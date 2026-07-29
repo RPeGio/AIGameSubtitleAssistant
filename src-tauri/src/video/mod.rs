@@ -111,56 +111,30 @@ fn parse_fraction_fps(s: &str) -> Option<f64> {
 
 // ─── 核心逻辑 ─────────────────────────────────────────────
 
-/// 调用 ffprobe 并解析其 JSON 输出，提取视频元数据
-fn probe_video(path: &str, ffprobe: &PathBuf) -> Result<VideoMetadata, String> {
-    let output = Command::new(ffprobe)
-        .args([
-            "-v",
-            "quiet", // 不输出日志，只输出 JSON
-            "-print_format",
-            "json",
-            "-show_format",   // 输出封装格式信息（含 duration）
-            "-show_streams",  // 输出所有流的信息（视频流/音频流）
-        ])
-        .arg(path)
-        .output()
-        .map_err(|e| format!("无法执行 ffprobe: {}", e))?;
-
-    // 检查 ffprobe 进程是否正常退出
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("ffprobe 执行失败: {}", stderr));
-    }
-
-    // 解析 JSON
-    let parsed: FfprobeOutput = serde_json::from_slice(&output.stdout)
-        .map_err(|e| format!("ffprobe JSON 解析失败: {}", e))?;
-
-    // 找到第一个视频流
+/// 将反序列化后的 ffprobe JSON 转换为 VideoMetadata
+fn ffprobe_output_to_metadata(parsed: &FfprobeOutput, path: &str) -> Result<VideoMetadata, String> {
     let video_stream = parsed
         .streams
         .iter()
         .find(|s| s.codec_type == "video")
         .ok_or_else(|| "未找到视频流".to_string())?;
 
-    // 解析帧率（可能是 "30000/1001"）
     let fps = video_stream
         .r_frame_rate
         .as_deref()
         .and_then(parse_fraction_fps)
         .unwrap_or(0.0);
 
-    // 找到第一个音频流的编码格式（如果有的话）
     let audio_codec = parsed
         .streams
         .iter()
         .find(|s| s.codec_type == "audio")
         .and_then(|s| s.codec_name.clone());
 
-    // duration 来自 format 段
     let duration = parsed
         .format
         .duration
+        .as_deref()
         .and_then(|d| d.parse::<f64>().ok())
         .unwrap_or(0.0);
 
@@ -173,6 +147,32 @@ fn probe_video(path: &str, ffprobe: &PathBuf) -> Result<VideoMetadata, String> {
         codec: video_stream.codec_name.clone().unwrap_or_default(),
         audio_codec,
     })
+}
+
+/// 调用 ffprobe 并解析其 JSON 输出，提取视频元数据
+fn probe_video(path: &str, ffprobe: &PathBuf) -> Result<VideoMetadata, String> {
+    let output = Command::new(ffprobe)
+        .args([
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+        ])
+        .arg(path)
+        .output()
+        .map_err(|e| format!("无法执行 ffprobe: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("ffprobe 执行失败: {}", stderr));
+    }
+
+    let parsed: FfprobeOutput = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("ffprobe JSON 解析失败: {}", e))?;
+
+    ffprobe_output_to_metadata(&parsed, path)
 }
 
 // ─── Tauri 命令 ───────────────────────────────────────────
