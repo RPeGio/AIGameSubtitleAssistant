@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+@font-face {
+  font-family: 'Exo';
+  src: url('/fonts/exo.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+}
+
 :root {
   --color-bg-primary: #1a1b2e;
   --color-bg-secondary: #22243a;
@@ -24,7 +31,7 @@ html, body, #app {
   height: 100%;
   width: 100%;
   overflow: hidden;
-  font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-family: 'Exo', sans-serif;
   background-color: var(--color-bg-primary);
   color: var(--color-text-primary);
 }
