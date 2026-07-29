@@ -63,3 +63,22 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+---
+
+## 5. Project-Specific Workflow
+
+### Task Granularity
+- Each Phase is split into small sub-tasks
+- **One task per conversation round** — do not batch multiple tasks in one response
+- Before coding each task, present the plan and let the user confirm
+
+### Git Policy
+- **Do NOT auto-commit** after completing a task
+- After coding, output a **conventional commit message** (title + body) that the user can copy for manual commit
+- The user is responsible for committing and pushing
+
+### Code Style
+- Rust: write comments in Chinese for core logic / architecture (the user is learning Rust)
+- Frontend: keep TypeScript/Vue concise, no unnecessary comments
+- Match existing project conventions
