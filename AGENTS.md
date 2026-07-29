@@ -75,7 +75,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ### Git Policy
 - **Do NOT auto-commit** after completing a task
-- After coding, output a **conventional commit message** (title + body) that the user can copy for manual commit
+- After coding, output a **conventional commit message** (title + body) in English that the user can copy for manual commit
 - The user is responsible for committing and pushing
 
 ### Code Style
