@@ -63,7 +63,6 @@ function onTimeUpdate() {
   if (!v) return;
   currentTime.value = v.currentTime;
   if (timeline.isSeeking) {
-    timeline.seekDone();
     return;
   }
   timeline.tick(v.currentTime);
