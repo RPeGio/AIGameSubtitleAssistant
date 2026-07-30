@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onUnmounted } from "vue";
 import { useTimelineStore } from "../../stores/timeline";
 
 const timeline = useTimelineStore();
@@ -13,16 +13,52 @@ const container = computed(() => {
   return { width: widthPct + "%", left: leftPct + "%" };
 });
 
-function onScrollbarClick(e: MouseEvent) {
-  const el = e.currentTarget as HTMLElement;
+function calcPct(e: MouseEvent, el: HTMLElement): number {
   const rect = el.getBoundingClientRect();
-  const pct = (e.clientX - rect.left) / rect.width;
-  timeline.scrollLeft = pct * timeline.totalWidth;
+  return Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
 }
+
+let dragging: HTMLElement | null = null;
+
+function onScrollbarMouseDown(e: MouseEvent) {
+  const el = e.currentTarget as HTMLElement;
+  e.preventDefault();
+  dragging = el;
+  timeline.scrollLeft = calcPct(e, el) * timeline.totalWidth;
+  window.addEventListener("mousemove", onWindowMouseMove);
+  window.addEventListener("mouseup", onWindowMouseUp);
+}
+
+function onWindowMouseMove(e: MouseEvent) {
+  if (!dragging) return;
+  timeline.scrollLeft = calcPct(e, dragging) * timeline.totalWidth;
+}
+
+function onWindowMouseUp() {
+  dragging = null;
+  window.removeEventListener("mousemove", onWindowMouseMove);
+  window.removeEventListener("mouseup", onWindowMouseUp);
+}
+
+function onWheelScrollbar(e: WheelEvent) {
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.1 : 0.9;
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  timeline.zoom(factor, e.clientX - rect.left);
+}
+
+onUnmounted(() => {
+  window.removeEventListener("mousemove", onWindowMouseMove);
+  window.removeEventListener("mouseup", onWindowMouseUp);
+});
 </script>
 
 <template>
-  <div class="scrollbar-track" @click="onScrollbarClick">
+  <div
+    class="scrollbar-track"
+    @mousedown="onScrollbarMouseDown"
+    @wheel.prevent="onWheelScrollbar"
+  >
     <div
       class="scrollbar-thumb"
       :style="{ width: container.width, left: container.left }"
@@ -47,6 +83,7 @@ function onScrollbarClick(e: MouseEvent) {
   opacity: 0.6;
   border-radius: 5px;
   min-width: 20px;
+  pointer-events: none;
   transition: opacity 0.1s;
 }
 

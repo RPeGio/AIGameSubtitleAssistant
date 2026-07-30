@@ -42,10 +42,10 @@ watch(
 );
 
 watch(
-  () => timeline.isSeeking,
-  (seeking) => {
-    if (seeking && videoRef.value) {
-      videoRef.value.currentTime = timeline.currentTime;
+  () => timeline.currentTime,
+  (t) => {
+    if (timeline.isSeeking && videoRef.value) {
+      videoRef.value.currentTime = t;
     }
   }
 );

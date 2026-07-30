@@ -24,8 +24,12 @@ export const useTimelineStore = defineStore("timeline", () => {
     currentTime.value = t;
   }
 
+  function scrubbing(value: boolean) {
+    isSeeking.value = value;
+  }
+
   function seek(t: number) {
-    isSeeking.value = true;
+    scrubbing(true);
     currentTime.value = t;
   }
 
@@ -80,6 +84,7 @@ export const useTimelineStore = defineStore("timeline", () => {
     focusedClipId,
     totalWidth,
     tick,
+    scrubbing,
     seek,
     seekDone,
     setDuration,

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { onMounted, onUnmounted, ref } from "vue";
 import { useTimelineStore, CLIP_COLORS } from "../../stores/timeline";
 import { useProjectStore } from "../../stores/project";
 import TimelineRuler from "./TimelineRuler.vue";
@@ -9,29 +10,71 @@ const timeline = useTimelineStore();
 const projectStore = useProjectStore();
 
 const tracks = () => projectStore.currentProject?.tracks ?? [];
+const tracksBodyRef = ref<HTMLElement | null>(null);
+let scrubbingTrackBody: HTMLElement | null = null;
+
+// ── 轨道区域 mousedown/mousemove/mouseup ──
+
+function onTrackBodyMouseDown(e: MouseEvent) {
+  const target = e.currentTarget as HTMLElement;
+  const rect = target.getBoundingClientRect();
+  e.preventDefault();
+  scrubbingTrackBody = target;
+  timeline.scrubbing(true);
+  timeline.seek(timeline.timeAtPixel(e.clientX - rect.left));
+  timeline.focusClip(null);
+  window.addEventListener("mousemove", onWindowMouseMove);
+  window.addEventListener("mouseup", onWindowMouseUp);
+}
+
+function onWindowMouseMove(e: MouseEvent) {
+  if (!scrubbingTrackBody) return;
+  const rect = scrubbingTrackBody.getBoundingClientRect();
+  timeline.currentTime = timeline.timeAtPixel(e.clientX - rect.left);
+}
+
+function onWindowMouseUp() {
+  if (!scrubbingTrackBody) return;
+  scrubbingTrackBody = null;
+  timeline.scrubbing(false);
+  window.removeEventListener("mousemove", onWindowMouseMove);
+  window.removeEventListener("mouseup", onWindowMouseUp);
+}
+
+// ── 滚轮 ──
 
 function onWheelTracks(e: WheelEvent) {
   e.preventDefault();
   timeline.pan(e.deltaY);
 }
 
-function onWheelScrollbar(e: WheelEvent) {
-  e.preventDefault();
-  const factor = e.deltaY < 0 ? 1.1 : 0.9;
-  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-  timeline.zoom(factor, e.clientX - rect.left);
+function setupWheelListeners(el: HTMLElement) {
+  el.addEventListener("wheel", onWheelTracks, { passive: false });
 }
 
-function onClickTracks(e: MouseEvent) {
-  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-  const x = e.clientX - rect.left;
-  timeline.seek(timeline.timeAtPixel(x));
-  timeline.focusClip(null);
+function teardownWheelListeners(el: HTMLElement) {
+  el.removeEventListener("wheel", onWheelTracks);
 }
+
+onMounted(() => {
+  if (tracksBodyRef.value) {
+    const bodies = tracksBodyRef.value.querySelectorAll(".tl-track-body");
+    bodies.forEach((el) => setupWheelListeners(el as HTMLElement));
+  }
+});
+
+onUnmounted(() => {
+  window.removeEventListener("mousemove", onWindowMouseMove);
+  window.removeEventListener("mouseup", onWindowMouseUp);
+  if (tracksBodyRef.value) {
+    const bodies = tracksBodyRef.value.querySelectorAll(".tl-track-body");
+    bodies.forEach((el) => teardownWheelListeners(el as HTMLElement));
+  }
+});
 </script>
 
 <template>
-  <div class="timeline-root">
+  <div class="timeline-root" ref="tracksBodyRef">
     <!-- Header: ruler -->
     <div class="tl-row">
       <div class="tl-label-col" />
@@ -51,9 +94,8 @@ function onClickTracks(e: MouseEvent) {
         <div class="label-type">{{ track.type }}</div>
       </div>
       <div
-        class="tl-content"
-        @wheel.prevent="onWheelTracks"
-        @click="onClickTracks"
+        class="tl-content tl-track-body"
+        @mousedown="onTrackBodyMouseDown"
       >
         <template v-if="track.events.length > 0">
           <TimelineClip
@@ -75,7 +117,7 @@ function onClickTracks(e: MouseEvent) {
     <div class="tl-row">
       <div class="tl-label-col" />
       <div class="tl-content">
-        <TimelineScrollbar @wheel.prevent="onWheelScrollbar" />
+        <TimelineScrollbar />
       </div>
     </div>
   </div>
@@ -142,5 +184,6 @@ function onClickTracks(e: MouseEvent) {
   color: var(--color-text-secondary);
   opacity: 0.4;
   white-space: nowrap;
+  pointer-events: none;
 }
 </style>
