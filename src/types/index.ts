@@ -1,17 +1,44 @@
-export interface SubtitleEvent {
+export interface TimelineEventBase {
   id: string;
   start: number;
   end: number;
+}
+
+export interface OcrTextEvent extends TimelineEventBase {
+  type: "ocr_text";
   text: string;
-  speaker?: string;
-  character?: string;
-  source: "ocr" | "asr" | "manual";
   confidence: number;
 }
 
+export interface OcrRegionEvent extends TimelineEventBase {
+  type: "ocr_region";
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
+export interface AsrEvent extends TimelineEventBase {
+  type: "asr";
+  text: string;
+  speaker: string;
+  character?: string;
+  confidence: number;
+}
+
+export interface ManualEvent extends TimelineEventBase {
+  type: "manual";
+  text: string;
+  character?: string;
+}
+
+export type TimelineEvent = OcrTextEvent | OcrRegionEvent | AsrEvent | ManualEvent;
+
 export interface Track {
-  type: "subtitle" | "voice" | "translation";
-  events: SubtitleEvent[];
+  id: string;
+  name: string;
+  type: string;
+  events: TimelineEvent[];
 }
 
 export interface Project {

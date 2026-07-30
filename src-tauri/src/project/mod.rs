@@ -7,30 +7,101 @@ use tauri::Manager; // 提供 app.path() 等方法
 
 // ─── 数据模型 ─────────────────────────────────────────────
 
-/// 字幕事件 —— 核心数据单元
-/// 一条字幕事件代表一句台词，包含起止时间、文本内容、说话人等
+// ─── 时间轴事件（tagged union）────────────────────────────
+// TimelineEvent 是所有轨道事件的基础抽象。
+// 通过 serde(tag = "type") 序列化为带类型标签的 JSON，
+// 反序列化时根据 "type" 字段自动分发到对应的变体。
+// JSON 示例: { "type": "ocr_region", "id": "...", "start": 0, "end": 90, "x1": 0.1, ... }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SubtitleEvent {
+#[serde(tag = "type")]
+pub enum TimelineEvent {
+    /// OCR 识别到的游戏内对话文本
+    #[serde(rename = "ocr_text")]
+    OcrText(OcrTextEvent),
+    /// OCR 区域选框 —— 标记视频中字幕出现的矩形区域
+    #[serde(rename = "ocr_region")]
+    OcrRegion(OcrRegionEvent),
+    /// ASR 语音识别结果，含说话人分离信息
+    #[serde(rename = "asr")]
+    Asr(AsrEvent),
+    /// 人工手动创建/编辑的字幕事件
+    #[serde(rename = "manual")]
+    Manual(ManualEvent),
+}
+
+/// OCR 文本事件 —— 从视频截图中识别出的一句台词
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OcrTextEvent {
     pub id: String,
     pub start: f64,
     pub end: f64,
+    /// 识别出的原始文本
     pub text: String,
-    pub speaker: Option<String>,
-    pub character: Option<String>,
-    /// 来源: "ocr" | "asr" | "manual"
-    pub source: String,
-    /// 置信度 (0.0 ~ 1.0)
+    /// OCR 置信度 (0.0 ~ 1.0)
     pub confidence: f64,
 }
 
-/// 轨道 —— 一组有序的字幕事件
-/// 一个项目可以有多个轨道（角色字幕轨、主播语音轨、翻译轨等）
+/// OCR 区域事件 —— 标记视频中某段时间内字幕出现的矩形位置
+/// 坐标使用归一化值 (0.0 ~ 1.0)，相对于视频画面的宽高
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OcrRegionEvent {
+    pub id: String,
+    pub start: f64,
+    pub end: f64,
+    /// 矩形左上角 X（归一化）
+    pub x1: f64,
+    /// 矩形左上角 Y（归一化）
+    pub y1: f64,
+    /// 矩形右下角 X（归一化）
+    pub x2: f64,
+    /// 矩形右下角 Y（归一化）
+    pub y2: f64,
+}
+
+/// ASR 语音识别事件 —— 由说话人分离模型输出的带时间轴的台词
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AsrEvent {
+    pub id: String,
+    pub start: f64,
+    pub end: f64,
+    /// 识别的文本内容
+    pub text: String,
+    /// 说话人标签（如 "S01", "S02"）
+    pub speaker: String,
+    /// 解析后的角色名（如 "派蒙"），可能为空
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub character: Option<String>,
+    /// ASR 置信度 (0.0 ~ 1.0)
+    pub confidence: f64,
+}
+
+/// 手动创建的字幕事件 —— 用户手工添加或编辑的台词
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManualEvent {
+    pub id: String,
+    pub start: f64,
+    pub end: f64,
+    /// 台词文本
+    pub text: String,
+    /// 角色名（可选）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub character: Option<String>,
+}
+
+/// 轨道 —— 一组有序的时间轴事件
+/// 一个项目可以有多个轨道（角色字幕轨、主播语音轨、OCR 区域轨等）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Track {
-    /// 轨道类型: "subtitle" | "voice" | "translation"
+    /// 轨道唯一标识
+    pub id: String,
+    /// 用户自定义的轨道显示名称（如 "角色字幕", "主播语音"）
+    pub name: String,
+    /// 轨道类型: "ocr_region" | "ocr_text" | "asr" | "manual" | "translation"
     #[serde(rename = "type")]
     pub track_type: String,
-    pub events: Vec<SubtitleEvent>,
+    /// 轨道内的事件列表，按时间排序
+    pub events: Vec<TimelineEvent>,
 }
 
 /// 项目 —— 顶层容器，保存整个字幕项目的元数据和所有轨道
