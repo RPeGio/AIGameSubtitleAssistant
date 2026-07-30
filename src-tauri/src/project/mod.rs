@@ -205,6 +205,30 @@ pub fn list_recent_projects(app: AppHandle) -> Vec<RecentProject> {
     }
 }
 
+// ─── 视频路径更新 ─────────────────────────────────────────
+
+/// 设置项目的视频文件路径并保存
+#[tauri::command]
+pub fn set_project_video(project_path: String, video_path: String) -> Result<Project, String> {
+    let project_file = PathBuf::from(&project_path).join(PROJECT_FILE);
+
+    let json = fs::read_to_string(&project_file)
+        .map_err(|e| format!("无法读取项目文件: {}", e))?;
+    let mut project: Project = serde_json::from_str(&json)
+        .map_err(|e| format!("项目文件解析失败: {}", e))?;
+
+    project.video = video_path;
+    project.path = project_path;
+    project.updated_at = now_iso();
+
+    let new_json = serde_json::to_string_pretty(&project)
+        .map_err(|e| format!("项目序列化失败: {}", e))?;
+    fs::write(&project_file, &new_json)
+        .map_err(|e| format!("无法写入项目文件: {}", e))?;
+
+    Ok(project)
+}
+
 // ─── 内部辅助 ─────────────────────────────────────────────
 
 /// 将项目添加到最近项目列表的最前面

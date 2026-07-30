@@ -28,3 +28,13 @@ export interface RecentProject {
   name: string;
   updated_at: string;
 }
+
+export interface VideoMetadata {
+  path: string;
+  duration: number;
+  width: number;
+  height: number;
+  fps: number;
+  codec: string;
+  audio_codec: string | null;
+}
