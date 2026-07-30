@@ -32,7 +32,20 @@ function onTrackBodyMouseDown(e: MouseEvent) {
 function onWindowMouseMove(e: MouseEvent) {
   if (!scrubbingTrackBody) return;
   const rect = scrubbingTrackBody.getBoundingClientRect();
-  timeline.currentTime = timeline.timeAtPixel(e.clientX - rect.left);
+  const mouseX = e.clientX - rect.left;
+
+  if (mouseX < 0) {
+    const speed = Math.min(-mouseX * 0.3, 20);
+    timeline.currentTime = timeline.timeAtPixel(0);
+    timeline.scrollLeft = Math.max(0, timeline.scrollLeft - speed);
+  } else if (mouseX > rect.width) {
+    const speed = Math.min((mouseX - rect.width) * 0.3, 20);
+    timeline.currentTime = timeline.timeAtPixel(rect.width);
+    const maxScroll = Math.max(0, timeline.totalWidth - 100);
+    timeline.scrollLeft = Math.min(timeline.scrollLeft + speed, maxScroll);
+  } else {
+    timeline.currentTime = timeline.timeAtPixel(mouseX);
+  }
 }
 
 function onWindowMouseUp() {
