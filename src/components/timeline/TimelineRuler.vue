@@ -42,10 +42,6 @@ const ticks = computed(() => {
   }
   return result;
 });
-
-const playheadStyle = computed(() => ({
-  transform: `translateX(${timeline.playheadX()}px)`,
-}));
 </script>
 
 <template>
@@ -66,10 +62,6 @@ const playheadStyle = computed(() => ({
       <NText v-if="tick.isMajor" class="tick-label" depth="3">
         {{ tick.label }}
       </NText>
-    </div>
-    <div class="playhead" :style="playheadStyle">
-      <div class="playhead-head" />
-      <div class="playhead-line" />
     </div>
   </div>
 </template>
@@ -107,28 +99,5 @@ const playheadStyle = computed(() => ({
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   margin-top: 1px;
-}
-
-.playhead {
-  position: absolute;
-  top: 0;
-  left: 0;
-  z-index: 10;
-  pointer-events: none;
-}
-
-.playhead-head {
-  width: 10px;
-  height: 10px;
-  background: var(--color-error);
-  border-radius: 3px 3px 0 0;
-  margin-left: -5px;
-}
-
-.playhead-line {
-  width: 1px;
-  height: 100vh;
-  background: var(--color-error);
-  margin-left: -0.5px;
 }
 </style>

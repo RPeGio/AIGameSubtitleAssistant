@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useTimelineStore, CLIP_COLORS } from "../../stores/timeline";
 import { useProjectStore } from "../../stores/project";
 import TimelineRuler from "./TimelineRuler.vue";
@@ -12,6 +12,8 @@ const projectStore = useProjectStore();
 const tracks = () => projectStore.currentProject?.tracks ?? [];
 const tracksBodyRef = ref<HTMLElement | null>(null);
 let scrubbingTrackBody: HTMLElement | null = null;
+
+const playheadLeft = computed(() => (180 + timeline.playheadX()) + "px");
 
 // ── 轨道区域 mousedown/mousemove/mouseup ──
 
@@ -78,7 +80,10 @@ onUnmounted(() => {
     <!-- Header: ruler -->
     <div class="tl-row">
       <div class="tl-label-col" />
-      <div class="tl-content">
+      <div
+        class="tl-content"
+        @mousedown="onTrackBodyMouseDown"
+      >
         <TimelineRuler />
       </div>
     </div>
@@ -113,6 +118,15 @@ onUnmounted(() => {
       </div>
     </div>
 
+    <!-- Playhead overlay — spans full height across all rows -->
+    <div
+      class="playhead-overlay"
+      :style="{ left: playheadLeft }"
+    >
+      <div class="playhead-head" />
+      <div class="playhead-line" />
+    </div>
+
     <!-- Footer: scrollbar -->
     <div class="tl-row">
       <div class="tl-label-col" />
@@ -125,11 +139,13 @@ onUnmounted(() => {
 
 <style scoped>
 .timeline-root {
+  position: relative;
   border-top: 1px solid var(--color-border);
   background: var(--color-bg-secondary);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
+  overflow: hidden;
 }
 
 .tl-row {
@@ -185,5 +201,29 @@ onUnmounted(() => {
   opacity: 0.4;
   white-space: nowrap;
   pointer-events: none;
+}
+
+.playhead-overlay {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  z-index: 20;
+  pointer-events: none;
+}
+
+.playhead-head {
+  width: 10px;
+  height: 10px;
+  background: var(--color-error);
+  border-radius: 3px 3px 0 0;
+  margin-left: -5px;
+}
+
+.playhead-line {
+  width: 1px;
+  height: 100%;
+  background: var(--color-error);
+  margin-left: -0.5px;
 }
 </style>
