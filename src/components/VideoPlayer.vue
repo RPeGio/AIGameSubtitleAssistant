@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { useTimelineStore } from "../stores/timeline";
 
 const props = defineProps<{ src: string }>();
+
+const timeline = useTimelineStore();
 
 const videoRef = ref<HTMLVideoElement | null>(null);
 const currentTime = ref(0);
@@ -34,6 +37,16 @@ watch(
     currentTime.value = 0;
     duration.value = 0;
     isPlaying.value = false;
+    timeline.setDuration(0);
+  }
+);
+
+watch(
+  () => timeline.isSeeking,
+  (seeking) => {
+    if (seeking && videoRef.value) {
+      videoRef.value.currentTime = timeline.currentTime;
+    }
   }
 );
 
@@ -42,12 +55,18 @@ function onLoadedMeta() {
   if (!v) return;
   duration.value = v.duration;
   isLoaded.value = true;
+  timeline.setDuration(v.duration);
 }
 
 function onTimeUpdate() {
   const v = videoRef.value;
   if (!v) return;
   currentTime.value = v.currentTime;
+  if (timeline.isSeeking) {
+    timeline.seekDone();
+    return;
+  }
+  timeline.tick(v.currentTime);
 }
 
 function onPlay() {

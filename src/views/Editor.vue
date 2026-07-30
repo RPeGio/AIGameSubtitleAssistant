@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { useProjectStore } from "../stores/project";
 import AppSidebar from "../components/AppSidebar.vue";
 import VideoPlayer from "../components/VideoPlayer.vue";
+import Timeline from "../components/timeline/Timeline.vue";
 import { NButton, NTag, NSpace, NAlert } from "naive-ui";
 
 const projectStore = useProjectStore();
@@ -41,7 +42,7 @@ const resolutionLabel = computed(() => {
   <div class="editor-layout">
     <AppSidebar />
     <main class="editor-main">
-      <!-- 已导入视频 -->
+      <!-- video imported -->
       <div v-if="hasVideo" class="editor-content">
         <div class="player-area">
           <VideoPlayer :src="meta!.path" />
@@ -61,9 +62,11 @@ const resolutionLabel = computed(() => {
             更换视频
           </NButton>
         </div>
+
+        <Timeline />
       </div>
 
-      <!-- 未导入视频 -->
+      <!-- empty state -->
       <div v-else class="editor-empty">
         <div class="empty-icon">📹</div>
         <h2>{{ projectStore.currentProject?.name ?? "加载中..." }}</h2>
@@ -114,16 +117,12 @@ const resolutionLabel = computed(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 24px;
+  padding: 24px 24px 0;
   gap: 12px;
 }
 
 .player-area {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 0;
+  flex-shrink: 0;
 }
 
 .info-bar {
