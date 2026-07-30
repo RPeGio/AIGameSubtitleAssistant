@@ -1,12 +1,21 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, watch } from "vue";
 import { useProjectStore } from "../stores/project";
+import { useTimelineStore } from "../stores/timeline";
 import AppSidebar from "../components/AppSidebar.vue";
 import VideoPlayer from "../components/VideoPlayer.vue";
 import Timeline from "../components/timeline/Timeline.vue";
 import { NButton, NTag, NSpace, NAlert } from "naive-ui";
 
 const projectStore = useProjectStore();
+const timeline = useTimelineStore();
+
+watch(
+  () => timeline.duration,
+  (d) => {
+    if (d > 0) projectStore.ensureDefaultTrack(d);
+  }
+);
 
 const meta = computed(() => projectStore.currentVideoMeta);
 const hasVideo = computed(() => meta.value !== null);

@@ -1,5 +1,13 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
+import type { TimelineEvent } from "../types";
+
+export const CLIP_COLORS: Record<string, string> = {
+  ocr_region: "#00b894",
+  ocr_text: "#fdcb6e",
+  asr: "#0984e3",
+  manual: "#a29bfe",
+};
 
 export const useTimelineStore = defineStore("timeline", () => {
   const pixelsPerSecond = ref(100);
@@ -7,6 +15,7 @@ export const useTimelineStore = defineStore("timeline", () => {
   const currentTime = ref(0);
   const duration = ref(0);
   const isSeeking = ref(false);
+  const focusedClipId = ref<string | null>(null);
 
   const totalWidth = computed(() => duration.value * pixelsPerSecond.value);
 
@@ -50,12 +59,25 @@ export const useTimelineStore = defineStore("timeline", () => {
     return (scrollLeft.value + px) / pixelsPerSecond.value;
   }
 
+  function focusClip(id: string | null) {
+    focusedClipId.value = id;
+  }
+
+  function clipPosition(event: TimelineEvent) {
+    const pps = pixelsPerSecond.value;
+    return {
+      left: event.start * pps - scrollLeft.value,
+      width: Math.max(4, (event.end - event.start) * pps),
+    };
+  }
+
   return {
     pixelsPerSecond,
     scrollLeft,
     currentTime,
     duration,
     isSeeking,
+    focusedClipId,
     totalWidth,
     tick,
     seek,
@@ -65,5 +87,7 @@ export const useTimelineStore = defineStore("timeline", () => {
     zoom,
     pan,
     timeAtPixel,
+    focusClip,
+    clipPosition,
   };
 });

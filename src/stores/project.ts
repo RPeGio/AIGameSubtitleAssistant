@@ -4,6 +4,10 @@ import type { Project, RecentProject, VideoMetadata } from "../types";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
+function generateId(): string {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
 export const useProjectStore = defineStore("project", () => {
   const currentProject = ref<Project | null>(null);
   const recentProjects = ref<RecentProject[]>([]);
@@ -89,6 +93,32 @@ export const useProjectStore = defineStore("project", () => {
     }
   }
 
+  function ensureDefaultTrack(duration: number) {
+    if (!currentProject.value) return;
+    const hasOcrRegion = currentProject.value.tracks.some(
+      (t) => t.type === "ocr_region"
+    );
+    if (hasOcrRegion) return;
+
+    currentProject.value.tracks.push({
+      id: generateId(),
+      name: "OCR 选区",
+      type: "ocr_region",
+      events: [
+        {
+          id: generateId(),
+          start: 0,
+          end: duration,
+          type: "ocr_region",
+          x1: 0.1,
+          y1: 0.7,
+          x2: 0.9,
+          y2: 0.85,
+        },
+      ],
+    });
+  }
+
   function closeProject() {
     currentProject.value = null;
     currentVideoMeta.value = null;
@@ -104,6 +134,7 @@ export const useProjectStore = defineStore("project", () => {
     createProject,
     openProject,
     importVideo,
+    ensureDefaultTrack,
     refreshRecentProjects,
     closeProject,
   };
