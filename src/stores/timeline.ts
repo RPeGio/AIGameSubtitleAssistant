@@ -60,7 +60,8 @@ export const useTimelineStore = defineStore("timeline", () => {
   }
 
   function timeAtPixel(px: number): number {
-    return (scrollLeft.value + px) / pixelsPerSecond.value;
+    const t = (scrollLeft.value + px) / pixelsPerSecond.value;
+    return Math.max(0, Math.min(duration.value, t));
   }
 
   function focusClip(id: string | null) {
