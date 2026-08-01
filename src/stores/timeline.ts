@@ -16,8 +16,19 @@ export const useTimelineStore = defineStore("timeline", () => {
   const duration = ref(0);
   const isSeeking = ref(false);
   const focusedClipId = ref<string | null>(null);
+  const viewportWidth = ref(0);
 
   const totalWidth = computed(() => duration.value * pixelsPerSecond.value);
+
+  /// 时间轴内容区域的可见宽度（由 Timeline 组件测量后写入）
+  function setViewportWidth(w: number) {
+    viewportWidth.value = w;
+  }
+
+  /// 内容区可滚动的最大偏移：保证右边缘恰好显示视频结尾
+  function maxScroll(): number {
+    return Math.max(0, totalWidth.value - viewportWidth.value);
+  }
 
   function tick(t: number) {
     if (isSeeking.value) return;
@@ -55,8 +66,7 @@ export const useTimelineStore = defineStore("timeline", () => {
   }
 
   function pan(delta: number) {
-    const maxScroll = Math.max(0, totalWidth.value - 100);
-    scrollLeft.value = Math.max(0, Math.min(scrollLeft.value + delta, maxScroll));
+    scrollLeft.value = Math.max(0, Math.min(scrollLeft.value + delta, maxScroll()));
   }
 
   function timeAtPixel(px: number): number {
@@ -83,12 +93,15 @@ export const useTimelineStore = defineStore("timeline", () => {
     duration,
     isSeeking,
     focusedClipId,
+    viewportWidth,
     totalWidth,
     tick,
     scrubbing,
     seek,
     seekDone,
     setDuration,
+    setViewportWidth,
+    maxScroll,
     playheadX,
     zoom,
     pan,

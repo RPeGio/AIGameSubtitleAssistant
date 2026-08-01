@@ -11,6 +11,8 @@ const projectStore = useProjectStore();
 
 const tracks = () => projectStore.currentProject?.tracks ?? [];
 const tracksBodyRef = ref<HTMLElement | null>(null);
+const viewportRef = ref<HTMLElement | null>(null);
+let viewportObserver: ResizeObserver | null = null;
 let scrubbingTrackBody: HTMLElement | null = null;
 
 const playheadLeft = computed(() => (180 + timeline.playheadX()) + "px");
@@ -41,8 +43,7 @@ function onWindowMouseMove(e: MouseEvent) {
   } else if (mouseX > rect.width) {
     const speed = Math.min((mouseX - rect.width) * 0.3, 20);
     timeline.currentTime = timeline.timeAtPixel(rect.width);
-    const maxScroll = Math.max(0, timeline.totalWidth - 100);
-    timeline.scrollLeft = Math.min(timeline.scrollLeft + speed, maxScroll);
+    timeline.scrollLeft = Math.min(timeline.scrollLeft + speed, timeline.maxScroll());
   } else {
     timeline.currentTime = timeline.timeAtPixel(mouseX);
   }
@@ -72,6 +73,14 @@ function teardownWheelListeners(el: HTMLElement) {
 }
 
 onMounted(() => {
+  if (viewportRef.value) {
+    const update = () => {
+      timeline.setViewportWidth(viewportRef.value!.getBoundingClientRect().width);
+    };
+    update();
+    viewportObserver = new ResizeObserver(update);
+    viewportObserver.observe(viewportRef.value);
+  }
   if (tracksBodyRef.value) {
     const bodies = tracksBodyRef.value.querySelectorAll(".tl-track-body");
     bodies.forEach((el) => setupWheelListeners(el as HTMLElement));
@@ -79,6 +88,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  viewportObserver?.disconnect();
   window.removeEventListener("mousemove", onWindowMouseMove);
   window.removeEventListener("mouseup", onWindowMouseUp);
   if (tracksBodyRef.value) {
@@ -94,6 +104,7 @@ onUnmounted(() => {
     <div class="tl-row">
       <div class="tl-label-col" />
       <div
+        ref="viewportRef"
         class="tl-content"
         @mousedown="onTrackBodyMouseDown"
       >
