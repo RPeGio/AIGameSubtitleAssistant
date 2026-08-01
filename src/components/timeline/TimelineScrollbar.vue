@@ -1,41 +1,105 @@
 <script setup lang="ts">
-import { computed, onUnmounted } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useTimelineStore } from "../../stores/timeline";
 
 const timeline = useTimelineStore();
+const trackRef = ref<HTMLElement | null>(null);
 
-const container = computed(() => {
-  const totalW = timeline.totalWidth;
-  if (totalW <= 0) return { width: "100%", left: "0%" };
-  const viewW = 800;
-  const leftPct = Math.max(0, Math.min(100, (timeline.scrollLeft / totalW) * 100));
-  const widthPct = Math.max(1, Math.min(100, (viewW / totalW) * 100));
-  return { width: widthPct + "%", left: leftPct + "%" };
+const trackWidth = ref(0);
+let resizeObserver: ResizeObserver | null = null;
+
+// 可视宽度（即滑条轨道宽度）随窗口变化自动测量
+onMounted(() => {
+  const el = trackRef.value;
+  if (!el) return;
+  const update = () => {
+    trackWidth.value = el.getBoundingClientRect().width;
+  };
+  update();
+  resizeObserver = new ResizeObserver(update);
+  resizeObserver.observe(el);
 });
 
-function calcPct(e: MouseEvent, el: HTMLElement): number {
-  const rect = el.getBoundingClientRect();
-  return Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+onUnmounted(() => {
+  resizeObserver?.disconnect();
+  window.removeEventListener("mousemove", onWindowMouseMove);
+  window.removeEventListener("mouseup", onWindowMouseUp);
+});
+
+// ── 缩略块位置换算 ──
+// 内容总宽 = timeline.totalWidth(px)；可视宽 = trackWidth(px)
+// 缩略块宽度 = 可视宽占总内容宽的比例，映射到轨道像素
+// 缩略块左边缘(轨道px) = scrollLeft / totalWidth * trackWidth
+
+const thumbWidthPx = computed(() => {
+  const totalW = timeline.totalWidth;
+  if (totalW <= 0 || trackWidth.value <= 0) return 0;
+  return Math.max(20, Math.min(trackWidth.value, (trackWidth.value / totalW) * trackWidth.value));
+});
+
+const thumbLeftPx = computed(() => {
+  const totalW = timeline.totalWidth;
+  if (totalW <= 0 || trackWidth.value <= 0) return 0;
+  return (timeline.scrollLeft / totalW) * trackWidth.value;
+});
+
+const container = computed(() => {
+  const tw = trackWidth.value;
+  if (tw <= 0) return { width: "100%", left: "0%" };
+  return {
+    width: (thumbWidthPx.value / tw) * 100 + "%",
+    left: (thumbLeftPx.value / tw) * 100 + "%",
+  };
+});
+
+// 由"缩略块左边缘的轨道像素坐标"反推 scrollLeft，并夹在边界内
+function scrollLeftFromThumbLeft(thumbLeftTrackPx: number): number {
+  const totalW = timeline.totalWidth;
+  const tw = trackWidth.value;
+  if (totalW <= 0 || tw <= 0) return 0;
+  const maxScroll = Math.max(0, totalW - tw);
+  const raw = (thumbLeftTrackPx / tw) * totalW;
+  return Math.max(0, Math.min(maxScroll, raw));
 }
 
-let dragging: HTMLElement | null = null;
+// ── 拖拽状态 ──
+let dragging = false;
+let dragOffsetPx = 0; // 鼠标X与缩略块左边缘之间的固定偏移(轨道px)
 
 function onScrollbarMouseDown(e: MouseEvent) {
-  const el = e.currentTarget as HTMLElement;
+  const el = trackRef.value;
+  if (!el || timeline.totalWidth <= 0 || trackWidth.value <= 0) return;
   e.preventDefault();
-  dragging = el;
-  timeline.scrollLeft = calcPct(e, el) * timeline.totalWidth;
+
+  const rect = el.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const tw = thumbWidthPx.value;
+  const tl = thumbLeftPx.value;
+
+  if (x >= tl && x <= tl + tw) {
+    // 按下的是缩略块本体：不瞬移，记录偏移，拖动跟随
+    dragOffsetPx = x - tl;
+  } else {
+    // 按下的是缩略块外的轨道区域：缩略块中心瞬移至鼠标位置
+    const newScrollLeft = scrollLeftFromThumbLeft(x - tw / 2);
+    timeline.scrollLeft = newScrollLeft;
+    dragOffsetPx = tw / 2;
+  }
+
+  dragging = true;
   window.addEventListener("mousemove", onWindowMouseMove);
   window.addEventListener("mouseup", onWindowMouseUp);
 }
 
 function onWindowMouseMove(e: MouseEvent) {
-  if (!dragging) return;
-  timeline.scrollLeft = calcPct(e, dragging) * timeline.totalWidth;
+  if (!dragging || !trackRef.value) return;
+  const rect = trackRef.value.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  timeline.scrollLeft = scrollLeftFromThumbLeft(x - dragOffsetPx);
 }
 
 function onWindowMouseUp() {
-  dragging = null;
+  dragging = false;
   window.removeEventListener("mousemove", onWindowMouseMove);
   window.removeEventListener("mouseup", onWindowMouseUp);
 }
@@ -46,15 +110,11 @@ function onWheelScrollbar(e: WheelEvent) {
   const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
   timeline.zoom(factor, e.clientX - rect.left);
 }
-
-onUnmounted(() => {
-  window.removeEventListener("mousemove", onWindowMouseMove);
-  window.removeEventListener("mouseup", onWindowMouseUp);
-});
 </script>
 
 <template>
   <div
+    ref="trackRef"
     class="scrollbar-track"
     @mousedown="onScrollbarMouseDown"
     @wheel.prevent="onWheelScrollbar"
