@@ -58,11 +58,13 @@ export const useTimelineStore = defineStore("timeline", () => {
 
   function zoom(factor: number, cursorX: number) {
     const oldPps = pixelsPerSecond.value;
-    const newPps = Math.max(25, Math.min(800, oldPps * factor));
+    // 最小 pps 允许缩到整段视频刚好铺满可视区（即缩略块=100% 宽）
+    const minPps = duration.value > 0 ? viewportWidth.value / duration.value : 1;
+    const newPps = Math.max(minPps, Math.min(800, oldPps * factor));
     if (newPps === oldPps) return;
     const timeAtCursor = (scrollLeft.value + cursorX) / oldPps;
     pixelsPerSecond.value = newPps;
-    scrollLeft.value = Math.max(0, timeAtCursor * newPps - cursorX);
+    scrollLeft.value = Math.max(0, Math.min(timeAtCursor * newPps - cursorX, maxScroll()));
   }
 
   function pan(delta: number) {
