@@ -28,8 +28,9 @@ export const useProjectStore = defineStore("project", () => {
   // 用该标记短路，避免"保存→触发监听→再保存"的死循环
   let applyingSaved = false;
 
-  async function saveNow() {
-    if (isLoading.value || !currentProject.value) return;
+  /// 保存结果：ok=成功 | failed=写入失败 | skipped=无可保存（无项目/加载中）
+  async function saveNow(): Promise<"ok" | "failed" | "skipped"> {
+    if (isLoading.value || !currentProject.value) return "skipped";
     saveState.value = "saving";
     try {
       const updated = await invoke<Project>("save_project", {
@@ -39,9 +40,11 @@ export const useProjectStore = defineStore("project", () => {
       currentProject.value = updated;
       applyingSaved = false;
       saveState.value = "saved";
+      return "ok";
     } catch (e) {
       saveState.value = "error";
       console.error("项目保存失败:", e);
+      return "failed";
     }
   }
 

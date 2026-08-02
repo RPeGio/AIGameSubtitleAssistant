@@ -5,10 +5,12 @@ import { useTimelineStore } from "../stores/timeline";
 import AppSidebar from "../components/AppSidebar.vue";
 import VideoPlayer from "../components/VideoPlayer.vue";
 import Timeline from "../components/timeline/Timeline.vue";
+import { useManualSave } from "../composables/useManualSave";
 import { NButton, NTag, NSpace, NAlert } from "naive-ui";
 
 const projectStore = useProjectStore();
 const timeline = useTimelineStore();
+const { manualSave } = useManualSave();
 
 watch(
   () => timeline.duration,
@@ -33,7 +35,7 @@ function onGlobalKeydown(e: KeyboardEvent) {
 
   if (e.code === "KeyS" && e.ctrlKey) {
     e.preventDefault(); // 挡住浏览器默认保存对话框
-    projectStore.saveNow();
+    manualSave();
     return;
   }
 

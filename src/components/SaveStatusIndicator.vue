@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useProjectStore } from "../stores/project";
+import { useManualSave } from "../composables/useManualSave";
 
 const projectStore = useProjectStore();
+const { manualSave } = useManualSave();
 
 const statusMeta = computed(() => {
   switch (projectStore.saveState) {
@@ -25,7 +27,7 @@ const statusMeta = computed(() => {
     <button
       class="save-btn"
       :title="'保存 (Ctrl+S)'"
-      @click="projectStore.saveNow()"
+      @click="manualSave"
     >
       <svg
         xmlns="http://www.w3.org/2000/svg"

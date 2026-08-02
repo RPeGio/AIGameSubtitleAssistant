@@ -126,6 +126,7 @@ function handleBack() {
   padding: 12px 8px;
   border-top: 1px solid var(--color-border);
   display: flex;
+  justify-content: space-between;
   align-items: center;
   gap: 8px;
 }
