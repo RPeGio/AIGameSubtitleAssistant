@@ -1,6 +1,12 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import type { Project, RecentProject, VideoMetadata } from "../types";
+import type {
+  Project,
+  RecentProject,
+  VideoMetadata,
+  TimelineEvent,
+  Track,
+} from "../types";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
@@ -110,13 +116,38 @@ export const useProjectStore = defineStore("project", () => {
           start: 0,
           end: duration,
           type: "ocr_region",
-          x1: 0.1,
+          // 默认矩形：宽 60%，高 20%，水平居中，保持在画面偏低位置
+          x1: 0.2,
           y1: 0.7,
-          x2: 0.9,
-          y2: 0.85,
+          x2: 0.8,
+          y2: 0.9,
         },
       ],
     });
+  }
+
+  /// 根据事件 id 跨所有轨道查找 { track, event }
+  function findEvent(id: string | null): { track: Track; event: TimelineEvent } | null {
+    if (!currentProject.value || !id) return null;
+    for (const track of currentProject.value.tracks) {
+      const event = track.events.find((e) => e.id === id);
+      if (event) return { track, event };
+    }
+    return null;
+  }
+
+  /// 更新指定 ocr_region 事件的坐标（就地修改 reactive 对象，时间轴即时刷新）
+  function updateOcrRegion(
+    id: string,
+    coords: { x1: number; y1: number; x2: number; y2: number }
+  ) {
+    const found = findEvent(id);
+    if (found && found.event.type === "ocr_region") {
+      found.event.x1 = coords.x1;
+      found.event.y1 = coords.y1;
+      found.event.x2 = coords.x2;
+      found.event.y2 = coords.y2;
+    }
   }
 
   function closeProject() {
@@ -135,6 +166,8 @@ export const useProjectStore = defineStore("project", () => {
     openProject,
     importVideo,
     ensureDefaultTrack,
+    findEvent,
+    updateOcrRegion,
     refreshRecentProjects,
     closeProject,
   };

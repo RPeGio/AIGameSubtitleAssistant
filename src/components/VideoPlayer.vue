@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useTimelineStore } from "../stores/timeline";
+import RegionOverlay from "./RegionOverlay.vue";
 
 const props = defineProps<{ src: string }>();
 
@@ -120,6 +121,8 @@ onUnmounted(() => window.removeEventListener("keydown", handleKeydown));
         @pause="onPause"
         @error="onError"
       />
+
+      <RegionOverlay />
 
       <div v-if="loadError" class="player-overlay">
         <span class="error-text">{{ loadError }}</span>
