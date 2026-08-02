@@ -2,6 +2,7 @@
 import { useRouter } from "vue-router";
 import { useProjectStore } from "../stores/project";
 import { NButton } from "naive-ui";
+import SaveStatusIndicator from "./SaveStatusIndicator.vue";
 
 const router = useRouter();
 const projectStore = useProjectStore();
@@ -38,6 +39,7 @@ function handleBack() {
       <NButton size="small" quaternary @click="handleBack">
         ← 返回
       </NButton>
+      <SaveStatusIndicator />
     </div>
   </aside>
 </template>

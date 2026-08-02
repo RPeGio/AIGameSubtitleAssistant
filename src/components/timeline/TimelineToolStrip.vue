@@ -1,0 +1,93 @@
+<script setup lang="ts">
+import { useTimelineStore } from "../../stores/timeline";
+
+const timeline = useTimelineStore();
+</script>
+
+<template>
+  <div class="tool-strip">
+    <button
+      class="tool-btn"
+      :class="{ active: timeline.activeTool === 'select' }"
+      :title="'选择工具（默认）'"
+      @click="timeline.setTool('select')"
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="20"
+        height="20"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="m3 3 7.07 16.97 2.51-7.39 7.39-2.51L3 3z" />
+        <path d="m13 13 6 6" />
+      </svg>
+    </button>
+    <button
+      class="tool-btn"
+      :class="{ active: timeline.activeTool === 'split' }"
+      :title="'分割工具：点击 clip 在光标处分割'"
+      @click="timeline.setTool('split')"
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="20"
+        height="20"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <circle cx="6" cy="6" r="3"></circle>
+        <circle cx="6" cy="18" r="3"></circle>
+        <line x1="20" y1="4" x2="8.12" y2="15.88"></line>
+        <line x1="14.47" y1="14.48" x2="20" y2="20"></line>
+        <line x1="8.12" y1="8.12" x2="12" y2="12"></line>
+      </svg>
+    </button>
+  </div>
+</template>
+
+<style scoped>
+.tool-strip {
+  width: 40px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--color-border);
+  background: var(--color-bg-tertiary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 4px 0;
+  gap: 4px;
+}
+
+.tool-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.tool-btn:hover {
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+}
+
+.tool-btn.active {
+  background: var(--color-accent);
+  color: #fff;
+}
+</style>

@@ -26,7 +26,10 @@ pub fn run() {
             project::create_project,
             project::open_project,
             project::save_project,
+            project::set_project_video,
             project::list_recent_projects,
+            // video 模块
+            video::get_video_metadata,
         ])
         .run(tauri::generate_context!())
         .expect("启动应用失败");

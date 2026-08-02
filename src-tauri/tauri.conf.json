@@ -13,14 +13,18 @@
     "windows": [
       {
         "title": "GameSubtitleAI",
-        "width": 1280,
-        "height": 800,
-        "minWidth": 960,
-        "minHeight": 600
+        "width": 1600,
+        "height": 900,
+        "minWidth": 1280,
+        "minHeight": 720
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
     }
   },
   "bundle": {
