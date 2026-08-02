@@ -189,8 +189,8 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Footer: scrollbar -->
-      <div class="tl-row">
+      <!-- Footer: scrollbar（固定贴底） -->
+      <div class="tl-row timeline-footer">
         <div class="tl-label-col" />
         <div class="tl-content">
           <TimelineScrollbar />
@@ -232,6 +232,12 @@ onUnmounted(() => {
 
 .track-row {
   border-top: 1px solid var(--color-border);
+}
+
+.timeline-footer {
+  margin-top: auto;
+  border-top: 1px solid var(--color-border);
+  flex-shrink: 0;
 }
 
 .tl-label-col {
