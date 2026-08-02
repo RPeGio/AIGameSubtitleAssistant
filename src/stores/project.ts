@@ -101,29 +101,84 @@ export const useProjectStore = defineStore("project", () => {
 
   function ensureDefaultTrack(duration: number) {
     if (!currentProject.value) return;
-    const hasOcrRegion = currentProject.value.tracks.some(
-      (t) => t.type === "ocr_region"
-    );
-    if (hasOcrRegion) return;
+    const tracks = currentProject.value.tracks;
 
-    currentProject.value.tracks.push({
-      id: generateId(),
-      name: "OCR 选区",
-      type: "ocr_region",
-      events: [
-        {
-          id: generateId(),
-          start: 0,
-          end: duration,
-          type: "ocr_region",
-          // 默认矩形：宽 60%，高 20%，水平居中，保持在画面偏低位置
-          x1: 0.2,
-          y1: 0.7,
-          x2: 0.8,
-          y2: 0.9,
-        },
-      ],
-    });
+    // OCR 选区轨道：默认一个覆盖整段视频的选区
+    if (!tracks.some((t) => t.type === "ocr_region")) {
+      tracks.push({
+        id: generateId(),
+        name: "OCR 选区",
+        type: "ocr_region",
+        events: [
+          {
+            id: generateId(),
+            start: 0,
+            end: duration,
+            type: "ocr_region",
+            // 默认矩形：宽 60%，高 20%，水平居中，保持在画面偏低位置
+            x1: 0.2,
+            y1: 0.7,
+            x2: 0.8,
+            y2: 0.9,
+          },
+        ],
+      });
+    }
+
+    // Mock 轨道：供测试"焦点在非 ocr 轨道时不显示遮罩"等场景
+    if (!tracks.some((t) => t.type === "asr")) {
+      tracks.push({
+        id: generateId(),
+        name: "主播语音 (mock)",
+        type: "asr",
+        events: [
+          {
+            id: generateId(),
+            type: "asr",
+            start: 0,
+            end: duration * 0.15,
+            text: "大家好，今天继续播这个游戏",
+            speaker: "S01",
+            confidence: 0.92,
+          },
+          {
+            id: generateId(),
+            type: "asr",
+            start: duration * 0.3,
+            end: duration * 0.42,
+            text: "哇这个剧情也太顶了",
+            speaker: "S01",
+            confidence: 0.95,
+          },
+        ],
+      });
+    }
+
+    if (!tracks.some((t) => t.type === "ocr_text")) {
+      tracks.push({
+        id: generateId(),
+        name: "剧情文本 (mock)",
+        type: "ocr_text",
+        events: [
+          {
+            id: generateId(),
+            type: "ocr_text",
+            start: 0.5,
+            end: duration * 0.1,
+            text: "旅行者，你来了",
+            confidence: 0.88,
+          },
+          {
+            id: generateId(),
+            type: "ocr_text",
+            start: duration * 0.45,
+            end: duration * 0.55,
+            text: "前方似乎有什么东西在等待",
+            confidence: 0.9,
+          },
+        ],
+      });
+    }
   }
 
   /// 根据事件 id 跨所有轨道查找 { track, event }
