@@ -16,50 +16,29 @@ const TOOL_WIDTH = 40;
 const LABEL_WIDTH = 180;
 
 const tracks = () => projectStore.currentProject?.tracks ?? [];
-const tracksBodyRef = ref<HTMLElement | null>(null);
+const rootRef = ref<HTMLElement | null>(null);
 const viewportRef = ref<HTMLElement | null>(null);
 let viewportObserver: ResizeObserver | null = null;
-let scrubbingTrackBody: HTMLElement | null = null;
+let scrubbingBody: HTMLElement | null = null;
 
-const playheadLeft = computed(
-  () => TOOL_WIDTH + LABEL_WIDTH + timeline.playheadX() + "px"
-);
+// 播放头在内容区内的横向位置（相对内容区左缘）
+const playheadLeft = computed(() => timeline.playheadX() + "px");
 
-// ── 轨道区域 mousedown/mousemove/mouseup ──
+// ── 刻度区拖动：只有刻度区域能拖动红色标头 ──
 
-function onTrackBodyMouseDown(e: MouseEvent) {
+function onRulerMouseDown(e: MouseEvent) {
   const target = e.currentTarget as HTMLElement;
-  const rect = target.getBoundingClientRect();
-
-  // 分割工具：在 clip 上按下即分割，空白处不动作
-  if (timeline.activeTool === "split") {
-    const clipEl = (e.target as HTMLElement).closest(".clip") as HTMLElement | null;
-    const eventId = clipEl?.dataset.eventId;
-    if (!eventId) return;
-    const time = timeline.timeAtPixel(e.clientX - rect.left);
-    const rightId = projectStore.splitEvent(eventId, time);
-    if (rightId) {
-      timeline.focusClip(rightId);
-      const found = projectStore.findEvent(rightId);
-      if (found) timeline.focusTrack(found.track.id);
-    }
-    return;
-  }
-
-  // 选择工具：擦动时间轴，并聚焦当前轨道
   e.preventDefault();
-  scrubbingTrackBody = target;
+  scrubbingBody = target;
   timeline.scrubbing(true);
-  timeline.seek(timeline.timeAtPixel(e.clientX - rect.left));
-  timeline.focusTrack(target.dataset.trackId ?? null);
-  timeline.focusClip(null);
+  timeline.seek(timeline.timeAtPixel(e.clientX - target.getBoundingClientRect().left));
   window.addEventListener("mousemove", onWindowMouseMove);
   window.addEventListener("mouseup", onWindowMouseUp);
 }
 
 function onWindowMouseMove(e: MouseEvent) {
-  if (!scrubbingTrackBody) return;
-  const rect = scrubbingTrackBody.getBoundingClientRect();
+  if (!scrubbingBody) return;
+  const rect = scrubbingBody.getBoundingClientRect();
   const mouseX = e.clientX - rect.left;
 
   if (mouseX < 0) {
@@ -76,11 +55,36 @@ function onWindowMouseMove(e: MouseEvent) {
 }
 
 function onWindowMouseUp() {
-  if (!scrubbingTrackBody) return;
-  scrubbingTrackBody = null;
+  if (!scrubbingBody) return;
+  scrubbingBody = null;
   timeline.scrubbing(false);
   window.removeEventListener("mousemove", onWindowMouseMove);
   window.removeEventListener("mouseup", onWindowMouseUp);
+}
+
+// ── 轨道区域：分割工具 or 只聚焦轨道（不移动播放头）──
+
+function onTrackAreaMouseDown(e: MouseEvent) {
+  const target = e.currentTarget as HTMLElement;
+
+  // 分割工具：在 clip 上按下即分割，空白处不动作
+  if (timeline.activeTool === "split") {
+    const clipEl = (e.target as HTMLElement).closest(".clip") as HTMLElement | null;
+    const eventId = clipEl?.dataset.eventId;
+    if (!eventId) return;
+    const time = timeline.timeAtPixel(e.clientX - target.getBoundingClientRect().left);
+    const rightId = projectStore.splitEvent(eventId, time);
+    if (rightId) {
+      timeline.focusClip(rightId);
+      const found = projectStore.findEvent(rightId);
+      if (found) timeline.focusTrack(found.track.id);
+    }
+    return;
+  }
+
+  // 选择模式：只聚焦轨道，不改变播放头
+  timeline.focusTrack(target.dataset.trackId ?? null);
+  timeline.focusClip(null);
 }
 
 // 选择模式下点击 clip：聚焦 clip + 其所在轨道
@@ -96,19 +100,15 @@ function onTrackLabelClicked(track: Track) {
   timeline.focusTrack(track.id);
 }
 
-// ── 滚轮 ──
+// ── 滚轮：事件委托到根元素，时间轴区域水平滚动 ──
 
-function onWheelTracks(e: WheelEvent) {
+function onWheelRoot(e: WheelEvent) {
+  const t = e.target as HTMLElement;
+  // 滑条自己处理缩放；工具条/标签列不响应
+  if (t.closest(".scrollbar-track")) return;
+  if (t.closest(".tool-strip") || t.closest(".tl-label-col")) return;
   e.preventDefault();
   timeline.pan(e.deltaY);
-}
-
-function setupWheelListeners(el: HTMLElement) {
-  el.addEventListener("wheel", onWheelTracks, { passive: false });
-}
-
-function teardownWheelListeners(el: HTMLElement) {
-  el.removeEventListener("wheel", onWheelTracks);
 }
 
 onMounted(() => {
@@ -120,35 +120,29 @@ onMounted(() => {
     viewportObserver = new ResizeObserver(update);
     viewportObserver.observe(viewportRef.value);
   }
-  if (tracksBodyRef.value) {
-    const bodies = tracksBodyRef.value.querySelectorAll(".tl-track-body");
-    bodies.forEach((el) => setupWheelListeners(el as HTMLElement));
-  }
+  rootRef.value?.addEventListener("wheel", onWheelRoot, { passive: false });
 });
 
 onUnmounted(() => {
   viewportObserver?.disconnect();
+  rootRef.value?.removeEventListener("wheel", onWheelRoot);
   window.removeEventListener("mousemove", onWindowMouseMove);
   window.removeEventListener("mouseup", onWindowMouseUp);
-  if (tracksBodyRef.value) {
-    const bodies = tracksBodyRef.value.querySelectorAll(".tl-track-body");
-    bodies.forEach((el) => teardownWheelListeners(el as HTMLElement));
-  }
 });
 </script>
 
 <template>
-  <div class="timeline-root" ref="tracksBodyRef">
+  <div class="timeline-root" ref="rootRef">
     <TimelineToolStrip />
 
     <div class="timeline-col">
-      <!-- Header: ruler -->
+      <!-- Header: ruler（仅这里可拖动播放头） -->
       <div class="tl-row">
         <div class="tl-label-col" />
         <div
           ref="viewportRef"
           class="tl-content"
-          @mousedown="onTrackBodyMouseDown"
+          @mousedown="onRulerMouseDown"
         >
           <TimelineRuler />
         </div>
@@ -171,7 +165,7 @@ onUnmounted(() => {
         <div
           class="tl-content tl-track-body"
           :data-track-id="track.id"
-          @mousedown="onTrackBodyMouseDown"
+          @mousedown="onTrackAreaMouseDown"
         >
           <template v-if="track.events.length > 0">
             <TimelineClip
@@ -198,10 +192,15 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Playhead overlay — spans full height across all rows -->
-    <div class="playhead-overlay" :style="{ left: playheadLeft }">
-      <div class="playhead-head" />
-      <div class="playhead-line" />
+    <!-- Playhead window：仅覆盖内容区，标头越界时被裁剪而不上溢到工具条/标签列 -->
+    <div
+      class="playhead-window"
+      :style="{ left: TOOL_WIDTH + LABEL_WIDTH + 'px' }"
+    >
+      <div class="playhead-overlay" :style="{ left: playheadLeft }">
+        <div class="playhead-head" />
+        <div class="playhead-line" />
+      </div>
     </div>
   </div>
 </template>
@@ -294,12 +293,21 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
+.playhead-window {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
 .playhead-overlay {
   position: absolute;
   top: 0;
   bottom: 0;
   width: 1px;
-  z-index: 20;
+  z-index: 15;
   pointer-events: none;
 }
 
