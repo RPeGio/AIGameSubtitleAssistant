@@ -209,6 +209,7 @@ onUnmounted(() => {
 <style scoped>
 .timeline-root {
   position: relative;
+  height: 100%;
   display: flex;
   flex-direction: row;
   border-top: 1px solid var(--color-border);

@@ -81,26 +81,30 @@ const resolutionLabel = computed(() => {
     <main class="editor-main">
       <!-- video imported -->
       <div v-if="hasVideo" class="editor-content">
-        <div class="player-area">
-          <VideoPlayer :src="meta!.path" />
+        <div class="top-pane">
+          <div class="player-area">
+            <VideoPlayer :src="meta!.path" />
+          </div>
+
+          <div class="info-bar">
+            <NSpace wrap size="small">
+              <NTag>{{ displayPath }}</NTag>
+              <NTag>{{ meta?.width }}×{{ meta?.height }}</NTag>
+              <NTag v-if="resolutionLabel">{{ resolutionLabel }}</NTag>
+              <NTag>{{ durationFormatted }}</NTag>
+              <NTag>{{ meta?.fps.toFixed(1) }}fps</NTag>
+              <NTag>{{ meta?.codec }}</NTag>
+            </NSpace>
+
+            <NButton size="small" @click="projectStore.importVideo()">
+              更换视频
+            </NButton>
+          </div>
         </div>
 
-        <div class="info-bar">
-          <NSpace wrap size="small">
-            <NTag>{{ displayPath }}</NTag>
-            <NTag>{{ meta?.width }}×{{ meta?.height }}</NTag>
-            <NTag v-if="resolutionLabel">{{ resolutionLabel }}</NTag>
-            <NTag>{{ durationFormatted }}</NTag>
-            <NTag>{{ meta?.fps.toFixed(1) }}fps</NTag>
-            <NTag>{{ meta?.codec }}</NTag>
-          </NSpace>
-
-          <NButton size="small" @click="projectStore.importVideo()">
-            更换视频
-          </NButton>
+        <div class="timeline-pane">
+          <Timeline />
         </div>
-
-        <Timeline />
       </div>
 
       <!-- empty state -->
@@ -154,15 +158,26 @@ const resolutionLabel = computed(() => {
   height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 24px 24px 0;
-  gap: 12px;
+  overflow: hidden;
+}
+
+.top-pane {
+  flex: 1 1 65%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 24px 8px;
 }
 
 .player-area {
-  flex-shrink: 0;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .info-bar {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -171,6 +186,13 @@ const resolutionLabel = computed(() => {
   padding: 10px 12px;
   background: var(--color-bg-secondary);
   border-radius: 8px;
+}
+
+.timeline-pane {
+  flex: 0 0 35%;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 12px 12px;
 }
 
 .editor-empty {

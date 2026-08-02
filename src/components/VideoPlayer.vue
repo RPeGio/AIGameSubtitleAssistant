@@ -158,15 +158,16 @@ onUnmounted(() => window.removeEventListener("keydown", handleKeydown));
   display: flex;
   flex-direction: column;
   gap: 8px;
+  height: 100%;
 }
 
 .player-container {
   position: relative;
+  flex: 1;
+  min-height: 0;
   background: #000;
   border-radius: 8px;
   overflow: hidden;
-  aspect-ratio: 16 / 9;
-  max-height: 60vh;
 }
 
 .video-el {
