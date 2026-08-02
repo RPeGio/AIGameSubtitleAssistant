@@ -239,11 +239,11 @@ pub fn open_project(app: AppHandle, path: String) -> Result<Project, String> {
     Ok(project)
 }
 
-/// 保存项目（写入 project.json）
+/// 保存项目（写入 project.json），返回带新 updated_at 的 Project
 ///
 /// - `project`: 要保存的项目对象
 #[tauri::command]
-pub fn save_project(project: Project) -> Result<(), String> {
+pub fn save_project(project: Project) -> Result<Project, String> {
     let project_path = PathBuf::from(&project.path);
     let project_file = project_path.join(PROJECT_FILE);
 
@@ -255,7 +255,7 @@ pub fn save_project(project: Project) -> Result<(), String> {
     fs::write(&project_file, &json)
         .map_err(|e| format!("无法写入项目文件: {}", e))?;
 
-    Ok(())
+    Ok(updated)
 }
 
 /// 获取最近项目列表

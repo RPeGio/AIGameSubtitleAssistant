@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { ref, watch } from "vue";
 import type {
   Project,
   RecentProject,
@@ -20,6 +20,52 @@ export const useProjectStore = defineStore("project", () => {
   const currentVideoMeta = ref<VideoMetadata | null>(null);
   const isLoading = ref(false);
   const videoImportError = ref<string | null>(null);
+
+  // ── 自动保存 ─────────────────────────────────────────
+  const saveState = ref<"saved" | "pending" | "saving" | "error">("saved");
+  let saveTimer: number | undefined;
+  // 保存后把 updated_at 同步回 currentProject，会触发深监听；
+  // 用该标记短路，避免"保存→触发监听→再保存"的死循环
+  let applyingSaved = false;
+
+  async function saveNow() {
+    if (isLoading.value || !currentProject.value) return;
+    saveState.value = "saving";
+    try {
+      const updated = await invoke<Project>("save_project", {
+        project: currentProject.value,
+      });
+      applyingSaved = true;
+      currentProject.value = updated;
+      applyingSaved = false;
+      saveState.value = "saved";
+    } catch (e) {
+      saveState.value = "error";
+      console.error("项目保存失败:", e);
+    }
+  }
+
+  function scheduleSave() {
+    saveState.value = "pending";
+    clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(saveNow, 1000);
+  }
+
+  // 深监听整个项目对象：任何轨道/clip/坐标变更都会触发自动保存
+  watch(
+    () => currentProject.value,
+    () => {
+      if (isLoading.value || applyingSaved) return;
+      scheduleSave();
+    },
+    { deep: true, flush: "sync" }
+  );
+
+  // 应用关闭前尽力 flush（Tauri 关闭窗口时 WebView 可能直接销毁，best-effort）
+  window.addEventListener("beforeunload", () => {
+    clearTimeout(saveTimer);
+    saveNow();
+  });
 
   async function createProject(name: string, path: string) {
     isLoading.value = true;
@@ -229,9 +275,13 @@ export const useProjectStore = defineStore("project", () => {
   }
 
   function closeProject() {
+    // 关闭前落盘（在置空前触发保存）
+    clearTimeout(saveTimer);
+    saveNow();
     currentProject.value = null;
     currentVideoMeta.value = null;
     videoImportError.value = null;
+    saveState.value = "saved";
   }
 
   return {
@@ -240,6 +290,7 @@ export const useProjectStore = defineStore("project", () => {
     currentVideoMeta,
     isLoading,
     videoImportError,
+    saveState,
     createProject,
     openProject,
     importVideo,
@@ -249,6 +300,7 @@ export const useProjectStore = defineStore("project", () => {
     splitEvent,
     updateOcrRegion,
     refreshRecentProjects,
+    saveNow,
     closeProject,
   };
 });

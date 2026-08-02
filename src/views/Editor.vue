@@ -26,11 +26,18 @@ watch(
   }
 );
 
-// S 键：在播放头处分割当前聚焦的 clip（分割工具的快捷键）
+// 快捷键：Ctrl+S 立即保存；S 分割当前聚焦 clip
 function onGlobalKeydown(e: KeyboardEvent) {
   const t = e.target as HTMLElement;
   if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
-  if (e.code === "KeyS" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+
+  if (e.code === "KeyS" && e.ctrlKey) {
+    e.preventDefault(); // 挡住浏览器默认保存对话框
+    projectStore.saveNow();
+    return;
+  }
+
+  if (e.code === "KeyS" && !e.metaKey && !e.altKey) {
     const id = timeline.focusedClipId;
     if (!id) return;
     const rightId = projectStore.splitEvent(id, timeline.currentTime);
