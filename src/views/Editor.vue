@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch } from "vue";
+import { computed, onMounted, onUnmounted, watch } from "vue";
 import { useProjectStore } from "../stores/project";
 import { useTimelineStore } from "../stores/timeline";
 import AppSidebar from "../components/AppSidebar.vue";
@@ -13,9 +13,37 @@ const timeline = useTimelineStore();
 watch(
   () => timeline.duration,
   (d) => {
-    if (d > 0) projectStore.ensureDefaultTrack(d);
+    if (d > 0) {
+      projectStore.ensureDefaultTrack(d);
+      // 默认聚焦 ocr 选区轨道，让遮罩立即可见
+      const ocrTrack = projectStore.currentProject?.tracks.find(
+        (t) => t.type === "ocr_region"
+      );
+      if (ocrTrack && !timeline.focusedTrackId) {
+        timeline.focusTrack(ocrTrack.id);
+      }
+    }
   }
 );
+
+// S 键：在播放头处分割当前聚焦的 clip（分割工具的快捷键）
+function onGlobalKeydown(e: KeyboardEvent) {
+  const t = e.target as HTMLElement;
+  if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
+  if (e.code === "KeyS" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    const id = timeline.focusedClipId;
+    if (!id) return;
+    const rightId = projectStore.splitEvent(id, timeline.currentTime);
+    if (rightId) {
+      timeline.focusClip(rightId);
+      const found = projectStore.findEvent(rightId);
+      if (found) timeline.focusTrack(found.track.id);
+    }
+  }
+}
+
+onMounted(() => window.addEventListener("keydown", onGlobalKeydown));
+onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
 
 const meta = computed(() => projectStore.currentVideoMeta);
 const hasVideo = computed(() => meta.value !== null);

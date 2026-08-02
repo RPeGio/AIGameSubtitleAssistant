@@ -136,6 +136,29 @@ export const useProjectStore = defineStore("project", () => {
     return null;
   }
 
+  /// 根据轨道 id 查找轨道
+  function findTrack(id: string | null): Track | null {
+    if (!currentProject.value || !id) return null;
+    return currentProject.value.tracks.find((t) => t.id === id) ?? null;
+  }
+
+  /// 在 time 处把事件切成两段，两段继承全部字段（含矩形坐标），返回右段 id
+  function splitEvent(eventId: string, time: number): string | null {
+    const found = findEvent(eventId);
+    if (!found) return null;
+    const { track, event } = found;
+    // 保护：分割点必须在区间内部，避免产生零长度 sliver
+    const EPS = 0.05;
+    if (time <= event.start + EPS || time >= event.end - EPS) return null;
+
+    const left = { ...event, id: generateId(), end: time };
+    const right = { ...event, id: generateId(), start: time };
+    const idx = track.events.indexOf(event);
+    track.events.splice(idx, 1, left, right);
+    track.events.sort((a, b) => a.start - b.start);
+    return right.id;
+  }
+
   /// 更新指定 ocr_region 事件的坐标（就地修改 reactive 对象，时间轴即时刷新）
   function updateOcrRegion(
     id: string,
@@ -167,6 +190,8 @@ export const useProjectStore = defineStore("project", () => {
     importVideo,
     ensureDefaultTrack,
     findEvent,
+    findTrack,
+    splitEvent,
     updateOcrRegion,
     refreshRecentProjects,
     closeProject,

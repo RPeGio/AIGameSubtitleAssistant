@@ -16,6 +16,8 @@ export const useTimelineStore = defineStore("timeline", () => {
   const duration = ref(0);
   const isSeeking = ref(false);
   const focusedClipId = ref<string | null>(null);
+  const focusedTrackId = ref<string | null>(null);
+  const activeTool = ref<"select" | "split">("select");
   const viewportWidth = ref(0);
 
   const totalWidth = computed(() => duration.value * pixelsPerSecond.value);
@@ -80,6 +82,16 @@ export const useTimelineStore = defineStore("timeline", () => {
     focusedClipId.value = id;
   }
 
+  /// 聚焦某条轨道（决定 RegionOverlay 遮罩是否显示）
+  function focusTrack(id: string | null) {
+    focusedTrackId.value = id;
+  }
+
+  /// 切换时间轴工具：select 选择/擦动 | split 分割
+  function setTool(tool: "select" | "split") {
+    activeTool.value = tool;
+  }
+
   function clipPosition(event: TimelineEvent) {
     const pps = pixelsPerSecond.value;
     return {
@@ -95,6 +107,8 @@ export const useTimelineStore = defineStore("timeline", () => {
     duration,
     isSeeking,
     focusedClipId,
+    focusedTrackId,
+    activeTool,
     viewportWidth,
     totalWidth,
     tick,
@@ -109,6 +123,8 @@ export const useTimelineStore = defineStore("timeline", () => {
     pan,
     timeAtPixel,
     focusClip,
+    focusTrack,
+    setTool,
     clipPosition,
   };
 });

@@ -41,16 +41,25 @@ onUnmounted(() => {
   window.removeEventListener("mouseup", onWindowMouseUp);
 });
 
-// ── 聚焦的 ocr_region 事件 ──
+// ── 聚焦轨道 + 播放头所在 clip ──
+// 焦点挂在轨道上：仅当聚焦的是 ocr_region 轨道时才显示遮罩，
+// 选区矩形始终跟随"红色标头当前所在的 clip"，随时间动态变化。
+
+const focusedTrack = computed(() => projectStore.findTrack(timeline.focusedTrackId));
 
 const region = computed<OcrRegionEvent | null>(() => {
-  const id = timeline.focusedClipId;
-  if (!id || !projectStore.currentProject) return null;
-  for (const track of projectStore.currentProject.tracks) {
-    const ev = track.events.find((e) => e.id === id);
-    if (ev && ev.type === "ocr_region") return ev;
-  }
-  return null;
+  const track = focusedTrack.value;
+  if (!track || track.type !== "ocr_region") return null;
+  const t = timeline.currentTime;
+  const current = track.events.find(
+    (e) => e.type === "ocr_region" && e.start <= t && e.end > t
+  ) as OcrRegionEvent | undefined;
+  if (current) return current;
+  // 播放头恰好停在视频结尾时，选中最后一个 ocr_region clip
+  const regions = track.events.filter(
+    (e) => e.type === "ocr_region"
+  ) as OcrRegionEvent[];
+  return regions.length > 0 ? regions[regions.length - 1] : null;
 });
 
 // ── 视频实际渲染矩形（letterbox 校正）──

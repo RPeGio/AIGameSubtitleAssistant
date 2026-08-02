@@ -2,12 +2,18 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useTimelineStore, CLIP_COLORS } from "../../stores/timeline";
 import { useProjectStore } from "../../stores/project";
+import type { Track } from "../../types";
 import TimelineRuler from "./TimelineRuler.vue";
 import TimelineClip from "./TimelineClip.vue";
 import TimelineScrollbar from "./TimelineScrollbar.vue";
+import TimelineToolStrip from "./TimelineToolStrip.vue";
 
 const timeline = useTimelineStore();
 const projectStore = useProjectStore();
+
+// 布局常量：工具列宽度 + 轨道标签列宽度
+const TOOL_WIDTH = 40;
+const LABEL_WIDTH = 180;
 
 const tracks = () => projectStore.currentProject?.tracks ?? [];
 const tracksBodyRef = ref<HTMLElement | null>(null);
@@ -15,17 +21,37 @@ const viewportRef = ref<HTMLElement | null>(null);
 let viewportObserver: ResizeObserver | null = null;
 let scrubbingTrackBody: HTMLElement | null = null;
 
-const playheadLeft = computed(() => (180 + timeline.playheadX()) + "px");
+const playheadLeft = computed(
+  () => TOOL_WIDTH + LABEL_WIDTH + timeline.playheadX() + "px"
+);
 
 // ── 轨道区域 mousedown/mousemove/mouseup ──
 
 function onTrackBodyMouseDown(e: MouseEvent) {
   const target = e.currentTarget as HTMLElement;
   const rect = target.getBoundingClientRect();
+
+  // 分割工具：在 clip 上按下即分割，空白处不动作
+  if (timeline.activeTool === "split") {
+    const clipEl = (e.target as HTMLElement).closest(".clip") as HTMLElement | null;
+    const eventId = clipEl?.dataset.eventId;
+    if (!eventId) return;
+    const time = timeline.timeAtPixel(e.clientX - rect.left);
+    const rightId = projectStore.splitEvent(eventId, time);
+    if (rightId) {
+      timeline.focusClip(rightId);
+      const found = projectStore.findEvent(rightId);
+      if (found) timeline.focusTrack(found.track.id);
+    }
+    return;
+  }
+
+  // 选择工具：擦动时间轴，并聚焦当前轨道
   e.preventDefault();
   scrubbingTrackBody = target;
   timeline.scrubbing(true);
   timeline.seek(timeline.timeAtPixel(e.clientX - rect.left));
+  timeline.focusTrack(target.dataset.trackId ?? null);
   timeline.focusClip(null);
   window.addEventListener("mousemove", onWindowMouseMove);
   window.addEventListener("mouseup", onWindowMouseUp);
@@ -55,6 +81,19 @@ function onWindowMouseUp() {
   timeline.scrubbing(false);
   window.removeEventListener("mousemove", onWindowMouseMove);
   window.removeEventListener("mouseup", onWindowMouseUp);
+}
+
+// 选择模式下点击 clip：聚焦 clip + 其所在轨道
+function onClipClicked(track: Track, clipId: string) {
+  if (timeline.activeTool === "split") return;
+  timeline.focusClip(clipId);
+  timeline.focusTrack(track.id);
+}
+
+// 点击轨道名称标签：聚焦该轨道
+function onTrackLabelClicked(track: Track) {
+  timeline.focusClip(null);
+  timeline.focusTrack(track.id);
 }
 
 // ── 滚轮 ──
@@ -100,63 +139,69 @@ onUnmounted(() => {
 
 <template>
   <div class="timeline-root" ref="tracksBodyRef">
-    <!-- Header: ruler -->
-    <div class="tl-row">
-      <div class="tl-label-col" />
-      <div
-        ref="viewportRef"
-        class="tl-content"
-        @mousedown="onTrackBodyMouseDown"
-      >
-        <TimelineRuler />
-      </div>
-    </div>
+    <TimelineToolStrip />
 
-    <!-- Track rows -->
-    <div
-      v-for="track in tracks()"
-      :key="track.id"
-      class="tl-row track-row"
-    >
-      <div class="tl-label-col">
-        <div class="label-name">{{ track.name }}</div>
-        <div class="label-type">{{ track.type }}</div>
+    <div class="timeline-col">
+      <!-- Header: ruler -->
+      <div class="tl-row">
+        <div class="tl-label-col" />
+        <div
+          ref="viewportRef"
+          class="tl-content"
+          @mousedown="onTrackBodyMouseDown"
+        >
+          <TimelineRuler />
+        </div>
       </div>
+
+      <!-- Track rows -->
       <div
-        class="tl-content tl-track-body"
-        @mousedown="onTrackBodyMouseDown"
+        v-for="track in tracks()"
+        :key="track.id"
+        class="tl-row track-row"
       >
-        <template v-if="track.events.length > 0">
-          <TimelineClip
-            v-for="event in track.events"
-            :key="event.id"
-            :event="event"
-            :color="CLIP_COLORS[event.type] ?? '#666'"
-            :left="timeline.clipPosition(event).left"
-            :width="timeline.clipPosition(event).width"
-            :focused="timeline.focusedClipId === event.id"
-            @click-clip="timeline.focusClip(event.id)"
-          />
-        </template>
-        <div v-else class="empty-hint">点击左侧时间轴跳转，在此轨道暂无事件</div>
+        <div
+          class="tl-label-col"
+          :class="{ 'track-focused': timeline.focusedTrackId === track.id }"
+          @click="onTrackLabelClicked(track)"
+        >
+          <div class="label-name">{{ track.name }}</div>
+          <div class="label-type">{{ track.type }}</div>
+        </div>
+        <div
+          class="tl-content tl-track-body"
+          :data-track-id="track.id"
+          @mousedown="onTrackBodyMouseDown"
+        >
+          <template v-if="track.events.length > 0">
+            <TimelineClip
+              v-for="event in track.events"
+              :key="event.id"
+              :event="event"
+              :color="CLIP_COLORS[event.type] ?? '#666'"
+              :left="timeline.clipPosition(event).left"
+              :width="timeline.clipPosition(event).width"
+              :focused="timeline.focusedClipId === event.id"
+              @click-clip="onClipClicked(track, event.id)"
+            />
+          </template>
+          <div v-else class="empty-hint">此轨道暂无事件</div>
+        </div>
+      </div>
+
+      <!-- Footer: scrollbar -->
+      <div class="tl-row">
+        <div class="tl-label-col" />
+        <div class="tl-content">
+          <TimelineScrollbar />
+        </div>
       </div>
     </div>
 
     <!-- Playhead overlay — spans full height across all rows -->
-    <div
-      class="playhead-overlay"
-      :style="{ left: playheadLeft }"
-    >
+    <div class="playhead-overlay" :style="{ left: playheadLeft }">
       <div class="playhead-head" />
       <div class="playhead-line" />
-    </div>
-
-    <!-- Footer: scrollbar -->
-    <div class="tl-row">
-      <div class="tl-label-col" />
-      <div class="tl-content">
-        <TimelineScrollbar />
-      </div>
     </div>
   </div>
 </template>
@@ -164,12 +209,19 @@ onUnmounted(() => {
 <style scoped>
 .timeline-root {
   position: relative;
+  display: flex;
+  flex-direction: row;
   border-top: 1px solid var(--color-border);
   background: var(--color-bg-secondary);
-  display: flex;
-  flex-direction: column;
   flex-shrink: 0;
   overflow: hidden;
+}
+
+.timeline-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .tl-row {
@@ -193,6 +245,12 @@ onUnmounted(() => {
   justify-content: center;
   padding: 4px 10px;
   flex-shrink: 0;
+  cursor: pointer;
+}
+
+.tl-label-col.track-focused {
+  background: var(--color-bg-tertiary);
+  box-shadow: inset 2px 0 0 var(--color-accent);
 }
 
 .label-name {

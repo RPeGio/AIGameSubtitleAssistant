@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import type { TimelineEvent } from "../../types";
+import { useTimelineStore } from "../../stores/timeline";
+
+const timeline = useTimelineStore();
 
 const props = defineProps<{
   event: TimelineEvent;
@@ -27,7 +30,8 @@ function clipText(): string {
 <template>
   <div
     class="clip"
-    :class="{ focused }"
+    :class="{ focused, 'split-tool': timeline.activeTool === 'split' }"
+    :data-event-id="event.id"
     :style="{
       left: left + 'px',
       width: width + 'px',
@@ -60,6 +64,10 @@ function clipText(): string {
 
 .clip:hover {
   opacity: 0.9;
+}
+
+.clip.split-tool {
+  cursor: crosshair;
 }
 
 .clip-label {
