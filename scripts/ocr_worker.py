@@ -32,6 +32,27 @@ def make_ocr():
     )
 
 
+def _extract_lines(res):
+    """从 OCR 结果里逐行产出 (text, confidence)。
+
+    paddleocr 3.x 的 `res` 可能是：
+      - dict: {"rec_texts": [...], "rec_scores": [...], ...}
+      - list: [{"text": ..., "confidence": ...}, ...] 或 [str, ...]
+    """
+    if isinstance(res, dict):
+        for t, c in zip(res.get("rec_texts", []), res.get("rec_scores", [])):
+            yield t or "", float(c or 0.0)
+    elif isinstance(res, list):
+        for it in res:
+            if isinstance(it, dict):
+                text = it.get("text") or ""
+                conf = float(it.get("confidence") or 0.0)
+            else:
+                text = str(it)
+                conf = 0.0
+            yield text, conf
+
+
 def recognize(ocr, image_path):
     """识别单张图，返回 (text, confidence)。
     区域多行文本用换行拼接，置信度取各行最小值。
@@ -40,26 +61,23 @@ def recognize(ocr, image_path):
     if not result:
         return "", 0.0
 
-    items = []
+    res = None
     try:
-        items = result[0].json.get("res") or []
+        res = result[0].json.get("res")
     except Exception:
-        items = []
-    if not items:
+        res = None
+    if res is None:
         try:
             res = result[0].res
-            items = [
-                {"text": t, "confidence": c}
-                for t, c in zip(res.get("rec_texts", []), res.get("rec_scores", []))
-            ]
         except Exception:
-            items = []
+            res = None
+    if res is None:
+        return "", 0.0
 
     texts = []
     confs = []
-    for it in items:
-        text = (it.get("text") or "").strip()
-        conf = float(it.get("confidence") or 0.0)
+    for text, conf in _extract_lines(res):
+        text = (text or "").strip()
         if text:
             texts.append(text)
             confs.append(conf)
