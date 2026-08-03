@@ -9,8 +9,9 @@
           {"id":1,"ok":false,"error":".."}
           {"id":2,"ok":true,"cmd":"pong"}
 
-模型只在首次需要时加载一次（内存常驻）。PADDLE_PADDLEOCR_HOME 由 Rust
-侧注入，使模型下载落在 runtime/models/paddleocr。
+模型只在首次需要时加载一次（内存常驻）。Rust 侧注入
+PADDLE_PDX_CACHE_HOME（paddleocr 3.x 基于 paddlex），使模型下载/缓存
+落在 runtime/models/paddleocr。
 """
 
 import io

@@ -83,7 +83,10 @@ impl PaddleProvider {
         let mut cmd = Command::new(&config.python_path);
         cmd.arg(&worker_script)
             .env("PYTHONPATH", &deps_dir)
-            .env("PADDLE_PADDLEOCR_HOME", &model_dir)
+            // paddleocr 3.x 基于 paddlex，模型缓存目录走 PADDLE_PDX_CACHE_HOME
+            .env("PADDLE_PDX_CACHE_HOME", &model_dir)
+            // 跳过启动时的模型源连通性检查，加速就绪
+            .env("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
