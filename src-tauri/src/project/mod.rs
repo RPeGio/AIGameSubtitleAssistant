@@ -147,6 +147,7 @@ fn now_iso() -> String {
 }
 
 /// 在当前时间戳基础上生成一个简短的唯一 ID
+#[allow(unused)]
 fn generate_id() -> String {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)

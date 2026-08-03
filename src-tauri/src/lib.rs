@@ -44,7 +44,7 @@ pub fn run() {
                     RuntimeConfig::default()
                 }
             };
-            app.manage(OcrManager::new(config));
+            app.manage(OcrManager::new(config, runtime_dir));
             Ok(())
         })
 

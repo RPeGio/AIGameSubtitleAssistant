@@ -7,10 +7,12 @@
 // 本阶段（2.1）只搭骨架：trait + 管理器 + 配置 + 占位 provider。
 
 pub mod config;
+pub mod paddle;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 pub use config::RuntimeConfig;
@@ -18,7 +20,7 @@ pub use config::RuntimeConfig;
 // ─── OCR 数据与错误 ──────────────────────────────────────
 
 /// 单张帧图像的 OCR 识别结果
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OcrResult {
     pub text: String,
     /// 识别置信度 (0.0 ~ 1.0)
@@ -30,8 +32,6 @@ pub struct OcrResult {
 pub enum OcrError {
     /// 运行环境未就绪（python/模型缺失）
     NotReady,
-    /// 已配置但尚未实现的 provider
-    Unimplemented(String),
     /// 环境层面错误：python 启动失败、依赖缺失等
     Runtime(Box<dyn Error + Send + Sync>),
     /// worker 进程返回的错误
@@ -59,7 +59,6 @@ impl fmt::Display for OcrError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             OcrError::NotReady => write!(f, "OCR 运行环境未就绪"),
-            OcrError::Unimplemented(name) => write!(f, "OCR provider '{}' 尚未实现", name),
             OcrError::Runtime(err) => write!(f, "OCR 运行环境错误: {}", err),
             OcrError::Worker(msg) => write!(f, "OCR worker 错误: {}", msg),
             OcrError::Io(err) => write!(f, "OCR IO 错误: {}", err),
@@ -86,6 +85,10 @@ pub trait OcrProvider: Send {
     fn name(&self) -> &str;
     /// 运行环境是否就绪
     fn is_ready(&self) -> bool;
+    /// 附加说明（如未就绪的原因），默认空
+    fn describe(&self) -> String {
+        String::new()
+    }
     /// 批量识别帧图像（文件路径），按输入顺序返回结果
     fn recognize_batch(&self, image_paths: &[String]) -> Result<Vec<OcrResult>, OcrError>;
 }
@@ -107,12 +110,13 @@ impl OcrProvider for NoneProvider {
     }
 }
 
-/// "已配置但未实现" 的 provider —— 保留配置的 name，便于与"未初始化"区分
-pub struct PendingProvider {
+/// 创建失败的 provider —— 携带失败原因，供状态探测展示
+pub struct BrokenProvider {
     name: String,
+    message: String,
 }
 
-impl OcrProvider for PendingProvider {
+impl OcrProvider for BrokenProvider {
     fn name(&self) -> &str {
         &self.name
     }
@@ -121,8 +125,14 @@ impl OcrProvider for PendingProvider {
         false
     }
 
+    fn describe(&self) -> String {
+        self.message.clone()
+    }
+
     fn recognize_batch(&self, _image_paths: &[String]) -> Result<Vec<OcrResult>, OcrError> {
-        Err(OcrError::Unimplemented(self.name.clone()))
+        Err(OcrError::Runtime(Box::new(std::io::Error::other(
+            self.message.clone(),
+        ))))
     }
 }
 
@@ -137,11 +147,21 @@ pub enum OcrProviderKind {
 }
 
 /// 根据类型与配置创建 provider 实例
-pub fn create_ocr_provider(kind: OcrProviderKind, _config: &RuntimeConfig) -> Box<dyn OcrProvider> {
+/// Paddle 创建失败时返回 BrokenProvider（携带原因），不 panic
+pub fn create_ocr_provider(
+    kind: OcrProviderKind,
+    config: &RuntimeConfig,
+    runtime_dir: &PathBuf,
+) -> Box<dyn OcrProvider> {
     match kind {
         OcrProviderKind::None => Box::new(NoneProvider),
-        // TODO(2.2): 实现 PaddleProvider（Python Worker 封装）
-        OcrProviderKind::Paddle => Box::new(PendingProvider { name: "paddle".into() }),
+        OcrProviderKind::Paddle => match paddle::PaddleProvider::spawn(config, runtime_dir) {
+            Ok(p) => Box::new(p),
+            Err(e) => Box::new(BrokenProvider {
+                name: "paddle".into(),
+                message: e.to_string(),
+            }),
+        },
     }
 }
 
@@ -158,21 +178,32 @@ pub struct OcrRuntimeStatus {
 /// 全局 OCR 管理器 —— 持有配置与当前 provider
 pub struct OcrManager {
     config: RuntimeConfig,
+    runtime_dir: PathBuf,
     provider: Mutex<Box<dyn OcrProvider>>,
 }
 
 impl OcrManager {
-    pub fn new(config: RuntimeConfig) -> Self {
-        // 2.1 阶段固定使用 NoneProvider；2.2 起按 config 决定
-        let provider = create_ocr_provider(OcrProviderKind::None, &config);
+    pub fn new(config: RuntimeConfig, runtime_dir: PathBuf) -> Self {
+        // 已配置 worker 脚本则走 Paddle；否则用 None 占位
+        let kind = if config.worker_script.is_empty() {
+            OcrProviderKind::None
+        } else {
+            OcrProviderKind::Paddle
+        };
+        let provider = create_ocr_provider(kind, &config, &runtime_dir);
         Self {
             config,
+            runtime_dir,
             provider: Mutex::new(provider),
         }
     }
 
     pub fn config(&self) -> &RuntimeConfig {
         &self.config
+    }
+
+    pub fn runtime_dir(&self) -> &PathBuf {
+        &self.runtime_dir
     }
 
     /// 作用域化访问 provider：内部加锁，避免把 MutexGuard 泄漏到调用方。
@@ -189,12 +220,15 @@ impl OcrManager {
     pub fn status(&self) -> OcrRuntimeStatus {
         let name = self.with_provider(|p| p.name().to_string());
         let ready = self.with_provider(|p| p.is_ready());
+        let detail = self.with_provider(|p| p.describe());
         let message = if ready {
             format!("OCR 运行时就绪（provider: {}）", name)
         } else if name == "none" {
             "未配置 OCR 运行环境".into()
-        } else {
+        } else if detail.is_empty() {
             format!("OCR 运行环境未就绪（provider: {}）", name)
+        } else {
+            format!("OCR 运行环境未就绪（provider: {}）：{}", name, detail)
         };
         OcrRuntimeStatus {
             provider: name,
@@ -220,20 +254,23 @@ mod tests {
     }
 
     #[test]
-    fn test_pending_provider_reports_configured_name() {
-        let p = PendingProvider { name: "paddle".into() };
-        assert_eq!(p.name(), "paddle");
-        assert!(!p.is_ready());
-        let result = p.recognize_batch(&["a.jpg".into()]);
-        assert!(matches!(result, Err(OcrError::Unimplemented(_))));
-    }
-
-    #[test]
     fn test_manager_status_not_ready() {
-        let manager = OcrManager::new(RuntimeConfig::default());
+        let manager = OcrManager::new(RuntimeConfig::default(), PathBuf::from("runtime"));
         let status = manager.status();
         assert_eq!(status.provider, "none");
         assert!(!status.ready);
+    }
+
+    #[test]
+    fn test_broken_provider_reports_reason() {
+        let p = BrokenProvider {
+            name: "paddle".into(),
+            message: "python 不存在".into(),
+        };
+        assert_eq!(p.name(), "paddle");
+        assert!(!p.is_ready());
+        assert_eq!(p.describe(), "python 不存在");
+        assert!(p.recognize_batch(&[]).is_err());
     }
 
     #[test]
@@ -246,6 +283,7 @@ mod tests {
         }));
         let mgr = OcrManager {
             config: RuntimeConfig::default(),
+            runtime_dir: PathBuf::from("runtime"),
             provider: mutex,
         };
         // with_provider 应退化为使用被污染 guard 内的值，不 panic
