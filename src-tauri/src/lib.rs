@@ -5,6 +5,7 @@ pub mod video;         // 视频处理（Phase 1 实现）
 pub mod timeline;      // 时间轴（Phase 1 实现）
 pub mod subtitle;      // 字幕（Phase 2 实现）
 pub mod ai_runtime;    // AI 运行时（Phase 2 起逐步实现）
+pub mod ocr;           // OCR 字幕生成流水线（Phase 2）
 pub mod export;        // 导出（Phase 6 实现）
 
 use ai_runtime::{config::resolve_runtime_dir, OcrManager, RuntimeConfig};
