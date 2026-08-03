@@ -7,6 +7,7 @@
 // 本阶段（2.1）只搭骨架：trait + 管理器 + 配置 + 占位 provider。
 
 pub mod config;
+pub mod dhash;
 pub mod paddle;
 
 use serde::{Deserialize, Serialize};
