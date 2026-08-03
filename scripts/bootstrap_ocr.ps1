@@ -35,6 +35,11 @@ $config = [ordered]@{
   model_dir     = "models/paddleocr"
   language      = "ch"
 }
-$config | ConvertTo-Json | Set-Content -Path (Join-Path $runtime "config.json") -Encoding UTF8
+# 无 BOM 写入（Set-Content -Encoding UTF8 会带 BOM，Rust 端 serde_json 解析会失败）
+[System.IO.File]::WriteAllText(
+  (Join-Path $runtime "config.json"),
+  ($config | ConvertTo-Json),
+  (New-Object System.Text.UTF8Encoding $false)
+)
 
 Write-Host "==> OCR 运行环境就绪：$runtime"

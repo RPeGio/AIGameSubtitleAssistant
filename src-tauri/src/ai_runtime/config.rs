@@ -104,7 +104,9 @@ impl RuntimeConfig {
         let json = fs::read_to_string(&path).map_err(|e| {
             format!("读取 {} 失败: {}", path.display(), e)
         })?;
-        serde_json::from_str::<RuntimeConfig>(&json)
+        // 兼容带 UTF-8 BOM 的配置（如某些编辑器/脚本写出的）
+        let json = json.strip_prefix('\u{feff}').unwrap_or(&json);
+        serde_json::from_str::<RuntimeConfig>(json)
             .map_err(|e| format!("解析 {} 失败: {}", path.display(), e))
     }
 
@@ -209,6 +211,19 @@ mod tests {
             language: "ch".into(),
         };
         assert!(cfg.validate(&dir).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_load_with_bom() {
+        // 兼容带 UTF-8 BOM 的配置文件
+        let dir = temp_dir("cfg_bom");
+        fs::create_dir_all(&dir).unwrap();
+        let json = r#"{"python_path":"python","worker_script":"","deps_dir":"","model_dir":"","language":"ch"}"#;
+        let with_bom = format!("\u{feff}{}", json);
+        fs::write(dir.join("config.json"), with_bom).unwrap();
+        let cfg = RuntimeConfig::load(&dir).unwrap();
+        assert_eq!(cfg.language, "ch");
         let _ = fs::remove_dir_all(&dir);
     }
 
