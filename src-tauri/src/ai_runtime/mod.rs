@@ -4,13 +4,14 @@
 //   - ASR：MOSS（Phase 3）
 //   - 文本处理：Local LLM（Phase 5）
 //
-// 本阶段（2.1）只搭骨架：trait + 管理器 + 配置 + NoneProvider 占位。
+// 本阶段（2.1）只搭骨架：trait + 管理器 + 配置 + 占位 provider。
 
 pub mod config;
 
 use serde::Serialize;
+use std::error::Error;
 use std::fmt;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::Mutex;
 
 pub use config::RuntimeConfig;
 
@@ -24,31 +25,57 @@ pub struct OcrResult {
     pub confidence: f64,
 }
 
-/// OCR 错误类型
+/// OCR 错误类型 —— 尽量保留底层错误链
 #[derive(Debug)]
 pub enum OcrError {
     /// 运行环境未就绪（python/模型缺失）
     NotReady,
-    /// 环境层面问题：python 启动失败、依赖缺失等
-    Runtime(String),
+    /// 已配置但尚未实现的 provider
+    Unimplemented(String),
+    /// 环境层面错误：python 启动失败、依赖缺失等
+    Runtime(Box<dyn Error + Send + Sync>),
     /// worker 进程返回的错误
     Worker(String),
     /// IO 错误
-    Io(String),
+    Io(std::io::Error),
+}
+
+impl OcrError {
+    pub fn runtime<E>(err: E) -> Self
+    where
+        E: Error + Send + Sync + 'static,
+    {
+        OcrError::Runtime(Box::new(err))
+    }
+}
+
+impl From<std::io::Error> for OcrError {
+    fn from(e: std::io::Error) -> Self {
+        OcrError::Io(e)
+    }
 }
 
 impl fmt::Display for OcrError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             OcrError::NotReady => write!(f, "OCR 运行环境未就绪"),
-            OcrError::Runtime(msg) => write!(f, "OCR 运行环境错误: {}", msg),
+            OcrError::Unimplemented(name) => write!(f, "OCR provider '{}' 尚未实现", name),
+            OcrError::Runtime(err) => write!(f, "OCR 运行环境错误: {}", err),
             OcrError::Worker(msg) => write!(f, "OCR worker 错误: {}", msg),
-            OcrError::Io(msg) => write!(f, "OCR IO 错误: {}", msg),
+            OcrError::Io(err) => write!(f, "OCR IO 错误: {}", err),
         }
     }
 }
 
-impl std::error::Error for OcrError {}
+impl std::error::Error for OcrError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            OcrError::Runtime(err) => Some(err.as_ref()),
+            OcrError::Io(err) => Some(err),
+            _ => None,
+        }
+    }
+}
 
 // ─── OCR Provider 抽象 ───────────────────────────────────
 
@@ -80,6 +107,25 @@ impl OcrProvider for NoneProvider {
     }
 }
 
+/// "已配置但未实现" 的 provider —— 保留配置的 name，便于与"未初始化"区分
+pub struct PendingProvider {
+    name: String,
+}
+
+impl OcrProvider for PendingProvider {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn is_ready(&self) -> bool {
+        false
+    }
+
+    fn recognize_batch(&self, _image_paths: &[String]) -> Result<Vec<OcrResult>, OcrError> {
+        Err(OcrError::Unimplemented(self.name.clone()))
+    }
+}
+
 // ─── Provider 工厂 ───────────────────────────────────────
 
 /// 支持的 OCR provider 类型（可扩展）
@@ -95,7 +141,7 @@ pub fn create_ocr_provider(kind: OcrProviderKind, _config: &RuntimeConfig) -> Bo
     match kind {
         OcrProviderKind::None => Box::new(NoneProvider),
         // TODO(2.2): 实现 PaddleProvider（Python Worker 封装）
-        OcrProviderKind::Paddle => Box::new(NoneProvider),
+        OcrProviderKind::Paddle => Box::new(PendingProvider { name: "paddle".into() }),
     }
 }
 
@@ -129,23 +175,29 @@ impl OcrManager {
         &self.config
     }
 
-    pub fn provider(&self) -> MutexGuard<'_, Box<dyn OcrProvider>> {
-        self.provider
+    /// 作用域化访问 provider：内部加锁，避免把 MutexGuard 泄漏到调用方。
+    /// 锁被污染时退化为使用被污染的 guard 内的值，保证调用不中断。
+    pub fn with_provider<R>(&self, f: impl FnOnce(&dyn OcrProvider) -> R) -> R {
+        let guard = self
+            .provider
             .lock()
-            .expect("OCR provider 锁被污染")
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        f(&**guard)
     }
 
     /// 汇总当前运行时状态（供 check_ocr_runtime 命令）
     pub fn status(&self) -> OcrRuntimeStatus {
-        let provider = self.provider();
-        let ready = provider.is_ready();
+        let name = self.with_provider(|p| p.name().to_string());
+        let ready = self.with_provider(|p| p.is_ready());
         let message = if ready {
-            format!("OCR 运行时就绪（provider: {}）", provider.name())
+            format!("OCR 运行时就绪（provider: {}）", name)
+        } else if name == "none" {
+            "未配置 OCR 运行环境".into()
         } else {
-            "OCR 运行环境未就绪：请先运行环境引导脚本".into()
+            format!("OCR 运行环境未就绪（provider: {}）", name)
         };
         OcrRuntimeStatus {
-            provider: provider.name().into(),
+            provider: name,
             ready,
             message,
         }
@@ -168,9 +220,36 @@ mod tests {
     }
 
     #[test]
+    fn test_pending_provider_reports_configured_name() {
+        let p = PendingProvider { name: "paddle".into() };
+        assert_eq!(p.name(), "paddle");
+        assert!(!p.is_ready());
+        let result = p.recognize_batch(&["a.jpg".into()]);
+        assert!(matches!(result, Err(OcrError::Unimplemented(_))));
+    }
+
+    #[test]
     fn test_manager_status_not_ready() {
         let manager = OcrManager::new(RuntimeConfig::default());
         let status = manager.status();
+        assert_eq!(status.provider, "none");
+        assert!(!status.ready);
+    }
+
+    #[test]
+    fn test_manager_survives_poisoned_lock() {
+        // 构造一个已污染的 Mutex：持有 guard 时 panic
+        let mutex = Mutex::new(Box::new(NoneProvider) as Box<dyn OcrProvider>);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = mutex.lock().unwrap();
+            std::panic::panic_any("poison");
+        }));
+        let mgr = OcrManager {
+            config: RuntimeConfig::default(),
+            provider: mutex,
+        };
+        // with_provider 应退化为使用被污染 guard 内的值，不 panic
+        let status = mgr.status();
         assert_eq!(status.provider, "none");
         assert!(!status.ready);
     }

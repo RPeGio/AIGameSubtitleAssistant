@@ -24,7 +24,7 @@ pub fn run() {
 
         // ─── 全局状态初始化 ───────────────────────────────
         // 解析 runtime 目录（环境变量 → 向上查找 → app_data 兜底），
-        // 加载运行配置并托管 OcrManager。
+        // 加载运行配置（失败时告警并回退默认）并托管 OcrManager。
         .setup(|app| {
             let fallback = app
                 .path()
@@ -32,7 +32,18 @@ pub fn run() {
                 .ok()
                 .map(|d| d.join("runtime"));
             let runtime_dir = resolve_runtime_dir(fallback);
-            let config = RuntimeConfig::load(&runtime_dir);
+            let config = match RuntimeConfig::load(&runtime_dir) {
+                Ok(cfg) => {
+                    if let Err(msg) = cfg.validate(&runtime_dir) {
+                        eprintln!("[ai_runtime] 配置校验失败: {} @ {}", msg, runtime_dir.display());
+                    }
+                    cfg
+                }
+                Err(msg) => {
+                    eprintln!("[ai_runtime] 读取配置失败（使用默认）: {}", msg);
+                    RuntimeConfig::default()
+                }
+            };
             app.manage(OcrManager::new(config));
             Ok(())
         })
