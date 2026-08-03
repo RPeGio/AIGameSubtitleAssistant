@@ -7,6 +7,9 @@ pub mod subtitle;      // 字幕（Phase 2 实现）
 pub mod ai_runtime;    // AI 运行时（Phase 2 起逐步实现）
 pub mod export;        // 导出（Phase 6 实现）
 
+use ai_runtime::{config::resolve_runtime_dir, OcrManager, RuntimeConfig};
+use tauri::Manager; // app.path() 等
+
 /// Tauri 应用入口
 ///
 /// 在这里注册所有插件和 Tauri 命令（IPC handlers）。
@@ -19,6 +22,21 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
 
+        // ─── 全局状态初始化 ───────────────────────────────
+        // 解析 runtime 目录（环境变量 → 向上查找 → app_data 兜底），
+        // 加载运行配置并托管 OcrManager。
+        .setup(|app| {
+            let fallback = app
+                .path()
+                .app_data_dir()
+                .ok()
+                .map(|d| d.join("runtime"));
+            let runtime_dir = resolve_runtime_dir(fallback);
+            let config = RuntimeConfig::load(&runtime_dir);
+            app.manage(OcrManager::new(config));
+            Ok(())
+        })
+
         // ─── 命令注册 ────────────────────────────────────
         // 每个命令函数在此列出，前端才能调用
         .invoke_handler(tauri::generate_handler![
@@ -30,6 +48,8 @@ pub fn run() {
             project::list_recent_projects,
             // video 模块
             video::get_video_metadata,
+            // ai_runtime 模块
+            ai_runtime::check_ocr_runtime,
         ])
         .run(tauri::generate_context!())
         .expect("启动应用失败");

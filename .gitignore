@@ -16,6 +16,9 @@ dist-ssr
 src-tauri/target/
 src-tauri/gen/
 
+# Local AI runtime (python deps, models, worker) — bootstrap creates this
+runtime/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
