@@ -1,21 +1,28 @@
-// ─── OCR 字幕生成流水线 ────────────────────────────────────
+﻿// ─── OCR 字幕生成流水线 ────────────────────────────────────
 // 纯函数部分：
 //   ocr_pass    —— 只 OCR 变化帧，未变化帧顺延文本，产出每帧的 FrameText
 //   merge_frames —— 连续相同文本合并成 OcrSegment（事件）
+// 编排命令：
+//   run_ocr     —— 串联 抽帧→变化检测→OCR→合并，后台线程跑并上报进度
 //
 // 依赖：
 //   2.3 extract_frames  →  Vec<ExtractedFrame>
 //   2.4 detect_changes  →  Vec<FrameChange>
 //   2.2 OcrProvider     →  批量识别
-//
-// 最终写入 ocr_text 轨道由 2.6 的编排命令负责。
 
 use crate::ai_runtime::dhash::FrameChange;
-use crate::ai_runtime::{OcrError, OcrProvider};
+use crate::ai_runtime::{OcrError, OcrManager, OcrResult};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::Arc;
+use tauri::{AppHandle, Emitter, Manager};
+use uuid::Uuid;
+
+/// OCR 进度事件名（前端 `OCR_PROGRESS_EVENT` 需保持一致）
+pub const OCR_PROGRESS_EVENT: &str = "ocr-progress";
 
 /// 合并后的一段字幕事件（不含 id，写轨道时由 store 分配）
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct OcrSegment {
     pub start: f64,
     pub end: f64,
@@ -36,16 +43,20 @@ pub struct FrameText {
 ///
 /// 契约：`changes` 必须按帧时间升序。
 ///
-/// - 变化帧的路径按顺序批量送去 `recognize_batch`，结果按变化帧顺序回填
+/// - 变化帧的路径按顺序批量交给 `recognize`（每次调用只处理一批），结果按变化帧顺序回填
+/// - 传 `recognize` 闭包而非 provider 引用，是为了让调用方把锁的持有范围缩小到单次批量调用
 /// - 文本在入口处 `trim` 归一化（空检测与后续合并语义保持一致）
 /// - 若返回结果数量与请求不符，视为 worker 错误并终止（不让部分失败悄悄污染字幕）
+/// - `on_progress` 每处理一批回调一次：(已处理帧数, 总帧数)
 pub fn ocr_pass(
     changes: &[FrameChange],
-    provider: &dyn OcrProvider,
+    mut recognize: impl FnMut(&[String]) -> Result<Vec<OcrResult>, OcrError>,
     batch_size: usize,
+    mut on_progress: impl FnMut(usize, usize),
 ) -> Result<Vec<FrameText>, OcrError> {
     let bs = batch_size.max(1);
-    let mut texts = Vec::with_capacity(changes.len());
+    let total = changes.len();
+    let mut texts = Vec::with_capacity(total);
     // 当前顺延的 (text, confidence)；Arc 共享避免未变化帧反复分配
     let mut current: Option<(Arc<str>, f64)> = None;
 
@@ -65,7 +76,7 @@ pub fn ocr_pass(
         let results = if paths.is_empty() {
             Vec::new()
         } else {
-            provider.recognize_batch(&paths)?
+            recognize(&paths)?
         };
 
         // 数量校验：短结果不能静默吞掉，避免顺延状态被污染
@@ -96,6 +107,7 @@ pub fn ocr_pass(
                 confidence,
             });
         }
+        on_progress(texts.len(), total);
     }
     Ok(texts)
 }
@@ -164,13 +176,195 @@ pub fn merge_frames(frames: Vec<FrameText>, interval: f64, clip_end: f64) -> Vec
     segments
 }
 
+// ─── 编排命令 ─────────────────────────────────────────────
+
+/// 前端传入的 ocr_region 选区（归一化坐标 + 时间段）
+#[derive(Deserialize)]
+pub struct OcrRegionInput {
+    pub start: f64,
+    pub end: f64,
+    pub x1: f64,
+    pub y1: f64,
+    pub x2: f64,
+    pub y2: f64,
+}
+
+/// OCR 运行参数
+#[derive(Deserialize)]
+pub struct OcrRunParams {
+    /// 帧间隔（秒），默认 1.0
+    pub frame_interval: f64,
+    /// dHash 变化检测阈值，默认 5
+    pub dhash_threshold: u32,
+    /// OCR 批大小，默认 16
+    pub batch_size: usize,
+}
+
+/// 进度事件载荷
+#[derive(Clone, Serialize)]
+pub struct OcrProgress {
+    pub clip_index: usize,
+    pub clip_count: usize,
+    /// 整体进度 0.0 ~ 1.0
+    pub progress: f64,
+    pub message: String,
+}
+
+/// RAII 临时目录守卫：任何退出路径（含 panic 展开、JoinHandle 错误）都会清理
+struct TempDirGuard(PathBuf);
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Tauri 命令：串联完整 OCR 流水线。
+///
+/// 在后台线程跑（不阻塞 UI），过程中通过 `ocr-progress` 事件上报进度，
+/// 返回按时间排序的 OcrSegment 列表，由前端写入 ocr_text 轨道。
+#[tauri::command]
+pub async fn run_ocr(
+    app: AppHandle,
+    video_path: String,
+    video_w: u32,
+    video_h: u32,
+    region_clips: Vec<OcrRegionInput>,
+    params: OcrRunParams,
+) -> Result<Vec<OcrSegment>, String> {
+    let clip_count = region_clips.len();
+    let app_handle = app.clone();
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<OcrSegment>, String> {
+        let manager = app_handle.state::<OcrManager>();
+        let ready = manager.with_provider(|p| p.is_ready());
+        if !ready {
+            return Err("OCR 运行环境未就绪".into());
+        }
+        if clip_count == 0 {
+            return Err("没有可处理的 OCR 选区".into());
+        }
+
+        let frame_interval = if params.frame_interval > 0.0 {
+            params.frame_interval
+        } else {
+            1.0
+        };
+        let dhash_threshold = params.dhash_threshold;
+        let batch_size = params.batch_size.max(1);
+
+        // 唯一临时目录（UUID 防碰撞/防猜测），RAII 守卫保证任何路径都清理
+        let base_dir = std::env::temp_dir().join(format!("gsa_ocr_{}", Uuid::new_v4()));
+        let _guard = TempDirGuard(base_dir.clone());
+        std::fs::create_dir_all(&base_dir).map_err(|e| format!("无法创建临时目录: {}", e))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&base_dir, std::fs::Permissions::from_mode(0o700));
+        }
+
+        let emit = |app: &AppHandle, clip_index: usize, progress: f64, message: String| {
+            let _ = app.emit(
+                OCR_PROGRESS_EVENT,
+                OcrProgress {
+                    clip_index,
+                    clip_count,
+                    progress,
+                    message,
+                },
+            );
+        };
+
+        let mut all_segments = Vec::new();
+        for (i, clip) in region_clips.iter().enumerate() {
+            let clip_dir = base_dir.join(format!("clip_{}", i));
+            std::fs::create_dir_all(&clip_dir).map_err(|e| format!("无法创建 clip 目录: {}", e))?;
+
+            emit(
+                &app_handle,
+                i,
+                i as f64 / clip_count as f64,
+                format!("提取帧 {}/{}", i + 1, clip_count),
+            );
+
+            let frames = crate::video::extract_frames(
+                &video_path,
+                clip.start,
+                clip.end,
+                clip.x1,
+                clip.y1,
+                clip.x2,
+                clip.y2,
+                video_w,
+                video_h,
+                frame_interval,
+                &clip_dir,
+            )
+            .map_err(|e| format!("抽帧失败（clip {}）: {}", i, e))?;
+
+            emit(
+                &app_handle,
+                i,
+                (i as f64 + 0.5) / clip_count as f64,
+                format!("变化检测 {}/{}", i + 1, clip_count),
+            );
+
+            let changes = crate::ai_runtime::dhash::detect_changes(&frames, dhash_threshold)
+                .map_err(|e| format!("变化检测失败（clip {}）: {}", i, e))?;
+
+            emit(
+                &app_handle,
+                i,
+                (i as f64 + 0.6) / clip_count as f64,
+                format!("OCR 识别 {}/{}", i + 1, clip_count),
+            );
+
+            let total_frames = changes.len();
+            // recognize 闭包每次调用只持锁处理一批 → 锁不覆盖整个 OCR 过程，
+            // check_ocr_runtime 等并发命令可在批次间取得 provider。
+            let texts = ocr_pass(
+                &changes,
+                |paths| manager.with_provider(|p| p.recognize_batch(paths)),
+                batch_size,
+                |done, total| {
+                    let overall =
+                        (i as f64 + done as f64 / total.max(1) as f64) / clip_count as f64;
+                    let _ = app_handle.emit(
+                        OCR_PROGRESS_EVENT,
+                        OcrProgress {
+                            clip_index: i,
+                            clip_count,
+                            progress: overall,
+                            message: format!(
+                                "OCR 识别 {}/{}（{}/{} 帧）",
+                                i + 1,
+                                clip_count,
+                                done,
+                                total_frames
+                            ),
+                        },
+                    );
+                },
+            )
+            .map_err(|e| format!("OCR 失败（clip {}）: {}", i, e))?;
+
+            let segments = merge_frames(texts, frame_interval, clip.end);
+            all_segments.extend(segments);
+        }
+
+        Ok(all_segments)
+    })
+    .await
+    .map_err(|e| format!("OCR 任务内部错误: {}", e))?
+}
+
 // ─── 单元测试 ─────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ai_runtime::dhash::FrameChange;
-    use crate::ai_runtime::{OcrResult, OcrError};
+    use crate::ai_runtime::{OcrProvider, OcrResult, OcrError};
     use crate::video::ExtractedFrame;
     use std::path::PathBuf;
 
@@ -232,7 +426,7 @@ mod tests {
             OcrResult { text: "B".into(), confidence: 0.8 },
         ]);
         let changes = vec![frame(0.0, true), frame(1.0, false), frame(2.0, true), frame(3.0, false)];
-        let texts = ocr_pass(&changes, &provider, 16).unwrap();
+        let texts = ocr_pass(&changes, |paths| provider.recognize_batch(paths), 16, |_, _| {}).unwrap();
         assert_eq!(texts.len(), 4);
         assert_eq!(texts[0].text.as_ref(), "A");
         assert_eq!(texts[1].text.as_ref(), "A"); // 顺延
@@ -245,7 +439,7 @@ mod tests {
     fn test_ocr_pass_trims_text() {
         let provider = mock(vec![OcrResult { text: "  A  ".into(), confidence: 0.9 }]);
         let changes = vec![frame(0.0, true)];
-        let texts = ocr_pass(&changes, &provider, 16).unwrap();
+        let texts = ocr_pass(&changes, |paths| provider.recognize_batch(paths), 16, |_, _| {}).unwrap();
         assert_eq!(texts[0].text.as_ref(), "A"); // 已 trim
     }
 
@@ -256,7 +450,7 @@ mod tests {
             OcrResult { text: String::new(), confidence: 0.0 },
         ]);
         let changes = vec![frame(0.0, true), frame(1.0, true), frame(2.0, false)];
-        let texts = ocr_pass(&changes, &provider, 1).unwrap();
+        let texts = ocr_pass(&changes, |paths| provider.recognize_batch(paths), 1, |_, _| {}).unwrap();
         assert_eq!(texts[0].text.as_ref(), "A");
         assert_eq!(texts[1].text.as_ref(), ""); // 变化帧识别为空 → 清空
         assert_eq!(texts[2].text.as_ref(), ""); // 顺延空
@@ -266,7 +460,7 @@ mod tests {
     fn test_ocr_pass_batch_mixed_changed() {
         let provider = mock(vec![OcrResult { text: "X".into(), confidence: 0.7 }]);
         let changes = vec![frame(0.0, false), frame(1.0, true)];
-        let texts = ocr_pass(&changes, &provider, 2).unwrap();
+        let texts = ocr_pass(&changes, |paths| provider.recognize_batch(paths), 2, |_, _| {}).unwrap();
         assert_eq!(texts[0].text.as_ref(), ""); // 首帧未变化且无 previous → 空
         assert_eq!(texts[1].text.as_ref(), "X");
     }
@@ -276,7 +470,7 @@ mod tests {
         // 预置结果比变化帧少 → 应返回错误而非静默空文本
         let provider = mock(vec![OcrResult { text: "A".into(), confidence: 0.9 }]);
         let changes = vec![frame(0.0, true), frame(1.0, true), frame(2.0, true)];
-        assert!(ocr_pass(&changes, &provider, 1).is_err());
+        assert!(ocr_pass(&changes, |paths| provider.recognize_batch(paths), 1, |_, _| {}).is_err());
     }
 
     // ── merge_frames ──

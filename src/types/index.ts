@@ -65,3 +65,35 @@ export interface VideoMetadata {
   codec: string;
   audio_codec: string | null;
 }
+
+export interface OcrRegionInput {
+  start: number;
+  end: number;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
+export interface OcrRunParams {
+  frame_interval: number;
+  dhash_threshold: number;
+  batch_size: number;
+}
+
+export interface OcrSegment {
+  start: number;
+  end: number;
+  text: string;
+  confidence: number;
+}
+
+export interface OcrProgress {
+  clip_index: number;
+  clip_count: number;
+  progress: number;
+  message: string;
+}
+
+/// OCR 进度事件名（Rust 侧 `OCR_PROGRESS_EVENT` 需保持一致）
+export const OCR_PROGRESS_EVENT = "ocr-progress";

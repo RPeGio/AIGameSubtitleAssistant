@@ -62,6 +62,8 @@ pub fn run() {
             video::get_video_metadata,
             // ai_runtime 模块
             ai_runtime::check_ocr_runtime,
+            // ocr 模块
+            ocr::run_ocr,
         ])
         .run(tauri::generate_context!())
         .expect("启动应用失败");

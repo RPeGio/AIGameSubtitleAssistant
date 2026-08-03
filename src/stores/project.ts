@@ -1,17 +1,33 @@
 import { defineStore } from "pinia";
-import { ref, watch } from "vue";
+import { onScopeDispose, ref, watch } from "vue";
 import type {
   Project,
   RecentProject,
   VideoMetadata,
   TimelineEvent,
   Track,
+  OcrRunParams,
+  OcrSegment,
+  OcrProgress,
 } from "../types";
+import { OCR_PROGRESS_EVENT } from "../types";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function ocrTextToEvent(seg: OcrSegment): TimelineEvent {
+  return {
+    id: generateId(),
+    type: "ocr_text",
+    start: seg.start,
+    end: seg.end,
+    text: seg.text,
+    confidence: seg.confidence,
+  };
 }
 
 export const useProjectStore = defineStore("project", () => {
@@ -20,6 +36,21 @@ export const useProjectStore = defineStore("project", () => {
   const currentVideoMeta = ref<VideoMetadata | null>(null);
   const isLoading = ref(false);
   const videoImportError = ref<string | null>(null);
+
+  // ── OCR 运行状态 ───────────────────────────────────────
+  const ocrRunning = ref(false);
+  const ocrProgress = ref(0);
+  const ocrMessage = ref("");
+
+  // 监听进度事件；注册清理函数，store 被 dispose（HMR/重复实例）时退订，避免叠加泄漏
+  const unlistenPromise = listen<OcrProgress>(OCR_PROGRESS_EVENT, (event) => {
+    ocrProgress.value = event.payload.progress;
+    ocrMessage.value = event.payload.message;
+  });
+  unlistenPromise.catch((e) => console.error("监听 OCR 进度事件失败:", e));
+  onScopeDispose(() => {
+    unlistenPromise.then((fn) => fn()).catch(() => {});
+  });
 
   // ── 自动保存 ─────────────────────────────────────────
   const saveState = ref<"saved" | "pending" | "saving" | "error">("saved");
@@ -277,6 +308,82 @@ export const useProjectStore = defineStore("project", () => {
     }
   }
 
+  /// 运行 OCR 流水线：收集所有 ocr_region 轨道的 clip → run_ocr → 写入 ocr_text 轨道
+  async function runOcr(params: OcrRunParams) {
+    if (ocrRunning.value || !currentProject.value || !currentVideoMeta.value) return;
+
+    const regionClips = currentProject.value.tracks
+      .filter((t) => t.type === "ocr_region")
+      .flatMap((t) => t.events)
+      .filter((e): e is Extract<typeof e, { type: "ocr_region" }> => e.type === "ocr_region")
+      .map((e) => ({
+        start: e.start,
+        end: e.end,
+        x1: e.x1,
+        y1: e.y1,
+        x2: e.x2,
+        y2: e.y2,
+      }))
+      .sort((a, b) => a.start - b.start);
+
+    if (regionClips.length === 0) {
+      throw new Error("请先设置 OCR 选区");
+    }
+
+    ocrRunning.value = true;
+    ocrProgress.value = 0;
+    ocrMessage.value = "准备中...";
+    try {
+      const segments = await invoke<OcrSegment[]>("run_ocr", {
+        videoPath: currentVideoMeta.value.path,
+        videoW: currentVideoMeta.value.width,
+        videoH: currentVideoMeta.value.height,
+        regionClips,
+        params,
+      });
+      writeOcrSegments(segments);
+      ocrProgress.value = 1;
+      ocrMessage.value = "完成";
+    } catch (e) {
+      // 失败时重置进度并抛出友好错误，避免 UI 残留半程状态
+      ocrProgress.value = 0;
+      ocrMessage.value = "OCR 失败";
+      throw new Error(normalizeOcrError(e));
+    } finally {
+      ocrRunning.value = false;
+    }
+  }
+
+  /// 把 IPC/后端错误映射为用户可读的信息，未识别时才回退原文
+  function normalizeOcrError(e: unknown): string {
+    const msg = String(e);
+    if (msg.includes("未就绪")) return "OCR 运行环境未就绪，请先运行环境引导脚本";
+    if (msg.includes("请先设置 OCR 选区")) return "请先设置 OCR 选区";
+    return msg;
+  }
+
+  /// 复用或新建 ocr_text 轨道
+  function ensureOcrTextTrack(): Track {
+    let track = currentProject.value?.tracks.find((t) => t.type === "ocr_text");
+    if (!track && currentProject.value) {
+      track = {
+        id: generateId(),
+        name: "OCR 文本",
+        type: "ocr_text",
+        events: [],
+      };
+      currentProject.value.tracks.push(track);
+    }
+    if (!track) throw new Error("当前无项目");
+    return track;
+  }
+
+  /// 清空并填充 ocr_text 轨道的事件（重跑不叠加）
+  function writeOcrSegments(segments: OcrSegment[]) {
+    const track = ensureOcrTextTrack();
+    track.events = segments.map(ocrTextToEvent).sort((a, b) => a.start - b.start);
+  }
+
   function closeProject() {
     // 关闭前落盘（在置空前触发保存）
     clearTimeout(saveTimer);
@@ -304,6 +411,10 @@ export const useProjectStore = defineStore("project", () => {
     updateOcrRegion,
     refreshRecentProjects,
     saveNow,
+    ocrRunning,
+    ocrProgress,
+    ocrMessage,
+    runOcr,
     closeProject,
   };
 });
