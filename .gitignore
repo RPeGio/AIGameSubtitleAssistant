@@ -19,6 +19,9 @@ src-tauri/gen/
 # Local AI runtime (python deps, models, worker) — bootstrap creates this
 runtime/
 
+# Local tests
+tests/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
