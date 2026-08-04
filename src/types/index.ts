@@ -79,6 +79,7 @@ export interface OcrRunParams {
   frame_interval: number;
   dhash_threshold: number;
   batch_size: number;
+  merge_similarity: number;
 }
 
 export interface OcrSegment {

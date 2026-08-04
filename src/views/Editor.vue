@@ -28,9 +28,10 @@ const message = useMessage();
 // ── OCR 控制 ────────────────────────────────────────────
 const showOcrConfig = ref(false);
 const ocrParams = ref<OcrRunParams>({
-  frame_interval: 1.0,
-  dhash_threshold: 5,
+  frame_interval: 0.5,
+  dhash_threshold: 3,
   batch_size: 16,
+  merge_similarity: 0.3,
 });
 
 async function startOcr() {
@@ -228,6 +229,16 @@ const resolutionLabel = computed(() => {
                 :max="128"
                 :precision="0"
                 :step="1"
+                style="width: 100%"
+              />
+            </div>
+            <div class="cfg-field">
+              <NText depth="2">合并相似度（0~1，越大越易合并）</NText>
+              <NInputNumber
+                v-model:value="ocrParams.merge_similarity"
+                :min="0"
+                :max="1"
+                :step="0.05"
                 style="width: 100%"
               />
             </div>

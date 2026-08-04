@@ -27,6 +27,20 @@ pub struct RuntimeConfig {
     pub model_dir: String,
     /// 识别语言，默认 "ch"
     pub language: String,
+    /// OCR 模型档位："mobile"（快，默认）| "server"（慢，更准）
+    #[serde(default = "default_ocr_model")]
+    pub ocr_model: String,
+    /// 开发期调试：帧输出到仓库根 temp/ 并打印各环节日志（release 前关闭）
+    #[serde(default = "default_dev_debug")]
+    pub dev_debug: bool,
+}
+
+fn default_ocr_model() -> String {
+    "mobile".into()
+}
+
+fn default_dev_debug() -> bool {
+    true
 }
 
 impl Default for RuntimeConfig {
@@ -37,6 +51,8 @@ impl Default for RuntimeConfig {
             deps_dir: String::new(),
             model_dir: String::new(),
             language: "ch".into(),
+            ocr_model: default_ocr_model(),
+            dev_debug: default_dev_debug(),
         }
     }
 }
@@ -171,6 +187,8 @@ mod tests {
             deps_dir: "deps".into(),
             model_dir: "models/paddleocr".into(),
             language: "ch".into(),
+            ocr_model: "mobile".into(),
+            dev_debug: true,
         };
         cfg.save(&dir).unwrap();
 
@@ -180,6 +198,8 @@ mod tests {
         assert_eq!(loaded.deps_dir, cfg.deps_dir);
         assert_eq!(loaded.model_dir, cfg.model_dir);
         assert_eq!(loaded.language, cfg.language);
+        assert_eq!(loaded.ocr_model, "mobile");
+        assert!(loaded.dev_debug);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -209,6 +229,8 @@ mod tests {
             deps_dir: "deps".into(),
             model_dir: "models/paddleocr".into(),
             language: "ch".into(),
+            ocr_model: "mobile".into(),
+            dev_debug: true,
         };
         assert!(cfg.validate(&dir).is_ok());
         let _ = fs::remove_dir_all(&dir);

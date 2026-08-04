@@ -85,6 +85,8 @@ impl PaddleProvider {
             .env("PYTHONPATH", &deps_dir)
             // paddleocr 3.x 基于 paddlex，模型缓存目录走 PADDLE_PDX_CACHE_HOME
             .env("PADDLE_PDX_CACHE_HOME", &model_dir)
+            // 模型档位：mobile（默认/快）| server（慢/准）
+            .env("GSA_OCR_MODEL", &config.ocr_model)
             // 跳过启动时的模型源连通性检查，加速就绪
             .env("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
             .stdin(Stdio::piped())
@@ -271,6 +273,8 @@ mod tests {
             deps_dir: "deps".into(),
             model_dir: "models/paddleocr".into(),
             language: "ch".into(),
+            ocr_model: "mobile".into(),
+            dev_debug: true,
         };
         assert_eq!(
             runtime.join(&cfg.worker_script),

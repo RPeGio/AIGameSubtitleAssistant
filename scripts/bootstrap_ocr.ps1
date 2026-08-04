@@ -34,6 +34,8 @@ $config = [ordered]@{
   deps_dir      = "deps"
   model_dir     = "models/paddleocr"
   language      = "ch"
+  ocr_model     = "mobile"
+  dev_debug     = $true
 }
 # 无 BOM 写入（Set-Content -Encoding UTF8 会带 BOM，Rust 端 serde_json 解析会失败）
 [System.IO.File]::WriteAllText(

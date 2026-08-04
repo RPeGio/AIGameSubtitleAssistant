@@ -19,6 +19,9 @@ src-tauri/gen/
 # Local AI runtime (python deps, models, worker) — bootstrap creates this
 runtime/
 
+# Dev debug frames output
+temp/
+
 # Local tests
 tests/
 

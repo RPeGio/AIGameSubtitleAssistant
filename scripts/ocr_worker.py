@@ -9,23 +9,35 @@
           {"id":1,"ok":false,"error":".."}
           {"id":2,"ok":true,"cmd":"pong"}
 
-模型只在首次需要时加载一次（内存常驻）。Rust 侧注入
-PADDLE_PDX_CACHE_HOME（paddleocr 3.x 基于 paddlex），使模型下载/缓存
-落在 runtime/models/paddleocr。
+模型只在首次需要时加载一次（内存常驻）。Rust 侧注入：
+  - PADDLE_PDX_CACHE_HOME：模型缓存目录（runtime/models/paddleocr）
+  - GSA_OCR_MODEL：模型档位 "mobile"（默认，快）| "server"（慢，更准）
+批量请求用一次 `ocr.predict(images列表)` 完成（真批处理）。
 """
 
 import io
 import json
+import os
 import sys
 
 LANG = "ch"
+
+# 模型档位 → 检测/识别模型名
+MODEL_MAP = {
+    "mobile": ("PP-OCRv5_mobile_det", "PP-OCRv5_mobile_rec"),
+    "server": ("PP-OCRv5_server_det", "PP-OCRv5_server_rec"),
+}
 
 
 def make_ocr():
     from paddleocr import PaddleOCR
 
+    model = os.environ.get("GSA_OCR_MODEL", "mobile").strip().lower()
+    det, rec = MODEL_MAP.get(model, MODEL_MAP["mobile"])
     return PaddleOCR(
         lang=LANG,
+        text_detection_model_name=det,
+        text_recognition_model_name=rec,
         use_doc_orientation_classify=False,
         use_doc_unwarping=False,
         use_textline_orientation=False,
@@ -53,22 +65,18 @@ def _extract_lines(res):
             yield text, conf
 
 
-def recognize(ocr, image_path):
-    """识别单张图，返回 (text, confidence)。
-    区域多行文本用换行拼接，置信度取各行最小值。
-    """
-    result = ocr.predict(image_path)
-    if not result:
+def _extract_result(result):
+    """从单条 predict 结果提取 (text, confidence)。"""
+    if result is None:
         return "", 0.0
-
     res = None
     try:
-        res = result[0].json.get("res")
+        res = result.json.get("res")
     except Exception:
         res = None
     if res is None:
         try:
-            res = result[0].res
+            res = result.res
         except Exception:
             res = None
     if res is None:
@@ -81,7 +89,6 @@ def recognize(ocr, image_path):
         if text:
             texts.append(text)
             confs.append(conf)
-
     return "\n".join(texts), min(confs) if confs else 0.0
 
 
@@ -117,11 +124,19 @@ def main():
             if cmd == "ping":
                 respond(stdout, rid, ok=True, cmd="pong")
             elif "images" in req:
-                results = []
-                for img in req["images"]:
-                    text, conf = recognize(ocr, img)
-                    results.append({"text": text, "confidence": conf})
-                respond(stdout, rid, ok=True, results=results)
+                images = req["images"]
+                # 真批处理：一次 predict 列表
+                results = ocr.predict(images) if images else []
+                out = []
+                if isinstance(results, list):
+                    for r in results:
+                        text, conf = _extract_result(r)
+                        out.append({"text": text, "confidence": conf})
+                else:
+                    # 极少数情况返回单个结果
+                    text, conf = _extract_result(results)
+                    out.append({"text": text, "confidence": conf})
+                respond(stdout, rid, ok=True, results=out)
             else:
                 respond(stdout, rid, ok=False, error=f"未知请求: {req}")
         except Exception as e:
