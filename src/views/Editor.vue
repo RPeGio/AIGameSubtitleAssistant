@@ -1,16 +1,48 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useProjectStore } from "../stores/project";
 import { useTimelineStore } from "../stores/timeline";
+import type { OcrRunParams } from "../types";
 import AppSidebar from "../components/AppSidebar.vue";
 import VideoPlayer from "../components/VideoPlayer.vue";
 import Timeline from "../components/timeline/Timeline.vue";
 import { useManualSave } from "../composables/useManualSave";
-import { NButton, NTag, NSpace, NAlert } from "naive-ui";
+import {
+  NButton,
+  NTag,
+  NSpace,
+  NAlert,
+  NCard,
+  NModal,
+  NInputNumber,
+  NProgress,
+  NText,
+  useMessage,
+} from "naive-ui";
 
 const projectStore = useProjectStore();
 const timeline = useTimelineStore();
 const { manualSave } = useManualSave();
+const message = useMessage();
+
+// ── OCR 控制 ────────────────────────────────────────────
+const showOcrConfig = ref(false);
+const ocrParams = ref<OcrRunParams>({
+  frame_interval: 0.5,
+  dhash_threshold: 3,
+  batch_size: 16,
+  merge_similarity: 0.3,
+});
+
+async function startOcr() {
+  showOcrConfig.value = false;
+  try {
+    await projectStore.runOcr(ocrParams.value);
+    message.success("OCR 完成");
+  } catch (e) {
+    message.error(String(e));
+  }
+}
 
 watch(
   () => timeline.duration,
@@ -111,6 +143,27 @@ const resolutionLabel = computed(() => {
           </div>
         </div>
 
+        <!-- OCR 工具栏 -->
+        <div class="ocr-toolbar">
+          <NButton
+            size="small"
+            type="primary"
+            :disabled="projectStore.ocrRunning"
+            @click="showOcrConfig = true"
+          >
+            运行 OCR
+          </NButton>
+          <template v-if="projectStore.ocrRunning">
+            <NProgress
+              type="line"
+              class="ocr-progress"
+              :percentage="Math.round(projectStore.ocrProgress * 100)"
+              :show-indicator="false"
+            />
+            <span class="ocr-msg">{{ projectStore.ocrMessage }}</span>
+          </template>
+        </div>
+
         <div class="timeline-pane">
           <Timeline />
         </div>
@@ -143,6 +196,62 @@ const resolutionLabel = computed(() => {
 
         <p class="empty-hint">支持 mp4 / mkv / webm / avi / mov / flv</p>
       </div>
+
+      <!-- OCR 参数弹窗 -->
+      <NModal v-model:show="showOcrConfig" :mask-closable="false">
+        <NCard title="OCR 参数设置" style="width: 440px">
+          <NSpace vertical size="large">
+            <div class="cfg-field">
+              <NText depth="2">帧间隔（秒）</NText>
+              <NInputNumber
+                v-model:value="ocrParams.frame_interval"
+                :min="0.1"
+                :step="0.5"
+                style="width: 100%"
+              />
+            </div>
+            <div class="cfg-field">
+              <NText depth="2">变化检测阈值</NText>
+              <NInputNumber
+                v-model:value="ocrParams.dhash_threshold"
+                :min="0"
+                :max="64"
+                :precision="0"
+                :step="1"
+                style="width: 100%"
+              />
+            </div>
+            <div class="cfg-field">
+              <NText depth="2">批大小</NText>
+              <NInputNumber
+                v-model:value="ocrParams.batch_size"
+                :min="1"
+                :max="128"
+                :precision="0"
+                :step="1"
+                style="width: 100%"
+              />
+            </div>
+            <div class="cfg-field">
+              <NText depth="2">合并相似度（0~1，越大越易合并）</NText>
+              <NInputNumber
+                v-model:value="ocrParams.merge_similarity"
+                :min="0"
+                :max="1"
+                :step="0.05"
+                style="width: 100%"
+              />
+            </div>
+            <NText depth="3" style="font-size: 12px">
+              提示：若发现有漏识别，可降低帧间隔后重新运行。
+            </NText>
+            <NSpace justify="end">
+              <NButton size="small" @click="showOcrConfig = false">取消</NButton>
+              <NButton size="small" type="primary" @click="startOcr">开始</NButton>
+            </NSpace>
+          </NSpace>
+        </NCard>
+      </NModal>
     </main>
   </div>
 </template>
@@ -202,6 +311,33 @@ const resolutionLabel = computed(() => {
   min-height: 0;
   overflow: hidden;
   padding: 0 12px 12px;
+}
+
+.ocr-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 24px 8px;
+}
+
+.ocr-progress {
+  flex: 1;
+  max-width: 320px;
+}
+
+.ocr-msg {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cfg-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .editor-empty {
