@@ -68,7 +68,8 @@ export const useProjectStore = defineStore("project", () => {
         project: currentProject.value,
       });
       applyingSaved = true;
-      currentProject.value = updated;
+      // 只合并 updated_at，不整体替换 —— 避免覆盖保存在响应式对象里的并发改动
+      currentProject.value.updated_at = updated.updated_at;
       applyingSaved = false;
       saveState.value = "saved";
       return "ok";
@@ -159,7 +160,10 @@ export const useProjectStore = defineStore("project", () => {
           projectPath: currentProject.value.path,
           videoPath,
         });
-        currentProject.value = updated;
+        // 只合并字段，不整体替换 —— 防止并发写入的轨道（ensureDefaultTrack 等在
+        // loadedmetadata 后添加）被 set_project_video 返回的旧对象覆盖丢失
+        currentProject.value.video = updated.video;
+        currentProject.value.updated_at = updated.updated_at;
       }
     } catch (e) {
       const err = String(e);
