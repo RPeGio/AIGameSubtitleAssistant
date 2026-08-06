@@ -1,5 +1,11 @@
 # CLAUDE.md
 
+## 开发前必读
+
+- `GameSubtitleAI_Plan.md`
+### 选择性读取
+- `session-ses_0528.md`（主分支 agent 对话记录）
+
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
 **Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
