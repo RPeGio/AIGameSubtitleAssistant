@@ -20,7 +20,7 @@ fn repo_root() -> PathBuf {
 #[ignore]
 fn test_t3_end_to_end() {
     let root = repo_root();
-    let video = root.join(r"tests\test(hi-res).mp4");
+    let video = root.join(r"examples\test(hi-res).mp4");
     let runtime_dir = root.join("runtime");
     assert!(video.is_file(), "缺少测试视频: {}", video.display());
     assert!(
