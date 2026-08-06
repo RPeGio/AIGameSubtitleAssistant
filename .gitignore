@@ -23,7 +23,7 @@ runtime/
 temp/
 
 # Local tests
-tests/
+examples/
 
 # Editor directories and files
 .vscode/*

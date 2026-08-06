@@ -1,11 +1,11 @@
 // ─── PaddleOCR Python Worker Provider ─────────────────────
-// 常驻子进程：系统 Python + runtime/worker/ocr_worker.py，JSON lines over stdio。
+// 常驻子进程：内嵌 Python（runtime/python）+ runtime/worker/ocr_worker.py，JSON lines over stdio。
 // 模型只加载一次；`ping` 用于启动探测（也顺带触发首次模型下载）。
 
 use crate::ai_runtime::{OcrError, OcrProvider, OcrResult, RuntimeConfig};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -80,7 +80,15 @@ impl PaddleProvider {
         let deps_dir = runtime_dir.join(&config.deps_dir);
         let model_dir = runtime_dir.join(&config.model_dir);
 
-        let mut cmd = Command::new(&config.python_path);
+        // python_path 支持相对 runtime 的写法（如 "python/python.exe"，机器无关）；
+        // 绝对路径（老配置）原样使用
+        let python = if Path::new(&config.python_path).is_absolute() {
+            PathBuf::from(&config.python_path)
+        } else {
+            runtime_dir.join(&config.python_path)
+        };
+
+        let mut cmd = Command::new(&python);
         cmd.arg(&worker_script)
             .env("PYTHONPATH", &deps_dir)
             // paddleocr 3.x 基于 paddlex，模型缓存目录走 PADDLE_PDX_CACHE_HOME
@@ -96,7 +104,7 @@ impl PaddleProvider {
         let mut child = cmd.spawn().map_err(|e| {
             OcrError::Worker(format!(
                 "无法启动 worker（python: {}，脚本: {}）：{}",
-                config.python_path,
+                python.display(),
                 worker_script.display(),
                 e
             ))

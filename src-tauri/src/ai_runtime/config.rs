@@ -2,7 +2,7 @@
 // runtime/ 目录存放运行环境相关的非代码资源：
 //   runtime/config.json          → 本文件持久化
 //   runtime/worker/ocr_worker.py → 2.2 的 Python OCR 桥接脚本
-//   runtime/deps                 → pip install --target 安装的依赖（复用系统 Python）
+//   runtime/deps                 → pip install --target 安装的依赖（内嵌解释器安装，cp312）
 //   runtime/models/paddleocr     → PP-OCR 模型文件
 //
 // runtime 目录解析顺序：
@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 /// 运行时配置 —— 描述 Python/依赖/模型所在位置
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RuntimeConfig {
-    /// 系统 Python 可执行文件路径（开发期直接用系统环境，不内嵌）
+    /// Python 可执行文件路径：相对 runtime（如 "python/python.exe"，机器无关）或绝对路径（老配置）
     pub python_path: String,
     /// OCR worker 脚本路径（相对 runtime 目录，如 worker/ocr_worker.py）
     pub worker_script: String,
@@ -74,6 +74,9 @@ fn runtime_dir_from_exe() -> Option<PathBuf> {
 }
 
 /// 解析 runtime 目录（环境变量 → 向上查找 → 兜底）
+///
+/// TODO(分发): 打包后需把 runtime/**/* 加入 tauri.conf.json 的 bundle.resources，
+/// 并让此处识别 Windows 资源目录布局（installer 下 resources/runtime/config.json）。
 pub fn resolve_runtime_dir(fallback: Option<PathBuf>) -> PathBuf {
     // 环境变量指定的目录必须真的含 config.json，否则视为误配置并告警
     if let Ok(env_dir) = std::env::var("GSA_RUNTIME_DIR") {
@@ -139,7 +142,7 @@ impl RuntimeConfig {
 
     /// 校验各路径的合法性：
     /// - worker_script / deps_dir / model_dir 必须解析在 runtime 目录内（防路径穿越）
-    /// - python_path 若为绝对路径则必须存在
+    /// - python_path 解析后（相对则按 runtime 目录解析）必须存在
     pub fn validate(&self, runtime_dir: &Path) -> Result<(), String> {
         for (name, value) in [
             ("worker_script", &self.worker_script),
@@ -158,10 +161,16 @@ impl RuntimeConfig {
         }
 
         let pp = PathBuf::from(&self.python_path);
-        if pp.is_absolute() && !pp.is_file() {
+        let joined = if pp.is_absolute() {
+            pp
+        } else {
+            runtime_dir.join(&pp)
+        };
+        if !joined.is_file() {
             return Err(format!(
-                "python_path 指向的文件不存在: {}",
-                self.python_path
+                "python_path 指向的文件不存在: {}（按 {} 解析）",
+                self.python_path,
+                joined.display()
             ));
         }
         Ok(())
@@ -223,8 +232,11 @@ mod tests {
     #[test]
     fn test_validate_paths_inside_runtime_ok() {
         let dir = temp_dir("cfg_valid");
+        fs::create_dir_all(&dir).unwrap();
+        // 相对 python_path 需解析到 runtime 内且文件存在
+        fs::write(dir.join("python.exe"), b"dummy").unwrap();
         let cfg = RuntimeConfig {
-            python_path: "python".into(),
+            python_path: "python.exe".into(),
             worker_script: "worker/ocr_worker.py".into(),
             deps_dir: "deps".into(),
             model_dir: "models/paddleocr".into(),
@@ -233,6 +245,16 @@ mod tests {
             dev_debug: true,
         };
         assert!(cfg.validate(&dir).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_validate_rejects_missing_python() {
+        let dir = temp_dir("cfg_missing_py");
+        fs::create_dir_all(&dir).unwrap();
+        let mut cfg = RuntimeConfig::default();
+        cfg.python_path = "python/python.exe".into();
+        assert!(cfg.validate(&dir).is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 

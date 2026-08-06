@@ -280,7 +280,8 @@ impl Drop for TempDirGuard {
 }
 
 /// 格式化时间 mm:ss.mmm
-fn fmt_time(s: f64) -> String {
+/// 秒 → "MM:SS.mmm"（集成测试打印结果用）
+pub fn fmt_time(s: f64) -> String {
     let total_ms = (s * 1000.0).round() as i64;
     let ms = total_ms % 1000;
     let sec = (total_ms / 1000) % 60;
@@ -712,69 +713,5 @@ mod tests {
         let frames = vec![ft(1.0, "甲", 0.9), ft(2.0, "乙", 0.8)];
         let segs = merge_frames(frames, 1.0, 10.0, 0.3);
         assert_eq!(segs.len(), 2);
-    }
-
-    // ── 集成实测（t3 项目，需本地环境；默认跳过）──
-
-    #[test]
-    #[ignore]
-    fn test_t3_end_to_end() {
-        use crate::ai_runtime::OcrManager;
-        use crate::ai_runtime::config::RuntimeConfig;
-        use std::path::Path;
-        use std::time::Instant;
-
-        let video = r"F:\RPeGio\Rust_Project\AIGameSubtitleAssistant\tests\test(hi-res).mp4";
-        let runtime_dir = Path::new(r"F:\RPeGio\Rust_Project\AIGameSubtitleAssistant\runtime");
-        let config = RuntimeConfig::load(runtime_dir).expect("读取 runtime 配置失败");
-        let manager = OcrManager::new(config, runtime_dir.to_path_buf());
-
-        let ready = manager.with_provider(|p| p.is_ready());
-        assert!(ready, "OCR 环境未就绪");
-
-        let meta = crate::video::get_video_metadata(video.to_string()).expect("读取视频元数据失败");
-        assert_eq!(meta.width, 1920);
-
-        // 来自 t3 项目 project.json 的 4 段选区
-        let clips = vec![
-            OcrRegionInput { start: 0.0, end: 36.373, x1: 0.2, y1: 0.7, x2: 0.8, y2: 0.9 },
-            OcrRegionInput { start: 36.373, end: 40.798, x1: 0.285, y1: 0.397, x2: 0.716, y2: 0.567 },
-            OcrRegionInput { start: 40.798, end: 153.263, x1: 0.131, y1: 0.782, x2: 0.877, y2: 0.942 },
-            OcrRegionInput { start: 153.263, end: 369.983, x1: 0.353, y1: 0.404, x2: 0.662, y2: 0.548 },
-        ];
-        let params = OcrRunParams {
-            frame_interval: 1.0,
-            dhash_threshold: 3,
-            batch_size: 16,
-            merge_similarity: 0.3,
-        };
-
-        let start = Instant::now();
-        let segments = run_ocr_pipeline(
-            &manager,
-            video,
-            meta.width,
-            meta.height,
-            &clips,
-            &params,
-            |_, _, _, _| {},
-        )
-        .expect("OCR 流水线失败");
-        let elapsed = start.elapsed();
-
-        println!("\n========== t3 实测结果 ==========");
-        println!(
-            "总耗时: {:.1}s（{:.2}min）  事件数: {}",
-            elapsed.as_secs_f64(),
-            elapsed.as_secs_f64() / 60.0,
-            segments.len()
-        );
-        for s in segments.iter().take(10) {
-            println!("  [{} → {}] \"{}\"", fmt_time(s.start), fmt_time(s.end), s.text);
-        }
-        if segments.len() > 10 {
-            println!("  ... 共 {} 条", segments.len());
-        }
-        println!("=================================");
     }
 }
