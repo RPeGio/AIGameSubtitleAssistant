@@ -6,6 +6,7 @@ import type { OcrRunParams } from "../types";
 import AppSidebar from "../components/AppSidebar.vue";
 import VideoPlayer from "../components/VideoPlayer.vue";
 import Timeline from "../components/timeline/Timeline.vue";
+import TrackOverview from "../components/TrackOverview.vue";
 import { useManualSave } from "../composables/useManualSave";
 import {
   NButton,
@@ -123,8 +124,14 @@ const resolutionLabel = computed(() => {
       <!-- video imported -->
       <div v-if="hasVideo" class="editor-content">
         <div class="top-pane">
-          <div class="player-area">
-            <VideoPlayer :src="meta!.path" />
+          <div class="preview-row">
+            <div class="player-area">
+              <VideoPlayer :src="meta!.path" />
+            </div>
+
+            <div class="overview-area">
+              <TrackOverview />
+            </div>
           </div>
 
           <div class="info-bar">
@@ -288,8 +295,23 @@ const resolutionLabel = computed(() => {
   padding: 16px 24px 8px;
 }
 
-.player-area {
+.preview-row {
   flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 8px;
+}
+
+.player-area {
+  flex: 1 1 60%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.overview-area {
+  flex: 1 1 40%;
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
