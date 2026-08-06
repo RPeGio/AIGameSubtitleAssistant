@@ -74,6 +74,7 @@ const editRows = computed(() => {
 });
 
 function startEdit(e: TimelineEvent) {
+  if (editingId.value === e.id) return;
   editingId.value = e.id;
   editText.value = textOf(e);
   nextTick(() => {
@@ -140,7 +141,7 @@ function cancelEdit() {
           <span class="ov-time">{{ fmtTime(clip.end) }}</span>
         </div>
 
-        <div v-if="isTextTrack" class="ov-content">
+        <div v-if="isTextTrack" class="ov-content" @dblclick="startEdit(clip)">
           <textarea
             v-if="editingId === clip.id"
             ref="editInput"
@@ -151,7 +152,7 @@ function cancelEdit() {
             @keydown.esc="cancelEdit"
             @blur="commitEdit"
           />
-          <span v-else class="ov-text" @dblclick.stop="startEdit(clip)">{{ textOf(clip) }}</span>
+          <span v-else class="ov-text">{{ textOf(clip) }}</span>
         </div>
 
         <span v-else-if="isRegionTrack" class="ov-coords">{{ regionLabel(clip) }}</span>
