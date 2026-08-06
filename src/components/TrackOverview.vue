@@ -77,6 +77,8 @@ function startEdit(e: TimelineEvent) {
   if (editingId.value === e.id) return;
   editingId.value = e.id;
   editText.value = textOf(e);
+  // 播放头跳到该 clip 起始，并滚动时间轴使其可见（便于在时间轴上定位）
+  timeline.jumpTo(e.start);
   nextTick(() => {
     editInput.value?.focus();
     editInput.value?.select();

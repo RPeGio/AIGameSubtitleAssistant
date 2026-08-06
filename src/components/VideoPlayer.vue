@@ -45,8 +45,11 @@ watch(
 watch(
   () => timeline.currentTime,
   (t) => {
-    if (timeline.isSeeking && videoRef.value) {
-      videoRef.value.currentTime = t;
+    const v = videoRef.value;
+    if (!v) return;
+    // 拖动中，或与视频实际时间不一致时（外部跳转如轨道总览双击编辑）同步视频
+    if (timeline.isSeeking || Math.abs(v.currentTime - t) > 0.05) {
+      v.currentTime = t;
     }
   }
 );

@@ -100,6 +100,19 @@ export const useTimelineStore = defineStore("timeline", () => {
     };
   }
 
+  /// 跳转播放头到指定时间，并滚动时间轴确保其位于可视区内
+  /// （scrollLeft 钳制在 [0, maxScroll()]，播放头距视口边缘保留 24px 余量）
+  function jumpTo(t: number) {
+    const MARGIN = 24;
+    const x = t * pixelsPerSecond.value;
+    if (x < scrollLeft.value + MARGIN) {
+      scrollLeft.value = Math.max(0, x - MARGIN);
+    } else if (x > scrollLeft.value + viewportWidth.value - MARGIN) {
+      scrollLeft.value = Math.min(x - viewportWidth.value + MARGIN, maxScroll());
+    }
+    currentTime.value = t;
+  }
+
   return {
     pixelsPerSecond,
     scrollLeft,
@@ -126,5 +139,6 @@ export const useTimelineStore = defineStore("timeline", () => {
     focusTrack,
     setTool,
     clipPosition,
+    jumpTo,
   };
 });
