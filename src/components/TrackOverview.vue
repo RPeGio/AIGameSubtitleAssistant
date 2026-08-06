@@ -65,7 +65,13 @@ function onEntryClicked(e: TimelineEvent) {
 // ── 双击编辑文字 ──
 const editingId = ref<string | null>(null);
 const editText = ref("");
-const editInput = ref<HTMLInputElement | null>(null);
+const editInput = ref<HTMLTextAreaElement | null>(null);
+
+// textarea 行数跟随内容（最多 10 行），初始即展开多行
+const editRows = computed(() => {
+  const lines = editText.value.split("\n").length;
+  return Math.min(10, Math.max(2, lines));
+});
 
 function startEdit(e: TimelineEvent) {
   editingId.value = e.id;
@@ -74,6 +80,14 @@ function startEdit(e: TimelineEvent) {
     editInput.value?.focus();
     editInput.value?.select();
   });
+}
+
+// Enter 插入换行；Ctrl/Cmd+Enter 提交；Esc 取消
+function onEditKeydown(e: KeyboardEvent) {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    commitEdit();
+  }
 }
 
 function commitEdit() {
@@ -127,12 +141,13 @@ function cancelEdit() {
         </div>
 
         <div v-if="isTextTrack" class="ov-content">
-          <input
+          <textarea
             v-if="editingId === clip.id"
             ref="editInput"
             v-model="editText"
             class="ov-edit-input"
-            @keydown.enter="commitEdit"
+            :rows="editRows"
+            @keydown.enter="onEditKeydown"
             @keydown.esc="cancelEdit"
             @blur="commitEdit"
           />
@@ -256,7 +271,7 @@ function cancelEdit() {
   flex: 1;
   min-width: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
 }
 
 .ov-text {
@@ -271,12 +286,17 @@ function cancelEdit() {
 .ov-edit-input {
   width: 100%;
   font-size: 12px;
+  font-family: inherit;
+  line-height: 1.4;
   color: var(--color-text-primary);
   background: var(--color-bg-primary);
   border: 1px solid var(--color-accent);
   border-radius: 4px;
-  padding: 2px 6px;
+  padding: 4px 6px;
   outline: none;
+  resize: vertical;
+  min-height: 32px;
+  box-sizing: border-box;
 }
 
 .ov-coords {
