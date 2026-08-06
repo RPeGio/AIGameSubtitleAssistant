@@ -312,6 +312,15 @@ export const useProjectStore = defineStore("project", () => {
     }
   }
 
+  /// 更新带 text 字段的事件的文字（ocr_text / asr / manual，就地修改 reactive 对象）
+  function updateEventText(id: string, text: string) {
+    const found = findEvent(id);
+    if (!found) return;
+    if (found.event.type !== "ocr_region") {
+      found.event.text = text;
+    }
+  }
+
   /// 运行 OCR 流水线：收集所有 ocr_region 轨道的 clip → run_ocr → 写入 ocr_text 轨道
   async function runOcr(params: OcrRunParams) {
     if (ocrRunning.value || !currentProject.value || !currentVideoMeta.value) return;
@@ -413,6 +422,7 @@ export const useProjectStore = defineStore("project", () => {
     findTrack,
     splitEvent,
     updateOcrRegion,
+    updateEventText,
     refreshRecentProjects,
     saveNow,
     ocrRunning,
