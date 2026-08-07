@@ -63,10 +63,11 @@ if ($BinaryUrl) {
   Expand-Archive $zip $exDir -Force
   $found = Get-ChildItem -Path $exDir -Recurse -Filter "moss-transcribe.exe" | Select-Object -First 1
   if (-not $found) { throw "预编译包中找不到 moss-transcribe.exe" }
-  Copy-Item $found.FullName $targetExe -Force
+  # 拷贝 exe 所在目录的全部文件：ggml.dll 等共享库必须与 exe 同目录
+  Get-ChildItem -Path $found.Directory -File | Copy-Item -Destination $binDir -Force
   Remove-Item -Recurse -Force $exDir
   Remove-Item -Force $zip
-  Write-Host "==> 二进制就位：$targetExe"
+  Write-Host "==> 二进制就位：$targetExe（含同目录 DLL）"
 } elseif (-not (Test-Path $targetExe)) {
   Write-Host @"
 
@@ -90,14 +91,18 @@ if ((Test-Path $modelPath) -and -not $Force) {
   Write-Host "==> 下载模型 $modelFile（约 $(if ($Quant -match '^f16$') {'1.8GB'} elseif ($Quant -match '^q8_0$') {'940MB'} elseif ($Quant -match '^q6_k$') {'730MB'} elseif ($Quant -match '^q5') {'620MB'} else {'510MB'})，请耐心等待）..."
   Write-Host "    来源: $url"
   curl.exe -L --fail --retry 3 --retry-delay 5 --max-time 3600 -o $modelPath $url
-  if ($LASTEXITCODE -ne 0) { throw "模型下载失败（网络受限可试 -HfMirror https://hf-mirror.com）" }
+  if ($LASTEXITCODE -ne 0) {
+    # 删除残留的半截文件，避免下次运行时被"已存在"跳过
+    Remove-Item -Force $modelPath -ErrorAction SilentlyContinue
+    throw "模型下载失败（网络受限可试 -HfMirror https://hf-mirror.com）"
+  }
 
-  # 从 HF API 取官方 LFS sha256 校验；API 不可达时告警跳过（模型已落盘）
+  # 从 HF API 取官方 LFS OID（Git-LFS OID 即文件 SHA256）校验；API 不可达时告警跳过（模型已落盘）
   $sha256 = $null
   try {
     $files = Invoke-RestMethod -Uri "$base/api/models/mudler/moss-transcribe.cpp-gguf/tree/main" -TimeoutSec 30
     foreach ($f in $files) {
-      if ($f.path -eq $modelFile -and $f.lfs.sha256) { $sha256 = $f.lfs.sha256; break }
+      if ($f.path -eq $modelFile -and $f.lfs.oid) { $sha256 = $f.lfs.oid; break }
     }
   } catch {
     Write-Host "==> 警告：无法访问 HF API 获取官方 SHA256，跳过校验"
