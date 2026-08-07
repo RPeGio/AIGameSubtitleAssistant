@@ -107,9 +107,16 @@ function onWheelRoot(e: WheelEvent) {
   // 滑条自己处理缩放；工具条/标签列不响应
   if (t.closest(".scrollbar-track")) return;
   if (t.closest(".tool-strip") || t.closest(".tl-label-col")) return;
-  // 轨道滚动区内：轨道多时可原生垂直滚动，不转为水平平移
+  // 轨道滚动区内：轨道多时可原生垂直滚动，不转为水平平移；
+  // 已滚到边界时回退为水平平移，避免滚轮输入被丢弃
   const tracksEl = t.closest(".tl-tracks") as HTMLElement | null;
-  if (tracksEl && tracksEl.scrollHeight > tracksEl.clientHeight) return;
+  if (tracksEl && tracksEl.scrollHeight > tracksEl.clientHeight) {
+    const atTop = tracksEl.scrollTop === 0 && e.deltaY < 0;
+    const atBottom =
+      tracksEl.scrollTop + tracksEl.clientHeight >= tracksEl.scrollHeight - 1 &&
+      e.deltaY > 0;
+    if (!atTop && !atBottom) return;
+  }
   e.preventDefault();
   timeline.pan(e.deltaY);
 }
@@ -235,6 +242,7 @@ onUnmounted(() => {
 }
 
 .tl-tracks {
+  /* 滚动容器：block 子行高度由内容决定（行高固定），溢出时垂直滚动 */
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -242,8 +250,6 @@ onUnmounted(() => {
 
 .track-row {
   border-top: 1px solid var(--color-border);
-  /* 行高固定，轨道多时由 .tl-tracks 垂直滚动，不被 flex 压缩 */
-  flex-shrink: 0;
 }
 
 .timeline-footer {
