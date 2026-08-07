@@ -310,10 +310,10 @@ pub struct AsrSegment {
     pub start: f64,
     pub end: f64,
     pub text: String,
-    /// 说话人标签（如 "S01"）
-    pub speaker: String,
-    /// 识别置信度 (0.0 ~ 1.0)
-    pub confidence: f64,
+    /// 说话人标签（如 "S01"）；provider 无说话人数据时为 None
+    pub speaker: Option<String>,
+    /// 识别置信度 (0.0 ~ 1.0)；provider 无置信度数据时为 None
+    pub confidence: Option<f64>,
 }
 
 /// ASR 错误类型 —— 尽量保留底层错误链
