@@ -39,7 +39,8 @@ pub struct RuntimeConfig {
     /// MOSS GGUF 模型文件（相对 runtime，如 "models/moss/moss-transcribe-q5_k.gguf"）；空 = 未配置
     #[serde(default)]
     pub moss_model: String,
-    /// MOSS 推理线程数：0 = 自动（官方建议 8 为甜点）
+    /// MOSS 推理线程数：0 = 不设置（CLI 默认全核）。实测 i7-14650HX（24 逻辑核）上全核最快，
+    /// 文档建议的 8 线程反而慢 ~72%（解码带宽受限，甜点依机器而异）
     #[serde(default)]
     pub moss_threads: u32,
 }
