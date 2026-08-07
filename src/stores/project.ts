@@ -21,6 +21,9 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
+/// 无说话人标签时的轨道名/事件字段 fallback
+const UNKNOWN_SPEAKER = "未标注";
+
 function ocrTextToEvent(seg: OcrSegment): TimelineEvent {
   return {
     id: generateId(),
@@ -39,7 +42,7 @@ function asrSegmentToEvent(seg: AsrSegment): TimelineEvent {
     start: seg.start,
     end: seg.end,
     text: seg.text,
-    speaker: seg.speaker ?? "",
+    speaker: seg.speaker || UNKNOWN_SPEAKER,
     confidence: seg.confidence ?? 0,
   };
 }
@@ -465,16 +468,17 @@ export const useProjectStore = defineStore("project", () => {
     return track;
   }
 
-  /// ASR 成功后清空全部 asr 轨道（含 mock）再按 speaker 分组填充，重跑不叠加
+  /// ASR 成功后按 speaker 分组填充各 asr 轨道，重跑不叠加。
+  /// 空结果视为无可识别语音，不动已有轨道（保护历史数据）。
   function writeAsrSegments(segments: AsrSegment[]) {
-    if (!currentProject.value) return;
+    if (!currentProject.value || segments.length === 0) return;
     currentProject.value.tracks
       .filter((t) => t.type === "asr")
       .forEach((t) => (t.events = []));
 
     const bySpeaker = new Map<string, TimelineEvent[]>();
     for (const seg of segments) {
-      const speaker = seg.speaker || "未标注";
+      const speaker = seg.speaker || UNKNOWN_SPEAKER;
       if (!bySpeaker.has(speaker)) bySpeaker.set(speaker, []);
       bySpeaker.get(speaker)!.push(asrSegmentToEvent(seg));
     }
@@ -482,6 +486,10 @@ export const useProjectStore = defineStore("project", () => {
       const track = ensureAsrTrack(speaker);
       track.events = events.sort((a, b) => a.start - b.start);
     }
+    // 清理重跑后不再出现/无事件的 asr 轨道（含 mock 壳），避免空壳残留
+    currentProject.value.tracks = currentProject.value.tracks.filter(
+      (t) => t.type !== "asr" || t.events.length > 0
+    );
   }
 
   function closeProject() {
