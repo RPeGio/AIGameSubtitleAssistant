@@ -555,10 +555,11 @@ mod asr_tests {
     fn test_asr_manager_selects_moss_kind() {
         let mut config = RuntimeConfig::default();
         config.moss_binary = "bin/moss-transcribe.exe".into();
-        let manager = AsrManager::new(config, PathBuf::from("runtime"));
+        config.moss_model = "models/moss/model.gguf".into();
+        let manager = AsrManager::new(config, PathBuf::from("no_such_runtime_xyz"));
         let status = manager.status();
         assert_eq!(status.provider, "moss");
-        // 测试 CWD 下 runtime/ 不存在 → spawn 失败 → broken（describe 非空）
+        // runtime 目录不存在 → spawn 失败 → broken（describe 非空）
         assert!(!status.ready);
         assert!(!status.message.is_empty());
     }

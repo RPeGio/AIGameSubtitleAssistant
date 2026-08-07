@@ -117,7 +117,12 @@ impl MossProvider {
     /// 执行一次转写（阻塞，长音频可达数分钟；由编排层放后台线程）
     fn run_transcribe(&self, audio_path: &Path) -> Result<Vec<AsrSegment>, AsrError> {
         let mut cmd = Command::new(&self.binary);
-        cmd.arg("transcribe").arg(&self.model).arg(audio_path);
+        cmd.arg("transcribe")
+            .arg(&self.model)
+            .arg(audio_path)
+            // 默认输出是原始流格式，--format json 才会输出结构化段
+            .arg("--format")
+            .arg("json");
         if self.threads > 0 {
             cmd.env("MTD_THREADS", self.threads.to_string());
         }
