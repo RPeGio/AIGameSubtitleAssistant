@@ -241,35 +241,6 @@ export const useProjectStore = defineStore("project", () => {
       });
     }
 
-    // Mock 轨道：供测试"焦点在非 ocr 轨道时不显示遮罩"等场景
-    if (!tracks.some((t) => t.type === "asr")) {
-      tracks.push({
-        id: generateId(),
-        name: "主播语音 (mock)",
-        type: "asr",
-        events: [
-          {
-            id: generateId(),
-            type: "asr",
-            start: 0,
-            end: duration * 0.15,
-            text: "大家好，今天继续播这个游戏",
-            speaker: "S01",
-            confidence: 0.92,
-          },
-          {
-            id: generateId(),
-            type: "asr",
-            start: duration * 0.3,
-            end: duration * 0.42,
-            text: "哇这个剧情也太顶了",
-            speaker: "S01",
-            confidence: 0.95,
-          },
-        ],
-      });
-    }
-
     if (!tracks.some((t) => t.type === "ocr_text")) {
       tracks.push({
         id: generateId(),
@@ -486,7 +457,7 @@ export const useProjectStore = defineStore("project", () => {
       const track = ensureAsrTrack(speaker);
       track.events = events.sort((a, b) => a.start - b.start);
     }
-    // 清理重跑后不再出现/无事件的 asr 轨道（含 mock 壳），避免空壳残留
+    // 清理重跑后不再出现/无事件的 asr 轨道，避免空壳残留
     currentProject.value.tracks = currentProject.value.tracks.filter(
       (t) => t.type !== "asr" || t.events.length > 0
     );

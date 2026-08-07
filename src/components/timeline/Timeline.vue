@@ -107,6 +107,9 @@ function onWheelRoot(e: WheelEvent) {
   // 滑条自己处理缩放；工具条/标签列不响应
   if (t.closest(".scrollbar-track")) return;
   if (t.closest(".tool-strip") || t.closest(".tl-label-col")) return;
+  // 轨道滚动区内：轨道多时可原生垂直滚动，不转为水平平移
+  const tracksEl = t.closest(".tl-tracks") as HTMLElement | null;
+  if (tracksEl && tracksEl.scrollHeight > tracksEl.clientHeight) return;
   e.preventDefault();
   timeline.pan(e.deltaY);
 }
@@ -148,38 +151,40 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Track rows -->
-      <div
-        v-for="track in tracks()"
-        :key="track.id"
-        class="tl-row track-row"
-      >
+      <!-- Track rows（垂直滚动区：轨道多时滚动，行高固定不被压缩） -->
+      <div class="tl-tracks">
         <div
-          class="tl-label-col"
-          :class="{ 'track-focused': timeline.focusedTrackId === track.id }"
-          @click="onTrackLabelClicked(track)"
+          v-for="track in tracks()"
+          :key="track.id"
+          class="tl-row track-row"
         >
-          <div class="label-name">{{ track.name }}</div>
-          <div class="label-type">{{ track.type }}</div>
-        </div>
-        <div
-          class="tl-content tl-track-body"
-          :data-track-id="track.id"
-          @mousedown="onTrackAreaMouseDown"
-        >
-          <template v-if="track.events.length > 0">
-            <TimelineClip
-              v-for="event in track.events"
-              :key="event.id"
-              :event="event"
-              :color="CLIP_COLORS[event.type] ?? '#666'"
-              :left="timeline.clipPosition(event).left"
-              :width="timeline.clipPosition(event).width"
-              :focused="timeline.focusedClipId === event.id"
-              @click-clip="onClipClicked(track, event.id)"
-            />
-          </template>
-          <div v-else class="empty-hint">此轨道暂无事件</div>
+          <div
+            class="tl-label-col"
+            :class="{ 'track-focused': timeline.focusedTrackId === track.id }"
+            @click="onTrackLabelClicked(track)"
+          >
+            <div class="label-name">{{ track.name }}</div>
+            <div class="label-type">{{ track.type }}</div>
+          </div>
+          <div
+            class="tl-content tl-track-body"
+            :data-track-id="track.id"
+            @mousedown="onTrackAreaMouseDown"
+          >
+            <template v-if="track.events.length > 0">
+              <TimelineClip
+                v-for="event in track.events"
+                :key="event.id"
+                :event="event"
+                :color="CLIP_COLORS[event.type] ?? '#666'"
+                :left="timeline.clipPosition(event).left"
+                :width="timeline.clipPosition(event).width"
+                :focused="timeline.focusedClipId === event.id"
+                @click-clip="onClipClicked(track, event.id)"
+              />
+            </template>
+            <div v-else class="empty-hint">此轨道暂无事件</div>
+          </div>
         </div>
       </div>
 
@@ -229,12 +234,19 @@ onUnmounted(() => {
   min-height: 0;
 }
 
+.tl-tracks {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .track-row {
   border-top: 1px solid var(--color-border);
+  /* 行高固定，轨道多时由 .tl-tracks 垂直滚动，不被 flex 压缩 */
+  flex-shrink: 0;
 }
 
 .timeline-footer {
-  margin-top: auto;
   border-top: 1px solid var(--color-border);
   flex-shrink: 0;
 }
