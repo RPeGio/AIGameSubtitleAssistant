@@ -13,7 +13,7 @@ pub mod paddle;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 pub use config::RuntimeConfig;
@@ -299,5 +299,301 @@ mod tests {
 /// Tauri 命令：探测 OCR 运行环境是否就绪
 #[tauri::command]
 pub fn check_ocr_runtime(state: tauri::State<'_, OcrManager>) -> OcrRuntimeStatus {
+    state.status()
+}
+
+// ─── ASR 数据与错误 ──────────────────────────────────────
+
+/// ASR 语音识别的一段结果（provider 原始输出，不含 id/character）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AsrSegment {
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
+    /// 说话人标签（如 "S01"）
+    pub speaker: String,
+    /// 识别置信度 (0.0 ~ 1.0)
+    pub confidence: f64,
+}
+
+/// ASR 错误类型 —— 尽量保留底层错误链
+#[derive(Debug)]
+pub enum AsrError {
+    /// 运行环境未就绪（可执行文件/模型缺失）
+    NotReady,
+    /// 环境层面错误：进程启动失败、依赖缺失等
+    Runtime(Box<dyn Error + Send + Sync>),
+    /// 转写进程返回的错误
+    Worker(String),
+    /// IO 错误
+    Io(std::io::Error),
+}
+
+impl AsrError {
+    pub fn runtime<E>(err: E) -> Self
+    where
+        E: Error + Send + Sync + 'static,
+    {
+        AsrError::Runtime(Box::new(err))
+    }
+}
+
+impl From<std::io::Error> for AsrError {
+    fn from(e: std::io::Error) -> Self {
+        AsrError::Io(e)
+    }
+}
+
+impl fmt::Display for AsrError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AsrError::NotReady => write!(f, "ASR 运行环境未就绪"),
+            AsrError::Runtime(err) => write!(f, "ASR 运行环境错误: {}", err),
+            AsrError::Worker(msg) => write!(f, "ASR worker 错误: {}", msg),
+            AsrError::Io(err) => write!(f, "ASR IO 错误: {}", err),
+        }
+    }
+}
+
+impl std::error::Error for AsrError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            AsrError::Runtime(err) => Some(err.as_ref()),
+            AsrError::Io(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
+// ─── ASR Provider 抽象 ───────────────────────────────────
+
+/// ASR 提供者。整段音频一次转写为第一接口（与 MOSS CLI 的 JSON 输出对应）。
+/// 只要求 `Send`，管理器外套 Mutex 提供 `Sync`。
+pub trait AsrProvider: Send {
+    /// provider 名称（"none" / "moss" 等）
+    fn name(&self) -> &str;
+    /// 运行环境是否就绪
+    fn is_ready(&self) -> bool;
+    /// 附加说明（如未就绪的原因），默认空
+    fn describe(&self) -> String {
+        String::new()
+    }
+    /// 转写整段音频（WAV 文件路径），返回带说话人标签的时间轴段
+    fn transcribe(&self, audio_path: &Path) -> Result<Vec<AsrSegment>, AsrError>;
+}
+
+/// 占位 provider —— 环境未就绪时使用，保证管线可编译
+pub struct AsrNoneProvider;
+
+impl AsrProvider for AsrNoneProvider {
+    fn name(&self) -> &str {
+        "none"
+    }
+
+    fn is_ready(&self) -> bool {
+        false
+    }
+
+    fn transcribe(&self, _audio_path: &Path) -> Result<Vec<AsrSegment>, AsrError> {
+        Err(AsrError::NotReady)
+    }
+}
+
+/// 创建失败的 provider —— 携带失败原因，供状态探测展示
+pub struct AsrBrokenProvider {
+    name: String,
+    message: String,
+}
+
+impl AsrProvider for AsrBrokenProvider {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn is_ready(&self) -> bool {
+        false
+    }
+
+    fn describe(&self) -> String {
+        self.message.clone()
+    }
+
+    fn transcribe(&self, _audio_path: &Path) -> Result<Vec<AsrSegment>, AsrError> {
+        Err(AsrError::Runtime(Box::new(std::io::Error::other(
+            self.message.clone(),
+        ))))
+    }
+}
+
+// ─── ASR Provider 工厂 ───────────────────────────────────
+
+/// 支持的 ASR provider 类型（可扩展）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AsrProviderKind {
+    None,
+    /// MOSS 转写 CLI（Phase 3 接入）
+    Moss,
+}
+
+/// 根据类型与配置创建 provider 实例
+/// Moss 创建失败时返回 BrokenProvider（携带原因），不 panic
+pub fn create_asr_provider(
+    kind: AsrProviderKind,
+    _config: &RuntimeConfig,
+    _runtime_dir: &PathBuf,
+) -> Box<dyn AsrProvider> {
+    match kind {
+        AsrProviderKind::None => Box::new(AsrNoneProvider),
+        AsrProviderKind::Moss => Box::new(AsrBrokenProvider {
+            name: "moss".into(),
+            message: "MOSS provider 未实现（Phase 3 T4）".into(),
+        }),
+    }
+}
+
+// ─── ASR 管理器（Tauri 托管状态）──────────────────────────
+
+/// 给前端展示的 ASR 运行时状态
+#[derive(Clone, Serialize)]
+pub struct AsrRuntimeStatus {
+    pub provider: String,
+    pub ready: bool,
+    pub message: String,
+}
+
+/// 全局 ASR 管理器 —— 持有配置与当前 provider
+pub struct AsrManager {
+    config: RuntimeConfig,
+    runtime_dir: PathBuf,
+    provider: Mutex<Box<dyn AsrProvider>>,
+}
+
+impl AsrManager {
+    pub fn new(config: RuntimeConfig, runtime_dir: PathBuf) -> Self {
+        // 已配置 MOSS 可执行文件则走 Moss；否则用 None 占位
+        let kind = if config.moss_binary.is_empty() {
+            AsrProviderKind::None
+        } else {
+            AsrProviderKind::Moss
+        };
+        let provider = create_asr_provider(kind, &config, &runtime_dir);
+        Self {
+            config,
+            runtime_dir,
+            provider: Mutex::new(provider),
+        }
+    }
+
+    pub fn config(&self) -> &RuntimeConfig {
+        &self.config
+    }
+
+    pub fn runtime_dir(&self) -> &PathBuf {
+        &self.runtime_dir
+    }
+
+    /// 作用域化访问 provider：内部加锁，避免把 MutexGuard 泄漏到调用方。
+    /// 锁被污染时退化为使用被污染的 guard 内的值，保证调用不中断。
+    pub fn with_provider<R>(&self, f: impl FnOnce(&dyn AsrProvider) -> R) -> R {
+        let guard = self
+            .provider
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        f(&**guard)
+    }
+
+    /// 汇总当前运行时状态（供 check_asr_runtime 命令）
+    pub fn status(&self) -> AsrRuntimeStatus {
+        let name = self.with_provider(|p| p.name().to_string());
+        let ready = self.with_provider(|p| p.is_ready());
+        let detail = self.with_provider(|p| p.describe());
+        let message = if ready {
+            format!("ASR 运行时就绪（provider: {}）", name)
+        } else if name == "none" {
+            "未配置 ASR 运行环境".into()
+        } else if detail.is_empty() {
+            format!("ASR 运行环境未就绪（provider: {}）", name)
+        } else {
+            format!("ASR 运行环境未就绪（provider: {}）：{}", name, detail)
+        };
+        AsrRuntimeStatus {
+            provider: name,
+            ready,
+            message,
+        }
+    }
+}
+
+// ─── ASR 单元测试 ─────────────────────────────────────────
+
+#[cfg(test)]
+mod asr_tests {
+    use super::*;
+
+    #[test]
+    fn test_asr_none_provider_not_ready() {
+        let p = AsrNoneProvider;
+        assert_eq!(p.name(), "none");
+        assert!(!p.is_ready());
+        let result = p.transcribe(Path::new("a.wav"));
+        assert!(matches!(result, Err(AsrError::NotReady)));
+    }
+
+    #[test]
+    fn test_asr_manager_status_not_ready() {
+        let manager = AsrManager::new(RuntimeConfig::default(), PathBuf::from("runtime"));
+        let status = manager.status();
+        assert_eq!(status.provider, "none");
+        assert!(!status.ready);
+    }
+
+    #[test]
+    fn test_asr_manager_selects_moss_kind() {
+        let mut config = RuntimeConfig::default();
+        config.moss_binary = "bin/moss-transcribe.exe".into();
+        let manager = AsrManager::new(config, PathBuf::from("runtime"));
+        let status = manager.status();
+        assert_eq!(status.provider, "moss");
+        assert!(!status.ready);
+        assert!(status.message.contains("未实现"));
+    }
+
+    #[test]
+    fn test_asr_broken_provider_reports_reason() {
+        let p = AsrBrokenProvider {
+            name: "moss".into(),
+            message: "可执行文件不存在".into(),
+        };
+        assert_eq!(p.name(), "moss");
+        assert!(!p.is_ready());
+        assert_eq!(p.describe(), "可执行文件不存在");
+        assert!(p.transcribe(Path::new("a.wav")).is_err());
+    }
+
+    #[test]
+    fn test_asr_manager_survives_poisoned_lock() {
+        // 构造一个已污染的 Mutex：持有 guard 时 panic
+        let mutex = Mutex::new(Box::new(AsrNoneProvider) as Box<dyn AsrProvider>);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = mutex.lock().unwrap();
+            std::panic::panic_any("poison");
+        }));
+        let mgr = AsrManager {
+            config: RuntimeConfig::default(),
+            runtime_dir: PathBuf::from("runtime"),
+            provider: mutex,
+        };
+        // with_provider 应退化为使用被污染 guard 内的值，不 panic
+        let status = mgr.status();
+        assert_eq!(status.provider, "none");
+        assert!(!status.ready);
+    }
+}
+
+// ─── ASR Tauri 命令 ──────────────────────────────────────
+
+/// Tauri 命令：探测 ASR 运行环境是否就绪
+#[tauri::command]
+pub fn check_asr_runtime(state: tauri::State<'_, AsrManager>) -> AsrRuntimeStatus {
     state.status()
 }

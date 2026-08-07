@@ -8,7 +8,7 @@ pub mod ai_runtime;    // AI 运行时（Phase 2 起逐步实现）
 pub mod ocr;           // OCR 字幕生成流水线（Phase 2）
 pub mod export;        // 导出（Phase 6 实现）
 
-use ai_runtime::{config::resolve_runtime_dir, OcrManager, RuntimeConfig};
+use ai_runtime::{config::resolve_runtime_dir, AsrManager, OcrManager, RuntimeConfig};
 use tauri::Manager; // app.path() 等
 
 /// Tauri 应用入口
@@ -45,7 +45,8 @@ pub fn run() {
                     RuntimeConfig::default()
                 }
             };
-            app.manage(OcrManager::new(config, runtime_dir));
+            app.manage(OcrManager::new(config.clone(), runtime_dir.clone()));
+            app.manage(AsrManager::new(config, runtime_dir));
             Ok(())
         })
 
@@ -62,6 +63,7 @@ pub fn run() {
             video::get_video_metadata,
             // ai_runtime 模块
             ai_runtime::check_ocr_runtime,
+            ai_runtime::check_asr_runtime,
             // ocr 模块
             ocr::run_ocr,
         ])
