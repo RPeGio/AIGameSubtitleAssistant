@@ -100,25 +100,33 @@ function onTrackLabelClicked(track: Track) {
   timeline.focusTrack(track.id);
 }
 
-// ── 滚轮：事件委托到根元素，时间轴区域水平滚动 ──
+// ── 滚轮：普通滚轮垂直滚动轨道区；Shift+滚轮水平平移时间轴 ──
 
 function onWheelRoot(e: WheelEvent) {
   const t = e.target as HTMLElement;
   // 滑条自己处理缩放；工具条/标签列不响应
   if (t.closest(".scrollbar-track")) return;
   if (t.closest(".tool-strip") || t.closest(".tl-label-col")) return;
-  // 轨道滚动区内：轨道多时可原生垂直滚动，不转为水平平移；
-  // 已滚到边界时回退为水平平移，避免滚轮输入被丢弃
-  const tracksEl = t.closest(".tl-tracks") as HTMLElement | null;
-  if (tracksEl && tracksEl.scrollHeight > tracksEl.clientHeight) {
-    const atTop = tracksEl.scrollTop === 0 && e.deltaY < 0;
-    const atBottom =
-      tracksEl.scrollTop + tracksEl.clientHeight >= tracksEl.scrollHeight - 1 &&
-      e.deltaY > 0;
-    if (!atTop && !atBottom) return;
+  // Shift+滚轮：水平平移时间轴
+  if (e.shiftKey) {
+    e.preventDefault();
+    timeline.pan(e.deltaY);
+    return;
   }
+  // 普通滚轮：垂直滚动轨道区
+  const inTracks = t.closest(".tl-tracks") as HTMLElement | null;
+  const tracksEl = rootRef.value?.querySelector<HTMLElement>(".tl-tracks") ?? null;
+  if (inTracks) {
+    // 轨道区内：可滚动时放行原生垂直滚动（保留触控板惯性），否则吸收输入
+    if (tracksEl && tracksEl.scrollHeight > tracksEl.clientHeight) return;
+    e.preventDefault();
+    return;
+  }
+  // 轨道区外（标尺/空白）：代为垂直滚动轨道区，保持一致的垂直滚动语义
   e.preventDefault();
-  timeline.pan(e.deltaY);
+  if (tracksEl && tracksEl.scrollHeight > tracksEl.clientHeight) {
+    tracksEl.scrollTop += e.deltaY;
+  }
 }
 
 onMounted(() => {
