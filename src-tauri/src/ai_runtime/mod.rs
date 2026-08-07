@@ -8,6 +8,7 @@
 
 pub mod config;
 pub mod dhash;
+pub mod moss;
 pub mod paddle;
 
 use serde::{Deserialize, Serialize};
@@ -439,15 +440,18 @@ pub enum AsrProviderKind {
 /// Moss 创建失败时返回 BrokenProvider（携带原因），不 panic
 pub fn create_asr_provider(
     kind: AsrProviderKind,
-    _config: &RuntimeConfig,
-    _runtime_dir: &PathBuf,
+    config: &RuntimeConfig,
+    runtime_dir: &PathBuf,
 ) -> Box<dyn AsrProvider> {
     match kind {
         AsrProviderKind::None => Box::new(AsrNoneProvider),
-        AsrProviderKind::Moss => Box::new(AsrBrokenProvider {
-            name: "moss".into(),
-            message: "MOSS provider 未实现（Phase 3 T4）".into(),
-        }),
+        AsrProviderKind::Moss => match moss::MossProvider::spawn(config, runtime_dir) {
+            Ok(p) => Box::new(p),
+            Err(e) => Box::new(AsrBrokenProvider {
+                name: "moss".into(),
+                message: e.to_string(),
+            }),
+        },
     }
 }
 
@@ -554,8 +558,9 @@ mod asr_tests {
         let manager = AsrManager::new(config, PathBuf::from("runtime"));
         let status = manager.status();
         assert_eq!(status.provider, "moss");
+        // 测试 CWD 下 runtime/ 不存在 → spawn 失败 → broken（describe 非空）
         assert!(!status.ready);
-        assert!(status.message.contains("未实现"));
+        assert!(!status.message.is_empty());
     }
 
     #[test]
