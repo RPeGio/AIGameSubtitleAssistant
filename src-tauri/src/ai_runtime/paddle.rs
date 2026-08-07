@@ -283,6 +283,9 @@ mod tests {
             language: "ch".into(),
             ocr_model: "mobile".into(),
             dev_debug: true,
+            moss_binary: String::new(),
+            moss_model: String::new(),
+            moss_threads: 0,
         };
         assert_eq!(
             runtime.join(&cfg.worker_script),
