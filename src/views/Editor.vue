@@ -44,6 +44,15 @@ async function startOcr() {
   }
 }
 
+async function startAsr() {
+  try {
+    await projectStore.runAsr();
+    message.success("ASR 完成");
+  } catch (e) {
+    message.error(String(e));
+  }
+}
+
 watch(
   () => timeline.duration,
   (d) => {
@@ -161,6 +170,23 @@ const resolutionLabel = computed(() => {
               :show-indicator="false"
             />
             <span class="ocr-msg">{{ projectStore.ocrMessage }}</span>
+          </template>
+
+          <NButton
+            size="small"
+            :disabled="projectStore.asrRunning"
+            @click="startAsr"
+          >
+            运行 ASR
+          </NButton>
+          <template v-if="projectStore.asrRunning">
+            <NProgress
+              type="line"
+              class="ocr-progress"
+              :percentage="Math.round(projectStore.asrProgress * 100)"
+              :show-indicator="false"
+            />
+            <span class="ocr-msg">{{ projectStore.asrMessage }}</span>
           </template>
         </div>
 
