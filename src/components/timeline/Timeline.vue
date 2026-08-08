@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import { useTimelineStore, CLIP_COLORS } from "../../stores/timeline";
 import { useProjectStore } from "../../stores/project";
 import type { Track } from "../../types";
@@ -100,6 +100,32 @@ function onTrackLabelClicked(track: Track) {
   timeline.focusTrack(track.id);
 }
 
+// ── 双击标签列重命名轨道（角色标注）──
+const renameTrackId = ref<string | null>(null);
+const renameDraft = ref("");
+const renameInput = ref<HTMLInputElement | null>(null);
+
+function startRename(track: Track) {
+  if (renameTrackId.value) return;
+  renameTrackId.value = track.id;
+  renameDraft.value = track.name;
+  nextTick(() => {
+    renameInput.value?.focus();
+    renameInput.value?.select();
+  });
+}
+
+// 空名视为取消（防误清）；提交后轨道内 asr/manual 事件 character 跟随
+function commitRename() {
+  const id = renameTrackId.value;
+  renameTrackId.value = null;
+  if (id) projectStore.renameTrack(id, renameDraft.value);
+}
+
+function cancelRename() {
+  renameTrackId.value = null;
+}
+
 // ── 滚轮：普通滚轮水平平移时间轴；Shift+滚轮垂直滚动轨道区 ──
 
 function onWheelRoot(e: WheelEvent) {
@@ -176,7 +202,25 @@ onUnmounted(() => {
             :class="{ 'track-focused': timeline.focusedTrackId === track.id }"
             @click="onTrackLabelClicked(track)"
           >
-            <div class="label-name">{{ track.name }}</div>
+              <div class="label-name">
+              <input
+                v-if="renameTrackId === track.id"
+                ref="renameInput"
+                v-model="renameDraft"
+                class="tl-name-input"
+                @keydown.enter="commitRename"
+                @keydown.esc="cancelRename"
+                @blur="commitRename"
+              />
+              <span
+                v-else
+                class="label-name-text"
+                title="双击重命名轨道"
+                @dblclick="startRename(track)"
+              >
+                {{ track.name }}
+              </span>
+            </div>
             <div class="label-type">{{ track.type }}</div>
           </div>
           <div
@@ -290,6 +334,27 @@ onUnmounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.label-name-text {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tl-name-input {
+  width: 100%;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--color-text-primary);
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  padding: 1px 4px;
+  outline: none;
+  box-sizing: border-box;
 }
 
 .label-type {
