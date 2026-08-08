@@ -146,7 +146,7 @@ const resolutionLabel = computed(() => {
               <NTag>{{ meta?.codec }}</NTag>
             </NSpace>
 
-            <NButton size="small" @click="projectStore.importVideo()">
+            <NButton size="small" type="primary" @click="projectStore.importVideo()">
               更换视频
             </NButton>
           </div>
@@ -174,6 +174,7 @@ const resolutionLabel = computed(() => {
 
           <NButton
             size="small"
+            type="primary"
             :disabled="projectStore.asrRunning"
             @click="startAsr"
           >
