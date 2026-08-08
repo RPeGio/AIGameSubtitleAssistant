@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
+import { NModal, NPopconfirm, NSelect, NButton } from "naive-ui";
 import { useTimelineStore, CLIP_COLORS } from "../../stores/timeline";
 import { useProjectStore } from "../../stores/project";
 import type { Track } from "../../types";
@@ -134,6 +135,54 @@ function onWindowMouseDown(e: MouseEvent) {
   commitRename();
 }
 
+// ── 轨道操作：上移/下移/删除/合并 ──
+function onMoveTrack(track: Track, dir: "up" | "down") {
+  projectStore.moveTrack(track.id, dir);
+}
+
+function onDeleteTrack(track: Track) {
+  projectStore.removeTrack(track.id);
+  if (timeline.focusedTrackId === track.id) {
+    timeline.focusTrack(null);
+    timeline.focusClip(null);
+  } else if (timeline.focusedClipId && !projectStore.findEvent(timeline.focusedClipId)) {
+    // 聚焦 clip 恰好位于被删轨道：清理悬空聚焦
+    timeline.focusClip(null);
+  }
+}
+
+// 合并：弹窗选择同类型目标轨道
+const mergeModal = ref(false);
+const mergeSrc = ref<Track | null>(null);
+const mergeDstId = ref<string | null>(null);
+
+const mergeOptions = computed(() => {
+  if (!mergeSrc.value) return [];
+  return tracks()
+    .filter((t) => t.id !== mergeSrc.value!.id && t.type === mergeSrc.value!.type)
+    .map((t) => ({ label: t.name, value: t.id }));
+});
+
+function onMergeOpen(track: Track) {
+  mergeSrc.value = track;
+  mergeDstId.value = null;
+  mergeModal.value = true;
+}
+
+function onMergeConfirm() {
+  if (mergeSrc.value && mergeDstId.value) {
+    projectStore.mergeTrack(mergeSrc.value.id, mergeDstId.value);
+    // 源轨被删除：清理悬空聚焦，聚焦指向目标轨道
+    if (timeline.focusedClipId && !projectStore.findEvent(timeline.focusedClipId)) {
+      timeline.focusClip(null);
+    }
+    if (timeline.focusedTrackId === mergeSrc.value.id) {
+      timeline.focusTrack(mergeDstId.value);
+    }
+  }
+  mergeModal.value = false;
+}
+
 // ── 滚轮：普通滚轮水平平移时间轴；Shift+滚轮垂直滚动轨道区 ──
 
 function onWheelRoot(e: WheelEvent) {
@@ -212,7 +261,7 @@ onUnmounted(() => {
             :class="{ 'track-focused': timeline.focusedTrackId === track.id }"
             @click="onTrackLabelClicked(track)"
           >
-              <div class="label-name">
+            <div class="label-name">
               <input
                 v-if="renameTrackId === track.id"
                 ref="renameInput"
@@ -232,6 +281,17 @@ onUnmounted(() => {
               </span>
             </div>
             <div class="label-type">{{ track.type }}</div>
+            <div v-if="renameTrackId !== track.id" class="tl-label-actions" @click.stop>
+              <button class="tl-label-btn" title="上移轨道" @click="onMoveTrack(track, 'up')">↑</button>
+              <button class="tl-label-btn" title="下移轨道" @click="onMoveTrack(track, 'down')">↓</button>
+              <button class="tl-label-btn" title="合并到其他轨道" @click="onMergeOpen(track)">⇄</button>
+              <NPopconfirm @positive-click="onDeleteTrack(track)">
+                <template #trigger>
+                  <button class="tl-label-btn tl-label-btn-danger" title="删除轨道">🗑</button>
+                </template>
+                删除轨道「{{ track.name }}」？此操作不可恢复
+              </NPopconfirm>
+            </div>
           </div>
           <div
             class="tl-content tl-track-body"
@@ -243,6 +303,7 @@ onUnmounted(() => {
                 v-for="event in track.events"
                 :key="event.id"
                 :event="event"
+                :siblings="track.events"
                 :color="CLIP_COLORS[event.type] ?? '#666'"
                 :left="timeline.clipPosition(event).left"
                 :width="timeline.clipPosition(event).width"
@@ -262,6 +323,36 @@ onUnmounted(() => {
           <TimelineScrollbar />
         </div>
       </div>
+
+      <!-- 轨道合并弹窗：选择同类型目标轨道 -->
+      <NModal
+        v-model:show="mergeModal"
+        preset="card"
+        title="合并轨道"
+        style="width: 400px"
+      >
+        <div class="merge-form">
+          <p class="merge-hint">
+            将轨道「{{ mergeSrc?.name }}」并入：
+          </p>
+          <NSelect
+            v-model:value="mergeDstId"
+            :options="mergeOptions"
+            placeholder="选择同类型目标轨道"
+          />
+        </div>
+        <template #footer>
+          <NButton size="small" @click="mergeModal = false">取消</NButton>
+          <NButton
+            size="small"
+            type="primary"
+            :disabled="!mergeDstId"
+            @click="onMergeConfirm"
+          >
+            合并
+          </NButton>
+        </template>
+      </NModal>
     </div>
 
     <!-- Playhead window：仅覆盖内容区，标头越界时被裁剪而不上溢到工具条/标签列 -->
@@ -330,6 +421,60 @@ onUnmounted(() => {
   padding: 4px 10px;
   flex-shrink: 0;
   cursor: pointer;
+}
+
+/* 轨道操作按钮组：hover 显示，右缘垂直居中 */
+.tl-label-actions {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+}
+
+.tl-label-col:hover .tl-label-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.tl-label-btn {
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 3px;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+}
+
+.tl-label-btn:hover {
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.tl-label-btn-danger:hover {
+  background: var(--color-error);
+  color: #fff;
+}
+
+.merge-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.merge-hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-primary);
+  word-break: break-all;
 }
 
 .tl-label-col.track-focused {

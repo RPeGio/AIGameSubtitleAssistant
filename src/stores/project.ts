@@ -329,6 +329,15 @@ export const useProjectStore = defineStore("project", () => {
     }
   }
 
+  /// 更新事件起止时间（就地修改，时间轴即时刷新），并按 start 重排序
+  function updateEventTime(id: string, start: number, end: number) {
+    const found = findEvent(id);
+    if (!found || end <= start) return;
+    found.event.start = start;
+    found.event.end = end;
+    found.track.events = [...found.track.events].sort((a, b) => a.start - b.start);
+  }
+
   /// 运行 OCR 流水线：收集所有 ocr_region 轨道的 clip → run_ocr → 写入 ocr_text 轨道
   async function runOcr(params: OcrRunParams) {
     if (ocrRunning.value || !currentProject.value || !currentVideoMeta.value) return;
@@ -491,6 +500,33 @@ export const useProjectStore = defineStore("project", () => {
     }
   }
 
+  /// 删除轨道（聚焦清理由 UI 层负责）
+  function removeTrack(id: string) {
+    if (!currentProject.value) return;
+    currentProject.value.tracks = currentProject.value.tracks.filter((t) => t.id !== id);
+  }
+
+  /// 上移/下移轨道（调整显示顺序）
+  function moveTrack(id: string, dir: "up" | "down") {
+    const tracks = currentProject.value?.tracks;
+    if (!tracks) return;
+    const i = tracks.findIndex((t) => t.id === id);
+    const j = dir === "up" ? i - 1 : i + 1;
+    if (i < 0 || j < 0 || j >= tracks.length) return;
+    [tracks[i], tracks[j]] = [tracks[j], tracks[i]];
+  }
+
+  /// 源轨事件并入目标轨（按 start 排序），删除源轨；character 为事件级字段，随事件保留
+  function mergeTrack(srcId: string, dstId: string) {
+    const tracks = currentProject.value?.tracks;
+    if (!tracks) return;
+    const src = tracks.find((t) => t.id === srcId);
+    const dst = tracks.find((t) => t.id === dstId);
+    if (!src || !dst || src.id === dst.id) return;
+    dst.events = [...dst.events, ...src.events].sort((a, b) => a.start - b.start);
+    currentProject.value!.tracks = tracks.filter((t) => t.id !== srcId);
+  }
+
   function closeProject() {
     // 关闭前落盘（在置空前触发保存）
     clearTimeout(saveTimer);
@@ -515,9 +551,13 @@ export const useProjectStore = defineStore("project", () => {
     findEvent,
     findTrack,
     renameTrack,
+    removeTrack,
+    moveTrack,
+    mergeTrack,
     splitEvent,
     updateOcrRegion,
     updateEventText,
+    updateEventTime,
     refreshRecentProjects,
     saveNow,
     ocrRunning,
