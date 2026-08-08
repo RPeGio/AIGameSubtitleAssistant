@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useTimelineStore, CLIP_COLORS } from "../stores/timeline";
 import { useProjectStore } from "../stores/project";
 import type { TimelineEvent } from "../types";
@@ -101,6 +101,13 @@ function commitEdit() {
 function cancelEdit() {
   editingId.value = null;
 }
+
+// 切换聚焦轨道时提交未完成的编辑：条目随轨道切换卸载，
+// 元素从 DOM 移除不触发 blur，不提交会残留编辑态
+watch(
+  () => timeline.focusedTrackId,
+  () => commitEdit()
+);
 </script>
 
 <template>
@@ -124,6 +131,7 @@ function cancelEdit() {
         class="ov-entry"
         :class="{ focused: timeline.focusedClipId === clip.id }"
         @click="onEntryClicked(clip)"
+        @dblclick="timeline.jumpTo(clip.start)"
       >
         <span class="ov-index">{{ i + 1 }}</span>
 
@@ -143,7 +151,7 @@ function cancelEdit() {
           <span class="ov-time">{{ fmtTime(clip.end) }}</span>
         </div>
 
-        <div v-if="isTextTrack" class="ov-content" @dblclick="startEdit(clip)">
+        <div v-if="isTextTrack" class="ov-content" @dblclick.stop="startEdit(clip)">
           <textarea
             v-if="editingId === clip.id"
             ref="editInput"
