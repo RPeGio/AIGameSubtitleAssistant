@@ -115,10 +115,12 @@ function onWindowMouseMove(e: MouseEvent) {
   const { minStart, maxEnd, prev, next } = bounds();
   const dur0 = d.origEnd - d.origStart;
   // 合并工具：resize 边缘拖过相邻边界超过阈值即直接合并相邻 clip
+  // （阈值以像素声明，比较前换算为秒：prev.end - MERGE_DRAG_PX / pps）
   if (timeline.activeTool === "merge" && d.moved) {
-    if (d.mode === "l" && prev && d.origStart + dt < prev.end - MERGE_DRAG_PX) {
+    const threshold = MERGE_DRAG_PX / timeline.pixelsPerSecond;
+    if (d.mode === "l" && prev && d.origStart + dt < prev.end - threshold) {
       if (tryMergeWith(prev)) return;
-    } else if (d.mode === "r" && next && d.origEnd + dt > next.start + MERGE_DRAG_PX) {
+    } else if (d.mode === "r" && next && d.origEnd + dt > next.start + threshold) {
       if (tryMergeWith(next)) return;
     }
   }
@@ -135,9 +137,11 @@ function onWindowMouseMove(e: MouseEvent) {
   projectStore.updateEventTime(props.event.id, start, end);
 }
 
-// 合并工具拖动：合并当前 clip 与相邻 clip 并聚焦合并结果，结束拖动
+// 合并工具拖动：合并当前 clip 与相邻 clip 并聚焦合并结果，结束拖动。
+// 拖动场景的相邻关系已由 bounds() 保证（最近非重叠邻居），
+// 中间可能有重叠事件打断排序相邻，故不要求严格相邻
 function tryMergeWith(other: TimelineEvent): boolean {
-  const merged = projectStore.mergeTwo(props.event.id, other.id);
+  const merged = projectStore.mergeTwo(props.event.id, other.id, false);
   if (!merged) return false;
   timeline.focusClip(merged);
   emit("merged");

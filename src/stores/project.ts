@@ -539,10 +539,11 @@ export const useProjectStore = defineStore("project", () => {
     currentProject.value!.tracks = tracks.filter((t) => t.id !== srcId);
   }
 
-  /// 合并两个同轨事件：时间取并集、文本按时间顺序拼接、
+  /// 合并两个同轨事件：时间取并集（end 取较晚）、文本按时间顺序拼接、
   /// 保留时间更早事件的 id 与属性，删除另一事件；返回保留的 id。
-  /// 条件：同轨、均非 ocr_region、按 start 排序后相邻；不满足返回 null
-  function mergeTwo(idA: string, idB: string): string | null {
+  /// 条件：同轨、均非 ocr_region；requireAdjacent 时还需按 start 排序相邻。
+  /// 不满足返回 null
+  function mergeTwo(idA: string, idB: string, requireAdjacent = true): string | null {
     const a = findEvent(idA);
     const b = findEvent(idB);
     if (!a || !b || a.track.id !== b.track.id) return null;
@@ -553,10 +554,11 @@ export const useProjectStore = defineStore("project", () => {
     const sorted = [...track.events].sort((x, y) => x.start - y.start);
     const ia = sorted.findIndex((e) => e.id === ea.id);
     const ib = sorted.findIndex((e) => e.id === eb.id);
-    if (ia < 0 || ib < 0 || Math.abs(ia - ib) !== 1) return null;
+    if (ia < 0 || ib < 0) return null;
+    if (requireAdjacent && Math.abs(ia - ib) !== 1) return null;
 
     const [first, second] = ea.start <= eb.start ? [ea, eb] : [eb, ea];
-    first.end = second.end;
+    first.end = Math.max(first.end, second.end);
     first.text = first.text + "\n" + second.text;
     track.events = track.events.filter((e) => e.id !== second.id);
     track.events.sort((x, y) => x.start - y.start);
