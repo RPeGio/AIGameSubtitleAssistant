@@ -9,8 +9,10 @@ import type {
   OcrRunParams,
   OcrSegment,
   OcrProgress,
+  AsrSegment,
+  AsrProgress,
 } from "../types";
-import { OCR_PROGRESS_EVENT } from "../types";
+import { OCR_PROGRESS_EVENT, ASR_PROGRESS_EVENT } from "../types";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
@@ -18,6 +20,9 @@ import { listen } from "@tauri-apps/api/event";
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
+
+/// 无说话人标签时的轨道名/事件字段 fallback
+const UNKNOWN_SPEAKER = "未标注";
 
 function ocrTextToEvent(seg: OcrSegment): TimelineEvent {
   return {
@@ -27,6 +32,18 @@ function ocrTextToEvent(seg: OcrSegment): TimelineEvent {
     end: seg.end,
     text: seg.text,
     confidence: seg.confidence,
+  };
+}
+
+function asrSegmentToEvent(seg: AsrSegment): TimelineEvent {
+  return {
+    id: generateId(),
+    type: "asr",
+    start: seg.start,
+    end: seg.end,
+    text: seg.text,
+    speaker: seg.speaker || UNKNOWN_SPEAKER,
+    confidence: seg.confidence ?? 0,
   };
 }
 
@@ -50,6 +67,21 @@ export const useProjectStore = defineStore("project", () => {
   unlistenPromise.catch((e) => console.error("监听 OCR 进度事件失败:", e));
   onScopeDispose(() => {
     unlistenPromise.then((fn) => fn()).catch(() => {});
+  });
+
+  // ── ASR 运行状态 ───────────────────────────────────────
+  const asrRunning = ref(false);
+  const asrProgress = ref(0);
+  const asrMessage = ref("");
+
+  // 监听进度事件；注册清理函数，store 被 dispose（HMR/重复实例）时退订，避免叠加泄漏
+  const asrUnlistenPromise = listen<AsrProgress>(ASR_PROGRESS_EVENT, (event) => {
+    asrProgress.value = event.payload.progress;
+    asrMessage.value = event.payload.message;
+  });
+  asrUnlistenPromise.catch((e) => console.error("监听 ASR 进度事件失败:", e));
+  onScopeDispose(() => {
+    asrUnlistenPromise.then((fn) => fn()).catch(() => {});
   });
 
   // ── 自动保存 ─────────────────────────────────────────
@@ -214,35 +246,6 @@ export const useProjectStore = defineStore("project", () => {
       });
     }
 
-    // Mock 轨道：供测试"焦点在非 ocr 轨道时不显示遮罩"等场景
-    if (!tracks.some((t) => t.type === "asr")) {
-      tracks.push({
-        id: generateId(),
-        name: "主播语音 (mock)",
-        type: "asr",
-        events: [
-          {
-            id: generateId(),
-            type: "asr",
-            start: 0,
-            end: duration * 0.15,
-            text: "大家好，今天继续播这个游戏",
-            speaker: "S01",
-            confidence: 0.92,
-          },
-          {
-            id: generateId(),
-            type: "asr",
-            start: duration * 0.3,
-            end: duration * 0.42,
-            text: "哇这个剧情也太顶了",
-            speaker: "S01",
-            confidence: 0.95,
-          },
-        ],
-      });
-    }
-
     if (!tracks.some((t) => t.type === "ocr_text")) {
       tracks.push({
         id: generateId(),
@@ -402,6 +405,78 @@ export const useProjectStore = defineStore("project", () => {
     track.events = segments.map(ocrTextToEvent).sort((a, b) => a.start - b.start);
   }
 
+  /// 运行 ASR 流水线：整段视频 → run_asr → 按 speaker 分组写入各 asr 轨道
+  async function runAsr() {
+    if (asrRunning.value || !currentProject.value || !currentVideoMeta.value) return;
+
+    asrRunning.value = true;
+    asrProgress.value = 0;
+    asrMessage.value = "准备中...";
+    try {
+      const segments = await invoke<AsrSegment[]>("run_asr", {
+        videoPath: currentVideoMeta.value.path,
+      });
+      writeAsrSegments(segments);
+      asrProgress.value = 1;
+      asrMessage.value = "完成";
+    } catch (e) {
+      // 失败/中断时不动已有轨道，只重置进度并抛出友好错误
+      asrProgress.value = 0;
+      asrMessage.value = "ASR 失败";
+      throw new Error(normalizeAsrError(e));
+    } finally {
+      asrRunning.value = false;
+    }
+  }
+
+  /// 把 IPC/后端错误映射为用户可读的信息，未识别时才回退原文
+  function normalizeAsrError(e: unknown): string {
+    const msg = String(e);
+    if (msg.includes("未就绪")) return "ASR 运行环境未就绪，请先运行环境引导脚本";
+    return msg;
+  }
+
+  /// 说话人一条 asr 轨道：找到同 speaker 的轨道复用，否则新建（轨道名 = speaker 标签）
+  function ensureAsrTrack(speaker: string): Track {
+    if (!currentProject.value) throw new Error("当前无项目");
+    const tracks = currentProject.value.tracks;
+    let track = tracks.find((t) => t.type === "asr" && t.name === speaker);
+    if (!track) {
+      track = {
+        id: generateId(),
+        name: speaker,
+        type: "asr",
+        events: [],
+      };
+      tracks.push(track);
+    }
+    return track;
+  }
+
+  /// ASR 成功后按 speaker 分组填充各 asr 轨道，重跑不叠加。
+  /// 空结果视为无可识别语音，不动已有轨道（保护历史数据）。
+  function writeAsrSegments(segments: AsrSegment[]) {
+    if (!currentProject.value || segments.length === 0) return;
+    currentProject.value.tracks
+      .filter((t) => t.type === "asr")
+      .forEach((t) => (t.events = []));
+
+    const bySpeaker = new Map<string, TimelineEvent[]>();
+    for (const seg of segments) {
+      const speaker = seg.speaker || UNKNOWN_SPEAKER;
+      if (!bySpeaker.has(speaker)) bySpeaker.set(speaker, []);
+      bySpeaker.get(speaker)!.push(asrSegmentToEvent(seg));
+    }
+    for (const [speaker, events] of bySpeaker) {
+      const track = ensureAsrTrack(speaker);
+      track.events = events.sort((a, b) => a.start - b.start);
+    }
+    // 清理重跑后不再出现/无事件的 asr 轨道，避免空壳残留
+    currentProject.value.tracks = currentProject.value.tracks.filter(
+      (t) => t.type !== "asr" || t.events.length > 0
+    );
+  }
+
   function closeProject() {
     // 关闭前落盘（在置空前触发保存）
     clearTimeout(saveTimer);
@@ -434,6 +509,10 @@ export const useProjectStore = defineStore("project", () => {
     ocrProgress,
     ocrMessage,
     runOcr,
+    asrRunning,
+    asrProgress,
+    asrMessage,
+    runAsr,
     closeProject,
   };
 });

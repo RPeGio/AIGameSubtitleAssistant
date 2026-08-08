@@ -100,15 +100,31 @@ function onTrackLabelClicked(track: Track) {
   timeline.focusTrack(track.id);
 }
 
-// ── 滚轮：事件委托到根元素，时间轴区域水平滚动 ──
+// ── 滚轮：普通滚轮水平平移时间轴；Shift+滚轮垂直滚动轨道区 ──
 
 function onWheelRoot(e: WheelEvent) {
   const t = e.target as HTMLElement;
   // 滑条自己处理缩放；工具条/标签列不响应
   if (t.closest(".scrollbar-track")) return;
   if (t.closest(".tool-strip") || t.closest(".tl-label-col")) return;
+  // Shift+滚轮：垂直滚动轨道区
+  if (e.shiftKey) {
+    const tracksEl = rootRef.value?.querySelector<HTMLElement>(".tl-tracks") ?? null;
+    if (tracksEl && tracksEl.scrollHeight > tracksEl.clientHeight) {
+      // 轨道区内放行原生滚动（保留触控板惯性），轨道区外代为滚动
+      // 注意 Chrome 按住 Shift 会交换 deltaX/deltaY 轴，故两轴都计入
+      if (t.closest(".tl-tracks")) return;
+      e.preventDefault();
+      tracksEl.scrollTop += e.deltaY + e.deltaX;
+      return;
+    }
+    // 轨道不足无法滚动：吸收输入
+    e.preventDefault();
+    return;
+  }
+  // 普通滚轮：水平平移时间轴（触控板横滑时 deltaX 非零）
   e.preventDefault();
-  timeline.pan(e.deltaY);
+  timeline.pan(e.deltaY + e.deltaX);
 }
 
 onMounted(() => {
@@ -148,38 +164,40 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Track rows -->
-      <div
-        v-for="track in tracks()"
-        :key="track.id"
-        class="tl-row track-row"
-      >
+      <!-- Track rows（垂直滚动区：轨道多时滚动，行高固定不被压缩） -->
+      <div class="tl-tracks">
         <div
-          class="tl-label-col"
-          :class="{ 'track-focused': timeline.focusedTrackId === track.id }"
-          @click="onTrackLabelClicked(track)"
+          v-for="track in tracks()"
+          :key="track.id"
+          class="tl-row track-row"
         >
-          <div class="label-name">{{ track.name }}</div>
-          <div class="label-type">{{ track.type }}</div>
-        </div>
-        <div
-          class="tl-content tl-track-body"
-          :data-track-id="track.id"
-          @mousedown="onTrackAreaMouseDown"
-        >
-          <template v-if="track.events.length > 0">
-            <TimelineClip
-              v-for="event in track.events"
-              :key="event.id"
-              :event="event"
-              :color="CLIP_COLORS[event.type] ?? '#666'"
-              :left="timeline.clipPosition(event).left"
-              :width="timeline.clipPosition(event).width"
-              :focused="timeline.focusedClipId === event.id"
-              @click-clip="onClipClicked(track, event.id)"
-            />
-          </template>
-          <div v-else class="empty-hint">此轨道暂无事件</div>
+          <div
+            class="tl-label-col"
+            :class="{ 'track-focused': timeline.focusedTrackId === track.id }"
+            @click="onTrackLabelClicked(track)"
+          >
+            <div class="label-name">{{ track.name }}</div>
+            <div class="label-type">{{ track.type }}</div>
+          </div>
+          <div
+            class="tl-content tl-track-body"
+            :data-track-id="track.id"
+            @mousedown="onTrackAreaMouseDown"
+          >
+            <template v-if="track.events.length > 0">
+              <TimelineClip
+                v-for="event in track.events"
+                :key="event.id"
+                :event="event"
+                :color="CLIP_COLORS[event.type] ?? '#666'"
+                :left="timeline.clipPosition(event).left"
+                :width="timeline.clipPosition(event).width"
+                :focused="timeline.focusedClipId === event.id"
+                @click-clip="onClipClicked(track, event.id)"
+              />
+            </template>
+            <div v-else class="empty-hint">此轨道暂无事件</div>
+          </div>
         </div>
       </div>
 
@@ -229,12 +247,18 @@ onUnmounted(() => {
   min-height: 0;
 }
 
+.tl-tracks {
+  /* 滚动容器：block 子行高度由内容决定（行高固定），溢出时垂直滚动 */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .track-row {
   border-top: 1px solid var(--color-border);
 }
 
 .timeline-footer {
-  margin-top: auto;
   border-top: 1px solid var(--color-border);
   flex-shrink: 0;
 }

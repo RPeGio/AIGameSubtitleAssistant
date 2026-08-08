@@ -338,6 +338,50 @@ pub fn extract_frames(
     Ok(frames)
 }
 
+// ─── 音频提取（ASR 用）────────────────────────────────────
+
+/// 提取视频音轨为 16kHz 单声道 PCM WAV（MOSS 的输入格式）。
+///
+/// # 参数
+/// - `video_path`: 视频绝对路径
+/// - `out_dir`: 输出目录（写入 audio.wav）
+///
+/// 返回生成的 audio.wav 路径。
+/// 无音轨时返回友好错误（录屏文件常见）。
+pub fn extract_audio(video_path: &str, out_dir: &Path) -> Result<PathBuf, String> {
+    let ffmpeg = resolve_ffmpeg().ok_or_else(|| "FFMPEG_NOT_FOUND".to_string())?;
+    fs::create_dir_all(out_dir).map_err(|e| format!("无法创建音频目录: {}", e))?;
+
+    let output_path = out_dir.join("audio.wav");
+    let output = Command::new(&ffmpeg)
+        .arg("-y")
+        .arg("-i")
+        .arg(video_path)
+        .arg("-vn")
+        .arg("-ac")
+        .arg("1")
+        .arg("-ar")
+        .arg("16000")
+        .arg("-c:a")
+        .arg("pcm_s16le")
+        .arg(&output_path)
+        .output()
+        .map_err(|e| format!("无法执行 ffmpeg: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // 录屏无音轨是常见场景，映射为友好错误
+        if stderr.contains("does not contain any stream") {
+            return Err("视频不包含音轨".into());
+        }
+        return Err(format!("ffmpeg 音频提取失败: {}", stderr));
+    }
+    if !output_path.is_file() {
+        return Err("ffmpeg 退出码为 0 但音频文件未生成".into());
+    }
+    Ok(output_path)
+}
+
 // ─── 单元测试 ─────────────────────────────────────────────
 
 #[cfg(test)]

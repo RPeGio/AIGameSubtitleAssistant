@@ -33,6 +33,16 @@ pub struct RuntimeConfig {
     /// 开发期调试：帧输出到仓库根 temp/ 并打印各环节日志（release 前关闭）
     #[serde(default = "default_dev_debug")]
     pub dev_debug: bool,
+    /// MOSS 推理可执行文件：相对 runtime（如 "bin/moss-transcribe.exe"，机器无关）或绝对路径；空 = 未配置
+    #[serde(default)]
+    pub moss_binary: String,
+    /// MOSS GGUF 模型文件（相对 runtime，如 "models/moss/moss-transcribe-q5_k.gguf"）；空 = 未配置
+    #[serde(default)]
+    pub moss_model: String,
+    /// MOSS 推理线程数：0 = 不设置（CLI 默认全核）。实测 i7-14650HX（24 逻辑核）上全核最快，
+    /// 文档建议的 8 线程反而慢 ~72%（解码带宽受限，甜点依机器而异）
+    #[serde(default)]
+    pub moss_threads: u32,
 }
 
 fn default_ocr_model() -> String {
@@ -53,6 +63,9 @@ impl Default for RuntimeConfig {
             language: "ch".into(),
             ocr_model: default_ocr_model(),
             dev_debug: default_dev_debug(),
+            moss_binary: String::new(),
+            moss_model: String::new(),
+            moss_threads: 0,
         }
     }
 }
@@ -141,13 +154,16 @@ impl RuntimeConfig {
     }
 
     /// 校验各路径的合法性：
-    /// - worker_script / deps_dir / model_dir 必须解析在 runtime 目录内（防路径穿越）
+    /// - worker_script / deps_dir / model_dir / moss_binary / moss_model 必须解析在 runtime 目录内（防路径穿越）
     /// - python_path 解析后（相对则按 runtime 目录解析）必须存在
+    /// - moss_binary 非空时必须存在（缺失时 ASR 不可用，由 provider 报告原因）
     pub fn validate(&self, runtime_dir: &Path) -> Result<(), String> {
         for (name, value) in [
             ("worker_script", &self.worker_script),
             ("deps_dir", &self.deps_dir),
             ("model_dir", &self.model_dir),
+            ("moss_binary", &self.moss_binary),
+            ("moss_model", &self.moss_model),
         ] {
             let pb = PathBuf::from(value);
             let joined = if pb.is_absolute() {
@@ -172,6 +188,23 @@ impl RuntimeConfig {
                 self.python_path,
                 joined.display()
             ));
+        }
+
+        // moss_binary 非空时必须真的存在（与 python_path 同策略）
+        if !self.moss_binary.is_empty() {
+            let mb = PathBuf::from(&self.moss_binary);
+            let joined = if mb.is_absolute() {
+                mb
+            } else {
+                runtime_dir.join(mb)
+            };
+            if !joined.is_file() {
+                return Err(format!(
+                    "moss_binary 指向的文件不存在: {}（按 {} 解析）",
+                    self.moss_binary,
+                    joined.display()
+                ));
+            }
         }
         Ok(())
     }
@@ -198,6 +231,9 @@ mod tests {
             language: "ch".into(),
             ocr_model: "mobile".into(),
             dev_debug: true,
+            moss_binary: "bin/moss-transcribe.exe".into(),
+            moss_model: "models/moss/moss-transcribe-q5_k.gguf".into(),
+            moss_threads: 8,
         };
         cfg.save(&dir).unwrap();
 
@@ -209,6 +245,9 @@ mod tests {
         assert_eq!(loaded.language, cfg.language);
         assert_eq!(loaded.ocr_model, "mobile");
         assert!(loaded.dev_debug);
+        assert_eq!(loaded.moss_binary, "bin/moss-transcribe.exe");
+        assert_eq!(loaded.moss_model, "models/moss/moss-transcribe-q5_k.gguf");
+        assert_eq!(loaded.moss_threads, 8);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -235,6 +274,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         // 相对 python_path 需解析到 runtime 内且文件存在
         fs::write(dir.join("python.exe"), b"dummy").unwrap();
+        fs::write(dir.join("moss-transcribe.exe"), b"dummy").unwrap();
         let cfg = RuntimeConfig {
             python_path: "python.exe".into(),
             worker_script: "worker/ocr_worker.py".into(),
@@ -243,6 +283,9 @@ mod tests {
             language: "ch".into(),
             ocr_model: "mobile".into(),
             dev_debug: true,
+            moss_binary: "moss-transcribe.exe".into(),
+            moss_model: "models/moss/moss-transcribe-q5_k.gguf".into(),
+            moss_threads: 8,
         };
         assert!(cfg.validate(&dir).is_ok());
         let _ = fs::remove_dir_all(&dir);
@@ -277,6 +320,72 @@ mod tests {
         let mut cfg = RuntimeConfig::default();
         cfg.worker_script = "../evil.py".into();
         assert!(cfg.validate(&dir).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_legacy_config_without_moss_fields() {
+        // 老配置（Phase 2）没有 moss 字段 → 应能加载且 moss 字段取默认值
+        let dir = temp_dir("cfg_legacy");
+        fs::create_dir_all(&dir).unwrap();
+        let json = r#"{"python_path":"python","worker_script":"worker/ocr_worker.py","deps_dir":"deps","model_dir":"models/paddleocr","language":"ch","ocr_model":"mobile","dev_debug":true}"#;
+        fs::write(dir.join("config.json"), json).unwrap();
+        let cfg = RuntimeConfig::load(&dir).unwrap();
+        assert_eq!(cfg.moss_binary, "");
+        assert_eq!(cfg.moss_model, "");
+        assert_eq!(cfg.moss_threads, 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_validate_rejects_moss_traversal() {
+        let dir = temp_dir("cfg_moss_traversal");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("python.exe"), b"dummy").unwrap();
+        let mut cfg = RuntimeConfig::default();
+        cfg.python_path = "python.exe".into();
+        cfg.moss_binary = "../evil.exe".into();
+        assert!(cfg.validate(&dir).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_validate_rejects_missing_moss_binary() {
+        let dir = temp_dir("cfg_missing_moss");
+        fs::create_dir_all(&dir).unwrap();
+        // python 就绪，确保错误来自 moss_binary 分支
+        fs::write(dir.join("python.exe"), b"dummy").unwrap();
+        let mut cfg = RuntimeConfig::default();
+        cfg.python_path = "python.exe".into();
+        cfg.moss_binary = "bin/moss-transcribe.exe".into();
+        assert!(cfg.validate(&dir).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_validate_moss_model_missing_ok() {
+        // moss_model 不做存在性检查：模型缺失时由 provider 报告"未就绪"原因
+        let dir = temp_dir("cfg_moss_model_missing");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("python.exe"), b"dummy").unwrap();
+        fs::write(dir.join("moss-transcribe.exe"), b"dummy").unwrap();
+        let mut cfg = RuntimeConfig::default();
+        cfg.python_path = "python.exe".into();
+        cfg.moss_binary = "moss-transcribe.exe".into();
+        cfg.moss_model = "models/moss/missing.gguf".into();
+        assert!(cfg.validate(&dir).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_validate_empty_moss_binary_ok() {
+        // moss 未配置（空）→ 合法，ASR 由 NoneProvider 兜底
+        let dir = temp_dir("cfg_no_moss");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("python.exe"), b"dummy").unwrap();
+        let mut cfg = RuntimeConfig::default();
+        cfg.python_path = "python.exe".into();
+        assert!(cfg.validate(&dir).is_ok());
         let _ = fs::remove_dir_all(&dir);
     }
 }

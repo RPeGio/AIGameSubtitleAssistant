@@ -98,3 +98,21 @@ export interface OcrProgress {
 
 /// OCR 进度事件名（Rust 侧 `OCR_PROGRESS_EVENT` 需保持一致）
 export const OCR_PROGRESS_EVENT = "ocr-progress";
+
+export interface AsrSegment {
+  start: number;
+  end: number;
+  text: string;
+  /// Rust Option<String> 序列化为 "S01"/null
+  speaker: string | null;
+  /// MOSS 无置信度输出 → null
+  confidence: number | null;
+}
+
+export interface AsrProgress {
+  progress: number;
+  message: string;
+}
+
+/// ASR 进度事件名（Rust 侧 `ASR_PROGRESS_EVENT` 需保持一致）
+export const ASR_PROGRESS_EVENT = "asr-progress";
