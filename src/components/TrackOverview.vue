@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useTimelineStore, CLIP_COLORS } from "../stores/timeline";
 import { useProjectStore } from "../stores/project";
 import type { TimelineEvent } from "../types";
@@ -141,6 +141,18 @@ function commitRename() {
 function cancelRename() {
   renamingTrackId.value = null;
 }
+
+// 轨道名编辑时点击输入框外任意处即提交：
+// 时间轴 clip 的 mousedown preventDefault/stopPropagation 会挡住 blur 与冒泡，
+// 捕获阶段注册先于其执行（与时间轴标签列一致的兜底）
+function onWindowMouseDown(e: MouseEvent) {
+  if (!renamingTrackId.value) return;
+  if ((e.target as HTMLElement).closest(".ov-name-input")) return;
+  commitRename();
+}
+
+onMounted(() => window.addEventListener("mousedown", onWindowMouseDown, true));
+onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, true));
 </script>
 
 <template>

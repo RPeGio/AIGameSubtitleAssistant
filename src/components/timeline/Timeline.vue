@@ -128,7 +128,8 @@ function cancelRename() {
 }
 
 // 编辑轨道名时点击输入框外任意处即提交：
-// WebView 点击不可聚焦元素可能不移焦，blur 兜底不可靠
+// WebView 点击不可聚焦元素可能不移焦，blur 兜底不可靠；
+// 捕获阶段注册，先于 clip 拖动 mousedown 的 stopPropagation 执行
 function onWindowMouseDown(e: MouseEvent) {
   if (!renameTrackId.value) return;
   if ((e.target as HTMLElement).closest(".tl-name-input")) return;
@@ -220,13 +221,13 @@ onMounted(() => {
     viewportObserver.observe(viewportRef.value);
   }
   rootRef.value?.addEventListener("wheel", onWheelRoot, { passive: false });
-  window.addEventListener("mousedown", onWindowMouseDown);
+  window.addEventListener("mousedown", onWindowMouseDown, true);
 });
 
 onUnmounted(() => {
   viewportObserver?.disconnect();
   rootRef.value?.removeEventListener("wheel", onWheelRoot);
-  window.removeEventListener("mousedown", onWindowMouseDown);
+  window.removeEventListener("mousedown", onWindowMouseDown, true);
   window.removeEventListener("mousemove", onWindowMouseMove);
   window.removeEventListener("mouseup", onWindowMouseUp);
 });

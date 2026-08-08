@@ -31,18 +31,34 @@ const drag = ref<{
   origStart: number;
   origEnd: number;
   moved: boolean;
+  /// 拖动中内容区屏幕矩形：鼠标越出可视区边缘时自动滚动
+  bodyRect: DOMRect | null;
 } | null>(null);
 let suppressClick = false;
 
-// 相邻约束：同轨按 start 排序后，前一个事件的 end / 后一个事件的 start
+// 相邻约束：只考虑与当前事件完全不重叠的最近前驱/后继
+// （合并轨道可能存在同时段重叠事件，重叠邻居不参与 clamp）；
+// duration 未知（≤0，视频元数据未加载）时不限制右界
 function bounds() {
   const sorted = [...props.siblings].sort((a, b) => a.start - b.start);
-  const idx = sorted.findIndex((e) => e.id === props.event.id);
-  const prev = idx > 0 ? sorted[idx - 1] : null;
-  const next = idx >= 0 && idx < sorted.length - 1 ? sorted[idx + 1] : null;
+  const self = props.event;
+  let prev: TimelineEvent | null = null;
+  let next: TimelineEvent | null = null;
+  for (const e of sorted) {
+    if (e.id === self.id) continue;
+    if (e.end <= self.start) {
+      if (!prev || e.end > prev.end) prev = e;
+    } else if (e.start >= self.end) {
+      if (!next || e.start < next.start) next = e;
+    }
+  }
   return {
     minStart: prev ? prev.end : 0,
-    maxEnd: next ? next.start : timeline.duration,
+    maxEnd: next
+      ? next.start
+      : timeline.duration > 0
+        ? timeline.duration
+        : Number.MAX_SAFE_INTEGER,
   };
 }
 
@@ -51,12 +67,14 @@ function onClipMouseDown(e: MouseEvent, mode: DragMode) {
   if (timeline.activeTool === "split") return;
   e.preventDefault();
   e.stopPropagation();
+  const body = (e.currentTarget as HTMLElement).closest(".tl-content") as HTMLElement | null;
   drag.value = {
     mode,
     startX: e.clientX,
     origStart: props.event.start,
     origEnd: props.event.end,
     moved: false,
+    bodyRect: body ? body.getBoundingClientRect() : null,
   };
   window.addEventListener("mousemove", onWindowMouseMove);
   window.addEventListener("mouseup", onWindowMouseUp);
@@ -65,9 +83,20 @@ function onClipMouseDown(e: MouseEvent, mode: DragMode) {
 function onWindowMouseMove(e: MouseEvent) {
   const d = drag.value;
   if (!d) return;
+  // 拖出可视区边缘自动滚动（补偿 scrollLeft 变化，保持鼠标与 clip 相对位置）
+  let scrollDelta = 0;
+  if (d.bodyRect) {
+    const before = timeline.scrollLeft;
+    if (e.clientX < d.bodyRect.left) {
+      timeline.pan((e.clientX - d.bodyRect.left) * 0.3);
+    } else if (e.clientX > d.bodyRect.right) {
+      timeline.pan((e.clientX - d.bodyRect.right) * 0.3);
+    }
+    scrollDelta = timeline.scrollLeft - before;
+  }
   const dx = e.clientX - d.startX;
   if (!d.moved && Math.abs(dx) > DRAG_THRESHOLD) d.moved = true;
-  const dt = dx / timeline.pixelsPerSecond;
+  const dt = (dx + scrollDelta) / timeline.pixelsPerSecond;
   const { minStart, maxEnd } = bounds();
   const dur0 = d.origEnd - d.origStart;
   let start = d.origStart;
