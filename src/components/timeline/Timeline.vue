@@ -126,6 +126,14 @@ function cancelRename() {
   renameTrackId.value = null;
 }
 
+// 编辑轨道名时点击输入框外任意处即提交：
+// WebView 点击不可聚焦元素可能不移焦，blur 兜底不可靠
+function onWindowMouseDown(e: MouseEvent) {
+  if (!renameTrackId.value) return;
+  if ((e.target as HTMLElement).closest(".tl-name-input")) return;
+  commitRename();
+}
+
 // ── 滚轮：普通滚轮水平平移时间轴；Shift+滚轮垂直滚动轨道区 ──
 
 function onWheelRoot(e: WheelEvent) {
@@ -163,11 +171,13 @@ onMounted(() => {
     viewportObserver.observe(viewportRef.value);
   }
   rootRef.value?.addEventListener("wheel", onWheelRoot, { passive: false });
+  window.addEventListener("mousedown", onWindowMouseDown);
 });
 
 onUnmounted(() => {
   viewportObserver?.disconnect();
   rootRef.value?.removeEventListener("wheel", onWheelRoot);
+  window.removeEventListener("mousedown", onWindowMouseDown);
   window.removeEventListener("mousemove", onWindowMouseMove);
   window.removeEventListener("mouseup", onWindowMouseUp);
 });
