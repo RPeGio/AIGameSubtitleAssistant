@@ -90,6 +90,13 @@ function onGlobalKeydown(e: KeyboardEvent) {
     return;
   }
 
+  // M：聚焦 clip 与同轨下一个事件合并（输入框内由 guard 排除）
+  if (e.code === "KeyM" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    const id = timeline.focusedClipId;
+    if (id) projectStore.mergeAdjacent(id);
+    return;
+  }
+
   if (e.code === "KeyS" && !e.metaKey && !e.altKey) {
     const id = timeline.focusedClipId;
     if (!id) return;

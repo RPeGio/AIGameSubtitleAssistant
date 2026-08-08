@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { NModal, NPopconfirm, NSelect, NButton } from "naive-ui";
 import { useTimelineStore, CLIP_COLORS } from "../../stores/timeline";
 import { useProjectStore } from "../../stores/project";
@@ -83,14 +83,46 @@ function onTrackAreaMouseDown(e: MouseEvent) {
     return;
   }
 
+  // 合并工具：点击空白取消当前第一选择
+  if (timeline.activeTool === "merge") {
+    mergeFirstId.value = null;
+    timeline.focusClip(null);
+    timeline.focusTrack(target.dataset.trackId ?? null);
+    return;
+  }
+
   // 选择模式：只聚焦轨道，不改变播放头
   timeline.focusTrack(target.dataset.trackId ?? null);
   timeline.focusClip(null);
 }
 
-// 选择模式下点击 clip：聚焦 clip + 其所在轨道
+// 选择模式下点击 clip：聚焦 clip + 其所在轨道；
+// 合并工具下为点选合并：第一次点击记为第一选择，第二次点击相邻 clip 直接合并
+const mergeFirstId = ref<string | null>(null);
+
 function onClipClicked(track: Track, clipId: string) {
   if (timeline.activeTool === "split") return;
+  if (timeline.activeTool === "merge") {
+    if (!mergeFirstId.value) {
+      // 第一选择：聚焦高亮，等待第二次点击
+      mergeFirstId.value = clipId;
+      timeline.focusClip(clipId);
+      timeline.focusTrack(track.id);
+      return;
+    }
+    const first = mergeFirstId.value;
+    mergeFirstId.value = null;
+    const merged = projectStore.mergeTwo(first, clipId);
+    if (merged) {
+      timeline.focusClip(merged);
+      timeline.focusTrack(track.id);
+    } else {
+      // 不相邻/不同轨：失焦供用户重新选择
+      timeline.focusClip(null);
+      timeline.focusTrack(track.id);
+    }
+    return;
+  }
   timeline.focusClip(clipId);
   timeline.focusTrack(track.id);
 }
@@ -163,6 +195,14 @@ const mergeOptions = computed(() => {
     .filter((t) => t.id !== mergeSrc.value!.id && t.type === mergeSrc.value!.type)
     .map((t) => ({ label: t.name, value: t.id }));
 });
+
+// 切换工具时清空点选合并的第一选择
+watch(
+  () => timeline.activeTool,
+  () => {
+    mergeFirstId.value = null;
+  }
+);
 
 function onMergeOpen(track: Track) {
   mergeSrc.value = track;
@@ -310,6 +350,7 @@ onUnmounted(() => {
                 :width="timeline.clipPosition(event).width"
                 :focused="timeline.focusedClipId === event.id"
                 @click-clip="onClipClicked(track, event.id)"
+                @merged="mergeFirstId = null"
               />
             </template>
             <div v-else class="empty-hint">此轨道暂无事件</div>

@@ -17,7 +17,11 @@ const props = defineProps<{
   focused: boolean;
 }>();
 
-const emit = defineEmits<{ "click-clip": [] }>();
+const emit = defineEmits<{
+  "click-clip": [];
+  /// 拖动合并完成（供时间轴清空点选合并的第一选择）
+  merged: [];
+}>();
 
 // ── 拖动：整段移动 / 左右边界改起止 ──
 const MIN_DUR = 0.05; // 与 splitEvent 的 EPS 一致，避免零长度 sliver
@@ -38,8 +42,14 @@ let suppressClick = false;
 
 // 相邻约束：只考虑与当前事件完全不重叠的最近前驱/后继
 // （合并轨道可能存在同时段重叠事件，重叠邻居不参与 clamp）；
-// duration 未知（≤0，视频元数据未加载）时不限制右界
-function bounds() {
+// duration 未知（≤0，视频元数据未加载）时不限制右界。
+// prev/next 供合并工具拖动过界时作为合并对象
+function bounds(): {
+  minStart: number;
+  maxEnd: number;
+  prev: TimelineEvent | null;
+  next: TimelineEvent | null;
+} {
   const sorted = [...props.siblings].sort((a, b) => a.start - b.start);
   const self = props.event;
   let prev: TimelineEvent | null = null;
@@ -59,8 +69,13 @@ function bounds() {
       : timeline.duration > 0
         ? timeline.duration
         : Number.MAX_SAFE_INTEGER,
+    prev,
+    next,
   };
 }
+
+// 合并工具：resize 边缘拖过相邻边界该距离（px）即合并
+const MERGE_DRAG_PX = 30;
 
 function onClipMouseDown(e: MouseEvent, mode: DragMode) {
   // 分割工具下不拖动（点击即分割是既有行为，不拦截冒泡）
@@ -97,8 +112,16 @@ function onWindowMouseMove(e: MouseEvent) {
   const dx = e.clientX - d.startX;
   if (!d.moved && Math.abs(dx) > DRAG_THRESHOLD) d.moved = true;
   const dt = (dx + scrollDelta) / timeline.pixelsPerSecond;
-  const { minStart, maxEnd } = bounds();
+  const { minStart, maxEnd, prev, next } = bounds();
   const dur0 = d.origEnd - d.origStart;
+  // 合并工具：resize 边缘拖过相邻边界超过阈值即直接合并相邻 clip
+  if (timeline.activeTool === "merge" && d.moved) {
+    if (d.mode === "l" && prev && d.origStart + dt < prev.end - MERGE_DRAG_PX) {
+      if (tryMergeWith(prev)) return;
+    } else if (d.mode === "r" && next && d.origEnd + dt > next.start + MERGE_DRAG_PX) {
+      if (tryMergeWith(next)) return;
+    }
+  }
   let start = d.origStart;
   let end = d.origEnd;
   if (d.mode === "move") {
@@ -110,6 +133,16 @@ function onWindowMouseMove(e: MouseEvent) {
     end = Math.max(d.origStart + MIN_DUR, Math.min(d.origEnd + dt, maxEnd));
   }
   projectStore.updateEventTime(props.event.id, start, end);
+}
+
+// 合并工具拖动：合并当前 clip 与相邻 clip 并聚焦合并结果，结束拖动
+function tryMergeWith(other: TimelineEvent): boolean {
+  const merged = projectStore.mergeTwo(props.event.id, other.id);
+  if (!merged) return false;
+  timeline.focusClip(merged);
+  emit("merged");
+  onWindowMouseUp();
+  return true;
 }
 
 function onWindowMouseUp() {
