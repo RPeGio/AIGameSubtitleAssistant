@@ -100,33 +100,31 @@ function onTrackLabelClicked(track: Track) {
   timeline.focusTrack(track.id);
 }
 
-// ── 滚轮：普通滚轮垂直滚动轨道区；Shift+滚轮水平平移时间轴 ──
+// ── 滚轮：普通滚轮水平平移时间轴；Shift+滚轮垂直滚动轨道区 ──
 
 function onWheelRoot(e: WheelEvent) {
   const t = e.target as HTMLElement;
   // 滑条自己处理缩放；工具条/标签列不响应
   if (t.closest(".scrollbar-track")) return;
   if (t.closest(".tool-strip") || t.closest(".tl-label-col")) return;
-  // Shift+滚轮：水平平移时间轴
+  // Shift+滚轮：垂直滚动轨道区
   if (e.shiftKey) {
+    const tracksEl = rootRef.value?.querySelector<HTMLElement>(".tl-tracks") ?? null;
+    if (tracksEl && tracksEl.scrollHeight > tracksEl.clientHeight) {
+      // 轨道区内放行原生滚动（保留触控板惯性），轨道区外代为滚动
+      // 注意 Chrome 按住 Shift 会交换 deltaX/deltaY 轴，故两轴都计入
+      if (t.closest(".tl-tracks")) return;
+      e.preventDefault();
+      tracksEl.scrollTop += e.deltaY + e.deltaX;
+      return;
+    }
+    // 轨道不足无法滚动：吸收输入
     e.preventDefault();
-    timeline.pan(e.deltaY);
     return;
   }
-  // 普通滚轮：垂直滚动轨道区
-  const inTracks = t.closest(".tl-tracks") as HTMLElement | null;
-  const tracksEl = rootRef.value?.querySelector<HTMLElement>(".tl-tracks") ?? null;
-  if (inTracks) {
-    // 轨道区内：可滚动时放行原生垂直滚动（保留触控板惯性），否则吸收输入
-    if (tracksEl && tracksEl.scrollHeight > tracksEl.clientHeight) return;
-    e.preventDefault();
-    return;
-  }
-  // 轨道区外（标尺/空白）：代为垂直滚动轨道区，保持一致的垂直滚动语义
+  // 普通滚轮：水平平移时间轴（触控板横滑时 deltaX 非零）
   e.preventDefault();
-  if (tracksEl && tracksEl.scrollHeight > tracksEl.clientHeight) {
-    tracksEl.scrollTop += e.deltaY;
-  }
+  timeline.pan(e.deltaY + e.deltaX);
 }
 
 onMounted(() => {
