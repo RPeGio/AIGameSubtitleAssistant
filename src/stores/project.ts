@@ -59,14 +59,19 @@ export const useProjectStore = defineStore("project", () => {
   // 用该标记短路，避免"保存→触发监听→再保存"的死循环
   let applyingSaved = false;
 
-  /// 保存结果：ok=成功 | failed=写入失败 | skipped=无可保存（无项目/加载中）
+  /// 保存结果：ok=成功 | failed=写入失败 | skipped=无可保存（无项目/加载中/保存期间项目已切换）
   async function saveNow(): Promise<"ok" | "failed" | "skipped"> {
-    if (isLoading.value || !currentProject.value) return "skipped";
+    const project = currentProject.value;
+    if (isLoading.value || !project) return "skipped";
     saveState.value = "saving";
     try {
       const updated = await invoke<Project>("save_project", {
-        project: currentProject.value,
+        project,
       });
+      // await 期间项目可能被关闭/切换（async 竞态），此时丢弃本次合并结果
+      if (isLoading.value || !currentProject.value || currentProject.value !== project) {
+        return "skipped";
+      }
       applyingSaved = true;
       // 只合并 updated_at，不整体替换 —— 避免覆盖保存在响应式对象里的并发改动
       currentProject.value.updated_at = updated.updated_at;
