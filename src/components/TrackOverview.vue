@@ -56,8 +56,10 @@ function textOf(e: TimelineEvent): string {
   return e.type === "ocr_region" ? "" : e.text;
 }
 
-// 点击条目：与时间轴 clip 双向聚焦绑定（不动播放头）
+// 点击条目：与时间轴 clip 双向聚焦绑定（不动播放头）；
+// 点击其他条目时提交当前编辑（点击正在编辑的条目自身不提交，便于继续输入）
 function onEntryClicked(e: TimelineEvent) {
+  if (editingId.value !== e.id) commitEdit();
   timeline.focusClip(e.id);
   timeline.focusTrack(focusedTrack.value?.id ?? null);
 }
