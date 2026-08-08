@@ -68,10 +68,11 @@ const timeline = useTimelineStore();
         stroke-linecap="round"
         stroke-linejoin="round"
       >
-        <line x1="8" y1="7" x2="8" y2="17" />
-        <polyline points="4 7 8 7 4 17 8 17" />
-        <line x1="16" y1="7" x2="16" y2="17" />
-        <polyline points="12 7 16 7 12 17 16 17" />
+        <line x1="12" y1="3.5" x2="12" y2="20.5" />
+        <rect x="2" y="6" width="6" height="12" rx="1" />
+        <rect x="16" y="6" width="6" height="12" rx="1" />
+        <polyline points="3.5 10 7.5 12 3.5 14" />
+        <polyline points="20.5 10 16.5 12 20.5 14" />
       </svg>
     </button>
   </div>
