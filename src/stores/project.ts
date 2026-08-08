@@ -477,6 +477,20 @@ export const useProjectStore = defineStore("project", () => {
     );
   }
 
+  /// 重命名轨道：asr/manual 事件的 character 跟随轨道角色名（空名不改名）
+  function renameTrack(trackId: string, name: string) {
+    const track = currentProject.value?.tracks.find((t) => t.id === trackId);
+    if (!track) return;
+    const trimmed = name.trim();
+    if (trimmed.length === 0) return;
+    track.name = trimmed;
+    for (const e of track.events) {
+      if (e.type === "asr" || e.type === "manual") {
+        e.character = trimmed;
+      }
+    }
+  }
+
   function closeProject() {
     // 关闭前落盘（在置空前触发保存）
     clearTimeout(saveTimer);
@@ -500,6 +514,7 @@ export const useProjectStore = defineStore("project", () => {
     ensureDefaultTrack,
     findEvent,
     findTrack,
+    renameTrack,
     splitEvent,
     updateOcrRegion,
     updateEventText,

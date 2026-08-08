@@ -108,14 +108,58 @@ function cancelEdit() {
 // 元素从 DOM 移除不触发 blur，不提交会残留编辑态
 watch(
   () => timeline.focusedTrackId,
-  () => commitEdit()
+  () => {
+    commitEdit();
+    commitRename();
+  }
 );
+
+// ── 双击重命名轨道（角色标注）──
+// 记录发起重命名的轨道 id：切换轨道时仍提交到原轨道
+const renamingTrackId = ref<string | null>(null);
+const nameDraft = ref("");
+const nameInput = ref<HTMLInputElement | null>(null);
+
+function startRename() {
+  const track = focusedTrack.value;
+  if (!track || renamingTrackId.value) return;
+  renamingTrackId.value = track.id;
+  nameDraft.value = track.name;
+  nextTick(() => {
+    nameInput.value?.focus();
+    nameInput.value?.select();
+  });
+}
+
+// 空名视为取消（防误清）；提交后轨道内 asr/manual 事件 character 跟随
+function commitRename() {
+  const id = renamingTrackId.value;
+  renamingTrackId.value = null;
+  if (id) projectStore.renameTrack(id, nameDraft.value);
+}
+
+function cancelRename() {
+  renamingTrackId.value = null;
+}
 </script>
 
 <template>
   <div class="overview-panel">
     <div class="overview-header">
-      <span v-if="focusedTrack" class="ov-track-name">{{ focusedTrack.name }}</span>
+      <div v-if="focusedTrack" class="ov-track-name-wrap">
+        <input
+          v-if="renamingTrackId"
+          ref="nameInput"
+          v-model="nameDraft"
+          class="ov-name-input"
+          @keydown.enter="commitRename"
+          @keydown.esc="cancelRename"
+          @blur="commitRename"
+        />
+        <span v-else class="ov-track-name" title="双击重命名轨道" @dblclick="startRename">
+          {{ focusedTrack.name }}
+        </span>
+      </div>
       <span v-else class="ov-track-name">轨道总览</span>
       <span v-if="focusedTrack" class="ov-track-type">{{ focusedTrack.type }}</span>
     </div>
@@ -196,6 +240,12 @@ watch(
   border-bottom: 1px solid var(--color-border);
 }
 
+.ov-track-name-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
 .ov-track-name {
   font-size: 13px;
   font-weight: 600;
@@ -203,6 +253,22 @@ watch(
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.ov-name-input {
+  width: 100%;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--color-text-primary);
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  padding: 2px 6px;
+  outline: none;
+  box-sizing: border-box;
 }
 
 .ov-track-type {
