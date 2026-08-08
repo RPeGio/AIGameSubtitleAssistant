@@ -500,6 +500,18 @@ export const useProjectStore = defineStore("project", () => {
     }
   }
 
+  /// 删除事件（聚焦清理由 UI 层负责）
+  function removeEvent(id: string) {
+    if (!currentProject.value) return;
+    for (const track of currentProject.value.tracks) {
+      const idx = track.events.findIndex((e) => e.id === id);
+      if (idx >= 0) {
+        track.events.splice(idx, 1);
+        return;
+      }
+    }
+  }
+
   /// 删除轨道（聚焦清理由 UI 层负责）
   function removeTrack(id: string) {
     if (!currentProject.value) return;
@@ -550,6 +562,7 @@ export const useProjectStore = defineStore("project", () => {
     ensureDefaultTrack,
     findEvent,
     findTrack,
+    removeEvent,
     renameTrack,
     removeTrack,
     moveTrack,

@@ -81,6 +81,15 @@ function onGlobalKeydown(e: KeyboardEvent) {
     return;
   }
 
+  // Delete：删除聚焦 clip（输入框内由上面的 guard 排除）
+  if (e.key === "Delete") {
+    const id = timeline.focusedClipId;
+    if (!id) return;
+    projectStore.removeEvent(id);
+    timeline.focusClip(null);
+    return;
+  }
+
   if (e.code === "KeyS" && !e.metaKey && !e.altKey) {
     const id = timeline.focusedClipId;
     if (!id) return;
