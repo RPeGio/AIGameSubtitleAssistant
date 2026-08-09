@@ -206,24 +206,46 @@ const resolutionLabel = computed(() => {
 
         <!-- OCR 工具栏 -->
         <div class="ocr-toolbar">
-          <NButton
-            size="small"
-            quaternary
+          <button
+            class="history-btn"
             :disabled="!projectStore.canUndo"
             title="撤销（Ctrl+Z）"
             @click="projectStore.undo(); cleanupFocus()"
           >
-            ↶
-          </NButton>
-          <NButton
-            size="small"
-            quaternary
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0 .57-8.38" />
+            </svg>
+          </button>
+          <button
+            class="history-btn"
             :disabled="!projectStore.canRedo"
             title="重做（Ctrl+Shift+Z / Ctrl+Y）"
             @click="projectStore.redo(); cleanupFocus()"
           >
-            ↷
-          </NButton>
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38" />
+            </svg>
+          </button>
           <NButton
             size="small"
             type="primary"
@@ -431,6 +453,30 @@ const resolutionLabel = computed(() => {
   align-items: center;
   gap: 12px;
   padding: 0 24px 8px;
+}
+
+/* 撤销/重做：透明底色，可用时白色图标，不可用时浅灰 */
+.history-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #fff;
+  cursor: pointer;
+}
+
+.history-btn:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.history-btn:disabled {
+  color: var(--color-text-secondary);
+  cursor: default;
 }
 
 .ocr-progress {
