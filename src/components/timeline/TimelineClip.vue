@@ -9,6 +9,8 @@ const projectStore = useProjectStore();
 
 const props = defineProps<{
   event: TimelineEvent;
+  /// 所在轨道 id（垂直换轨时区分源轨）
+  trackId: string;
   /// 同轨全部事件（含自身）：拖动时计算相邻约束
   siblings: TimelineEvent[];
   color: string;
@@ -21,20 +23,28 @@ const emit = defineEmits<{
   "click-clip": [];
   /// 拖动合并完成（供时间轴清空点选合并的第一选择）
   merged: [];
+  /// 垂直拖动悬停目标轨道变化（null = 无有效目标）
+  "v-drag-target": [trackId: string | null];
 }>();
 
-// ── 拖动：整段移动 / 左右边界改起止 ──
+// ── 拖动：整段移动 / 左右边界改起止 / 垂直换轨 ──
 const MIN_DUR = 0.05; // 与 splitEvent 的 EPS 一致，避免零长度 sliver
 const DRAG_THRESHOLD = 3; // 位移超过该像素才视为拖动（区分点击）
+const V_DRAG_THRESHOLD = 12; // 垂直位移超过该像素才进入换轨模式（asr 事件专属）
 
 type DragMode = "move" | "l" | "r";
 
 const drag = ref<{
   mode: DragMode;
   startX: number;
+  startY: number;
   origStart: number;
   origEnd: number;
   moved: boolean;
+  /// 垂直换轨模式：鼠标已跨过垂直阈值，只换轨道不改时间
+  vMode: boolean;
+  /// 当前悬停的目标轨道 id（有效目标，非源轨）
+  vTarget: string | null;
   /// 拖动中内容区屏幕矩形：鼠标越出可视区边缘时自动滚动
   bodyRect: DOMRect | null;
 } | null>(null);
@@ -86,13 +96,28 @@ function onClipMouseDown(e: MouseEvent, mode: DragMode) {
   drag.value = {
     mode,
     startX: e.clientX,
+    startY: e.clientY,
     origStart: props.event.start,
     origEnd: props.event.end,
     moved: false,
+    vMode: false,
+    vTarget: null,
     bodyRect: body ? body.getBoundingClientRect() : null,
   };
   window.addEventListener("mousemove", onWindowMouseMove);
   window.addEventListener("mouseup", onWindowMouseUp);
+}
+
+// 垂直换轨：鼠标所在位置悬停的 asr 轨道（非源轨）为目标轨道
+function vDragTargetAt(clientX: number, clientY: number): string | null {
+  const el = document.elementFromPoint(clientX, clientY);
+  const body = el?.closest<HTMLElement>(".tl-track-body[data-track-id]");
+  if (!body) return null;
+  // 只允许 asr → asr 换轨；高亮与 drop 行为一致，避免误导
+  if (body.dataset.trackType !== "asr") return null;
+  const trackId = body.dataset.trackId ?? null;
+  if (!trackId || trackId === props.trackId) return null;
+  return trackId;
 }
 
 function onWindowMouseMove(e: MouseEvent) {
@@ -110,12 +135,30 @@ function onWindowMouseMove(e: MouseEvent) {
     scrollDelta = timeline.scrollLeft - before;
   }
   const dx = e.clientX - d.startX;
+  const dy = e.clientY - d.startY;
   if (!d.moved && Math.abs(dx) > DRAG_THRESHOLD) {
     d.moved = true;
     // 一次拖动 = 一个撤销步骤（首次超过阈值才记录，点击不产生空步骤；
     // 拖动中的 updateEventTime 不重复记录）
     projectStore.recordSnapshot();
   }
+
+  // 垂直换轨：asr 事件在 move 模式下垂直位移超过阈值 → 冻结时间，只换轨道
+  // 合并工具有自己的拖动语义（resize 过界合并），不进入换轨
+  if (d.mode === "move" && props.event.type === "asr" && timeline.activeTool !== "merge") {
+    if (!d.vMode && Math.abs(dy) > V_DRAG_THRESHOLD) {
+      d.vMode = true;
+    }
+    if (d.vMode) {
+      const target = vDragTargetAt(e.clientX, e.clientY);
+      if (target !== d.vTarget) {
+        d.vTarget = target;
+        emit("v-drag-target", target);
+      }
+      return;
+    }
+  }
+
   const dt = (dx + scrollDelta) / timeline.pixelsPerSecond;
   const { minStart, maxEnd, prev, next } = bounds();
   const dur0 = d.origEnd - d.origStart;
@@ -159,9 +202,20 @@ function onWindowMouseUp() {
   drag.value = null;
   window.removeEventListener("mousemove", onWindowMouseMove);
   window.removeEventListener("mouseup", onWindowMouseUp);
+  // 垂直换轨：释放时若有有效目标轨道则移动事件，并清除悬停高亮
+  if (d?.vMode) {
+    emit("v-drag-target", null);
+    if (d.vTarget) {
+      // 水平未移动（moved=false）时由 store 记录快照；已移动过则复用水平拖动的快照
+      projectStore.moveEventToTrack(props.event.id, d.vTarget, !d.moved);
+      timeline.focusClip(props.event.id);
+      timeline.focusTrack(d.vTarget);
+    }
+  }
   // 拖动结束后的 click（与 mouseup 同任务派发）不触发聚焦逻辑；
   // 若鼠标已离开 clip（无 click 派发）也复位，不吞掉下一次点击
-  if (d?.moved) {
+  // vMode 也需抑制：纯垂直拖动后 click 会落在目标轨道的其他 clip 上
+  if (d?.moved || d?.vMode) {
     suppressClick = true;
     window.setTimeout(() => (suppressClick = false), 0);
   }
@@ -191,7 +245,7 @@ function clipText(): string {
 <template>
   <div
     class="clip"
-    :class="{ focused, dragging: drag !== null, 'split-tool': timeline.activeTool === 'split' }"
+    :class="{ focused, dragging: drag !== null, 'v-dragging': drag?.vMode, 'split-tool': timeline.activeTool === 'split' }"
     :data-event-id="event.id"
     :style="{
       left: left + 'px',
@@ -244,6 +298,15 @@ function clipText(): string {
 
 .clip.dragging {
   cursor: grabbing;
+}
+
+/* 垂直换轨模式：半透明示意"等待放到目标轨道"，并隐藏文字避免遮挡 */
+.clip.v-dragging {
+  opacity: 0.55;
+}
+
+.clip.v-dragging .clip-label {
+  opacity: 0;
 }
 
 /* 左右边界手柄：拖动改起止时间 */
