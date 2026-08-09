@@ -210,6 +210,7 @@ const resolutionLabel = computed(() => {
             class="history-btn"
             :disabled="!projectStore.canUndo"
             title="撤销（Ctrl+Z）"
+            aria-label="撤销"
             @click="projectStore.undo(); cleanupFocus()"
           >
             <svg
@@ -230,6 +231,7 @@ const resolutionLabel = computed(() => {
             class="history-btn"
             :disabled="!projectStore.canRedo"
             title="重做（Ctrl+Shift+Z / Ctrl+Y）"
+            aria-label="重做"
             @click="projectStore.redo(); cleanupFocus()"
           >
             <svg
@@ -455,18 +457,18 @@ const resolutionLabel = computed(() => {
   padding: 0 24px 8px;
 }
 
-/* 撤销/重做：透明底色，可用时白色图标，不可用时浅灰 */
+/* 撤销/重做：透明底色，可用时亮色图标，不可用时浅灰 */
 .history-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: none;
   border-radius: 4px;
   background: transparent;
-  color: #fff;
+  color: var(--color-text-primary);
   cursor: pointer;
 }
 
