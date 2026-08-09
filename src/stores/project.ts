@@ -530,6 +530,30 @@ export const useProjectStore = defineStore("project", () => {
     );
   }
 
+  /// 把事件移动到目标轨道（asr 事件垂直拖拽换轨：人工修正说话人归属）。
+  /// 约束：事件与目标轨道均为 asr 类型；character 跟随目标轨道名（空名不改）。
+  /// record 为 false 时调用方负责已记录快照（如水平拖动已记录），避免一次拖动两个撤销步骤。
+  /// 返回是否成功。speaker 原始标签保留（不污染 ASR 数据）。
+  function moveEventToTrack(
+    eventId: string,
+    targetTrackId: string,
+    record: boolean = true
+  ): boolean {
+    if (!currentProject.value) return false;
+    const src = findEvent(eventId);
+    if (!src || src.event.type !== "asr") return false;
+    const dst = currentProject.value.tracks.find((t) => t.id === targetTrackId);
+    if (!dst || dst.type !== "asr" || dst.id === src.track.id) return false;
+
+    if (record) recordSnapshot();
+    src.track.events = src.track.events.filter((e) => e.id !== eventId);
+    dst.events = [...dst.events, src.event].sort((a, b) => a.start - b.start);
+    if (dst.name.trim().length > 0) {
+      src.event.character = dst.name.trim();
+    }
+    return true;
+  }
+
   /// 重命名轨道：asr/manual 事件的 character 跟随轨道角色名（空名不改名）
   function renameTrack(trackId: string, name: string) {
     const track = currentProject.value?.tracks.find((t) => t.id === trackId);
@@ -655,6 +679,7 @@ export const useProjectStore = defineStore("project", () => {
     findTrack,
     removeEvent,
     renameTrack,
+    moveEventToTrack,
     removeTrack,
     moveTrack,
     mergeTrack,

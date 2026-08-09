@@ -133,6 +133,13 @@ function onTrackLabelClicked(track: Track) {
   timeline.focusTrack(track.id);
 }
 
+// ── 垂直换轨：高亮鼠标悬停的目标轨道 ──
+const vDragTargetId = ref<string | null>(null);
+
+function onVDragTarget(trackId: string | null) {
+  vDragTargetId.value = trackId;
+}
+
 // ── 双击标签列重命名轨道（角色标注）──
 const renameTrackId = ref<string | null>(null);
 const renameDraft = ref("");
@@ -292,11 +299,12 @@ onUnmounted(() => {
 
       <!-- Track rows（垂直滚动区：轨道多时滚动，行高固定不被压缩） -->
       <div class="tl-tracks">
-        <div
-          v-for="track in tracks()"
-          :key="track.id"
-          class="tl-row track-row"
-        >
+          <div
+            v-for="track in tracks()"
+            :key="track.id"
+            class="tl-row track-row"
+            :class="{ 'v-drop-target': vDragTargetId === track.id }"
+          >
           <div
             class="tl-label-col"
             :class="{ 'track-focused': timeline.focusedTrackId === track.id }"
@@ -337,6 +345,7 @@ onUnmounted(() => {
           <div
             class="tl-content tl-track-body"
             :data-track-id="track.id"
+            :data-track-type="track.type"
             @mousedown="onTrackAreaMouseDown"
           >
             <template v-if="track.events.length > 0">
@@ -344,6 +353,7 @@ onUnmounted(() => {
                 v-for="event in track.events"
                 :key="event.id"
                 :event="event"
+                :track-id="track.id"
                 :siblings="track.events"
                 :color="CLIP_COLORS[event.type] ?? '#666'"
                 :left="timeline.clipPosition(event).left"
@@ -351,6 +361,7 @@ onUnmounted(() => {
                 :focused="timeline.focusedClipId === event.id"
                 @click-clip="onClipClicked(track, event.id)"
                 @merged="mergeFirstId = null"
+                @v-drag-target="onVDragTarget"
               />
             </template>
             <div v-else class="empty-hint">此轨道暂无事件</div>
@@ -443,6 +454,12 @@ onUnmounted(() => {
 
 .track-row {
   border-top: 1px solid var(--color-border);
+}
+
+/* 垂直换轨：悬停目标轨道高亮（accent 左侧指示条 + 背景提亮） */
+.track-row.v-drop-target {
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  box-shadow: inset 3px 0 0 var(--color-accent);
 }
 
 .timeline-footer {
