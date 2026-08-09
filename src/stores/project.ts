@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { onScopeDispose, ref, watch } from "vue";
+import { computed, onScopeDispose, ref, watch } from "vue";
 import type {
   Project,
   RecentProject,
@@ -139,11 +139,51 @@ export const useProjectStore = defineStore("project", () => {
     saveNow();
   });
 
+  // ── 撤销/重做：快照式操作记录 ─────────────────────────
+  // 每次操作前把当前 tracks 深拷贝入 undo 栈（一个操作 = 一个撤销步骤）；
+  // 高频写入（拖动改时/区域拖动/文字编辑）在操作开始点记录，写入中不重复记录
+  const undoStack = ref<Track[][]>([]);
+  const redoStack = ref<Track[][]>([]);
+  const MAX_HISTORY = 60;
+
+  function snapshot(): Track[] {
+    return JSON.parse(JSON.stringify(currentProject.value?.tracks ?? [])) as Track[];
+  }
+
+  /// 操作执行前调用：当前状态入 undo 栈，新操作打断重做链
+  function recordSnapshot() {
+    if (!currentProject.value) return;
+    undoStack.value.push(snapshot());
+    if (undoStack.value.length > MAX_HISTORY) undoStack.value.shift();
+    redoStack.value = [];
+  }
+
+  function undo() {
+    if (!currentProject.value || undoStack.value.length === 0) return;
+    redoStack.value.push(snapshot());
+    currentProject.value.tracks = undoStack.value.pop()!;
+  }
+
+  function redo() {
+    if (!currentProject.value || redoStack.value.length === 0) return;
+    undoStack.value.push(snapshot());
+    currentProject.value.tracks = redoStack.value.pop()!;
+  }
+
+  function clearHistory() {
+    undoStack.value = [];
+    redoStack.value = [];
+  }
+
+  const canUndo = computed(() => undoStack.value.length > 0);
+  const canRedo = computed(() => redoStack.value.length > 0);
+
   async function createProject(name: string, path: string) {
     isLoading.value = true;
     try {
       const project = await invoke<Project>("create_project", { name, path });
       currentProject.value = project;
+      clearHistory();
       await refreshRecentProjects();
       return project;
     } finally {
@@ -156,6 +196,7 @@ export const useProjectStore = defineStore("project", () => {
     try {
       const project = await invoke<Project>("open_project", { path });
       currentProject.value = project;
+      clearHistory();
       if (project.video) {
         await loadVideoMeta(project.video);
       }
@@ -298,6 +339,7 @@ export const useProjectStore = defineStore("project", () => {
     const EPS = 0.05;
     if (time <= event.start + EPS || time >= event.end - EPS) return null;
 
+    recordSnapshot();
     const left = { ...event, id: generateId(), end: time };
     const right = { ...event, id: generateId(), start: time };
     const idx = track.events.indexOf(event);
@@ -411,6 +453,7 @@ export const useProjectStore = defineStore("project", () => {
   /// 清空并填充 ocr_text 轨道的事件（重跑不叠加）
   function writeOcrSegments(segments: OcrSegment[]) {
     const track = ensureOcrTextTrack();
+    recordSnapshot();
     track.events = segments.map(ocrTextToEvent).sort((a, b) => a.start - b.start);
   }
 
@@ -466,6 +509,7 @@ export const useProjectStore = defineStore("project", () => {
   /// 空结果视为无可识别语音，不动已有轨道（保护历史数据）。
   function writeAsrSegments(segments: AsrSegment[]) {
     if (!currentProject.value || segments.length === 0) return;
+    recordSnapshot();
     currentProject.value.tracks
       .filter((t) => t.type === "asr")
       .forEach((t) => (t.events = []));
@@ -492,6 +536,7 @@ export const useProjectStore = defineStore("project", () => {
     if (!track) return;
     const trimmed = name.trim();
     if (trimmed.length === 0) return;
+    recordSnapshot();
     track.name = trimmed;
     for (const e of track.events) {
       if (e.type === "asr" || e.type === "manual") {
@@ -506,6 +551,7 @@ export const useProjectStore = defineStore("project", () => {
     for (const track of currentProject.value.tracks) {
       const idx = track.events.findIndex((e) => e.id === id);
       if (idx >= 0) {
+        recordSnapshot();
         track.events.splice(idx, 1);
         return;
       }
@@ -515,6 +561,8 @@ export const useProjectStore = defineStore("project", () => {
   /// 删除轨道（聚焦清理由 UI 层负责）
   function removeTrack(id: string) {
     if (!currentProject.value) return;
+    if (!currentProject.value.tracks.some((t) => t.id === id)) return;
+    recordSnapshot();
     currentProject.value.tracks = currentProject.value.tracks.filter((t) => t.id !== id);
   }
 
@@ -525,6 +573,7 @@ export const useProjectStore = defineStore("project", () => {
     const i = tracks.findIndex((t) => t.id === id);
     const j = dir === "up" ? i - 1 : i + 1;
     if (i < 0 || j < 0 || j >= tracks.length) return;
+    recordSnapshot();
     [tracks[i], tracks[j]] = [tracks[j], tracks[i]];
   }
 
@@ -535,6 +584,7 @@ export const useProjectStore = defineStore("project", () => {
     const src = tracks.find((t) => t.id === srcId);
     const dst = tracks.find((t) => t.id === dstId);
     if (!src || !dst || src.id === dst.id) return;
+    recordSnapshot();
     dst.events = [...dst.events, ...src.events].sort((a, b) => a.start - b.start);
     currentProject.value!.tracks = tracks.filter((t) => t.id !== srcId);
   }
@@ -557,6 +607,7 @@ export const useProjectStore = defineStore("project", () => {
     if (ia < 0 || ib < 0) return null;
     if (requireAdjacent && Math.abs(ia - ib) !== 1) return null;
 
+    recordSnapshot();
     const [first, second] = ea.start <= eb.start ? [ea, eb] : [eb, ea];
     first.end = Math.max(first.end, second.end);
     first.text = first.text + "\n" + second.text;
@@ -586,6 +637,7 @@ export const useProjectStore = defineStore("project", () => {
     currentVideoMeta.value = null;
     videoImportError.value = null;
     saveState.value = "saved";
+    clearHistory();
   }
 
   return {
@@ -612,6 +664,12 @@ export const useProjectStore = defineStore("project", () => {
     updateOcrRegion,
     updateEventText,
     updateEventTime,
+    recordSnapshot,
+    undo,
+    redo,
+    clearHistory,
+    canUndo,
+    canRedo,
     refreshRecentProjects,
     saveNow,
     ocrRunning,

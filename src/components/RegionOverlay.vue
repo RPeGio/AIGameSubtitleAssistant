@@ -143,6 +143,8 @@ function startDrag(e: MouseEvent, mode: "move" | "resize", handle = "") {
   if (!r) return;
   e.preventDefault();
   e.stopPropagation();
+  // 一次拖动 = 一个撤销步骤（拖动中的 updateOcrRegion 不重复记录）
+  projectStore.recordSnapshot();
   drag = {
     mode,
     handle,

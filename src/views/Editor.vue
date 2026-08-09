@@ -70,10 +70,29 @@ watch(
   }
 );
 
-// 快捷键：Ctrl+S 立即保存；S 分割当前聚焦 clip
+// 快捷键：Ctrl+S 立即保存；S 分割；Delete 删除；M 合并；
+// Ctrl+Z 撤销；Ctrl+Shift+Z / Ctrl+Y 重做
 function onGlobalKeydown(e: KeyboardEvent) {
   const t = e.target as HTMLElement;
   if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
+
+  // 撤销/重做（含聚焦悬空清理）
+  if (e.code === "KeyZ" && e.ctrlKey) {
+    e.preventDefault();
+    if (e.shiftKey) {
+      projectStore.redo();
+    } else {
+      projectStore.undo();
+    }
+    cleanupFocus();
+    return;
+  }
+  if (e.code === "KeyY" && e.ctrlKey) {
+    e.preventDefault();
+    projectStore.redo();
+    cleanupFocus();
+    return;
+  }
 
   if (e.code === "KeyS" && e.ctrlKey) {
     e.preventDefault(); // 挡住浏览器默认保存对话框
@@ -106,6 +125,16 @@ function onGlobalKeydown(e: KeyboardEvent) {
       const found = projectStore.findEvent(rightId);
       if (found) timeline.focusTrack(found.track.id);
     }
+  }
+}
+
+// 撤销/重做后聚焦可能悬空（clip/轨道已被快照恢复移除），清理之
+function cleanupFocus() {
+  if (timeline.focusedClipId && !projectStore.findEvent(timeline.focusedClipId)) {
+    timeline.focusClip(null);
+  }
+  if (timeline.focusedTrackId && !projectStore.findTrack(timeline.focusedTrackId)) {
+    timeline.focusTrack(null);
   }
 }
 
@@ -177,6 +206,48 @@ const resolutionLabel = computed(() => {
 
         <!-- OCR 工具栏 -->
         <div class="ocr-toolbar">
+          <button
+            class="history-btn"
+            :disabled="!projectStore.canUndo"
+            title="撤销（Ctrl+Z）"
+            aria-label="撤销"
+            @click="projectStore.undo(); cleanupFocus()"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0 .57-8.38" />
+            </svg>
+          </button>
+          <button
+            class="history-btn"
+            :disabled="!projectStore.canRedo"
+            title="重做（Ctrl+Shift+Z / Ctrl+Y）"
+            aria-label="重做"
+            @click="projectStore.redo(); cleanupFocus()"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38" />
+            </svg>
+          </button>
           <NButton
             size="small"
             type="primary"
@@ -384,6 +455,30 @@ const resolutionLabel = computed(() => {
   align-items: center;
   gap: 12px;
   padding: 0 24px 8px;
+}
+
+/* 撤销/重做：透明底色，可用时亮色图标，不可用时浅灰 */
+.history-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.history-btn:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.history-btn:disabled {
+  color: var(--color-text-secondary);
+  cursor: default;
 }
 
 .ocr-progress {
