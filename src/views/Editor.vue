@@ -70,10 +70,29 @@ watch(
   }
 );
 
-// 快捷键：Ctrl+S 立即保存；S 分割当前聚焦 clip
+// 快捷键：Ctrl+S 立即保存；S 分割；Delete 删除；M 合并；
+// Ctrl+Z 撤销；Ctrl+Shift+Z / Ctrl+Y 重做
 function onGlobalKeydown(e: KeyboardEvent) {
   const t = e.target as HTMLElement;
   if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
+
+  // 撤销/重做（含聚焦悬空清理）
+  if (e.code === "KeyZ" && e.ctrlKey) {
+    e.preventDefault();
+    if (e.shiftKey) {
+      projectStore.redo();
+    } else {
+      projectStore.undo();
+    }
+    cleanupFocus();
+    return;
+  }
+  if (e.code === "KeyY" && e.ctrlKey) {
+    e.preventDefault();
+    projectStore.redo();
+    cleanupFocus();
+    return;
+  }
 
   if (e.code === "KeyS" && e.ctrlKey) {
     e.preventDefault(); // 挡住浏览器默认保存对话框
@@ -106,6 +125,16 @@ function onGlobalKeydown(e: KeyboardEvent) {
       const found = projectStore.findEvent(rightId);
       if (found) timeline.focusTrack(found.track.id);
     }
+  }
+}
+
+// 撤销/重做后聚焦可能悬空（clip/轨道已被快照恢复移除），清理之
+function cleanupFocus() {
+  if (timeline.focusedClipId && !projectStore.findEvent(timeline.focusedClipId)) {
+    timeline.focusClip(null);
+  }
+  if (timeline.focusedTrackId && !projectStore.findTrack(timeline.focusedTrackId)) {
+    timeline.focusTrack(null);
   }
 }
 
@@ -177,6 +206,24 @@ const resolutionLabel = computed(() => {
 
         <!-- OCR 工具栏 -->
         <div class="ocr-toolbar">
+          <NButton
+            size="small"
+            quaternary
+            :disabled="!projectStore.canUndo"
+            title="撤销（Ctrl+Z）"
+            @click="projectStore.undo(); cleanupFocus()"
+          >
+            ↶
+          </NButton>
+          <NButton
+            size="small"
+            quaternary
+            :disabled="!projectStore.canRedo"
+            title="重做（Ctrl+Shift+Z / Ctrl+Y）"
+            @click="projectStore.redo(); cleanupFocus()"
+          >
+            ↷
+          </NButton>
           <NButton
             size="small"
             type="primary"

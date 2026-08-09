@@ -110,7 +110,12 @@ function onWindowMouseMove(e: MouseEvent) {
     scrollDelta = timeline.scrollLeft - before;
   }
   const dx = e.clientX - d.startX;
-  if (!d.moved && Math.abs(dx) > DRAG_THRESHOLD) d.moved = true;
+  if (!d.moved && Math.abs(dx) > DRAG_THRESHOLD) {
+    d.moved = true;
+    // 一次拖动 = 一个撤销步骤（首次超过阈值才记录，点击不产生空步骤；
+    // 拖动中的 updateEventTime 不重复记录）
+    projectStore.recordSnapshot();
+  }
   const dt = (dx + scrollDelta) / timeline.pixelsPerSecond;
   const { minStart, maxEnd, prev, next } = bounds();
   const dur0 = d.origEnd - d.origStart;

@@ -75,10 +75,14 @@ const editRows = computed(() => {
   return Math.min(10, Math.max(2, lines));
 });
 
+// 进入编辑时记录原文本：提交时文本有变化才记一个撤销步骤
+let editOriginal = "";
+
 function startEdit(e: TimelineEvent) {
   if (editingId.value === e.id) return;
   editingId.value = e.id;
   editText.value = textOf(e);
+  editOriginal = editText.value;
   // 播放头跳到该 clip 起始，并滚动时间轴使其可见（便于在时间轴上定位）
   timeline.jumpTo(e.start);
   nextTick(() => {
@@ -96,7 +100,13 @@ function onEditKeydown(e: KeyboardEvent) {
 }
 
 function commitEdit() {
-  if (editingId.value) projectStore.updateEventText(editingId.value, editText.value);
+  if (editingId.value) {
+    if (editText.value !== editOriginal) {
+      // 文本有实际变化才记录（取消/Esc/无改动提交不产生空撤销步骤）
+      projectStore.recordSnapshot();
+    }
+    projectStore.updateEventText(editingId.value, editText.value);
+  }
   editingId.value = null;
 }
 
