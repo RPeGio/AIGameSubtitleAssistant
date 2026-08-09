@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { onScopeDispose, ref, watch } from "vue";
+import { computed, onScopeDispose, ref, watch } from "vue";
 import type {
   Project,
   RecentProject,
@@ -139,11 +139,51 @@ export const useProjectStore = defineStore("project", () => {
     saveNow();
   });
 
+  // ── 撤销/重做：快照式操作记录 ─────────────────────────
+  // 每次操作前把当前 tracks 深拷贝入 undo 栈（一个操作 = 一个撤销步骤）；
+  // 高频写入（拖动改时/区域拖动/文字编辑）在操作开始点记录，写入中不重复记录
+  const undoStack = ref<Track[][]>([]);
+  const redoStack = ref<Track[][]>([]);
+  const MAX_HISTORY = 60;
+
+  function snapshot(): Track[] {
+    return JSON.parse(JSON.stringify(currentProject.value?.tracks ?? [])) as Track[];
+  }
+
+  /// 操作执行前调用：当前状态入 undo 栈，新操作打断重做链
+  function recordSnapshot() {
+    if (!currentProject.value) return;
+    undoStack.value.push(snapshot());
+    if (undoStack.value.length > MAX_HISTORY) undoStack.value.shift();
+    redoStack.value = [];
+  }
+
+  function undo() {
+    if (!currentProject.value || undoStack.value.length === 0) return;
+    redoStack.value.push(snapshot());
+    currentProject.value.tracks = undoStack.value.pop()!;
+  }
+
+  function redo() {
+    if (!currentProject.value || redoStack.value.length === 0) return;
+    undoStack.value.push(snapshot());
+    currentProject.value.tracks = redoStack.value.pop()!;
+  }
+
+  function clearHistory() {
+    undoStack.value = [];
+    redoStack.value = [];
+  }
+
+  const canUndo = computed(() => undoStack.value.length > 0);
+  const canRedo = computed(() => redoStack.value.length > 0);
+
   async function createProject(name: string, path: string) {
     isLoading.value = true;
     try {
       const project = await invoke<Project>("create_project", { name, path });
       currentProject.value = project;
+      clearHistory();
       await refreshRecentProjects();
       return project;
     } finally {
@@ -156,6 +196,7 @@ export const useProjectStore = defineStore("project", () => {
     try {
       const project = await invoke<Project>("open_project", { path });
       currentProject.value = project;
+      clearHistory();
       if (project.video) {
         await loadVideoMeta(project.video);
       }
@@ -298,6 +339,7 @@ export const useProjectStore = defineStore("project", () => {
     const EPS = 0.05;
     if (time <= event.start + EPS || time >= event.end - EPS) return null;
 
+    recordSnapshot();
     const left = { ...event, id: generateId(), end: time };
     const right = { ...event, id: generateId(), start: time };
     const idx = track.events.indexOf(event);
@@ -327,6 +369,15 @@ export const useProjectStore = defineStore("project", () => {
     if (found.event.type !== "ocr_region") {
       found.event.text = text;
     }
+  }
+
+  /// 更新事件起止时间（就地修改，时间轴即时刷新），并按 start 重排序
+  function updateEventTime(id: string, start: number, end: number) {
+    const found = findEvent(id);
+    if (!found || end <= start) return;
+    found.event.start = start;
+    found.event.end = end;
+    found.track.events = [...found.track.events].sort((a, b) => a.start - b.start);
   }
 
   /// 运行 OCR 流水线：收集所有 ocr_region 轨道的 clip → run_ocr → 写入 ocr_text 轨道
@@ -402,6 +453,7 @@ export const useProjectStore = defineStore("project", () => {
   /// 清空并填充 ocr_text 轨道的事件（重跑不叠加）
   function writeOcrSegments(segments: OcrSegment[]) {
     const track = ensureOcrTextTrack();
+    recordSnapshot();
     track.events = segments.map(ocrTextToEvent).sort((a, b) => a.start - b.start);
   }
 
@@ -457,6 +509,7 @@ export const useProjectStore = defineStore("project", () => {
   /// 空结果视为无可识别语音，不动已有轨道（保护历史数据）。
   function writeAsrSegments(segments: AsrSegment[]) {
     if (!currentProject.value || segments.length === 0) return;
+    recordSnapshot();
     currentProject.value.tracks
       .filter((t) => t.type === "asr")
       .forEach((t) => (t.events = []));
@@ -477,6 +530,105 @@ export const useProjectStore = defineStore("project", () => {
     );
   }
 
+  /// 重命名轨道：asr/manual 事件的 character 跟随轨道角色名（空名不改名）
+  function renameTrack(trackId: string, name: string) {
+    const track = currentProject.value?.tracks.find((t) => t.id === trackId);
+    if (!track) return;
+    const trimmed = name.trim();
+    if (trimmed.length === 0) return;
+    recordSnapshot();
+    track.name = trimmed;
+    for (const e of track.events) {
+      if (e.type === "asr" || e.type === "manual") {
+        e.character = trimmed;
+      }
+    }
+  }
+
+  /// 删除事件（聚焦清理由 UI 层负责）
+  function removeEvent(id: string) {
+    if (!currentProject.value) return;
+    for (const track of currentProject.value.tracks) {
+      const idx = track.events.findIndex((e) => e.id === id);
+      if (idx >= 0) {
+        recordSnapshot();
+        track.events.splice(idx, 1);
+        return;
+      }
+    }
+  }
+
+  /// 删除轨道（聚焦清理由 UI 层负责）
+  function removeTrack(id: string) {
+    if (!currentProject.value) return;
+    if (!currentProject.value.tracks.some((t) => t.id === id)) return;
+    recordSnapshot();
+    currentProject.value.tracks = currentProject.value.tracks.filter((t) => t.id !== id);
+  }
+
+  /// 上移/下移轨道（调整显示顺序）
+  function moveTrack(id: string, dir: "up" | "down") {
+    const tracks = currentProject.value?.tracks;
+    if (!tracks) return;
+    const i = tracks.findIndex((t) => t.id === id);
+    const j = dir === "up" ? i - 1 : i + 1;
+    if (i < 0 || j < 0 || j >= tracks.length) return;
+    recordSnapshot();
+    [tracks[i], tracks[j]] = [tracks[j], tracks[i]];
+  }
+
+  /// 源轨事件并入目标轨（按 start 排序），删除源轨；character 为事件级字段，随事件保留
+  function mergeTrack(srcId: string, dstId: string) {
+    const tracks = currentProject.value?.tracks;
+    if (!tracks) return;
+    const src = tracks.find((t) => t.id === srcId);
+    const dst = tracks.find((t) => t.id === dstId);
+    if (!src || !dst || src.id === dst.id) return;
+    recordSnapshot();
+    dst.events = [...dst.events, ...src.events].sort((a, b) => a.start - b.start);
+    currentProject.value!.tracks = tracks.filter((t) => t.id !== srcId);
+  }
+
+  /// 合并两个同轨事件：时间取并集（end 取较晚）、文本按时间顺序拼接、
+  /// 保留时间更早事件的 id 与属性，删除另一事件；返回保留的 id。
+  /// 条件：同轨、均非 ocr_region；requireAdjacent 时还需按 start 排序相邻。
+  /// 不满足返回 null
+  function mergeTwo(idA: string, idB: string, requireAdjacent = true): string | null {
+    const a = findEvent(idA);
+    const b = findEvent(idB);
+    if (!a || !b || a.track.id !== b.track.id) return null;
+    const { track } = a;
+    const ea = a.event;
+    const eb = b.event;
+    if (ea.type === "ocr_region" || eb.type === "ocr_region") return null;
+    const sorted = [...track.events].sort((x, y) => x.start - y.start);
+    const ia = sorted.findIndex((e) => e.id === ea.id);
+    const ib = sorted.findIndex((e) => e.id === eb.id);
+    if (ia < 0 || ib < 0) return null;
+    if (requireAdjacent && Math.abs(ia - ib) !== 1) return null;
+
+    recordSnapshot();
+    const [first, second] = ea.start <= eb.start ? [ea, eb] : [eb, ea];
+    first.end = Math.max(first.end, second.end);
+    first.text = first.text + "\n" + second.text;
+    track.events = track.events.filter((e) => e.id !== second.id);
+    track.events.sort((x, y) => x.start - y.start);
+    return first.id;
+  }
+
+  /// 合并事件与其同轨排序后紧随其后的下一个事件（M 键），
+  /// 语义与 mergeTwo 一致（保留时间更早的事件）
+  function mergeAdjacent(id: string): string | null {
+    const found = findEvent(id);
+    if (!found) return null;
+    const { track, event } = found;
+    if (event.type === "ocr_region") return null;
+    const sorted = [...track.events].sort((a, b) => a.start - b.start);
+    const idx = sorted.findIndex((e) => e.id === id);
+    if (idx < 0 || idx >= sorted.length - 1) return null;
+    return mergeTwo(id, sorted[idx + 1].id);
+  }
+
   function closeProject() {
     // 关闭前落盘（在置空前触发保存）
     clearTimeout(saveTimer);
@@ -485,6 +637,7 @@ export const useProjectStore = defineStore("project", () => {
     currentVideoMeta.value = null;
     videoImportError.value = null;
     saveState.value = "saved";
+    clearHistory();
   }
 
   return {
@@ -500,9 +653,23 @@ export const useProjectStore = defineStore("project", () => {
     ensureDefaultTrack,
     findEvent,
     findTrack,
+    removeEvent,
+    renameTrack,
+    removeTrack,
+    moveTrack,
+    mergeTrack,
+    mergeTwo,
+    mergeAdjacent,
     splitEvent,
     updateOcrRegion,
     updateEventText,
+    updateEventTime,
+    recordSnapshot,
+    undo,
+    redo,
+    clearHistory,
+    canUndo,
+    canRedo,
     refreshRecentProjects,
     saveNow,
     ocrRunning,

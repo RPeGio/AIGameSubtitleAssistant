@@ -51,6 +51,30 @@ const timeline = useTimelineStore();
         <line x1="8.12" y1="8.12" x2="12" y2="12"></line>
       </svg>
     </button>
+    <button
+      class="tool-btn"
+      :class="{ active: timeline.activeTool === 'merge' }"
+      :title="'合并工具：点选两个相邻 clip 合并；或按住 clip 边缘拖过相邻边界合并'"
+      @click="timeline.setTool('merge')"
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="20"
+        height="20"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <line x1="12" y1="3.5" x2="12" y2="20.5" />
+        <rect x="2" y="6" width="6" height="12" rx="1" />
+        <rect x="16" y="6" width="6" height="12" rx="1" />
+        <polyline points="3.5 10 7.5 12 3.5 14" />
+        <polyline points="20.5 10 16.5 12 20.5 14" />
+      </svg>
+    </button>
   </div>
 </template>
 

@@ -17,7 +17,7 @@ export const useTimelineStore = defineStore("timeline", () => {
   const isSeeking = ref(false);
   const focusedClipId = ref<string | null>(null);
   const focusedTrackId = ref<string | null>(null);
-  const activeTool = ref<"select" | "split">("select");
+  const activeTool = ref<"select" | "split" | "merge">("select");
   const viewportWidth = ref(0);
 
   const totalWidth = computed(() => duration.value * pixelsPerSecond.value);
@@ -87,8 +87,8 @@ export const useTimelineStore = defineStore("timeline", () => {
     focusedTrackId.value = id;
   }
 
-  /// 切换时间轴工具：select 选择/擦动 | split 分割
-  function setTool(tool: "select" | "split") {
+  /// 切换时间轴工具：select 选择/擦动 | split 分割 | merge 合并
+  function setTool(tool: "select" | "split" | "merge") {
     activeTool.value = tool;
   }
 

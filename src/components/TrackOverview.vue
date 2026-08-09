@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useTimelineStore, CLIP_COLORS } from "../stores/timeline";
 import { useProjectStore } from "../stores/project";
 import type { TimelineEvent } from "../types";
@@ -75,10 +75,14 @@ const editRows = computed(() => {
   return Math.min(10, Math.max(2, lines));
 });
 
+// 进入编辑时记录原文本：提交时文本有变化才记一个撤销步骤
+let editOriginal = "";
+
 function startEdit(e: TimelineEvent) {
   if (editingId.value === e.id) return;
   editingId.value = e.id;
   editText.value = textOf(e);
+  editOriginal = editText.value;
   // 播放头跳到该 clip 起始，并滚动时间轴使其可见（便于在时间轴上定位）
   timeline.jumpTo(e.start);
   nextTick(() => {
@@ -96,7 +100,13 @@ function onEditKeydown(e: KeyboardEvent) {
 }
 
 function commitEdit() {
-  if (editingId.value) projectStore.updateEventText(editingId.value, editText.value);
+  if (editingId.value) {
+    if (editText.value !== editOriginal) {
+      // 文本有实际变化才记录（取消/Esc/无改动提交不产生空撤销步骤）
+      projectStore.recordSnapshot();
+    }
+    projectStore.updateEventText(editingId.value, editText.value);
+  }
   editingId.value = null;
 }
 
@@ -108,14 +118,70 @@ function cancelEdit() {
 // 元素从 DOM 移除不触发 blur，不提交会残留编辑态
 watch(
   () => timeline.focusedTrackId,
-  () => commitEdit()
+  () => {
+    commitEdit();
+    commitRename();
+  }
 );
+
+// ── 双击重命名轨道（角色标注）──
+// 记录发起重命名的轨道 id：切换轨道时仍提交到原轨道
+const renamingTrackId = ref<string | null>(null);
+const nameDraft = ref("");
+const nameInput = ref<HTMLInputElement | null>(null);
+
+function startRename() {
+  const track = focusedTrack.value;
+  if (!track || renamingTrackId.value) return;
+  renamingTrackId.value = track.id;
+  nameDraft.value = track.name;
+  nextTick(() => {
+    nameInput.value?.focus();
+    nameInput.value?.select();
+  });
+}
+
+// 空名视为取消（防误清）；提交后轨道内 asr/manual 事件 character 跟随
+function commitRename() {
+  const id = renamingTrackId.value;
+  renamingTrackId.value = null;
+  if (id) projectStore.renameTrack(id, nameDraft.value);
+}
+
+function cancelRename() {
+  renamingTrackId.value = null;
+}
+
+// 轨道名编辑时点击输入框外任意处即提交：
+// 时间轴 clip 的 mousedown preventDefault/stopPropagation 会挡住 blur 与冒泡，
+// 捕获阶段注册先于其执行（与时间轴标签列一致的兜底）
+function onWindowMouseDown(e: MouseEvent) {
+  if (!renamingTrackId.value) return;
+  if ((e.target as HTMLElement).closest(".ov-name-input")) return;
+  commitRename();
+}
+
+onMounted(() => window.addEventListener("mousedown", onWindowMouseDown, true));
+onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, true));
 </script>
 
 <template>
   <div class="overview-panel">
     <div class="overview-header">
-      <span v-if="focusedTrack" class="ov-track-name">{{ focusedTrack.name }}</span>
+      <div v-if="focusedTrack" class="ov-track-name-wrap">
+        <input
+          v-if="renamingTrackId"
+          ref="nameInput"
+          v-model="nameDraft"
+          class="ov-name-input"
+          @keydown.enter="commitRename"
+          @keydown.esc="cancelRename"
+          @blur="commitRename"
+        />
+        <span v-else class="ov-track-name" title="双击重命名轨道" @dblclick="startRename">
+          {{ focusedTrack.name }}
+        </span>
+      </div>
       <span v-else class="ov-track-name">轨道总览</span>
       <span v-if="focusedTrack" class="ov-track-type">{{ focusedTrack.type }}</span>
     </div>
@@ -196,6 +262,12 @@ watch(
   border-bottom: 1px solid var(--color-border);
 }
 
+.ov-track-name-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
 .ov-track-name {
   font-size: 13px;
   font-weight: 600;
@@ -203,6 +275,22 @@ watch(
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.ov-name-input {
+  width: 100%;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--color-text-primary);
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  padding: 2px 6px;
+  outline: none;
+  box-sizing: border-box;
 }
 
 .ov-track-type {
