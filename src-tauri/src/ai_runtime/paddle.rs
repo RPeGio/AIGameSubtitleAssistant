@@ -286,6 +286,9 @@ mod tests {
             moss_binary: String::new(),
             moss_model: String::new(),
             moss_threads: 0,
+            llm_binary: String::new(),
+            llm_model: String::new(),
+            llm_threads: 0,
         };
         assert_eq!(
             runtime.join(&cfg.worker_script),
