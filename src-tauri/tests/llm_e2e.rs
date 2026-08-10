@@ -40,4 +40,11 @@ fn test_llm_end_to_end() {
 
     // 基础健全性：链路通、有回答（模型质量不在此测试范围）
     assert!(!answer.trim().is_empty(), "推理结果为空");
+    // 防 stdout 污染回归：回答不应混入 UI 残留（banner/性能统计/退出提示）
+    assert!(
+        !answer.contains("[ Prompt:"),
+        "回答被 UI 输出污染: {}",
+        answer
+    );
+    assert!(!answer.contains("Exiting"), "回答被 UI 输出污染: {}", answer);
 }

@@ -5,9 +5,10 @@
 
 use crate::ai_runtime::{resolve_path, LlmError, LlmProvider, RuntimeConfig};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// llama-cli Provider —— 每次 complete 启动一次性子进程
 pub struct LlamaProvider {
@@ -57,26 +58,47 @@ impl LlamaProvider {
 
     /// 探测：`-st -n 1` 最小推理（加载模型 + 生成 1 token）。
     /// 成功说明模型可加载且推理链路通；比仅验元数据更真实（能暴露 CUDA 初始化等问题）。
+    /// 60s 超时保护：模型加载/GPU 初始化卡住时不能拖死应用启动。
     fn probe(&self) -> Result<(), LlmError> {
-        let output = Command::new(&self.binary)
-            .arg("-m")
+        let mut cmd = Command::new(&self.binary);
+        cmd.arg("-m")
             .arg(&self.model)
             .arg("-p")
             .arg("hi")
             .arg("-st")
             .arg("-n")
             .arg("1")
-            .output()
-            .map_err(|e| LlmError::Worker(format!("无法启动 llama-cli: {}", e)))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(LlmError::Worker(format!(
-                "llama-cli 探测推理失败（{}）：{}",
-                output.status,
-                stderr.trim()
-            )));
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if self.threads > 0 {
+            cmd.arg("-t").arg(self.threads.to_string());
         }
-        Ok(())
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| LlmError::Worker(format!("无法启动 llama-cli: {}", e)))?;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) if status.success() => return Ok(()),
+                Ok(Some(status)) => {
+                    return Err(LlmError::Worker(format!(
+                        "llama-cli 探测推理失败（{}）",
+                        status
+                    )));
+                }
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(LlmError::Worker("llama-cli 探测超时（60s）".into()));
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Err(e) => {
+                    return Err(LlmError::Worker(format!("llama-cli 探测进程异常: {}", e)));
+                }
+            }
+        }
     }
 
     fn set_error(&self, msg: &str) {
@@ -101,7 +123,10 @@ impl LlamaProvider {
             // stdout 只留回答文本，prompt 不回显
             .arg("--no-display-prompt")
             .arg("--temp")
-            .arg("0.2");
+            .arg("0.2")
+            // 强制 ANSI 色块：见 parse_answer（b10333 把 UI 全输出到 stdout，靠色块定位回答）
+            .arg("--color")
+            .arg("on");
         if self.threads > 0 {
             cmd.arg("-t").arg(self.threads.to_string());
         }
@@ -116,7 +141,29 @@ impl LlamaProvider {
                 stderr.trim()
             )));
         }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        Ok(parse_answer(&String::from_utf8_lossy(&output.stdout)))
+    }
+}
+
+/// 从 llama-cli stdout 提取回答文本。
+///
+/// b10333 的 `-st` 模式把 banner、模型信息、提示符、性能统计全部输出到 stdout
+/// （stderr 反而为空），且无法用参数关闭。强制 `--color on` 后输出有稳定结构：
+/// prompt 回显夹在绿色块（`\x1b[32m` … `\x1b[0m`）内，回答为无色文本，
+/// 性能统计以品红块（`\x1b[35m`）开始：
+///   ... `\x1b[1m\x1b[32m` `> prompt...` `\x1b[0m` <回答> `\x1b[35m` [ Prompt: ... ] `\x1b[0m` Exiting...
+/// 故取第一个 `\x1b[0m` 之后、第一个 `\x1b[35m` 之前的内容。
+/// 色块缺失（版本/参数变化）时回退返回整段 trim，靠 e2e 断言防污染回归。
+fn parse_answer(stdout: &str) -> String {
+    let reset = "\x1b[0m";
+    let magenta = "\x1b[35m";
+    match stdout.find(reset) {
+        Some(start) => {
+            let tail = &stdout[start + reset.len()..];
+            let end = tail.find(magenta).unwrap_or(tail.len());
+            tail[..end].trim().to_string()
+        }
+        None => stdout.trim().to_string(),
     }
 }
 
@@ -154,6 +201,43 @@ impl LlmProvider for LlamaProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_answer_multiline_prompt() {
+        // b10333 实测输出结构：绿色块回显 prompt → \x1b[0m 回答 → \x1b[35m 性能统计
+        let stdout = format!(
+            "Loading model... \nbanner\n\x1b[1m\x1b[32m\n> line one\nline two\n2+2=?\n\x1b[0m2+2=4\n\x1b[35m\n[ Prompt: 2251.0 t/s | Generation: 305.8 t/s ]\n\x1b[0m\n\nExiting...\n"
+        );
+        assert_eq!(parse_answer(&stdout), "2+2=4");
+    }
+
+    #[test]
+    fn test_parse_answer_single_line_prompt() {
+        let stdout = format!(
+            "banner\n\x1b[1m\x1b[32m\n> 2+2=?\n\x1b[0m2+2 equals 4.\n\x1b[35m\n[ Prompt: 1 t/s ]\n\x1b[0m\nExiting...\n"
+        );
+        assert_eq!(parse_answer(&stdout), "2+2 equals 4.");
+    }
+
+    #[test]
+    fn test_parse_answer_multiline_response() {
+        // 回答多行：\x1b[0m 后的全部行直到品红块
+        let stdout = format!(
+            "\x1b[1m\x1b[32m\n> hi\n\x1b[0mline one\nline two\n\x1b[35m\n[ Prompt: 1 t/s ]\n\x1b[0m\n"
+        );
+        assert_eq!(parse_answer(&stdout), "line one\nline two");
+    }
+
+    #[test]
+    fn test_parse_answer_no_color_blocks_fallback() {
+        // 色块缺失（版本变化）→ 回退整段 trim
+        assert_eq!(parse_answer("just an answer\n"), "just an answer");
+    }
+
+    #[test]
+    fn test_parse_answer_empty() {
+        assert_eq!(parse_answer(""), "");
+    }
 
     #[test]
     fn test_spawn_missing_binary_errors() {
