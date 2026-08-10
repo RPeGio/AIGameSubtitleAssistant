@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useProjectStore } from "../stores/project";
 import { useTimelineStore } from "../stores/timeline";
-import type { OcrRunParams } from "../types";
+import type { OcrRunParams, LlmRuntimeStatus } from "../types";
 import AppSidebar from "../components/AppSidebar.vue";
 import VideoPlayer from "../components/VideoPlayer.vue";
 import Timeline from "../components/timeline/Timeline.vue";
@@ -15,6 +15,7 @@ import {
   NAlert,
   NCard,
   NModal,
+  NInput,
   NInputNumber,
   NProgress,
   NText,
@@ -49,6 +50,32 @@ async function startAsr() {
   try {
     await projectStore.runAsr();
     message.success("ASR 完成");
+  } catch (e) {
+    message.error(String(e));
+  }
+}
+
+// ── LLM 控制 ────────────────────────────────────────────
+const showLlmPanel = ref(false);
+const llmPrompt = ref("");
+const llmResult = ref("");
+const llmRuntimeStatus = ref<LlmRuntimeStatus | null>(null);
+
+/// 打开面板：重置上次结果并探测运行时状态
+async function openLlmPanel() {
+  showLlmPanel.value = true;
+  llmResult.value = "";
+  try {
+    llmRuntimeStatus.value = await projectStore.checkLlmRuntime();
+  } catch {
+    llmRuntimeStatus.value = null;
+  }
+}
+
+async function runLlm() {
+  llmResult.value = "";
+  try {
+    llmResult.value = await projectStore.runLlm(llmPrompt.value);
   } catch (e) {
     message.error(String(e));
   }
@@ -283,6 +310,10 @@ const resolutionLabel = computed(() => {
             />
             <span class="ocr-msg">{{ projectStore.asrMessage }}</span>
           </template>
+
+          <NButton size="small" type="primary" @click="openLlmPanel">
+            LLM
+          </NButton>
         </div>
 
         <div class="timeline-pane">
@@ -370,6 +401,51 @@ const resolutionLabel = computed(() => {
               <NButton size="small" @click="showOcrConfig = false">取消</NButton>
               <NButton size="small" type="primary" @click="startOcr">开始</NButton>
             </NSpace>
+          </NSpace>
+        </NCard>
+      </NModal>
+
+      <NModal v-model:show="showLlmPanel" title="LLM 测试台" :mask-closable="false">
+        <NCard title="LLM 测试台" style="width: 560px">
+          <NSpace vertical size="large">
+            <NAlert
+              v-if="llmRuntimeStatus && !llmRuntimeStatus.ready"
+              type="warning"
+              :show-icon="true"
+            >
+              {{ llmRuntimeStatus.message }}
+            </NAlert>
+
+            <NInput
+              v-model:value="llmPrompt"
+              type="textarea"
+              :rows="5"
+              placeholder="输入 prompt，例如：2+2=?"
+            />
+
+            <div class="llm-run-row">
+              <template v-if="projectStore.llmRunning">
+                <NProgress
+                  type="line"
+                  class="llm-progress"
+                  :percentage="Math.round(projectStore.llmProgress * 100)"
+                  :show-indicator="false"
+                />
+                <NText depth="3">{{ projectStore.llmMessage }}</NText>
+              </template>
+              <NButton
+                size="small"
+                type="primary"
+                :disabled="projectStore.llmRunning"
+                @click="runLlm"
+              >
+                {{ projectStore.llmRunning ? "推理中..." : "运行" }}
+              </NButton>
+            </div>
+
+            <NCard v-if="llmResult" title="结果" size="small">
+              <pre class="llm-result">{{ llmResult }}</pre>
+            </NCard>
           </NSpace>
         </NCard>
       </NModal>
@@ -492,6 +568,27 @@ const resolutionLabel = computed(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.llm-run-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.llm-progress {
+  flex: 1;
+  min-width: 200px;
+}
+
+.llm-result {
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-text-primary);
 }
 
 .cfg-field {

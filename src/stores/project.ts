@@ -11,8 +11,10 @@ import type {
   OcrProgress,
   AsrSegment,
   AsrProgress,
+  LlmProgress,
+  LlmRuntimeStatus,
 } from "../types";
-import { OCR_PROGRESS_EVENT, ASR_PROGRESS_EVENT } from "../types";
+import { OCR_PROGRESS_EVENT, ASR_PROGRESS_EVENT, LLM_PROGRESS_EVENT } from "../types";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
@@ -82,6 +84,21 @@ export const useProjectStore = defineStore("project", () => {
   asrUnlistenPromise.catch((e) => console.error("监听 ASR 进度事件失败:", e));
   onScopeDispose(() => {
     asrUnlistenPromise.then((fn) => fn()).catch(() => {});
+  });
+
+  // ── LLM 运行状态 ───────────────────────────────────────
+  const llmRunning = ref(false);
+  const llmProgress = ref(0);
+  const llmMessage = ref("");
+
+  // 监听进度事件；注册清理函数，store 被 dispose（HMR/重复实例）时退订，避免叠加泄漏
+  const llmUnlistenPromise = listen<LlmProgress>(LLM_PROGRESS_EVENT, (event) => {
+    llmProgress.value = event.payload.progress;
+    llmMessage.value = event.payload.message;
+  });
+  llmUnlistenPromise.catch((e) => console.error("监听 LLM 进度事件失败:", e));
+  onScopeDispose(() => {
+    llmUnlistenPromise.then((fn) => fn()).catch(() => {});
   });
 
   // ── 自动保存 ─────────────────────────────────────────
@@ -488,6 +505,41 @@ export const useProjectStore = defineStore("project", () => {
     return msg;
   }
 
+  /// 执行一次 LLM 推理（手动 prompt 测试台），返回回答文本
+  async function runLlm(prompt: string): Promise<string> {
+    if (llmRunning.value) throw new Error("LLM 正在运行中");
+    if (!prompt.trim()) throw new Error("请输入 prompt");
+
+    llmRunning.value = true;
+    llmProgress.value = 0;
+    llmMessage.value = "准备中...";
+    try {
+      const answer = await invoke<string>("run_llm", { prompt });
+      llmProgress.value = 1;
+      llmMessage.value = "完成";
+      return answer;
+    } catch (e) {
+      // 失败时重置进度并抛出友好错误，避免 UI 残留半程状态
+      llmProgress.value = 0;
+      llmMessage.value = "LLM 推理失败";
+      throw new Error(normalizeLlmError(e));
+    } finally {
+      llmRunning.value = false;
+    }
+  }
+
+  /// 探测 LLM 运行环境（面板打开时展示状态）
+  async function checkLlmRuntime(): Promise<LlmRuntimeStatus> {
+    return await invoke<LlmRuntimeStatus>("check_llm_runtime");
+  }
+
+  /// 把 IPC/后端错误映射为用户可读的信息，未识别时才回退原文
+  function normalizeLlmError(e: unknown): string {
+    const msg = String(e);
+    if (msg.includes("未就绪")) return "LLM 运行环境未就绪，请先运行环境引导脚本";
+    return msg;
+  }
+
   /// 说话人一条 asr 轨道：找到同 speaker 的轨道复用，否则新建（轨道名 = speaker 标签）
   function ensureAsrTrack(speaker: string): Track {
     if (!currentProject.value) throw new Error("当前无项目");
@@ -705,6 +757,11 @@ export const useProjectStore = defineStore("project", () => {
     asrProgress,
     asrMessage,
     runAsr,
+    llmRunning,
+    llmProgress,
+    llmMessage,
+    runLlm,
+    checkLlmRuntime,
     closeProject,
   };
 });

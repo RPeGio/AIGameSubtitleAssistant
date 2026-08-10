@@ -7,6 +7,7 @@ pub mod subtitle;      // 字幕（Phase 2 实现）
 pub mod ai_runtime;    // AI 运行时（Phase 2 起逐步实现）
 pub mod ocr;           // OCR 字幕生成流水线（Phase 2）
 pub mod asr;           // ASR 语音识别流水线（Phase 3）
+pub mod llm;           // LLM 推理流水线（Phase 5）
 pub mod export;        // 导出（Phase 6 实现）
 
 use ai_runtime::{config::resolve_runtime_dir, AsrManager, LlmManager, OcrManager, RuntimeConfig};
@@ -71,6 +72,8 @@ pub fn run() {
             ocr::run_ocr,
             // asr 模块
             asr::run_asr,
+            // llm 模块
+            llm::run_llm,
         ])
         .run(tauri::generate_context!())
         .expect("启动应用失败");

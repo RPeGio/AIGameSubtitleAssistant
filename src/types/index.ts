@@ -116,3 +116,18 @@ export interface AsrProgress {
 
 /// ASR 进度事件名（Rust 侧 `ASR_PROGRESS_EVENT` 需保持一致）
 export const ASR_PROGRESS_EVENT = "asr-progress";
+
+export interface LlmRuntimeStatus {
+  /// provider 名称（"none" / "llama" 等）
+  provider: string;
+  ready: boolean;
+  message: string;
+}
+
+export interface LlmProgress {
+  progress: number;
+  message: string;
+}
+
+/// LLM 进度事件名（Rust 侧 `LLM_PROGRESS_EVENT` 需保持一致）
+export const LLM_PROGRESS_EVENT = "llm-progress";
