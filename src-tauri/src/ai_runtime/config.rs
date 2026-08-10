@@ -206,41 +206,34 @@ impl RuntimeConfig {
             ));
         }
 
-        // moss_binary 非空时必须真的存在（与 python_path 同策略）
-        if !self.moss_binary.is_empty() {
-            let mb = PathBuf::from(&self.moss_binary);
-            let joined = if mb.is_absolute() {
-                mb
-            } else {
-                runtime_dir.join(mb)
-            };
-            if !joined.is_file() {
-                return Err(format!(
-                    "moss_binary 指向的文件不存在: {}（按 {} 解析）",
-                    self.moss_binary,
-                    joined.display()
-                ));
-            }
-        }
-
-        // llm_binary 非空时必须真的存在（与 moss_binary 同策略）
-        if !self.llm_binary.is_empty() {
-            let lb = PathBuf::from(&self.llm_binary);
-            let joined = if lb.is_absolute() {
-                lb
-            } else {
-                runtime_dir.join(lb)
-            };
-            if !joined.is_file() {
-                return Err(format!(
-                    "llm_binary 指向的文件不存在: {}（按 {} 解析）",
-                    self.llm_binary,
-                    joined.display()
-                ));
-            }
-        }
+        // moss_binary / llm_binary 非空时必须真的存在（与 python_path 同策略）
+        ensure_binary_exists("moss_binary", &self.moss_binary, runtime_dir)?;
+        ensure_binary_exists("llm_binary", &self.llm_binary, runtime_dir)?;
         Ok(())
     }
+}
+
+/// 可执行文件存在性检查：空值（未配置）直接通过；
+/// 非空时按 runtime 目录解析（绝对路径原样使用），文件缺失返回 Err。
+fn ensure_binary_exists(name: &str, value: &str, runtime_dir: &Path) -> Result<(), String> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    let pb = PathBuf::from(value);
+    let joined = if pb.is_absolute() {
+        pb
+    } else {
+        runtime_dir.join(pb)
+    };
+    if !joined.is_file() {
+        return Err(format!(
+            "{} 指向的文件不存在: {}（按 {} 解析）",
+            name,
+            value,
+            joined.display()
+        ));
+    }
+    Ok(())
 }
 
 // ─── 单元测试 ─────────────────────────────────────────────
