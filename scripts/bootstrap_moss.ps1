@@ -43,7 +43,7 @@ if ($Backend -notmatch "^(cpu|cuda|vulkan)$") {
 }
 # GPU 后端预埋：官方暂无 Windows GPU 预编译包，仅提示构建方式，行为不变
 if ($Backend -ne "cpu") {
-  Write-Host "==> 注意：-Backend $Backend 需自构建 GPU 版（scripts/build_moss.ps1 加 -DGGML_CUDA=ON / -DGGML_VULKAN=ON），或提供 -BinaryUrl 指向 GPU 版 zip"
+  Write-Host "==> 注意：-Backend $Backend 需自构建 GPU 版（build_moss.ps1 暂不支持 CUDA/Vulkan 选项，需手动改 cmake 配置 -DGGML_CUDA=ON / -DGGML_VULKAN=ON），或提供 -BinaryUrl 指向 GPU 版 zip"
 }
 
 # 白名单档位，防路径注入

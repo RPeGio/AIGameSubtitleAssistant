@@ -57,6 +57,7 @@ New-Item -ItemType Directory -Force -Path $llmDir | Out-Null
 New-Item -ItemType Directory -Force -Path $modelDir | Out-Null
 
 # ── 1. llama-cli.exe 就位 ──
+$haveBinary = $false
 if (Test-Path $targetExe) {
   if (-not $Force) {
     Write-Host "==> 已有 $targetExe，跳过下载（-Force 重新下载；切换后端时请先删除或 -Force）"
@@ -101,7 +102,9 @@ if (-not $haveBinary) {
 # ── 1.5 CUDA runtime（仅 cuda 后端）──
 # cuda 版预编译包是 lean 版：不含 cudart64_12.dll / cublas64_12.dll / cublasLt64_12.dll，
 # 缺任一都会导致 ggml-cuda.dll 加载失败（--list-devices 显示 none）
-if ($Backend -eq "cuda" -and (-not (Test-Path (Join-Path $llmDir "cudart64_12.dll")) -or $Force)) {
+$cudartDlls = @("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll")
+$cudartMissing = @($cudartDlls | Where-Object { -not (Test-Path (Join-Path $llmDir $_)) })
+if ($Backend -eq "cuda" -and ($cudartMissing.Count -gt 0 -or $Force)) {
   $cudartAsset = "cudart-llama-bin-win-cuda-12.4-x64.zip"
   $cudartUrl = "https://github.com/ggml-org/llama.cpp/releases/download/$Version/$cudartAsset"
   if ($GitMirror) { $cudartUrl = "$GitMirror$cudartUrl" }
@@ -207,10 +210,12 @@ if ($Backend -eq "cpu") {
   } else {
     Write-Host "==> 警告：--list-devices 未见 $device（exit=$code）"
     if ($Backend -eq "cuda") {
-      Write-Host "    排查：1) 确认 bin/llm 下存在 cudart64_12.dll / cublas64_12.dll / cublasLt64_12.dll"
-      Write-Host "         2) 确认 NVIDIA 驱动已安装（nvidia-smi 可查）"
+      Write-Host "    排查：1) 若此前用其他 -Backend 装过，请加 -Force 重新下载（当前 exe 可能仍是旧后端构建）"
+      Write-Host "         2) 确认 bin/llm 下存在 cudart64_12.dll / cublas64_12.dll / cublasLt64_12.dll"
+      Write-Host "         3) 确认 NVIDIA 驱动已安装（nvidia-smi 可查）"
     } else {
-      Write-Host "    请检查显卡驱动；--list-devices 输出："
+      Write-Host "    排查：若此前用其他 -Backend 装过，请加 -Force 重新下载（当前 exe 可能仍是旧后端构建）；否则检查显卡驱动"
+      Write-Host "    --list-devices 输出："
     }
     $out | Select-Object -First 6
   }
