@@ -100,6 +100,9 @@ function seekTo(e: Event) {
 }
 
 function handleKeydown(e: KeyboardEvent) {
+  // 编辑文字时（输入框/contentEditable）不拦截空格，避免吞掉输入
+  const t = e.target as HTMLElement;
+  if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
   if (e.code === "Space") {
     e.preventDefault();
     togglePlay();
