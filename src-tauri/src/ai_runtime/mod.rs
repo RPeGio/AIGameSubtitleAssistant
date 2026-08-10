@@ -17,6 +17,7 @@ use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tauri::Manager;
 
 pub use config::RuntimeConfig;
 
@@ -868,8 +869,16 @@ mod llm_tests {
 
 // ─── LLM Tauri 命令 ──────────────────────────────────────
 
-/// Tauri 命令：探测 LLM 运行环境是否就绪
+/// Tauri 命令：探测 LLM 运行环境是否就绪。
+/// async + spawn_blocking：推理进行中会短暂占用 provider 锁，
+/// sync 命令跑在主线程会等锁导致整窗冻结（换 3B 模型后更明显）。
 #[tauri::command]
-pub fn check_llm_runtime(state: tauri::State<'_, LlmManager>) -> LlmRuntimeStatus {
-    state.status()
+pub async fn check_llm_runtime(app: tauri::AppHandle) -> LlmRuntimeStatus {
+    tauri::async_runtime::spawn_blocking(move || app.state::<LlmManager>().status())
+        .await
+        .unwrap_or_else(|e| LlmRuntimeStatus {
+            provider: "unknown".into(),
+            ready: false,
+            message: format!("LLM 运行环境探测失败: {}", e),
+        })
 }

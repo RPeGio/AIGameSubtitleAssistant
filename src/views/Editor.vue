@@ -68,7 +68,12 @@ async function openLlmPanel() {
   try {
     llmRuntimeStatus.value = await projectStore.checkLlmRuntime();
   } catch {
-    llmRuntimeStatus.value = null;
+    // 探测失败也要给用户可见的反馈，不能静默
+    llmRuntimeStatus.value = {
+      provider: "",
+      ready: false,
+      message: "无法探测 LLM 运行环境状态",
+    };
   }
 }
 
