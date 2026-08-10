@@ -9,6 +9,8 @@ bootstrap_moss.ps1 —— 搭建 MOSS ASR 运行环境
 3. 合并写 runtime/config.json（保留 OCR 等既有字段）
 
 参数：
+  -Backend <cpu|cuda|vulkan>  推理后端，默认 cpu。GPU 后端需要自构建
+                              （官方暂未发布 Windows GPU 预编译包），本参数为预埋接口
   -Quant <q5_k|q8_0|q6_k|q5_0|q4_k|q4_0|f16>  模型档位，默认 q5_k（HF 官方推荐：byte-identical 且仅 619MB）
   -BinaryUrl <url>    预编译 moss-transcribe.zip 下载地址（可选）
   -BinarySha256 <hex> 预编译 zip 的 SHA256（提供时校验）
@@ -17,6 +19,7 @@ bootstrap_moss.ps1 —— 搭建 MOSS ASR 运行环境
 用法：powershell -ExecutionPolicy Bypass -File scripts/bootstrap_moss.ps1
 #>
 param(
+  [string]$Backend = "cpu",
   [string]$Quant = "q5_k",
   [string]$BinaryUrl = "",
   [string]$BinarySha256 = "",
@@ -32,6 +35,16 @@ $runtime = Join-Path $root "runtime"
 $binDir = Join-Path $runtime "bin"
 $modelDir = Join-Path $runtime "models\moss"
 $targetExe = Join-Path $binDir "moss-transcribe.exe"
+
+# 白名单校验，防路径/URL 注入
+$Backend = $Backend.ToLower()
+if ($Backend -notmatch "^(cpu|cuda|vulkan)$") {
+  throw "无效的 -Backend: $Backend（可选 cpu/cuda/vulkan）"
+}
+# GPU 后端预埋：官方暂无 Windows GPU 预编译包，仅提示构建方式，行为不变
+if ($Backend -ne "cpu") {
+  Write-Host "==> 注意：-Backend $Backend 需自构建 GPU 版（scripts/build_moss.ps1 加 -DGGML_CUDA=ON / -DGGML_VULKAN=ON），或提供 -BinaryUrl 指向 GPU 版 zip"
+}
 
 # 白名单档位，防路径注入
 $Quant = $Quant.ToLower()
