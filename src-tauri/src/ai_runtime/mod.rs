@@ -8,6 +8,7 @@
 
 pub mod config;
 pub mod dhash;
+pub mod llm;
 pub mod moss;
 pub mod paddle;
 
@@ -18,6 +19,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 pub use config::RuntimeConfig;
+
+// ─── 通用工具 ─────────────────────────────────────────────
+
+/// 相对 runtime 的路径（机器无关）join runtime 目录；绝对路径（老配置）原样使用
+pub(crate) fn resolve_path(p: &str, runtime_dir: &Path) -> PathBuf {
+    if Path::new(p).is_absolute() {
+        PathBuf::from(p)
+    } else {
+        runtime_dir.join(p)
+    }
+}
 
 // ─── OCR 数据与错误 ──────────────────────────────────────
 
@@ -601,5 +613,263 @@ mod asr_tests {
 /// Tauri 命令：探测 ASR 运行环境是否就绪
 #[tauri::command]
 pub fn check_asr_runtime(state: tauri::State<'_, AsrManager>) -> AsrRuntimeStatus {
+    state.status()
+}
+
+// ─── LLM 数据与错误 ──────────────────────────────────────
+
+/// LLM 推理错误类型 —— 尽量保留底层错误链
+#[derive(Debug)]
+pub enum LlmError {
+    /// 运行环境未就绪（可执行文件/模型缺失）
+    NotReady,
+    /// 环境层面错误：进程启动失败、依赖缺失等
+    Runtime(Box<dyn Error + Send + Sync>),
+    /// 推理进程返回的错误
+    Worker(String),
+    /// IO 错误
+    Io(std::io::Error),
+}
+
+impl LlmError {
+    pub fn runtime<E>(err: E) -> Self
+    where
+        E: Error + Send + Sync + 'static,
+    {
+        LlmError::Runtime(Box::new(err))
+    }
+}
+
+impl From<std::io::Error> for LlmError {
+    fn from(e: std::io::Error) -> Self {
+        LlmError::Io(e)
+    }
+}
+
+impl fmt::Display for LlmError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LlmError::NotReady => write!(f, "LLM 运行环境未就绪"),
+            LlmError::Runtime(err) => write!(f, "LLM 运行环境错误: {}", err),
+            LlmError::Worker(msg) => write!(f, "LLM worker 错误: {}", msg),
+            LlmError::Io(err) => write!(f, "LLM IO 错误: {}", err),
+        }
+    }
+}
+
+impl std::error::Error for LlmError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            LlmError::Runtime(err) => Some(err.as_ref()),
+            LlmError::Io(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
+// ─── LLM Provider 抽象 ───────────────────────────────────
+
+/// LLM 提供者。单轮推理（prompt → 文本）为第一接口（与 llama-cli 单轮模式对应）。
+/// 只要求 `Send`，管理器外套 Mutex 提供 `Sync`。
+pub trait LlmProvider: Send {
+    /// provider 名称（"none" / "llama" 等）
+    fn name(&self) -> &str;
+    /// 运行环境是否就绪
+    fn is_ready(&self) -> bool;
+    /// 附加说明（如未就绪的原因），默认空
+    fn describe(&self) -> String {
+        String::new()
+    }
+    /// 执行一次单轮推理，返回回答文本
+    fn complete(&self, prompt: &str) -> Result<String, LlmError>;
+}
+
+/// 占位 provider —— 环境未就绪时使用，保证管线可编译
+pub struct LlmNoneProvider;
+
+impl LlmProvider for LlmNoneProvider {
+    fn name(&self) -> &str {
+        "none"
+    }
+
+    fn is_ready(&self) -> bool {
+        false
+    }
+
+    fn complete(&self, _prompt: &str) -> Result<String, LlmError> {
+        Err(LlmError::NotReady)
+    }
+}
+
+/// 创建失败的 provider —— 携带失败原因，供状态探测展示
+pub struct LlmBrokenProvider {
+    name: String,
+    message: String,
+}
+
+impl LlmProvider for LlmBrokenProvider {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn is_ready(&self) -> bool {
+        false
+    }
+
+    fn describe(&self) -> String {
+        self.message.clone()
+    }
+
+    fn complete(&self, _prompt: &str) -> Result<String, LlmError> {
+        Err(LlmError::Runtime(Box::new(std::io::Error::other(
+            self.message.clone(),
+        ))))
+    }
+}
+
+// ─── LLM Provider 工厂 ───────────────────────────────────
+
+/// 支持的 LLM provider 类型（可扩展）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LlmProviderKind {
+    None,
+    /// llama.cpp CLI（Phase 5 接入）
+    Llama,
+}
+
+/// 根据类型与配置创建 provider 实例
+/// Llama 创建失败时返回 BrokenProvider（携带原因），不 panic
+pub fn create_llm_provider(
+    kind: LlmProviderKind,
+    config: &RuntimeConfig,
+    runtime_dir: &PathBuf,
+) -> Box<dyn LlmProvider> {
+    match kind {
+        LlmProviderKind::None => Box::new(LlmNoneProvider),
+        LlmProviderKind::Llama => match llm::LlamaProvider::spawn(config, runtime_dir) {
+            Ok(p) => Box::new(p),
+            Err(e) => Box::new(LlmBrokenProvider {
+                name: "llama".into(),
+                message: e.to_string(),
+            }),
+        },
+    }
+}
+
+// ─── LLM 管理器（Tauri 托管状态）──────────────────────────
+
+/// 给前端展示的 LLM 运行时状态
+#[derive(Clone, Serialize)]
+pub struct LlmRuntimeStatus {
+    pub provider: String,
+    pub ready: bool,
+    pub message: String,
+}
+
+/// 全局 LLM 管理器 —— 持有配置与当前 provider
+pub struct LlmManager {
+    config: RuntimeConfig,
+    runtime_dir: PathBuf,
+    provider: Mutex<Box<dyn LlmProvider>>,
+}
+
+impl LlmManager {
+    pub fn new(config: RuntimeConfig, runtime_dir: PathBuf) -> Self {
+        // 已配置 llama-cli 可执行文件则走 Llama；否则用 None 占位
+        let kind = if config.llm_binary.is_empty() {
+            LlmProviderKind::None
+        } else {
+            LlmProviderKind::Llama
+        };
+        let provider = create_llm_provider(kind, &config, &runtime_dir);
+        Self {
+            config,
+            runtime_dir,
+            provider: Mutex::new(provider),
+        }
+    }
+
+    pub fn config(&self) -> &RuntimeConfig {
+        &self.config
+    }
+
+    pub fn runtime_dir(&self) -> &PathBuf {
+        &self.runtime_dir
+    }
+
+    /// 作用域化访问 provider：内部加锁，避免把 MutexGuard 泄漏到调用方。
+    /// 锁被污染时退化为使用被污染的 guard 内的值，保证调用不中断。
+    pub fn with_provider<R>(&self, f: impl FnOnce(&dyn LlmProvider) -> R) -> R {
+        let guard = self
+            .provider
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        f(&**guard)
+    }
+
+    /// 汇总当前运行时状态（供 check_llm_runtime 命令）
+    pub fn status(&self) -> LlmRuntimeStatus {
+        let name = self.with_provider(|p| p.name().to_string());
+        let ready = self.with_provider(|p| p.is_ready());
+        let detail = self.with_provider(|p| p.describe());
+        let message = if ready {
+            format!("LLM 运行时就绪（provider: {}）", name)
+        } else if name == "none" {
+            "未配置 LLM 运行环境".into()
+        } else if detail.is_empty() {
+            format!("LLM 运行环境未就绪（provider: {}）", name)
+        } else {
+            format!("LLM 运行环境未就绪（provider: {}）：{}", name, detail)
+        };
+        LlmRuntimeStatus {
+            provider: name,
+            ready,
+            message,
+        }
+    }
+}
+
+// ─── LLM 单元测试 ─────────────────────────────────────────
+
+#[cfg(test)]
+mod llm_tests {
+    use super::*;
+
+    #[test]
+    fn test_llm_none_provider_not_ready() {
+        let p = LlmNoneProvider;
+        assert_eq!(p.name(), "none");
+        assert!(!p.is_ready());
+        let result = p.complete("hi");
+        assert!(matches!(result, Err(LlmError::NotReady)));
+    }
+
+    #[test]
+    fn test_llm_manager_status_not_ready() {
+        let manager = LlmManager::new(RuntimeConfig::default(), PathBuf::from("runtime"));
+        let status = manager.status();
+        assert_eq!(status.provider, "none");
+        assert!(!status.ready);
+    }
+
+    #[test]
+    fn test_llm_manager_selects_llama_kind() {
+        let mut config = RuntimeConfig::default();
+        config.llm_binary = "bin/llama-cli.exe".into();
+        config.llm_model = "models/qwen/model.gguf".into();
+        let manager = LlmManager::new(config, PathBuf::from("no_such_runtime_xyz"));
+        let status = manager.status();
+        assert_eq!(status.provider, "llama");
+        // runtime 目录不存在 → spawn 失败 → broken（describe 非空）
+        assert!(!status.ready);
+        assert!(!status.message.is_empty());
+    }
+}
+
+// ─── LLM Tauri 命令 ──────────────────────────────────────
+
+/// Tauri 命令：探测 LLM 运行环境是否就绪
+#[tauri::command]
+pub fn check_llm_runtime(state: tauri::State<'_, LlmManager>) -> LlmRuntimeStatus {
     state.status()
 }

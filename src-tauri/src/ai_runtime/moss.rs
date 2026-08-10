@@ -3,7 +3,7 @@
 // stdout 输出 JSON 段数组，stderr 是日志（量小，可整体收集）。
 // 模型每次转写加载一次（~1.4s），相对长音频推理（数分钟）可忽略，故不做常驻进程。
 
-use crate::ai_runtime::{AsrError, AsrProvider, AsrSegment, RuntimeConfig};
+use crate::ai_runtime::{resolve_path, AsrError, AsrProvider, AsrSegment, RuntimeConfig};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -34,15 +34,6 @@ fn parse_segments(json: &str) -> Result<Vec<AsrSegment>, AsrError> {
             confidence: None,
         })
         .collect())
-}
-
-/// 相对 runtime 的路径（机器无关）join runtime 目录；绝对路径（老配置）原样使用
-fn resolve_path(p: &str, runtime_dir: &Path) -> PathBuf {
-    if Path::new(p).is_absolute() {
-        PathBuf::from(p)
-    } else {
-        runtime_dir.join(p)
-    }
 }
 
 /// MOSS 转写 provider —— 每次 transcribe 启动一次性子进程
