@@ -271,6 +271,7 @@ export const useProjectStore = defineStore("project", () => {
         id: generateId(),
         name: "OCR 选区",
         type: "ocr_region",
+        track_role: "game",
         events: [
           {
             id: generateId(),
@@ -292,6 +293,7 @@ export const useProjectStore = defineStore("project", () => {
         id: generateId(),
         name: "剧情文本 (mock)",
         type: "ocr_text",
+        track_role: "game",
         events: [
           {
             id: generateId(),
@@ -442,6 +444,7 @@ export const useProjectStore = defineStore("project", () => {
         id: generateId(),
         name: "OCR 文本",
         type: "ocr_text",
+        track_role: "game",
         events: [],
       };
       currentProject.value.tracks.push(track);
@@ -498,6 +501,8 @@ export const useProjectStore = defineStore("project", () => {
         id: generateId(),
         name: speaker,
         type: "asr",
+        // 默认游戏内容：主播语音轨由用户手动标记（run_fuse 只消费游戏内容轨）
+        track_role: "game",
         events: [],
       };
       tracks.push(track);
@@ -567,6 +572,14 @@ export const useProjectStore = defineStore("project", () => {
         e.character = trimmed;
       }
     }
+  }
+
+  /// 更新轨道内容属性（仅 asr 轨道消费）："streamer" 主播语音 | "game" 游戏内容
+  function updateTrackRole(trackId: string, role: string) {
+    const track = currentProject.value?.tracks.find((t) => t.id === trackId);
+    if (!track || track.track_role === role) return;
+    recordSnapshot();
+    track.track_role = role;
   }
 
   /// 删除事件（聚焦清理由 UI 层负责）
@@ -679,6 +692,7 @@ export const useProjectStore = defineStore("project", () => {
     findTrack,
     removeEvent,
     renameTrack,
+    updateTrackRole,
     moveEventToTrack,
     removeTrack,
     moveTrack,

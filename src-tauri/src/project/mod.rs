@@ -100,8 +100,18 @@ pub struct Track {
     /// 轨道类型: "ocr_region" | "ocr_text" | "asr" | "manual" | "translation"
     #[serde(rename = "type")]
     pub track_type: String,
+    /// 轨道内容属性（仅 asr 轨道使用）：
+    /// "streamer" 主播语音 | "game" 游戏内容。
+    /// 缺省视为 "game"：游戏内容轨是常态，主播语音轨由用户显式标记
+    #[serde(default = "default_track_role")]
+    pub track_role: String,
     /// 轨道内的事件列表，按时间排序
+    #[serde(default)]
     pub events: Vec<TimelineEvent>,
+}
+
+fn default_track_role() -> String {
+    "game".into()
 }
 
 /// 项目 —— 顶层容器，保存整个字幕项目的元数据和所有轨道
@@ -335,4 +345,44 @@ fn append_recent_project(app: &AppHandle, project: &Project) -> Result<(), Strin
         .map_err(|e| format!("写入最近项目列表失败: {}", e))?;
 
     Ok(())
+}
+
+// ─── 单元测试 ─────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_track() -> Track {
+        Track {
+            id: "t1".into(),
+            name: "主播语音".into(),
+            track_type: "asr".into(),
+            track_role: "streamer".into(),
+            events: vec![],
+        }
+    }
+
+    #[test]
+    fn test_track_roundtrip_preserves_role() {
+        let json = serde_json::to_string(&sample_track()).unwrap();
+        let back: Track = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.track_role, "streamer");
+    }
+
+    #[test]
+    fn test_track_legacy_json_defaults_to_game() {
+        // 旧 project.json 无 track_role 字段 → 反序列化默认 "game"
+        let json = r#"{"id":"t1","name":"游戏角色","type":"asr","events":[]}"#;
+        let track: Track = serde_json::from_str(json).unwrap();
+        assert_eq!(track.track_role, "game");
+    }
+
+    #[test]
+    fn test_track_missing_events_defaults_empty() {
+        // events 缺省（旧数据）也不应炸
+        let json = r#"{"id":"t1","name":"轨","type":"manual"}"#;
+        let track: Track = serde_json::from_str(json).unwrap();
+        assert!(track.events.is_empty());
+    }
 }

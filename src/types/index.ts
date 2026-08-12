@@ -38,6 +38,9 @@ export interface Track {
   id: string;
   name: string;
   type: string;
+  /// 轨道内容属性（仅 asr 轨道使用）："streamer" 主播语音 | "game" 游戏内容
+  /// 旧项目缺省视为 "game"
+  track_role: string;
   events: TimelineEvent[];
 }
 
