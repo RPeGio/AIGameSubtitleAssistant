@@ -13,8 +13,9 @@ use tauri::{AppHandle, Emitter, Manager};
 
 /// 单批最多 ASR 段数
 const BATCH_SIZE: usize = 30;
-/// 融合批生成上限：30 段 JSON 输出（text + character）需要更大余量
-const MAX_TOKENS: u32 = 2048;
+/// 融合批生成上限：30 段 JSON 输出（text + character）需要大余量；
+/// 仅作上限，正常输出远小于此
+const MAX_TOKENS: u32 = 4096;
 
 /// 输入：一个游戏内容 ASR 段（index = 输入顺序，LLM 输出按此对应）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +55,8 @@ pub struct FuseResult {
 }
 
 /// 构建单批 prompt：指令 + OCR 全量编号列表 + 本批 ASR 编号列表。
+/// 编号带前缀区分（OCR[n] / ASR[n]）：批 ≥2 时 ASR 编号是全局顺序，
+/// 无前缀会让小模型混淆两套编号，把 OCR 编号误当 ASR 编号输出。
 /// 跨语言语义对齐：LLM 自己建立对应关系，只输出 JSON。
 fn build_prompt(ocr_texts: &[String], batch: &[FuseAsrInput]) -> String {
     let mut p = String::new();
@@ -63,17 +66,18 @@ fn build_prompt(ocr_texts: &[String], batch: &[FuseAsrInput]) -> String {
          - 找到对应字幕：最终文本用字幕文本（去掉角色名前缀，如“派蒙：”），并提取角色名；\n\
          - 找不到对应：最终文本保留 ASR 原文，角色名为空。\n\
          修正 OCR/ASR 中的明显识别错误，合并重复内容。\n\
-         只输出 JSON，格式：{\"segments\":[{\"index\":ASR编号,\"text\":\"最终文本\",\"character\":\"角色名或空\"}]}\n\n",
+         只输出 JSON，格式：{\"segments\":[{\"index\":ASR编号,\"text\":\"最终文本\",\"character\":\"角色名或空\"}]}\n\
+         index 必须是 ASR[n] 里的编号。\n\n",
     );
     p.push_str("== 字幕文本（OCR）==\n");
     for (i, t) in ocr_texts.iter().enumerate() {
         let t = t.replace('\n', " ");
-        p.push_str(&format!("[{}] {}\n", i + 1, t));
+        p.push_str(&format!("OCR[{}] {}\n", i + 1, t));
     }
     p.push_str("\n== 游戏语音转写（ASR）==\n");
     for s in batch {
         let t = s.text.replace('\n', " ");
-        p.push_str(&format!("[{}] {}\n", s.index, t));
+        p.push_str(&format!("ASR[{}] {}\n", s.index, t));
     }
     p
 }
@@ -256,10 +260,10 @@ mod tests {
         let ocr = vec!["派蒙：旅行者你来了".into(), "前方有敌人".into()];
         let batch = sample_inputs(2);
         let p = build_prompt(&ocr, &batch);
-        assert!(p.contains("[1] 派蒙：旅行者你来了"));
-        assert!(p.contains("[2] 前方有敌人"));
-        assert!(p.contains("[1] 语音1"));
-        assert!(p.contains("[2] 语音2"));
+        assert!(p.contains("OCR[1] 派蒙：旅行者你来了"));
+        assert!(p.contains("OCR[2] 前方有敌人"));
+        assert!(p.contains("ASR[1] 语音1"));
+        assert!(p.contains("ASR[2] 语音2"));
     }
 
     #[test]

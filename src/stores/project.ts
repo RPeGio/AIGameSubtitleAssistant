@@ -618,10 +618,11 @@ export const useProjectStore = defineStore("project", () => {
     return track;
   }
 
-  /// 清空并填充 fused 轨道的事件（重跑不叠加）
+  /// 清空并填充 fused 轨道的事件（重跑不叠加）。
+  /// 快照先于 ensureFusedTrack：首次运行时撤销能把新建的轨道一并移除
   function writeFusedSegments(result: FuseResult) {
-    const track = ensureFusedTrack();
     recordSnapshot();
+    const track = ensureFusedTrack();
     track.events = result.segments.map(fusedToEvent).sort((a, b) => a.start - b.start);
   }
 
