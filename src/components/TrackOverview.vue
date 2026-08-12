@@ -193,17 +193,17 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
         <span v-else class="ov-track-name" title="双击重命名轨道" @dblclick="startRename">
           {{ focusedTrack.name }}
         </span>
+        <NSelect
+          v-if="focusedTrack.type === 'asr'"
+          :value="focusedTrack.track_role"
+          size="tiny"
+          :options="TRACK_ROLE_OPTIONS"
+          class="ov-track-role-select"
+          @update:value="onTrackRoleChange"
+        />
       </div>
       <span v-else class="ov-track-name">轨道总览</span>
-      <NSelect
-        v-if="focusedTrack && focusedTrack.type === 'asr'"
-        :value="focusedTrack.track_role"
-        size="tiny"
-        :options="TRACK_ROLE_OPTIONS"
-        class="ov-track-role-select"
-        @update:value="onTrackRoleChange"
-      />
-      <span v-else-if="focusedTrack" class="ov-track-type">{{ focusedTrack.type }}</span>
+      <span v-if="focusedTrack" class="ov-track-type">{{ focusedTrack.type }}</span>
     </div>
 
     <div v-if="!focusedTrack" class="overview-empty">
@@ -286,6 +286,7 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
   flex: 1;
   min-width: 0;
   display: flex;
+  gap: 8px;
 }
 
 .ov-track-name {
