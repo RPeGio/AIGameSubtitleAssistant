@@ -30,7 +30,7 @@ fn test_llm_end_to_end() {
 
     let start = Instant::now();
     let answer = manager
-        .with_provider(|p| p.complete("2+2=?"))
+        .with_provider(|p| p.complete("2+2=?", 256))
         .expect("LLM 推理失败");
     let elapsed = start.elapsed();
 

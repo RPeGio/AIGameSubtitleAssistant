@@ -86,6 +86,20 @@ async function runLlm() {
   }
 }
 
+// ── AI 融合控制 ─────────────────────────────────────────
+async function startFuse() {
+  try {
+    const result = await projectStore.runFuse();
+    const failed = result.stats.failed_batches;
+    const suffix = failed > 0 ? `，${failed} 批解析失败已保留原文本` : "";
+    message.success(
+      `AI 融合完成：匹配 ${result.stats.matched}/${result.stats.total} 段${suffix}`
+    );
+  } catch (e) {
+    message.error(String(e));
+  }
+}
+
 watch(
   () => timeline.duration,
   (d) => {
@@ -319,6 +333,24 @@ const resolutionLabel = computed(() => {
           <NButton size="small" type="primary" @click="openLlmPanel">
             LLM
           </NButton>
+
+          <NButton
+            size="small"
+            type="primary"
+            :disabled="projectStore.fuseRunning"
+            @click="startFuse"
+          >
+            AI 融合
+          </NButton>
+          <template v-if="projectStore.fuseRunning">
+            <NProgress
+              type="line"
+              class="ocr-progress"
+              :percentage="Math.round(projectStore.llmProgress * 100)"
+              :show-indicator="false"
+            />
+            <span class="ocr-msg">{{ projectStore.llmMessage }}</span>
+          </template>
         </div>
 
         <div class="timeline-pane">

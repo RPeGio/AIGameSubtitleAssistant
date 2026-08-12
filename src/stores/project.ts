@@ -13,6 +13,9 @@ import type {
   AsrProgress,
   LlmProgress,
   LlmRuntimeStatus,
+  FuseAsrInput,
+  FuseResult,
+  FusedSegment,
 } from "../types";
 import { OCR_PROGRESS_EVENT, ASR_PROGRESS_EVENT, LLM_PROGRESS_EVENT } from "../types";
 import { invoke } from "@tauri-apps/api/core";
@@ -46,6 +49,17 @@ function asrSegmentToEvent(seg: AsrSegment): TimelineEvent {
     text: seg.text,
     speaker: seg.speaker || UNKNOWN_SPEAKER,
     confidence: seg.confidence ?? 0,
+  };
+}
+
+function fusedToEvent(seg: FusedSegment): TimelineEvent {
+  return {
+    id: generateId(),
+    type: "fused",
+    start: seg.start,
+    end: seg.end,
+    text: seg.text,
+    ...(seg.character ? { character: seg.character } : {}),
   };
 }
 
@@ -543,6 +557,84 @@ export const useProjectStore = defineStore("project", () => {
     return msg;
   }
 
+  // ── AI 融合（Phase 4）──────────────────────────────────
+  const fuseRunning = ref(false);
+
+  /// 收集 ocr_text 轨文本（全部）与 track_role="game" 的 ASR 段（按时间排序、编号），
+  /// 调 run_fuse 交给 LLM 融合，结果写入 fused 最终产物轨道（重跑覆盖）
+  async function runFuse(): Promise<FuseResult> {
+    if (fuseRunning.value || !currentProject.value) throw new Error("当前无法执行 AI 融合");
+    if (!currentVideoMeta.value) throw new Error("请先导入视频");
+
+    const ocrTrack = currentProject.value.tracks.find((t) => t.type === "ocr_text");
+    const ocrTexts = (ocrTrack?.events ?? [])
+      .filter((e): e is Extract<TimelineEvent, { type: "ocr_text" }> => e.type === "ocr_text")
+      .map((e) => e.text);
+
+    const gameAsr = currentProject.value.tracks
+      .filter((t) => t.type === "asr" && t.track_role === "game")
+      .flatMap((t) => t.events)
+      .filter((e): e is Extract<TimelineEvent, { type: "asr" }> => e.type === "asr")
+      .sort((a, b) => a.start - b.start);
+    const asrSegments: FuseAsrInput[] = gameAsr.map((e, i) => ({
+      index: i + 1,
+      start: e.start,
+      end: e.end,
+      text: e.text,
+    }));
+
+    fuseRunning.value = true;
+    llmProgress.value = 0;
+    llmMessage.value = "准备中...";
+    try {
+      const result = await invoke<FuseResult>("run_fuse", { ocrTexts, asrSegments });
+      writeFusedSegments(result);
+      llmProgress.value = 1;
+      llmMessage.value = "完成";
+      return result;
+    } catch (e) {
+      llmProgress.value = 0;
+      llmMessage.value = "AI 融合失败";
+      throw new Error(normalizeFuseError(e));
+    } finally {
+      fuseRunning.value = false;
+    }
+  }
+
+  /// 复用或新建 fused 最终产物轨道
+  function ensureFusedTrack(): Track {
+    let track = currentProject.value?.tracks.find((t) => t.type === "fused");
+    if (!track && currentProject.value) {
+      track = {
+        id: generateId(),
+        name: "最终字幕",
+        type: "fused",
+        track_role: "game",
+        events: [],
+      };
+      currentProject.value.tracks.push(track);
+    }
+    if (!track) throw new Error("当前无项目");
+    return track;
+  }
+
+  /// 清空并填充 fused 轨道的事件（重跑不叠加）
+  function writeFusedSegments(result: FuseResult) {
+    const track = ensureFusedTrack();
+    recordSnapshot();
+    track.events = result.segments.map(fusedToEvent).sort((a, b) => a.start - b.start);
+  }
+
+  /// 把 IPC/后端错误映射为用户可读的信息，未识别时才回退原文
+  function normalizeFuseError(e: unknown): string {
+    const msg = String(e);
+    if (msg.includes("未就绪")) return "LLM 运行环境未就绪，请先运行环境引导脚本";
+    if (msg.includes("没有可用的 OCR")) return "缺少 OCR 字幕文本，请先运行 OCR";
+    if (msg.includes("没有可用的游戏内容"))
+      return "没有游戏内容 ASR 段，请先运行 ASR 并检查轨道属性（主播语音除外）";
+    return msg;
+  }
+
   /// 说话人一条 asr 轨道：找到同 speaker 的轨道复用，否则新建（轨道名 = speaker 标签）
   function ensureAsrTrack(speaker: string): Track {
     if (!currentProject.value) throw new Error("当前无项目");
@@ -776,6 +868,8 @@ export const useProjectStore = defineStore("project", () => {
     llmMessage,
     runLlm,
     checkLlmRuntime,
+    fuseRunning,
+    runFuse,
     closeProject,
   };
 });

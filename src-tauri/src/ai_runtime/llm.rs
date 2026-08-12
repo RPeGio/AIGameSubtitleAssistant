@@ -109,7 +109,7 @@ impl LlamaProvider {
 
     /// 执行一次单轮推理（阻塞；由编排层放后台线程）。
     /// 温度固定 0.2：纠错/去重/格式化等确定性任务，低温减少幻觉。
-    fn run_complete(&self, prompt: &str) -> Result<String, LlmError> {
+    fn run_complete(&self, prompt: &str, max_tokens: u32) -> Result<String, LlmError> {
         let mut cmd = Command::new(&self.binary);
         cmd.arg("-m")
             .arg(&self.model)
@@ -117,9 +117,9 @@ impl LlamaProvider {
             .arg(prompt)
             // 单轮：回答后立即退出，不进入交互循环
             .arg("-st")
-            // 生成上限，防止异常情况无限生成
+            // 生成上限，防止异常情况无限生成（融合批输出 JSON 需要更大上限）
             .arg("-n")
-            .arg("256")
+            .arg(max_tokens.to_string())
             // stdout 只留回答文本，prompt 不回显
             .arg("--no-display-prompt")
             .arg("--temp")
@@ -184,11 +184,11 @@ impl LlmProvider for LlamaProvider {
             .unwrap_or_default()
     }
 
-    fn complete(&self, prompt: &str) -> Result<String, LlmError> {
+    fn complete(&self, prompt: &str, max_tokens: u32) -> Result<String, LlmError> {
         if !self.is_ready() {
             return Err(LlmError::NotReady);
         }
-        let result = self.run_complete(prompt);
+        let result = self.run_complete(prompt, max_tokens);
         if let Err(e) = &result {
             self.set_error(&e.to_string());
         }
@@ -277,7 +277,10 @@ mod tests {
         let provider = LlamaProvider::spawn(&config, &dir).unwrap();
         assert!(!provider.is_ready());
         assert!(!provider.describe().is_empty());
-        assert!(matches!(provider.complete("hi"), Err(LlmError::NotReady)));
+        assert!(matches!(
+            provider.complete("hi", 256),
+            Err(LlmError::NotReady)
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

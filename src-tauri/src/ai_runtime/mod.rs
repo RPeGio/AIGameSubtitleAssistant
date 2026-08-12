@@ -681,8 +681,9 @@ pub trait LlmProvider: Send {
     fn describe(&self) -> String {
         String::new()
     }
-    /// 执行一次单轮推理，返回回答文本
-    fn complete(&self, prompt: &str) -> Result<String, LlmError>;
+    /// 执行一次单轮推理，返回回答文本。
+    /// `max_tokens` 为生成上限（llama-cli -n 参数）
+    fn complete(&self, prompt: &str, max_tokens: u32) -> Result<String, LlmError>;
 }
 
 /// 占位 provider —— 环境未就绪时使用，保证管线可编译
@@ -697,7 +698,7 @@ impl LlmProvider for LlmNoneProvider {
         false
     }
 
-    fn complete(&self, _prompt: &str) -> Result<String, LlmError> {
+    fn complete(&self, _prompt: &str, _max_tokens: u32) -> Result<String, LlmError> {
         Err(LlmError::NotReady)
     }
 }
@@ -721,7 +722,7 @@ impl LlmProvider for LlmBrokenProvider {
         self.message.clone()
     }
 
-    fn complete(&self, _prompt: &str) -> Result<String, LlmError> {
+    fn complete(&self, _prompt: &str, _max_tokens: u32) -> Result<String, LlmError> {
         Err(LlmError::Runtime(Box::new(std::io::Error::other(
             self.message.clone(),
         ))))
@@ -841,7 +842,7 @@ mod llm_tests {
         let p = LlmNoneProvider;
         assert_eq!(p.name(), "none");
         assert!(!p.is_ready());
-        let result = p.complete("hi");
+        let result = p.complete("hi", 256);
         assert!(matches!(result, Err(LlmError::NotReady)));
     }
 

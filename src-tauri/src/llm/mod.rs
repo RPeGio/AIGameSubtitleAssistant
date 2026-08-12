@@ -10,6 +10,9 @@ use tauri::{AppHandle, Emitter, Manager};
 /// LLM 进度事件名（前端需保持一致）
 pub const LLM_PROGRESS_EVENT: &str = "llm-progress";
 
+/// 测试台默认生成上限（融合批在 fuse 模块另行指定更大值）
+const MAX_TOKENS: u32 = 256;
+
 /// 进度事件载荷。LLM 为单次推理，无 clip 概念，只有整体进度 0.0 ~ 1.0。
 #[derive(Clone, Serialize)]
 pub struct LlmProgress {
@@ -33,7 +36,7 @@ where
 
     on_progress(0.1, "推理中…".into());
     let answer = manager
-        .with_provider(|p| p.complete(prompt))
+        .with_provider(|p| p.complete(prompt, MAX_TOKENS))
         .map_err(|e| format!("LLM 推理失败: {}", e))?;
 
     on_progress(1.0, "完成".into());
