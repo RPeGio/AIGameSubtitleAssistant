@@ -1,11 +1,23 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { NSelect } from "naive-ui";
 import { useTimelineStore, CLIP_COLORS } from "../stores/timeline";
 import { useProjectStore } from "../stores/project";
 import type { TimelineEvent } from "../types";
 
 const timeline = useTimelineStore();
 const projectStore = useProjectStore();
+
+// 轨道内容属性选项（仅 asr 轨道显示）：默认游戏内容，主播语音由用户显式标记
+const TRACK_ROLE_OPTIONS = [
+  { label: "游戏内容", value: "game" },
+  { label: "主播语音", value: "streamer" },
+];
+
+function onTrackRoleChange(role: string | null) {
+  const track = focusedTrack.value;
+  if (track) projectStore.updateTrackRole(track.id, role ?? "game");
+}
 
 const focusedTrack = computed(() => projectStore.findTrack(timeline.focusedTrackId));
 
@@ -183,7 +195,15 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
         </span>
       </div>
       <span v-else class="ov-track-name">轨道总览</span>
-      <span v-if="focusedTrack" class="ov-track-type">{{ focusedTrack.type }}</span>
+      <NSelect
+        v-if="focusedTrack && focusedTrack.type === 'asr'"
+        :value="focusedTrack.track_role"
+        size="tiny"
+        :options="TRACK_ROLE_OPTIONS"
+        class="ov-track-role-select"
+        @update:value="onTrackRoleChange"
+      />
+      <span v-else-if="focusedTrack" class="ov-track-type">{{ focusedTrack.type }}</span>
     </div>
 
     <div v-if="!focusedTrack" class="overview-empty">
@@ -300,6 +320,11 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
   border-radius: 4px;
   padding: 1px 6px;
   flex-shrink: 0;
+}
+
+.ov-track-role-select {
+  flex-shrink: 0;
+  width: 110px;
 }
 
 .overview-body {

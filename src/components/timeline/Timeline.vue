@@ -22,12 +22,6 @@ const viewportRef = ref<HTMLElement | null>(null);
 let viewportObserver: ResizeObserver | null = null;
 let scrubbingBody: HTMLElement | null = null;
 
-// 轨道内容属性选项（仅 asr 轨道显示）：默认游戏内容，主播语音由用户显式标记
-const TRACK_ROLE_OPTIONS = [
-  { label: "游戏内容", value: "game" },
-  { label: "主播语音", value: "streamer" },
-];
-
 // 播放头在内容区内的横向位置（相对内容区左缘）
 const playheadLeft = computed(() => timeline.playheadX() + "px");
 
@@ -335,16 +329,7 @@ onUnmounted(() => {
                 {{ track.name }}
               </span>
             </div>
-            <div v-if="track.type === 'asr'" class="label-type">
-              <NSelect
-                :value="track.track_role"
-                size="tiny"
-                :options="TRACK_ROLE_OPTIONS"
-                class="track-role-select"
-                @update:value="(role) => projectStore.updateTrackRole(track.id, role ?? 'game')"
-              />
-            </div>
-            <div v-else class="label-type">{{ track.type }}</div>
+            <div class="label-type">{{ track.type }}</div>
             <div v-if="renameTrackId !== track.id" class="tl-label-actions" @click.stop>
               <button class="tl-label-btn" title="上移轨道" @click="onMoveTrack(track, 'up')">↑</button>
               <button class="tl-label-btn" title="下移轨道" @click="onMoveTrack(track, 'down')">↓</button>
@@ -590,21 +575,6 @@ onUnmounted(() => {
   font-size: 10px;
   color: var(--color-text-secondary);
   font-variant-numeric: tabular-nums;
-}
-
-.track-role-select {
-  width: 100%;
-}
-
-/* 压缩下拉高度到接近类型文本行，保持 asr 轨与其他轨道行高一致 */
-.track-role-select :deep(.n-base-selection) {
-  height: 18px;
-  min-height: 18px;
-}
-
-.track-role-select :deep(.n-base-selection-label) {
-  font-size: 10px;
-  line-height: 18px;
 }
 
 .tl-content {
