@@ -341,7 +341,7 @@ onUnmounted(() => {
                 size="tiny"
                 :options="TRACK_ROLE_OPTIONS"
                 class="track-role-select"
-                @update:value="(role) => projectStore.updateTrackRole(track.id, String(role))"
+                @update:value="(role) => projectStore.updateTrackRole(track.id, role ?? 'game')"
               />
             </div>
             <div v-else class="label-type">{{ track.type }}</div>
@@ -594,6 +594,17 @@ onUnmounted(() => {
 
 .track-role-select {
   width: 100%;
+}
+
+/* 压缩下拉高度到接近类型文本行，保持 asr 轨与其他轨道行高一致 */
+.track-role-select :deep(.n-base-selection) {
+  height: 18px;
+  min-height: 18px;
+}
+
+.track-role-select :deep(.n-base-selection-label) {
+  font-size: 10px;
+  line-height: 18px;
 }
 
 .tl-content {
