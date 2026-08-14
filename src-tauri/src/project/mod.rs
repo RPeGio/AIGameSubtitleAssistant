@@ -105,6 +105,9 @@ pub struct Track {
     /// 缺省视为 "game"：游戏内容轨是常态，主播语音轨由用户显式标记
     #[serde(default = "default_track_role")]
     pub track_role: String,
+    /// 是否在预览窗口中显示该轨道字幕（纯显示偏好，随项目保存）
+    #[serde(default = "default_true")]
+    pub preview_visible: bool,
     /// 轨道内的事件列表，按时间排序
     #[serde(default)]
     pub events: Vec<TimelineEvent>,
@@ -112,6 +115,10 @@ pub struct Track {
 
 fn default_track_role() -> String {
     "game".into()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// 项目 —— 顶层容器，保存整个字幕项目的元数据和所有轨道
@@ -359,6 +366,7 @@ mod tests {
             name: "主播语音".into(),
             track_type: "asr".into(),
             track_role: "streamer".into(),
+            preview_visible: true,
             events: vec![],
         }
     }
@@ -384,5 +392,22 @@ mod tests {
         let json = r#"{"id":"t1","name":"轨","type":"manual"}"#;
         let track: Track = serde_json::from_str(json).unwrap();
         assert!(track.events.is_empty());
+    }
+
+    #[test]
+    fn test_track_legacy_json_preview_visible_defaults_true() {
+        // 旧 project.json 无 preview_visible → 默认 true（预览不遗漏旧轨道）
+        let json = r#"{"id":"t1","name":"游戏角色","type":"asr","events":[]}"#;
+        let track: Track = serde_json::from_str(json).unwrap();
+        assert!(track.preview_visible);
+    }
+
+    #[test]
+    fn test_track_preview_visible_roundtrip() {
+        let mut track = sample_track();
+        track.preview_visible = false;
+        let json = serde_json::to_string(&track).unwrap();
+        let back: Track = serde_json::from_str(&json).unwrap();
+        assert!(!back.preview_visible);
     }
 }

@@ -272,6 +272,7 @@ export const useProjectStore = defineStore("project", () => {
         name: "OCR 选区",
         type: "ocr_region",
         track_role: "game",
+        preview_visible: true,
         events: [
           {
             id: generateId(),
@@ -294,6 +295,7 @@ export const useProjectStore = defineStore("project", () => {
         name: "剧情文本 (mock)",
         type: "ocr_text",
         track_role: "game",
+        preview_visible: true,
         events: [
           {
             id: generateId(),
@@ -445,6 +447,7 @@ export const useProjectStore = defineStore("project", () => {
         name: "OCR 文本",
         type: "ocr_text",
         track_role: "game",
+        preview_visible: true,
         events: [],
       };
       currentProject.value.tracks.push(track);
@@ -503,6 +506,7 @@ export const useProjectStore = defineStore("project", () => {
         type: "asr",
         // 默认游戏内容：主播语音轨由用户手动标记（run_fuse 只消费游戏内容轨）
         track_role: "game",
+        preview_visible: true,
         events: [],
       };
       tracks.push(track);
@@ -580,6 +584,16 @@ export const useProjectStore = defineStore("project", () => {
     if (!track || track.track_role === role) return;
     recordSnapshot();
     track.track_role = role;
+  }
+
+  // ── 字幕预览 ───────────────────────────────────────────
+  /// 预览层总开关（会话级，不持久化）
+  const subtitlePreviewOn = ref(true);
+
+  /// 切换单轨预览显示（纯显示偏好：不进撤销快照，随项目保存）
+  function toggleTrackPreview(trackId: string) {
+    const track = currentProject.value?.tracks.find((t) => t.id === trackId);
+    if (track) track.preview_visible = !track.preview_visible;
   }
 
   /// 删除事件（聚焦清理由 UI 层负责）
@@ -693,6 +707,8 @@ export const useProjectStore = defineStore("project", () => {
     removeEvent,
     renameTrack,
     updateTrackRole,
+    subtitlePreviewOn,
+    toggleTrackPreview,
     moveEventToTrack,
     removeTrack,
     moveTrack,

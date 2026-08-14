@@ -1,15 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onUnmounted } from "vue";
 import { useTimelineStore } from "../stores/timeline";
 import { useProjectStore } from "../stores/project";
+import { useVideoContentRect } from "../composables/useVideoContentRect";
 import type { OcrRegionEvent } from "../types";
 
 const timeline = useTimelineStore();
 const projectStore = useProjectStore();
 
-const rootRef = ref<HTMLElement | null>(null);
-const containerSize = ref({ width: 0, height: 0 });
-let resizeObserver: ResizeObserver | null = null;
+const { containerRef, contentRect } = useVideoContentRect();
 
 // 拖拽状态：mode=move 平移整个选区；mode=resize 拉伸某条边/角
 let drag: null | {
@@ -23,20 +22,7 @@ let drag: null | {
   y2: number;
 } = null;
 
-onMounted(() => {
-  const el = rootRef.value;
-  if (!el) return;
-  const update = () => {
-    const r = el.getBoundingClientRect();
-    containerSize.value = { width: r.width, height: r.height };
-  };
-  update();
-  resizeObserver = new ResizeObserver(update);
-  resizeObserver.observe(el);
-});
-
 onUnmounted(() => {
-  resizeObserver?.disconnect();
   window.removeEventListener("mousemove", onWindowMouseMove);
   window.removeEventListener("mouseup", onWindowMouseUp);
 });
@@ -60,25 +46,6 @@ const region = computed<OcrRegionEvent | null>(() => {
     (e) => e.type === "ocr_region"
   ) as OcrRegionEvent[];
   return regions.length > 0 ? regions[regions.length - 1] : null;
-});
-
-// ── 视频实际渲染矩形（letterbox 校正）──
-// 视频 object-fit:contain，若画面比例与容器不同会出现黑边。
-// 用 ffprobe 提供的视频宽高 + 容器实测尺寸，算出画面真实占据的矩形，
-// 选区坐标（归一化 0~1）都相对这个矩形换算。
-
-const contentRect = computed(() => {
-  const cw = containerSize.value.width;
-  const ch = containerSize.value.height;
-  if (cw <= 0 || ch <= 0) return { left: 0, top: 0, width: cw, height: ch };
-  const meta = projectStore.currentVideoMeta;
-  if (!meta || meta.width <= 0 || meta.height <= 0) {
-    return { left: 0, top: 0, width: cw, height: ch };
-  }
-  const scale = Math.min(cw / meta.width, ch / meta.height);
-  const w = meta.width * scale;
-  const h = meta.height * scale;
-  return { left: (cw - w) / 2, top: (ch - h) / 2, width: w, height: h };
 });
 
 const contentStyle = computed(() => ({
@@ -214,7 +181,7 @@ function onWindowMouseUp() {
 </script>
 
 <template>
-  <div ref="rootRef" class="region-overlay">
+  <div ref="containerRef" class="region-overlay">
     <div v-if="region" class="region-content" :style="contentStyle">
       <!-- 区域外 4 块 50% 黑遮罩 -->
       <div v-for="d in dims" :key="d.key" class="dim" :style="d.style" />
