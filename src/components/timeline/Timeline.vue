@@ -482,8 +482,8 @@ onUnmounted(() => {
 .tl-label-col {
   position: relative;
   z-index: 30;
-  min-width: 180px;
-  max-width: 180px;
+  min-width: 220px;
+  max-width: 220px;
   border-right: 1px solid var(--color-border);
   background: var(--color-bg-secondary);
   display: flex;

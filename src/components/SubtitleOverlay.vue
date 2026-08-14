@@ -108,7 +108,7 @@ const stackStyle = computed(() => ({
   background: rgba(0, 0, 0, 0.55);
   border-radius: 4px;
   padding: 2px 10px;
-  font-size: 20px;
+  font-size: 14px;
   font-weight: 500;
   color: #fff;
   line-height: 1.5;
