@@ -81,6 +81,11 @@ const editingId = ref<string | null>(null);
 const editText = ref("");
 const editInput = ref<HTMLTextAreaElement | null>(null);
 
+/// v-for 内的模板 ref 会被收集为数组，focus 会失败；用函数 ref 绑定当前渲染的输入框
+function setEditInput(el: unknown) {
+  editInput.value = (el as HTMLTextAreaElement) ?? null;
+}
+
 // textarea 行数跟随内容（最多 10 行），初始即展开多行
 const editRows = computed(() => {
   const lines = editText.value.split("\n").length;
@@ -242,7 +247,7 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
         <div v-if="isTextTrack" class="ov-content" @dblclick.stop="startEdit(clip)">
           <textarea
             v-if="editingId === clip.id"
-            ref="editInput"
+            :ref="setEditInput"
             v-model="editText"
             class="ov-edit-input"
             :rows="editRows"

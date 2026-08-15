@@ -149,6 +149,11 @@ const renameTrackId = ref<string | null>(null);
 const renameDraft = ref("");
 const renameInput = ref<HTMLInputElement | null>(null);
 
+/// v-for 内的模板 ref 会被收集为数组，focus 会失败；用函数 ref 绑定当前渲染的输入框
+function setRenameInput(el: unknown) {
+  renameInput.value = (el as HTMLInputElement) ?? null;
+}
+
 function startRename(track: Track) {
   if (renameTrackId.value) return;
   renameTrackId.value = track.id;
@@ -317,7 +322,7 @@ onUnmounted(() => {
             <div class="label-name">
               <input
                 v-if="renameTrackId === track.id"
-                ref="renameInput"
+                :ref="setRenameInput"
                 v-model="renameDraft"
                 class="tl-name-input"
                 @keydown.enter="commitRename"
