@@ -229,6 +229,10 @@ function onWindowMouseMove(e: MouseEvent) {
     }
   }
 
+  // 位移未达拖动阈值（点击 or 原位吸附区间）→ 不更新事件：
+  // 保持原位，且未记快照无需撤销
+  if (!d.moved) return;
+
   const dt = (dx + scrollDelta) / timeline.pixelsPerSecond;
 
   const { minStart, maxEnd, prev, next } = bounds();
