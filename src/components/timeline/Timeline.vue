@@ -430,6 +430,13 @@ onUnmounted(() => {
         <div class="playhead-line" />
       </div>
     </div>
+
+    <!-- 吸附标记线：贯穿轨道区，拖动吸附时显示 -->
+    <div
+      v-if="timeline.snapGuideX !== null"
+      class="snap-guide"
+      :style="{ left: TOOL_WIDTH + LABEL_WIDTH + timeline.snapGuideX + 'px' }"
+    />
   </div>
 </template>
 
@@ -639,5 +646,16 @@ onUnmounted(() => {
   height: 100%;
   background: var(--color-error);
   margin-left: -0.5px;
+}
+
+.snap-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  margin-left: -0.5px;
+  background: var(--color-accent);
+  z-index: 14; /* playhead(15) 之下 */
+  pointer-events: none;
 }
 </style>

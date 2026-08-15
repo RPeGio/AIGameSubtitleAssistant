@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import type { TimelineEvent } from "../../types";
-import { useTimelineStore } from "../../stores/timeline";
+import { useTimelineStore, SNAP_THRESHOLD_PX } from "../../stores/timeline";
 import { useProjectStore } from "../../stores/project";
 
 const timeline = useTimelineStore();
@@ -47,6 +47,8 @@ const drag = ref<{
   vTarget: string | null;
   /// 拖动中内容区屏幕矩形：鼠标越出可视区边缘时自动滚动
   bodyRect: DOMRect | null;
+  /// 候选吸附边界（所有其他事件 start/end 时间秒），拖动开始收集一次（静态）
+  snapEdges: number[];
 } | null>(null);
 let suppressClick = false;
 
@@ -87,6 +89,64 @@ function bounds(): {
 // 合并工具：resize 边缘拖过相邻边界该距离（px）即合并
 const MERGE_DRAG_PX = 30;
 
+// ── 吸附 ──
+
+/// 收集所有轨道所有事件的 start/end 时间（排除自身）：
+/// 拖动中候选边界集合静态，首次进入拖动时收集一次
+function collectSnapEdges(): number[] {
+  const edges: number[] = [];
+  const tracks = projectStore.currentProject?.tracks ?? [];
+  for (const track of tracks) {
+    for (const e of track.events) {
+      if (e.id === props.event.id) continue;
+      edges.push(e.start, e.end);
+    }
+  }
+  return edges;
+}
+
+/// 边界吸附：拖动关键边与候选边界像素距离 < 阈值时对齐。
+/// move 模式 start/end 双边缘都试（取更近命中）；l 只吸 start；r 只吸 end。
+/// 返回吸附后的 start/end 与标记线像素位置；无命中返回 null。
+function snapToEdges(
+  mode: DragMode,
+  start: number,
+  end: number,
+  edges: number[],
+  pps: number,
+  minStart: number,
+  maxEnd: number,
+): { start: number; end: number; guidePx: number } | null {
+  const dur = end - start;
+  let best: { start: number; end: number; guidePx: number } | null = null;
+  let bestDist = SNAP_THRESHOLD_PX;
+  for (const cand of edges) {
+    if (mode === "move" || mode === "l") {
+      const dist = Math.abs(start - cand) * pps;
+      if (dist < bestDist) {
+        const s = cand;
+        const e = mode === "move" ? s + dur : end;
+        if (s >= minStart && e <= maxEnd) {
+          best = { start: s, end: e, guidePx: cand * pps };
+          bestDist = dist;
+        }
+      }
+    }
+    if (mode === "move" || mode === "r") {
+      const dist = Math.abs(end - cand) * pps;
+      if (dist < bestDist) {
+        const e = cand;
+        const s = mode === "move" ? e - dur : start;
+        if (s >= minStart && e <= maxEnd) {
+          best = { start: s, end: e, guidePx: cand * pps };
+          bestDist = dist;
+        }
+      }
+    }
+  }
+  return best;
+}
+
 function onClipMouseDown(e: MouseEvent, mode: DragMode) {
   // 分割工具下不拖动（点击即分割是既有行为，不拦截冒泡）
   if (timeline.activeTool === "split") return;
@@ -103,6 +163,7 @@ function onClipMouseDown(e: MouseEvent, mode: DragMode) {
     vMode: false,
     vTarget: null,
     bodyRect: body ? body.getBoundingClientRect() : null,
+    snapEdges: [],
   };
   window.addEventListener("mousemove", onWindowMouseMove);
   window.addEventListener("mouseup", onWindowMouseUp);
@@ -141,6 +202,8 @@ function onWindowMouseMove(e: MouseEvent) {
     // 一次拖动 = 一个撤销步骤（首次超过阈值才记录，点击不产生空步骤；
     // 拖动中的 updateEventTime 不重复记录）
     projectStore.recordSnapshot();
+    // 候选吸附边界静态，进入拖动时收集一次
+    d.snapEdges = collectSnapEdges();
   }
 
   // 垂直换轨：asr 事件在 move 模式下垂直位移超过阈值 → 冻结时间，只换轨道
@@ -148,6 +211,7 @@ function onWindowMouseMove(e: MouseEvent) {
   if (d.mode === "move" && props.event.type === "asr" && timeline.activeTool !== "merge") {
     if (!d.vMode && Math.abs(dy) > V_DRAG_THRESHOLD) {
       d.vMode = true;
+      timeline.setSnapGuide(null);
     }
     if (d.vMode) {
       const target = vDragTargetAt(e.clientX, e.clientY);
@@ -160,6 +224,17 @@ function onWindowMouseMove(e: MouseEvent) {
   }
 
   const dt = (dx + scrollDelta) / timeline.pixelsPerSecond;
+  // 原位吸附：位移未超过吸附阈值时保持原位（不更新事件）
+  if (
+    d.moved &&
+    timeline.snapEnabled &&
+    timeline.activeTool === "select" &&
+    Math.abs(dx) < SNAP_THRESHOLD_PX
+  ) {
+    timeline.setSnapGuide(null);
+    return;
+  }
+
   const { minStart, maxEnd, prev, next } = bounds();
   const dur0 = d.origEnd - d.origStart;
   // 合并工具：resize 边缘拖过相邻边界超过阈值即直接合并相邻 clip
@@ -182,6 +257,27 @@ function onWindowMouseMove(e: MouseEvent) {
   } else {
     end = Math.max(d.origStart + MIN_DUR, Math.min(d.origEnd + dt, maxEnd));
   }
+
+  // 边界吸附：拖动关键边接近其他 clip 的 start/end 时对齐，并显示标记线
+  if (d.moved && timeline.snapEnabled && timeline.activeTool === "select" && d.snapEdges.length > 0) {
+    const snapped = snapToEdges(
+      d.mode,
+      start,
+      end,
+      d.snapEdges,
+      timeline.pixelsPerSecond,
+      minStart,
+      maxEnd,
+    );
+    if (snapped) {
+      start = snapped.start;
+      end = snapped.end;
+      timeline.setSnapGuide(snapped.guidePx);
+    } else {
+      timeline.setSnapGuide(null);
+    }
+  }
+
   projectStore.updateEventTime(props.event.id, start, end);
 }
 
@@ -200,6 +296,8 @@ function tryMergeWith(other: TimelineEvent): boolean {
 function onWindowMouseUp() {
   const d = drag.value;
   drag.value = null;
+  // 拖动结束：吸附标记线立即消失
+  timeline.setSnapGuide(null);
   window.removeEventListener("mousemove", onWindowMouseMove);
   window.removeEventListener("mouseup", onWindowMouseUp);
   // 垂直换轨：释放时若有有效目标轨道则移动事件，并清除悬停高亮

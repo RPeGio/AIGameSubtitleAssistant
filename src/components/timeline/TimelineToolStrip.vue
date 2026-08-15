@@ -75,6 +75,30 @@ const timeline = useTimelineStore();
         <polyline points="20.5 10 16.5 12 20.5 14" />
       </svg>
     </button>
+    <button
+      class="tool-btn"
+      :class="{ active: timeline.snapEnabled }"
+      :title="timeline.snapEnabled ? '吸附：开启' : '吸附：关闭'"
+      @click="timeline.toggleSnap()"
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="20"
+        height="20"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M6 15a4 4 0 0 0 4 4" />
+        <path d="M8.5 13.5a3.5 3.5 0 0 0 3 3" />
+        <path d="M18 9V5a2 2 0 0 0-4 0v4" />
+        <path d="M14 9V4a2 2 0 0 0-4 0v5" />
+        <path d="M10 9V6a2 2 0 0 0-4 0v9a8 8 0 0 0 8 8h1a8 8 0 0 0 7.9-6" />
+      </svg>
+    </button>
   </div>
 </template>
 
