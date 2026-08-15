@@ -236,6 +236,7 @@ function clipText(): string {
       return `(${e.x1.toFixed(2)}, ${e.y1.toFixed(2)}) → (${e.x2.toFixed(2)}, ${e.y2.toFixed(2)})`;
     case "ocr_text":
     case "asr":
+    case "fused":
     case "manual":
       return e.text.length > 24 ? e.text.slice(0, 24) + "…" : e.text;
   }

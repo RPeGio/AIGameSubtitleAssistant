@@ -6,6 +6,7 @@ export const CLIP_COLORS: Record<string, string> = {
   ocr_region: "#00b894",
   ocr_text: "#fdcb6e",
   asr: "#0984e3",
+  fused: "#00cec9",
   manual: "#a29bfe",
 };
 

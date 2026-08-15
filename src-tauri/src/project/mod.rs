@@ -25,6 +25,9 @@ pub enum TimelineEvent {
     /// ASR 语音识别结果，含说话人分离信息
     #[serde(rename = "asr")]
     Asr(AsrEvent),
+    /// AI 融合结果 —— OCR 文本与 ASR 融合后的最终字幕（Phase 4）
+    #[serde(rename = "fused")]
+    Fused(FusedEvent),
     /// 人工手动创建/编辑的字幕事件
     #[serde(rename = "manual")]
     Manual(ManualEvent),
@@ -74,6 +77,19 @@ pub struct AsrEvent {
     pub character: Option<String>,
     /// ASR 置信度 (0.0 ~ 1.0)
     pub confidence: f64,
+}
+
+/// AI 融合事件 —— LLM 将 OCR 文本与 ASR 段融合后的最终字幕（Phase 4）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FusedEvent {
+    pub id: String,
+    pub start: f64,
+    pub end: f64,
+    /// 融合后的最终文本（优先 OCR 文本，无匹配时保留 ASR 原文本）
+    pub text: String,
+    /// 角色名（LLM 从 OCR 文本提取），可能为空
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub character: Option<String>,
 }
 
 /// 手动创建的字幕事件 —— 用户手工添加或编辑的台词
@@ -409,5 +425,41 @@ mod tests {
         let json = serde_json::to_string(&track).unwrap();
         let back: Track = serde_json::from_str(&json).unwrap();
         assert!(!back.preview_visible);
+    }
+
+    #[test]
+    fn test_fused_event_roundtrip() {
+        // fused 事件：tagged union 序列化/反序列化往返
+        let ev = TimelineEvent::Fused(FusedEvent {
+            id: "f1".into(),
+            start: 1.5,
+            end: 4.2,
+            text: "旅行者，你来了".into(),
+            character: Some("派蒙".into()),
+        });
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains("\"type\":\"fused\""));
+        let back: TimelineEvent = serde_json::from_str(&json).unwrap();
+        match back {
+            TimelineEvent::Fused(f) => {
+                assert_eq!(f.id, "f1");
+                assert_eq!(f.text, "旅行者，你来了");
+                assert_eq!(f.character.as_deref(), Some("派蒙"));
+            }
+            _ => panic!("类型标签分发错误"),
+        }
+    }
+
+    #[test]
+    fn test_fused_event_character_omitted_when_none() {
+        let ev = TimelineEvent::Fused(FusedEvent {
+            id: "f2".into(),
+            start: 0.0,
+            end: 1.0,
+            text: "未匹配文本".into(),
+            character: None,
+        });
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(!json.contains("character"));
     }
 }

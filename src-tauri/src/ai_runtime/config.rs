@@ -43,6 +43,15 @@ pub struct RuntimeConfig {
     /// 文档建议的 8 线程反而慢 ~72%（解码带宽受限，甜点依机器而异）
     #[serde(default)]
     pub moss_threads: u32,
+    /// LLM 推理可执行文件（llama-cli）：相对 runtime（如 "bin/llama-cli.exe"，机器无关）或绝对路径；空 = 未配置
+    #[serde(default)]
+    pub llm_binary: String,
+    /// Qwen GGUF 模型文件（相对 runtime，如 "models/qwen/Qwen3-4B-Q4_K_M.gguf"）；空 = 未配置
+    #[serde(default)]
+    pub llm_model: String,
+    /// LLM 推理线程数：0 = 不设置（llama-cli 默认全核），沿用 MOSS 的实测结论
+    #[serde(default)]
+    pub llm_threads: u32,
 }
 
 fn default_ocr_model() -> String {
@@ -66,6 +75,9 @@ impl Default for RuntimeConfig {
             moss_binary: String::new(),
             moss_model: String::new(),
             moss_threads: 0,
+            llm_binary: String::new(),
+            llm_model: String::new(),
+            llm_threads: 0,
         }
     }
 }
@@ -154,9 +166,11 @@ impl RuntimeConfig {
     }
 
     /// 校验各路径的合法性：
-    /// - worker_script / deps_dir / model_dir / moss_binary / moss_model 必须解析在 runtime 目录内（防路径穿越）
+    /// - worker_script / deps_dir / model_dir / moss_binary / moss_model / llm_binary / llm_model
+    ///   必须解析在 runtime 目录内（防路径穿越）
     /// - python_path 解析后（相对则按 runtime 目录解析）必须存在
-    /// - moss_binary 非空时必须存在（缺失时 ASR 不可用，由 provider 报告原因）
+    /// - moss_binary / llm_binary 非空时必须存在（缺失时对应运行时不可用，由 provider 报告原因）
+    /// - moss_model / llm_model 不做存在性检查（模型缺失时由 provider 报告"未就绪"原因）
     pub fn validate(&self, runtime_dir: &Path) -> Result<(), String> {
         for (name, value) in [
             ("worker_script", &self.worker_script),
@@ -164,6 +178,8 @@ impl RuntimeConfig {
             ("model_dir", &self.model_dir),
             ("moss_binary", &self.moss_binary),
             ("moss_model", &self.moss_model),
+            ("llm_binary", &self.llm_binary),
+            ("llm_model", &self.llm_model),
         ] {
             let pb = PathBuf::from(value);
             let joined = if pb.is_absolute() {
@@ -190,24 +206,34 @@ impl RuntimeConfig {
             ));
         }
 
-        // moss_binary 非空时必须真的存在（与 python_path 同策略）
-        if !self.moss_binary.is_empty() {
-            let mb = PathBuf::from(&self.moss_binary);
-            let joined = if mb.is_absolute() {
-                mb
-            } else {
-                runtime_dir.join(mb)
-            };
-            if !joined.is_file() {
-                return Err(format!(
-                    "moss_binary 指向的文件不存在: {}（按 {} 解析）",
-                    self.moss_binary,
-                    joined.display()
-                ));
-            }
-        }
+        // moss_binary / llm_binary 非空时必须真的存在（与 python_path 同策略）
+        ensure_binary_exists("moss_binary", &self.moss_binary, runtime_dir)?;
+        ensure_binary_exists("llm_binary", &self.llm_binary, runtime_dir)?;
         Ok(())
     }
+}
+
+/// 可执行文件存在性检查：空值（未配置）直接通过；
+/// 非空时按 runtime 目录解析（绝对路径原样使用），文件缺失返回 Err。
+fn ensure_binary_exists(name: &str, value: &str, runtime_dir: &Path) -> Result<(), String> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    let pb = PathBuf::from(value);
+    let joined = if pb.is_absolute() {
+        pb
+    } else {
+        runtime_dir.join(pb)
+    };
+    if !joined.is_file() {
+        return Err(format!(
+            "{} 指向的文件不存在: {}（按 {} 解析）",
+            name,
+            value,
+            joined.display()
+        ));
+    }
+    Ok(())
 }
 
 // ─── 单元测试 ─────────────────────────────────────────────
@@ -234,6 +260,9 @@ mod tests {
             moss_binary: "bin/moss-transcribe.exe".into(),
             moss_model: "models/moss/moss-transcribe-q5_k.gguf".into(),
             moss_threads: 8,
+            llm_binary: "bin/llama-cli.exe".into(),
+            llm_model: "models/qwen/Qwen3-4B-Q4_K_M.gguf".into(),
+            llm_threads: 4,
         };
         cfg.save(&dir).unwrap();
 
@@ -248,6 +277,9 @@ mod tests {
         assert_eq!(loaded.moss_binary, "bin/moss-transcribe.exe");
         assert_eq!(loaded.moss_model, "models/moss/moss-transcribe-q5_k.gguf");
         assert_eq!(loaded.moss_threads, 8);
+        assert_eq!(loaded.llm_binary, "bin/llama-cli.exe");
+        assert_eq!(loaded.llm_model, "models/qwen/Qwen3-4B-Q4_K_M.gguf");
+        assert_eq!(loaded.llm_threads, 4);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -275,6 +307,7 @@ mod tests {
         // 相对 python_path 需解析到 runtime 内且文件存在
         fs::write(dir.join("python.exe"), b"dummy").unwrap();
         fs::write(dir.join("moss-transcribe.exe"), b"dummy").unwrap();
+        fs::write(dir.join("llama-cli.exe"), b"dummy").unwrap();
         let cfg = RuntimeConfig {
             python_path: "python.exe".into(),
             worker_script: "worker/ocr_worker.py".into(),
@@ -286,6 +319,9 @@ mod tests {
             moss_binary: "moss-transcribe.exe".into(),
             moss_model: "models/moss/moss-transcribe-q5_k.gguf".into(),
             moss_threads: 8,
+            llm_binary: "llama-cli.exe".into(),
+            llm_model: "models/qwen/Qwen3-4B-Q4_K_M.gguf".into(),
+            llm_threads: 4,
         };
         assert!(cfg.validate(&dir).is_ok());
         let _ = fs::remove_dir_all(&dir);
@@ -334,6 +370,9 @@ mod tests {
         assert_eq!(cfg.moss_binary, "");
         assert_eq!(cfg.moss_model, "");
         assert_eq!(cfg.moss_threads, 0);
+        assert_eq!(cfg.llm_binary, "");
+        assert_eq!(cfg.llm_model, "");
+        assert_eq!(cfg.llm_threads, 0);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -381,6 +420,58 @@ mod tests {
     fn test_validate_empty_moss_binary_ok() {
         // moss 未配置（空）→ 合法，ASR 由 NoneProvider 兜底
         let dir = temp_dir("cfg_no_moss");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("python.exe"), b"dummy").unwrap();
+        let mut cfg = RuntimeConfig::default();
+        cfg.python_path = "python.exe".into();
+        assert!(cfg.validate(&dir).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_validate_rejects_llm_traversal() {
+        let dir = temp_dir("cfg_llm_traversal");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("python.exe"), b"dummy").unwrap();
+        let mut cfg = RuntimeConfig::default();
+        cfg.python_path = "python.exe".into();
+        cfg.llm_binary = "../evil.exe".into();
+        assert!(cfg.validate(&dir).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_validate_rejects_missing_llm_binary() {
+        let dir = temp_dir("cfg_missing_llm");
+        fs::create_dir_all(&dir).unwrap();
+        // python 就绪，确保错误来自 llm_binary 分支
+        fs::write(dir.join("python.exe"), b"dummy").unwrap();
+        let mut cfg = RuntimeConfig::default();
+        cfg.python_path = "python.exe".into();
+        cfg.llm_binary = "bin/llama-cli.exe".into();
+        assert!(cfg.validate(&dir).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_validate_llm_model_missing_ok() {
+        // llm_model 不做存在性检查：模型缺失时由 provider 报告"未就绪"原因
+        let dir = temp_dir("cfg_llm_model_missing");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("python.exe"), b"dummy").unwrap();
+        fs::write(dir.join("llama-cli.exe"), b"dummy").unwrap();
+        let mut cfg = RuntimeConfig::default();
+        cfg.python_path = "python.exe".into();
+        cfg.llm_binary = "llama-cli.exe".into();
+        cfg.llm_model = "models/qwen/missing.gguf".into();
+        assert!(cfg.validate(&dir).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_validate_empty_llm_binary_ok() {
+        // llm 未配置（空）→ 合法，LLM 由 NoneProvider 兜底
+        let dir = temp_dir("cfg_no_llm");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("python.exe"), b"dummy").unwrap();
         let mut cfg = RuntimeConfig::default();

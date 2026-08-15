@@ -15,15 +15,14 @@ interface PreviewLine {
   text: string;
 }
 
-/// 角色/说话人前缀：asr 优先 character 再 speaker；manual 用 character。
-/// 注：fused 类型在 llm 分支合并后启用（当前分支 types 尚无该事件）
+/// 角色/说话人前缀：asr 优先 character 再 speaker；fused/manual 用 character
 function prefixOf(e: TimelineEvent): string {
   if (e.type === "asr") {
     if (e.character) return e.character;
     if (e.speaker) return e.speaker;
     return "";
   }
-  if (e.type === "manual") {
+  if (e.type === "fused" || e.type === "manual") {
     return e.character ?? "";
   }
   return "";
