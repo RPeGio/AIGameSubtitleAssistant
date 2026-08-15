@@ -126,7 +126,8 @@ function snapToEdges(
       if (dist < bestDist) {
         const s = cand;
         const e = mode === "move" ? s + dur : end;
-        if (s >= minStart && e <= maxEnd) {
+        // 同 clamp 语义：不得越过相邻边界、时长不得小于 MIN_DUR
+        if (s >= minStart && e <= maxEnd && e - s >= MIN_DUR) {
           best = { start: s, end: e, guidePx: cand * pps };
           bestDist = dist;
         }
@@ -137,7 +138,7 @@ function snapToEdges(
       if (dist < bestDist) {
         const e = cand;
         const s = mode === "move" ? e - dur : start;
-        if (s >= minStart && e <= maxEnd) {
+        if (s >= minStart && e <= maxEnd && e - s >= MIN_DUR) {
           best = { start: s, end: e, guidePx: cand * pps };
           bestDist = dist;
         }
@@ -197,7 +198,12 @@ function onWindowMouseMove(e: MouseEvent) {
   }
   const dx = e.clientX - d.startX;
   const dy = e.clientY - d.startY;
-  if (!d.moved && Math.abs(dx) > DRAG_THRESHOLD) {
+  // 拖动判定阈值：吸附开启（select 工具）时用吸附阈值——位移未到阈值
+  // 保持原位且不记快照（避免亚阈值拖动产生空撤销步骤）；
+  // 其余情况沿用点击判定阈值 3px
+  const dragThreshold =
+    timeline.snapEnabled && timeline.activeTool === "select" ? SNAP_THRESHOLD_PX : DRAG_THRESHOLD;
+  if (!d.moved && Math.abs(dx) > dragThreshold) {
     d.moved = true;
     // 一次拖动 = 一个撤销步骤（首次超过阈值才记录，点击不产生空步骤；
     // 拖动中的 updateEventTime 不重复记录）
@@ -224,16 +230,6 @@ function onWindowMouseMove(e: MouseEvent) {
   }
 
   const dt = (dx + scrollDelta) / timeline.pixelsPerSecond;
-  // 原位吸附：位移未超过吸附阈值时保持原位（不更新事件）
-  if (
-    d.moved &&
-    timeline.snapEnabled &&
-    timeline.activeTool === "select" &&
-    Math.abs(dx) < SNAP_THRESHOLD_PX
-  ) {
-    timeline.setSnapGuide(null);
-    return;
-  }
 
   const { minStart, maxEnd, prev, next } = bounds();
   const dur0 = d.origEnd - d.origStart;

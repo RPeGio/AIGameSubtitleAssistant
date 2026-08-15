@@ -431,11 +431,13 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 吸附标记线：贯穿轨道区，拖动吸附时显示 -->
+    <!-- 吸附标记线：贯穿轨道区，拖动吸附时显示（虚拟滚动，需减 scrollLeft） -->
     <div
       v-if="timeline.snapGuideX !== null"
       class="snap-guide"
-      :style="{ left: TOOL_WIDTH + LABEL_WIDTH + timeline.snapGuideX + 'px' }"
+      :style="{
+        left: TOOL_WIDTH + LABEL_WIDTH + timeline.snapGuideX - timeline.scrollLeft + 'px',
+      }"
     />
   </div>
 </template>
