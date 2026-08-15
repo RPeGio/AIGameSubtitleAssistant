@@ -86,17 +86,10 @@ const timeline = useTimelineStore();
         width="20"
         height="20"
         viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
+        fill="currentColor"
+        stroke="none"
       >
-        <path d="M6 15a4 4 0 0 0 4 4" />
-        <path d="M8.5 13.5a3.5 3.5 0 0 0 3 3" />
-        <path d="M18 9V5a2 2 0 0 0-4 0v4" />
-        <path d="M14 9V4a2 2 0 0 0-4 0v5" />
-        <path d="M10 9V6a2 2 0 0 0-4 0v9a8 8 0 0 0 8 8h1a8 8 0 0 0 7.9-6" />
+        <path d="M14,12a2,2,0,0,1-4,0V2H2V12a10,10,0,0,0,20,0V2H14ZM8,4V6H4V4ZM20,4V6H16V4Zm-4,8V8h4v4A8,8,0,0,1,4,12V8H8v4a4,4,0,0,0,8,0Z" />
       </svg>
     </button>
   </div>
