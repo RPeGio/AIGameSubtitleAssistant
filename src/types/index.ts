@@ -47,6 +47,8 @@ export interface Track {
   /// 轨道内容属性（仅 asr 轨道使用）："streamer" 主播语音 | "game" 游戏内容
   /// 旧项目缺省视为 "game"
   track_role: string;
+  /// 是否在预览窗口中显示该轨道字幕（纯显示偏好，随项目保存）
+  preview_visible: boolean;
   events: TimelineEvent[];
 }
 

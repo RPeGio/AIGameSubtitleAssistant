@@ -10,6 +10,9 @@ export const CLIP_COLORS: Record<string, string> = {
   manual: "#a29bfe",
 };
 
+/// 参与字幕预览/文字编辑的轨道类型（眼睛开关与预览渲染共用，防两处漂移）
+export const TEXT_TRACK_TYPES = ["ocr_text", "asr", "fused", "manual"];
+
 export const useTimelineStore = defineStore("timeline", () => {
   const pixelsPerSecond = ref(100);
   const scrollLeft = ref(0);

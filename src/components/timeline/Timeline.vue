@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { NModal, NPopconfirm, NSelect, NButton } from "naive-ui";
-import { useTimelineStore, CLIP_COLORS } from "../../stores/timeline";
+import { useTimelineStore, CLIP_COLORS, TEXT_TRACK_TYPES } from "../../stores/timeline";
 import { useProjectStore } from "../../stores/project";
 import type { Track } from "../../types";
 import TimelineRuler from "./TimelineRuler.vue";
@@ -14,7 +14,11 @@ const projectStore = useProjectStore();
 
 // 布局常量：工具列宽度 + 轨道标签列宽度
 const TOOL_WIDTH = 40;
-const LABEL_WIDTH = 180;
+const LABEL_WIDTH = 220;
+
+function isTextTrackType(type: string): boolean {
+  return TEXT_TRACK_TYPES.includes(type);
+}
 
 const tracks = () => projectStore.currentProject?.tracks ?? [];
 const rootRef = ref<HTMLElement | null>(null);
@@ -331,6 +335,14 @@ onUnmounted(() => {
             </div>
             <div class="label-type">{{ track.type }}</div>
             <div v-if="renameTrackId !== track.id" class="tl-label-actions" @click.stop>
+              <button
+                v-if="isTextTrackType(track.type)"
+                class="tl-label-btn"
+                :title="track.preview_visible ? '隐藏预览' : '显示预览'"
+                @click="projectStore.toggleTrackPreview(track.id)"
+              >
+                {{ track.preview_visible ? "👁" : "🚫" }}
+              </button>
               <button class="tl-label-btn" title="上移轨道" @click="onMoveTrack(track, 'up')">↑</button>
               <button class="tl-label-btn" title="下移轨道" @click="onMoveTrack(track, 'down')">↓</button>
               <button class="tl-label-btn" title="合并到其他轨道" @click="onMergeOpen(track)">⇄</button>
@@ -470,8 +482,8 @@ onUnmounted(() => {
 .tl-label-col {
   position: relative;
   z-index: 30;
-  min-width: 180px;
-  max-width: 180px;
+  min-width: 220px;
+  max-width: 220px;
   border-right: 1px solid var(--color-border);
   background: var(--color-bg-secondary);
   display: flex;

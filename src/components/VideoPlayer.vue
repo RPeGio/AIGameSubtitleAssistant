@@ -2,11 +2,14 @@
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useTimelineStore } from "../stores/timeline";
+import { useProjectStore } from "../stores/project";
 import RegionOverlay from "./RegionOverlay.vue";
+import SubtitleOverlay from "./SubtitleOverlay.vue";
 
 const props = defineProps<{ src: string }>();
 
 const timeline = useTimelineStore();
+const projectStore = useProjectStore();
 
 const videoRef = ref<HTMLVideoElement | null>(null);
 const currentTime = ref(0);
@@ -130,6 +133,18 @@ onUnmounted(() => window.removeEventListener("keydown", handleKeydown));
 
       <RegionOverlay />
 
+      <SubtitleOverlay />
+
+      <button
+        class="cc-btn"
+        :class="{ active: projectStore.subtitlePreviewOn }"
+        :disabled="!isLoaded"
+        title="字幕预览开关"
+        @click="projectStore.subtitlePreviewOn = !projectStore.subtitlePreviewOn"
+      >
+        CC
+      </button>
+
       <div v-if="loadError" class="player-overlay">
         <span class="error-text">{{ loadError }}</span>
       </div>
@@ -191,6 +206,39 @@ onUnmounted(() => window.removeEventListener("keydown", handleKeydown));
   background: rgba(0, 0, 0, 0.6);
   font-size: 14px;
   color: var(--color-text-secondary);
+}
+
+.cc-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 20;
+  min-width: 30px;
+  height: 22px;
+  padding: 0 6px;
+  border: none;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.5);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.cc-btn:hover {
+  background: rgba(0, 0, 0, 0.75);
+  color: var(--color-text-primary);
+}
+
+.cc-btn.active {
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.cc-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .error-text {
