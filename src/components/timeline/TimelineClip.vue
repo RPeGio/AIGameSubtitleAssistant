@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import type { TimelineEvent } from "../../types";
-import { useTimelineStore } from "../../stores/timeline";
+import { useTimelineStore, SNAP_THRESHOLD_PX } from "../../stores/timeline";
 import { useProjectStore } from "../../stores/project";
 
 const timeline = useTimelineStore();
@@ -47,6 +47,8 @@ const drag = ref<{
   vTarget: string | null;
   /// 拖动中内容区屏幕矩形：鼠标越出可视区边缘时自动滚动
   bodyRect: DOMRect | null;
+  /// 候选吸附边界（所有其他事件 start/end 时间秒），拖动开始收集一次（静态）
+  snapEdges: number[];
 } | null>(null);
 let suppressClick = false;
 
@@ -87,6 +89,82 @@ function bounds(): {
 // 合并工具：resize 边缘拖过相邻边界该距离（px）即合并
 const MERGE_DRAG_PX = 30;
 
+// ── 吸附 ──
+
+/// 收集所有轨道所有事件的 start/end 时间 + 自身原位置边界（移走后可吸回原位）：
+/// 拖动中候选边界集合静态，首次进入拖动时收集一次
+function collectSnapEdges(): number[] {
+  const edges: number[] = [];
+  const d = drag.value;
+  // 自身原边界：clip 移走后仍能吸附回原位
+  edges.push(d?.origStart ?? props.event.start, d?.origEnd ?? props.event.end);
+  const tracks = projectStore.currentProject?.tracks ?? [];
+  for (const track of tracks) {
+    for (const e of track.events) {
+      if (e.id === props.event.id) continue;
+      edges.push(e.start, e.end);
+    }
+  }
+  return edges;
+}
+
+/// 边界吸附：拖动关键边与候选边界像素距离 < 阈值时对齐。
+/// move 模式 start/end 双边缘都试（取更近命中）；l 只吸 start；r 只吸 end。
+/// 返回吸附后的 start/end 与标记线像素位置；无命中返回 null。
+function snapToEdges(
+  mode: DragMode,
+  start: number,
+  end: number,
+  edges: number[],
+  pps: number,
+  minStart: number,
+  maxEnd: number,
+): { start: number; end: number; guidePx: number } | null {
+  const dur = end - start;
+  let best: { start: number; end: number; guidePx: number } | null = null;
+  let bestDist = SNAP_THRESHOLD_PX;
+  for (const cand of edges) {
+    if (mode === "move" || mode === "l") {
+      const dist = Math.abs(start - cand) * pps;
+      if (dist < bestDist) {
+        const s = cand;
+        const e = mode === "move" ? s + dur : end;
+        // 同 clamp 语义：不得越过相邻边界、时长不得小于 MIN_DUR
+        if (s >= minStart && e <= maxEnd && e - s >= MIN_DUR) {
+          best = { start: s, end: e, guidePx: cand * pps };
+          bestDist = dist;
+        }
+      }
+    }
+    if (mode === "move" || mode === "r") {
+      const dist = Math.abs(end - cand) * pps;
+      if (dist < bestDist) {
+        const e = cand;
+        const s = mode === "move" ? e - dur : start;
+        if (s >= minStart && e <= maxEnd && e - s >= MIN_DUR) {
+          best = { start: s, end: e, guidePx: cand * pps };
+          bestDist = dist;
+        }
+      }
+    }
+  }
+  return best;
+}
+
+// ── 原位虚影 ──
+// 拖动中在原始位置渲染虚线框（内容区绝对坐标，随滚动移动）；
+// mouseup 后 drag=null 自动销毁
+const ghostStyle = computed(() => {
+  const d = drag.value;
+  if (!d) return {};
+  const pps = timeline.pixelsPerSecond;
+  const dur = d.origEnd - d.origStart;
+  return {
+    left: d.origStart * pps - timeline.scrollLeft + "px",
+    width: Math.max(4, dur * pps) + "px",
+  };
+});
+
 function onClipMouseDown(e: MouseEvent, mode: DragMode) {
   // 分割工具下不拖动（点击即分割是既有行为，不拦截冒泡）
   if (timeline.activeTool === "split") return;
@@ -103,6 +181,7 @@ function onClipMouseDown(e: MouseEvent, mode: DragMode) {
     vMode: false,
     vTarget: null,
     bodyRect: body ? body.getBoundingClientRect() : null,
+    snapEdges: [],
   };
   window.addEventListener("mousemove", onWindowMouseMove);
   window.addEventListener("mouseup", onWindowMouseUp);
@@ -136,18 +215,30 @@ function onWindowMouseMove(e: MouseEvent) {
   }
   const dx = e.clientX - d.startX;
   const dy = e.clientY - d.startY;
-  if (!d.moved && Math.abs(dx) > DRAG_THRESHOLD) {
+  // 拖动判定阈值：吸附开启（select 工具）时用吸附阈值——位移未到阈值
+  // 保持原位且不记快照（避免亚阈值拖动产生空撤销步骤）；
+  // 其余情况沿用点击判定阈值 3px
+  const dragThreshold =
+    timeline.snapEnabled && timeline.activeTool === "select" ? SNAP_THRESHOLD_PX : DRAG_THRESHOLD;
+  if (!d.moved && Math.abs(dx) > dragThreshold) {
     d.moved = true;
     // 一次拖动 = 一个撤销步骤（首次超过阈值才记录，点击不产生空步骤；
     // 拖动中的 updateEventTime 不重复记录）
     projectStore.recordSnapshot();
+    // 候选吸附边界静态，进入拖动时收集一次
+    d.snapEdges = collectSnapEdges();
   }
 
-  // 垂直换轨：asr 事件在 move 模式下垂直位移超过阈值 → 冻结时间，只换轨道
+  // 垂直换轨：asr 事件在 move 模式下垂直位移超过阈值 → 冻结时间，只换轨道；
+  // 鼠标移回源轨道区域（dy 回落）时退出，恢复水平拖动。
   // 合并工具有自己的拖动语义（resize 过界合并），不进入换轨
   if (d.mode === "move" && props.event.type === "asr" && timeline.activeTool !== "merge") {
     if (!d.vMode && Math.abs(dy) > V_DRAG_THRESHOLD) {
       d.vMode = true;
+      timeline.setSnapGuide(null);
+    } else if (d.vMode && Math.abs(dy) < V_DRAG_THRESHOLD) {
+      d.vMode = false;
+      emit("v-drag-target", null);
     }
     if (d.vMode) {
       const target = vDragTargetAt(e.clientX, e.clientY);
@@ -159,7 +250,12 @@ function onWindowMouseMove(e: MouseEvent) {
     }
   }
 
+  // 位移未达拖动阈值（点击 or 原位吸附区间）→ 不更新事件：
+  // 保持原位，且未记快照无需撤销
+  if (!d.moved) return;
+
   const dt = (dx + scrollDelta) / timeline.pixelsPerSecond;
+
   const { minStart, maxEnd, prev, next } = bounds();
   const dur0 = d.origEnd - d.origStart;
   // 合并工具：resize 边缘拖过相邻边界超过阈值即直接合并相邻 clip
@@ -182,6 +278,27 @@ function onWindowMouseMove(e: MouseEvent) {
   } else {
     end = Math.max(d.origStart + MIN_DUR, Math.min(d.origEnd + dt, maxEnd));
   }
+
+  // 边界吸附：拖动关键边接近其他 clip 的 start/end 时对齐，并显示标记线
+  if (d.moved && timeline.snapEnabled && timeline.activeTool === "select" && d.snapEdges.length > 0) {
+    const snapped = snapToEdges(
+      d.mode,
+      start,
+      end,
+      d.snapEdges,
+      timeline.pixelsPerSecond,
+      minStart,
+      maxEnd,
+    );
+    if (snapped) {
+      start = snapped.start;
+      end = snapped.end;
+      timeline.setSnapGuide(snapped.guidePx);
+    } else {
+      timeline.setSnapGuide(null);
+    }
+  }
+
   projectStore.updateEventTime(props.event.id, start, end);
 }
 
@@ -200,6 +317,8 @@ function tryMergeWith(other: TimelineEvent): boolean {
 function onWindowMouseUp() {
   const d = drag.value;
   drag.value = null;
+  // 拖动结束：吸附标记线立即消失
+  timeline.setSnapGuide(null);
   window.removeEventListener("mousemove", onWindowMouseMove);
   window.removeEventListener("mouseup", onWindowMouseUp);
   // 垂直换轨：释放时若有有效目标轨道则移动事件，并清除悬停高亮
@@ -245,6 +364,11 @@ function clipText(): string {
 
 <template>
   <div
+    v-if="drag && drag.moved"
+    class="clip-ghost"
+    :style="{ ...ghostStyle, borderColor: color, color }"
+  />
+  <div
     class="clip"
     :class="{ focused, dragging: drag !== null, 'v-dragging': drag?.vMode, 'split-tool': timeline.activeTool === 'split' }"
     :data-event-id="event.id"
@@ -282,6 +406,19 @@ function clipText(): string {
   overflow: hidden;
   cursor: pointer;
   transition: box-shadow 0.1s;
+}
+
+/* 原位虚影：拖动中显示在原始位置的虚线框 */
+.clip-ghost {
+  position: absolute;
+  top: 4px;
+  height: 32px;
+  border: 2px dashed;
+  border-radius: 4px;
+  box-sizing: border-box;
+  background: color-mix(in srgb, currentColor 20%, transparent);
+  pointer-events: none;
+  z-index: 1;
 }
 
 .clip.focused {

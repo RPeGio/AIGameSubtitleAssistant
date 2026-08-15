@@ -13,6 +13,9 @@ export const CLIP_COLORS: Record<string, string> = {
 /// 参与字幕预览/文字编辑的轨道类型（眼睛开关与预览渲染共用，防两处漂移）
 export const TEXT_TRACK_TYPES = ["ocr_text", "asr", "fused", "manual"];
 
+/// 统一吸附阈值（像素）：clip 边缘与吸附点距离小于该值即对齐
+export const SNAP_THRESHOLD_PX = 8;
+
 export const useTimelineStore = defineStore("timeline", () => {
   const pixelsPerSecond = ref(100);
   const scrollLeft = ref(0);
@@ -23,6 +26,10 @@ export const useTimelineStore = defineStore("timeline", () => {
   const focusedTrackId = ref<string | null>(null);
   const activeTool = ref<"select" | "split" | "merge">("select");
   const viewportWidth = ref(0);
+  /// 吸附开关（默认开启）
+  const snapEnabled = ref(true);
+  /// 吸附标记线位置（内容区像素坐标；null = 不显示）
+  const snapGuideX = ref<number | null>(null);
 
   const totalWidth = computed(() => duration.value * pixelsPerSecond.value);
 
@@ -96,6 +103,16 @@ export const useTimelineStore = defineStore("timeline", () => {
     activeTool.value = tool;
   }
 
+  function toggleSnap() {
+    snapEnabled.value = !snapEnabled.value;
+    snapGuideX.value = null;
+  }
+
+  /// 设置吸附标记线位置（内容区像素坐标）；null 清除
+  function setSnapGuide(x: number | null) {
+    snapGuideX.value = x;
+  }
+
   function clipPosition(event: TimelineEvent) {
     const pps = pixelsPerSecond.value;
     return {
@@ -128,6 +145,8 @@ export const useTimelineStore = defineStore("timeline", () => {
     activeTool,
     viewportWidth,
     totalWidth,
+    snapEnabled,
+    snapGuideX,
     tick,
     scrubbing,
     seek,
@@ -142,6 +161,8 @@ export const useTimelineStore = defineStore("timeline", () => {
     focusClip,
     focusTrack,
     setTool,
+    toggleSnap,
+    setSnapGuide,
     clipPosition,
     jumpTo,
   };
