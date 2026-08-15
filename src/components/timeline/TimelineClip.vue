@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import type { TimelineEvent } from "../../types";
 import { useTimelineStore, SNAP_THRESHOLD_PX } from "../../stores/timeline";
 import { useProjectStore } from "../../stores/project";
@@ -91,10 +91,13 @@ const MERGE_DRAG_PX = 30;
 
 // ── 吸附 ──
 
-/// 收集所有轨道所有事件的 start/end 时间（排除自身）：
+/// 收集所有轨道所有事件的 start/end 时间 + 自身原位置边界（移走后可吸回原位）：
 /// 拖动中候选边界集合静态，首次进入拖动时收集一次
 function collectSnapEdges(): number[] {
   const edges: number[] = [];
+  const d = drag.value;
+  // 自身原边界：clip 移走后仍能吸附回原位
+  edges.push(d?.origStart ?? props.event.start, d?.origEnd ?? props.event.end);
   const tracks = projectStore.currentProject?.tracks ?? [];
   for (const track of tracks) {
     for (const e of track.events) {
@@ -147,6 +150,20 @@ function snapToEdges(
   }
   return best;
 }
+
+// ── 原位虚影 ──
+// 拖动中在原始位置渲染虚线框（内容区绝对坐标，随滚动移动）；
+// mouseup 后 drag=null 自动销毁
+const ghostStyle = computed(() => {
+  const d = drag.value;
+  if (!d) return {};
+  const pps = timeline.pixelsPerSecond;
+  const dur = d.origEnd - d.origStart;
+  return {
+    left: d.origStart * pps - timeline.scrollLeft + "px",
+    width: Math.max(4, dur * pps) + "px",
+  };
+});
 
 function onClipMouseDown(e: MouseEvent, mode: DragMode) {
   // 分割工具下不拖动（点击即分割是既有行为，不拦截冒泡）
@@ -343,6 +360,11 @@ function clipText(): string {
 
 <template>
   <div
+    v-if="drag && drag.moved"
+    class="clip-ghost"
+    :style="{ ...ghostStyle, borderColor: color, color }"
+  />
+  <div
     class="clip"
     :class="{ focused, dragging: drag !== null, 'v-dragging': drag?.vMode, 'split-tool': timeline.activeTool === 'split' }"
     :data-event-id="event.id"
@@ -380,6 +402,19 @@ function clipText(): string {
   overflow: hidden;
   cursor: pointer;
   transition: box-shadow 0.1s;
+}
+
+/* 原位虚影：拖动中显示在原始位置的虚线框 */
+.clip-ghost {
+  position: absolute;
+  top: 4px;
+  height: 32px;
+  border: 2px dashed;
+  border-radius: 4px;
+  box-sizing: border-box;
+  background: color-mix(in srgb, currentColor 20%, transparent);
+  pointer-events: none;
+  z-index: 1;
 }
 
 .clip.focused {
