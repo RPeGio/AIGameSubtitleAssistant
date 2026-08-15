@@ -229,12 +229,16 @@ function onWindowMouseMove(e: MouseEvent) {
     d.snapEdges = collectSnapEdges();
   }
 
-  // 垂直换轨：asr 事件在 move 模式下垂直位移超过阈值 → 冻结时间，只换轨道
+  // 垂直换轨：asr 事件在 move 模式下垂直位移超过阈值 → 冻结时间，只换轨道；
+  // 鼠标移回源轨道区域（dy 回落）时退出，恢复水平拖动。
   // 合并工具有自己的拖动语义（resize 过界合并），不进入换轨
   if (d.mode === "move" && props.event.type === "asr" && timeline.activeTool !== "merge") {
     if (!d.vMode && Math.abs(dy) > V_DRAG_THRESHOLD) {
       d.vMode = true;
       timeline.setSnapGuide(null);
+    } else if (d.vMode && Math.abs(dy) < V_DRAG_THRESHOLD) {
+      d.vMode = false;
+      emit("v-drag-target", null);
     }
     if (d.vMode) {
       const target = vDragTargetAt(e.clientX, e.clientY);
