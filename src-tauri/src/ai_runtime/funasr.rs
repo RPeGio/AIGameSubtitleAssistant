@@ -163,9 +163,11 @@ impl FunAsrProvider {
 
     /// 终止系统上历史残留的 funasr_worker 孤儿进程（本次子进程尚未 spawn，
     /// 不会误杀自己）。python.exe 与 OCR worker 同名，故按命令行过滤。
+    /// wmic 在 Win11 24H2+/Server 2025 已被移除，失败时回退 PowerShell
+    /// Get-CimInstance（同一过滤语义）。
     #[cfg(windows)]
     fn cleanup_stale_funasr_processes(&self) {
-        let output = match Command::new("wmic")
+        let wmic_out = Command::new("wmic")
             .args([
                 "process",
                 "where",
@@ -174,27 +176,36 @@ impl FunAsrProvider {
                 "ProcessId,CommandLine",
                 "/format:csv",
             ])
-            .output()
-        {
-            Ok(o) => o,
-            Err(e) => {
-                if self.dev_debug {
-                    eprintln!("[funasr] wmic 调用失败，跳过残留清理: {}", e);
+            .output();
+        match wmic_out {
+            Ok(o) if o.status.success() => {
+                for pid in Self::parse_wmic_pids(&String::from_utf8_lossy(&o.stdout), "funasr_worker.py") {
+                    Self::kill_pid(pid);
                 }
-                return;
             }
-        };
-        for pid in Self::parse_wmic_pids(
-            &String::from_utf8_lossy(&output.stdout),
-            "funasr_worker.py",
-        ) {
-            if self.dev_debug {
-                eprintln!("[funasr] 清理残留转写进程 PID {}", pid);
+            _ => {
+                // PowerShell 按命令行过滤（不含引号嵌套，Rust 侧 argv 直传无 shell 展开）
+                let script = "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -like '*funasr_worker.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }";
+                if let Err(e) = Command::new("powershell")
+                    .args(["-NoProfile", "-Command", script])
+                    .output()
+                {
+                    if self.dev_debug {
+                        eprintln!("[funasr] 残留清理失败（wmic 与 powershell 均不可用）: {}", e);
+                    }
+                } else if self.dev_debug {
+                    eprintln!("[funasr] 已用 PowerShell 清理残留转写进程");
+                }
             }
-            let _ = Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F"])
-                .output();
         }
+    }
+
+    /// taskkill 单个进程（幂等：进程已不存在时忽略错误）
+    #[cfg(windows)]
+    fn kill_pid(pid: u32) {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .output();
     }
 
     /// 非 Windows 平台：无 wmic/taskkill，跳过清理（当前项目仅 Windows 部署）

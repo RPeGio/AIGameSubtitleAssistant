@@ -508,7 +508,12 @@ impl AsrManager {
             "funasr" => AsrProviderKind::FunAsr,
             "moss" => AsrProviderKind::Moss,
             _ => {
-                if !config.funasr_worker.is_empty() {
+                // 自动：funasr 三路径字段齐全（worker/deps/model_dir，bootstrap 一次写全）
+                // 才算配置了 funasr，否则回退 moss——半配置（只填了 worker）不劫持 moss
+                if !config.funasr_worker.is_empty()
+                    && !config.funasr_deps.is_empty()
+                    && !config.funasr_model_dir.is_empty()
+                {
                     AsrProviderKind::FunAsr
                 } else if !config.moss_binary.is_empty() {
                     AsrProviderKind::Moss
@@ -617,13 +622,24 @@ mod asr_tests {
 
     #[test]
     fn test_asr_manager_auto_selects_funasr_when_configured() {
-        // 空 asr_provider + funasr_worker 非空 → 自动选 funasr
+        // 空 asr_provider + funasr 三路径字段齐全 → 自动选 funasr
         let mut config = RuntimeConfig::default();
         config.funasr_worker = "worker/funasr_worker.py".into();
         config.funasr_deps = "deps_funasr".into();
+        config.funasr_model_dir = "models/funasr".into();
         config.moss_binary = "bin/moss-transcribe.exe".into();
         let manager = AsrManager::new(config, PathBuf::from("no_such_runtime_xyz"));
         assert_eq!(manager.with_provider(|p| p.name().to_string()), "funasr");
+    }
+
+    #[test]
+    fn test_asr_manager_auto_falls_back_to_moss_on_partial_funasr() {
+        // 只填了 funasr_worker（半配置）→ 不劫持 moss，自动回退 moss
+        let mut config = RuntimeConfig::default();
+        config.funasr_worker = "worker/funasr_worker.py".into();
+        config.moss_binary = "bin/moss-transcribe.exe".into();
+        let manager = AsrManager::new(config, PathBuf::from("no_such_runtime_xyz"));
+        assert_eq!(manager.with_provider(|p| p.name().to_string()), "moss");
     }
 
     #[test]

@@ -14,6 +14,7 @@ stdout: [{"start":0.5,"end":2.3,"speaker":"SPK0","text":"..."}, ...]
 sentence_info 的 start/end 是 VAD 段边界（官方确认可靠，非字符级时间戳），单位毫秒。
 """
 
+import io
 import json
 import os
 import sys
@@ -35,6 +36,8 @@ def pick_device(want):
 
 
 def main():
+    # 强制 UTF-8：中文 locale Windows 下 stdout 默认 GBK，Rust 侧按 UTF-8 解析会乱码
+    stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     if len(sys.argv) < 2:
         sys.stderr.write("用法: python funasr_worker.py <audio.wav>\n")
         sys.exit(2)
@@ -69,7 +72,7 @@ def main():
             "speaker": "SPK%d" % sent.get("spk", 0),
             "text": sent.get("sentence", "").strip(),
         })
-    sys.stdout.write(json.dumps(segments, ensure_ascii=False))
+    stdout.write(json.dumps(segments, ensure_ascii=False))
 
 
 if __name__ == "__main__":
