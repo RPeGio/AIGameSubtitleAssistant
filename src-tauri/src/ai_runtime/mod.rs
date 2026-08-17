@@ -8,6 +8,7 @@
 
 pub mod config;
 pub mod dhash;
+pub mod funasr;
 pub mod llm;
 pub mod moss;
 pub mod paddle;
@@ -451,10 +452,12 @@ pub enum AsrProviderKind {
     None,
     /// MOSS 转写 CLI（Phase 3 接入）
     Moss,
+    /// FunASR Python worker（Fun-ASR-Nano + VAD + cam++ 说话人 + 标点）
+    FunAsr,
 }
 
 /// 根据类型与配置创建 provider 实例
-/// Moss 创建失败时返回 BrokenProvider（携带原因），不 panic
+/// 创建失败时返回 BrokenProvider（携带原因），不 panic
 pub fn create_asr_provider(
     kind: AsrProviderKind,
     config: &RuntimeConfig,
@@ -466,6 +469,13 @@ pub fn create_asr_provider(
             Ok(p) => Box::new(p),
             Err(e) => Box::new(AsrBrokenProvider {
                 name: "moss".into(),
+                message: e.to_string(),
+            }),
+        },
+        AsrProviderKind::FunAsr => match funasr::FunAsrProvider::spawn(config, runtime_dir) {
+            Ok(p) => Box::new(p),
+            Err(e) => Box::new(AsrBrokenProvider {
+                name: "funasr".into(),
                 message: e.to_string(),
             }),
         },
@@ -493,11 +503,19 @@ pub struct AsrManager {
 
 impl AsrManager {
     pub fn new(config: RuntimeConfig, runtime_dir: PathBuf) -> Self {
-        // 已配置 MOSS 可执行文件则走 Moss；否则用 None 占位
-        let kind = if config.moss_binary.is_empty() {
-            AsrProviderKind::None
-        } else {
-            AsrProviderKind::Moss
+        // 按 asr_provider 字段显式选择；空 = 自动（funasr 配置存在则 funasr，否则 moss）
+        let kind = match config.asr_provider.as_str() {
+            "funasr" => AsrProviderKind::FunAsr,
+            "moss" => AsrProviderKind::Moss,
+            _ => {
+                if !config.funasr_worker.is_empty() {
+                    AsrProviderKind::FunAsr
+                } else if !config.moss_binary.is_empty() {
+                    AsrProviderKind::Moss
+                } else {
+                    AsrProviderKind::None
+                }
+            }
         };
         let provider = create_asr_provider(kind, &config, &runtime_dir);
         Self {
@@ -581,6 +599,42 @@ mod asr_tests {
         // runtime 目录不存在 → spawn 失败 → broken（describe 非空）
         assert!(!status.ready);
         assert!(!status.message.is_empty());
+    }
+
+    #[test]
+    fn test_asr_manager_selects_funasr_kind() {
+        // 显式 asr_provider="funasr" → funasr（即使 moss 也配置了）
+        let mut config = RuntimeConfig::default();
+        config.asr_provider = "funasr".into();
+        config.funasr_worker = "worker/funasr_worker.py".into();
+        config.funasr_deps = "deps_funasr".into();
+        config.moss_binary = "bin/moss-transcribe.exe".into();
+        let manager = AsrManager::new(config, PathBuf::from("no_such_runtime_xyz"));
+        let status = manager.status();
+        assert_eq!(status.provider, "funasr");
+        assert!(!status.ready);
+    }
+
+    #[test]
+    fn test_asr_manager_auto_selects_funasr_when_configured() {
+        // 空 asr_provider + funasr_worker 非空 → 自动选 funasr
+        let mut config = RuntimeConfig::default();
+        config.funasr_worker = "worker/funasr_worker.py".into();
+        config.funasr_deps = "deps_funasr".into();
+        config.moss_binary = "bin/moss-transcribe.exe".into();
+        let manager = AsrManager::new(config, PathBuf::from("no_such_runtime_xyz"));
+        assert_eq!(manager.with_provider(|p| p.name().to_string()), "funasr");
+    }
+
+    #[test]
+    fn test_asr_manager_explicit_moss_overrides_auto() {
+        // 显式 asr_provider="moss" 时，即使 funasr 已配置也用 moss
+        let mut config = RuntimeConfig::default();
+        config.asr_provider = "moss".into();
+        config.funasr_worker = "worker/funasr_worker.py".into();
+        config.moss_binary = "bin/moss-transcribe.exe".into();
+        let manager = AsrManager::new(config, PathBuf::from("no_such_runtime_xyz"));
+        assert_eq!(manager.with_provider(|p| p.name().to_string()), "moss");
     }
 
     #[test]
