@@ -77,6 +77,8 @@ pub fn run() {
             llm::run_llm,
             // fuse 模块
             fuse::run_fuse,
+            // export 模块
+            export::export_track_subtitle,
         ])
         .run(tauri::generate_context!())
         .expect("启动应用失败");
