@@ -520,7 +520,11 @@ export const useProjectStore = defineStore("project", () => {
 
   /// 请求取消当前 ASR 转写（后端终止 MOSS 子进程，runAsr 的 invoke 会返回"已取消"错误）
   async function cancelAsr() {
-    await invoke("asr_cancel");
+    try {
+      await invoke("asr_cancel");
+    } catch (e) {
+      console.error("取消 ASR 失败:", e);
+    }
   }
 
   /// 把 IPC/后端错误映射为用户可读的信息，未识别时才回退原文

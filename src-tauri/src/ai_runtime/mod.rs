@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 pub use config::RuntimeConfig;
@@ -382,8 +382,9 @@ impl std::error::Error for AsrError {
 // ─── ASR Provider 抽象 ───────────────────────────────────
 
 /// ASR 提供者。整段音频一次转写为第一接口（与 MOSS CLI 的 JSON 输出对应）。
-/// 只要求 `Send`，管理器外套 Mutex 提供 `Sync`。
-pub trait AsrProvider: Send {
+/// 要求 `Send + Sync`：transcribe 是分钟级阻塞调用，管理器以 `Arc` 共享、
+/// 不加锁——cancel()（取消/超时/退出钩子）必须能与转写并发执行。
+pub trait AsrProvider: Send + Sync {
     /// provider 名称（"none" / "moss" 等）
     fn name(&self) -> &str;
     /// 运行环境是否就绪
@@ -481,11 +482,13 @@ pub struct AsrRuntimeStatus {
     pub message: String,
 }
 
-/// 全局 ASR 管理器 —— 持有配置与当前 provider
+/// 全局 ASR 管理器 —— 持有配置与当前 provider。
+/// provider 以 Arc 共享、无互斥锁：transcribe 阻塞调用与 cancel
+/// （取消/超时/退出钩子）需要并发，锁会把取消拖到转写结束（失效）。
 pub struct AsrManager {
     config: RuntimeConfig,
     runtime_dir: PathBuf,
-    provider: Mutex<Box<dyn AsrProvider>>,
+    provider: Arc<dyn AsrProvider>,
 }
 
 impl AsrManager {
@@ -500,7 +503,7 @@ impl AsrManager {
         Self {
             config,
             runtime_dir,
-            provider: Mutex::new(provider),
+            provider: Arc::from(provider),
         }
     }
 
@@ -512,14 +515,9 @@ impl AsrManager {
         &self.runtime_dir
     }
 
-    /// 作用域化访问 provider：内部加锁，避免把 MutexGuard 泄漏到调用方。
-    /// 锁被污染时退化为使用被污染的 guard 内的值，保证调用不中断。
+    /// 访问 provider（无锁：provider 内部自带同步，transcribe 与 cancel 可并发）
     pub fn with_provider<R>(&self, f: impl FnOnce(&dyn AsrProvider) -> R) -> R {
-        let guard = self
-            .provider
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        f(&**guard)
+        f(&*self.provider)
     }
 
     /// 汇总当前运行时状态（供 check_asr_runtime 命令）
@@ -545,7 +543,7 @@ impl AsrManager {
 
     /// 请求取消当前转写（终止活动的 MOSS 子进程；无活动任务时无操作）
     pub fn cancel(&self) {
-        self.with_provider(|p| p.cancel());
+        self.provider.cancel();
     }
 }
 
@@ -598,19 +596,12 @@ mod asr_tests {
     }
 
     #[test]
-    fn test_asr_manager_survives_poisoned_lock() {
-        // 构造一个已污染的 Mutex：持有 guard 时 panic
-        let mutex = Mutex::new(Box::new(AsrNoneProvider) as Box<dyn AsrProvider>);
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = mutex.lock().unwrap();
-            std::panic::panic_any("poison");
-        }));
-        let mgr = AsrManager {
-            config: RuntimeConfig::default(),
-            runtime_dir: PathBuf::from("runtime"),
-            provider: mutex,
-        };
-        // with_provider 应退化为使用被污染 guard 内的值，不 panic
+    fn test_asr_manager_shares_provider_without_lock() {
+        // provider 以 Arc 共享（无互斥锁）：transcribe 阻塞期间 cancel 可并发；
+        // 无活动任务时 cancel 无副作用、不 panic
+        let mgr = AsrManager::new(RuntimeConfig::default(), PathBuf::from("runtime"));
+        assert_eq!(mgr.with_provider(|p| p.name().to_string()), "none");
+        mgr.cancel();
         let status = mgr.status();
         assert_eq!(status.provider, "none");
         assert!(!status.ready);

@@ -170,7 +170,9 @@ impl MossProvider {
             .then(|| Instant::now() + Duration::from_secs(self.timeout_minutes as u64 * 60));
         let status = loop {
             if self.cancelled.load(Ordering::SeqCst) {
-                // cancel 已 kill 子进程并置空 active_child
+                // cancel 可能落在子进程登记前的窗口（flag 已置但没 kill），
+                // 此处幂等再调一次确保子进程被终止
+                self.cancel();
                 return Err(AsrError::Worker("MOSS 转写已取消".into()));
             }
             let mut slot = self
