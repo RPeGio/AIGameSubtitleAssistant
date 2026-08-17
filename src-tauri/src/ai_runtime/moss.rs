@@ -6,6 +6,9 @@
 // 进程生命周期：转写子进程登记在 active_child，支持：
 //   - cancel()：取消转写（kill 子进程），供前端"取消 ASR"与超时使用
 //   - 应用退出钩子调用 cancel()，避免关应用后孤儿 moss 进程残留占满 CPU
+//
+// 防残留叠加：每次转写前用 tasklist/taskkill 清理系统上历史残留的
+// moss-transcribe 孤儿进程（异常崩溃等可能绕过退出钩子，导致多实例抢 CPU）。
 
 use crate::ai_runtime::{resolve_path, AsrError, AsrProvider, AsrSegment, RuntimeConfig};
 use serde::Deserialize;
@@ -57,6 +60,8 @@ pub struct MossProvider {
     last_error: Mutex<Option<String>>,
     /// 当前活动的转写子进程（供取消/退出钩子终止）
     active_child: Mutex<Option<Child>>,
+    /// 开发调试：打印运行时细节日志
+    dev_debug: bool,
 }
 
 impl MossProvider {
@@ -87,6 +92,7 @@ impl MossProvider {
             cancelled: AtomicBool::new(false),
             last_error: Mutex::new(None),
             active_child: Mutex::new(None),
+            dev_debug: config.dev_debug,
         };
         if let Err(e) = provider.probe() {
             provider.set_error(&e.to_string());
@@ -120,9 +126,59 @@ impl MossProvider {
         }
     }
 
+    /// 解析 `tasklist /FO CSV /NH` 输出，提取 moss-transcribe 的 PID 列表。
+    /// 无进程时 tasklist 输出本地化提示行（非 CSV 格式），不匹配前缀天然跳过。
+    /// CSV 行形如：`"moss-transcribe.exe","12345","Console","1","1,234 K"`
+    fn parse_tasklist_pids(output: &str) -> Vec<u32> {
+        output
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| l.starts_with("\"moss-transcribe.exe\""))
+            .filter_map(|l| {
+                let mut fields = l.split(',');
+                fields.next()?; // 映像名
+                let pid = fields.next()?.trim_matches('"').parse::<u32>().ok()?;
+                Some(pid)
+            })
+            .collect()
+    }
+
+    /// 终止系统上历史残留的 moss-transcribe 孤儿进程（本次子进程尚未
+    /// spawn，不会误杀自己）。异常崩溃/被杀软强杀等路径可能绕过退出钩子，
+    /// 残留进程会与下次转写叠加抢占 CPU，故每次转写前清理。
+    #[cfg(windows)]
+    fn cleanup_stale_moss_processes(&self) {
+        let output = match Command::new("tasklist")
+            .args(["/FO", "CSV", "/NH", "/FI", "IMAGENAME eq moss-transcribe.exe"])
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => {
+                if self.dev_debug {
+                    eprintln!("[moss] tasklist 调用失败，跳过残留清理: {}", e);
+                }
+                return;
+            }
+        };
+        for pid in Self::parse_tasklist_pids(&String::from_utf8_lossy(&output.stdout)) {
+            if self.dev_debug {
+                eprintln!("[moss] 清理残留转写进程 PID {}", pid);
+            }
+            let _ = Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/F"])
+                .output();
+        }
+    }
+
+    /// 非 Windows 平台：无 tasklist/taskkill，跳过清理（当前项目仅 Windows 部署）
+    #[cfg(not(windows))]
+    fn cleanup_stale_moss_processes(&self) {}
+
     /// 执行一次转写（阻塞，长音频可达数分钟；由编排层放后台线程）。
     /// 子进程登记在 active_child：轮询等待（可被 cancel 打断）+ 超时终止。
     fn run_transcribe(&self, audio_path: &Path) -> Result<Vec<AsrSegment>, AsrError> {
+        // 防残留叠加：清理历史孤儿进程（本次子进程尚未 spawn，不误杀自己）
+        self.cleanup_stale_moss_processes();
         let mut cmd = Command::new(&self.binary);
         cmd.arg("transcribe")
             .arg(&self.model)
@@ -320,5 +376,29 @@ mod tests {
             "/x/moss-transcribe.exe"
         };
         assert_eq!(resolve_path(abs, runtime), PathBuf::from(abs));
+    }
+
+    #[test]
+    fn test_parse_tasklist_pids_extracts_csv_rows() {
+        // 多个残留实例：都应被识别（含内存列带千分位逗号的情况）
+        let out = concat!(
+            "\"moss-transcribe.exe\",\"12345\",\"Console\",\"1\",\"1,234 K\"\r\n",
+            "\"moss-transcribe.exe\",\"67890\",\"Console\",\"1\",\"5,678 K\"\r\n"
+        );
+        assert_eq!(MossProvider::parse_tasklist_pids(out), vec![12345, 67890]);
+    }
+
+    #[test]
+    fn test_parse_tasklist_pids_skips_empty_and_foreign() {
+        // 无进程时 tasklist 输出本地化提示行（非 CSV），不应误解析出 PID
+        let localized = "INFO: No tasks are running which match the specified criteria.\r\n";
+        assert!(MossProvider::parse_tasklist_pids(localized).is_empty());
+        assert!(MossProvider::parse_tasklist_pids("").is_empty());
+        // 其他映像的行不属于 moss，忽略
+        let foreign = "\"chrome.exe\",\"999\",\"Console\",\"1\",\"9,999 K\"\r\n";
+        assert!(MossProvider::parse_tasklist_pids(foreign).is_empty());
+        // 坏 PID 行（理论不会出现）应跳过而非崩溃
+        let malformed = "\"moss-transcribe.exe\",\"abc\",\"Console\",\"1\",\"1,234 K\"\r\n";
+        assert!(MossProvider::parse_tasklist_pids(malformed).is_empty());
     }
 }
