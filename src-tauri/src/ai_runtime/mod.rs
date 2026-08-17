@@ -394,6 +394,9 @@ pub trait AsrProvider: Send {
     }
     /// 转写整段音频（WAV 文件路径），返回带说话人标签的时间轴段
     fn transcribe(&self, audio_path: &Path) -> Result<Vec<AsrSegment>, AsrError>;
+    /// 取消当前转写（默认无操作；MOSS 实现为终止活动子进程）。
+    /// 供前端"取消 ASR"、超时与应用退出钩子调用。
+    fn cancel(&self) {}
 }
 
 /// 占位 provider —— 环境未就绪时使用，保证管线可编译
@@ -539,6 +542,11 @@ impl AsrManager {
             message,
         }
     }
+
+    /// 请求取消当前转写（终止活动的 MOSS 子进程；无活动任务时无操作）
+    pub fn cancel(&self) {
+        self.with_provider(|p| p.cancel());
+    }
 }
 
 // ─── ASR 单元测试 ─────────────────────────────────────────
@@ -615,6 +623,12 @@ mod asr_tests {
 #[tauri::command]
 pub fn check_asr_runtime(state: tauri::State<'_, AsrManager>) -> AsrRuntimeStatus {
     state.status()
+}
+
+/// Tauri 命令：取消当前 ASR 转写（终止活动的 MOSS 子进程）
+#[tauri::command]
+pub fn asr_cancel(state: tauri::State<'_, AsrManager>) {
+    state.cancel();
 }
 
 // ─── LLM 数据与错误 ──────────────────────────────────────

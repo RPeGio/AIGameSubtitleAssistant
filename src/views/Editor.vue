@@ -55,6 +55,10 @@ async function startAsr() {
   }
 }
 
+function cancelAsr() {
+  projectStore.cancelAsr();
+}
+
 // ── LLM 控制 ────────────────────────────────────────────
 const showLlmPanel = ref(false);
 const llmPrompt = ref("");
@@ -328,6 +332,9 @@ const resolutionLabel = computed(() => {
               :show-indicator="false"
             />
             <span class="ocr-msg">{{ projectStore.asrMessage }}</span>
+            <NButton size="tiny" quaternary type="error" @click="cancelAsr">
+              取消
+            </NButton>
           </template>
 
           <NButton size="small" type="primary" @click="openLlmPanel">

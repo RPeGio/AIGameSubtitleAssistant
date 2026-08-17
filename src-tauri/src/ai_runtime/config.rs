@@ -43,6 +43,10 @@ pub struct RuntimeConfig {
     /// 文档建议的 8 线程反而慢 ~72%（解码带宽受限，甜点依机器而异）
     #[serde(default)]
     pub moss_threads: u32,
+    /// MOSS 转写超时（分钟）：0 = 不限。防御模型/音频异常导致的卡死，
+    /// 超时后终止子进程并报错（正常长音频按需调大）
+    #[serde(default)]
+    pub moss_timeout_minutes: u32,
     /// LLM 推理可执行文件（llama-cli）：相对 runtime（如 "bin/llama-cli.exe"，机器无关）或绝对路径；空 = 未配置
     #[serde(default)]
     pub llm_binary: String,
@@ -75,6 +79,7 @@ impl Default for RuntimeConfig {
             moss_binary: String::new(),
             moss_model: String::new(),
             moss_threads: 0,
+            moss_timeout_minutes: 0,
             llm_binary: String::new(),
             llm_model: String::new(),
             llm_threads: 0,
@@ -260,6 +265,7 @@ mod tests {
             moss_binary: "bin/moss-transcribe.exe".into(),
             moss_model: "models/moss/moss-transcribe-q5_k.gguf".into(),
             moss_threads: 8,
+            moss_timeout_minutes: 30,
             llm_binary: "bin/llama-cli.exe".into(),
             llm_model: "models/qwen/Qwen3-4B-Q4_K_M.gguf".into(),
             llm_threads: 4,
@@ -277,6 +283,7 @@ mod tests {
         assert_eq!(loaded.moss_binary, "bin/moss-transcribe.exe");
         assert_eq!(loaded.moss_model, "models/moss/moss-transcribe-q5_k.gguf");
         assert_eq!(loaded.moss_threads, 8);
+        assert_eq!(loaded.moss_timeout_minutes, 30);
         assert_eq!(loaded.llm_binary, "bin/llama-cli.exe");
         assert_eq!(loaded.llm_model, "models/qwen/Qwen3-4B-Q4_K_M.gguf");
         assert_eq!(loaded.llm_threads, 4);
@@ -319,6 +326,7 @@ mod tests {
             moss_binary: "moss-transcribe.exe".into(),
             moss_model: "models/moss/moss-transcribe-q5_k.gguf".into(),
             moss_threads: 8,
+            moss_timeout_minutes: 0,
             llm_binary: "llama-cli.exe".into(),
             llm_model: "models/qwen/Qwen3-4B-Q4_K_M.gguf".into(),
             llm_threads: 4,
@@ -373,6 +381,7 @@ mod tests {
         assert_eq!(cfg.llm_binary, "");
         assert_eq!(cfg.llm_model, "");
         assert_eq!(cfg.llm_threads, 0);
+        assert_eq!(cfg.moss_timeout_minutes, 0);
         let _ = fs::remove_dir_all(&dir);
     }
 

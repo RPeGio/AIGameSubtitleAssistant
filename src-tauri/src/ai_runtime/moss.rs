@@ -2,13 +2,19 @@
 // 一次性子进程：`moss-transcribe transcribe <model.gguf> <audio.wav> --format json`。
 // stdout 输出 JSON 段数组，stderr 是日志（量小，可整体收集）。
 // 模型每次转写加载一次（~1.4s），相对长音频推理（数分钟）可忽略，故不做常驻进程。
+//
+// 进程生命周期：转写子进程登记在 active_child，支持：
+//   - cancel()：取消转写（kill 子进程），供前端"取消 ASR"与超时使用
+//   - 应用退出钩子调用 cancel()，避免关应用后孤儿 moss 进程残留占满 CPU
 
 use crate::ai_runtime::{resolve_path, AsrError, AsrProvider, AsrSegment, RuntimeConfig};
 use serde::Deserialize;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// MOSS CLI 输出的单段（JSON 数组元素）。多余字段（id）由 serde 默认忽略。
 #[derive(Deserialize)]
@@ -42,9 +48,15 @@ pub struct MossProvider {
     model: PathBuf,
     /// 推理线程数：0 = 不设置 MTD_THREADS（CLI 默认全核）
     threads: u32,
+    /// 转写超时（分钟）：0 = 不限；超时终止子进程并报错
+    timeout_minutes: u32,
     ready: AtomicBool,
+    /// 取消标志：cancel() 置位，transcribe 轮询检测后返回"已取消"
+    cancelled: AtomicBool,
     /// 最近一次错误（供 describe() 向状态探测展示）
     last_error: Mutex<Option<String>>,
+    /// 当前活动的转写子进程（供取消/退出钩子终止）
+    active_child: Mutex<Option<Child>>,
 }
 
 impl MossProvider {
@@ -70,8 +82,11 @@ impl MossProvider {
             binary,
             model,
             threads: config.moss_threads,
+            timeout_minutes: config.moss_timeout_minutes,
             ready: AtomicBool::new(false),
+            cancelled: AtomicBool::new(false),
             last_error: Mutex::new(None),
+            active_child: Mutex::new(None),
         };
         if let Err(e) = provider.probe() {
             provider.set_error(&e.to_string());
@@ -105,7 +120,8 @@ impl MossProvider {
         }
     }
 
-    /// 执行一次转写（阻塞，长音频可达数分钟；由编排层放后台线程）
+    /// 执行一次转写（阻塞，长音频可达数分钟；由编排层放后台线程）。
+    /// 子进程登记在 active_child：轮询等待（可被 cancel 打断）+ 超时终止。
     fn run_transcribe(&self, audio_path: &Path) -> Result<Vec<AsrSegment>, AsrError> {
         let mut cmd = Command::new(&self.binary);
         cmd.arg("transcribe")
@@ -113,22 +129,108 @@ impl MossProvider {
             .arg(audio_path)
             // 默认输出是原始流格式，--format json 才会输出结构化段
             .arg("--format")
-            .arg("json");
+            .arg("json")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         if self.threads > 0 {
             cmd.env("MTD_THREADS", self.threads.to_string());
         }
-        let output = cmd
-            .output()
+        let mut child = cmd
+            .spawn()
             .map_err(|e| AsrError::Worker(format!("无法启动 MOSS 转写: {}", e)))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+
+        // 分离管道交给读线程：防止管道缓冲写满阻塞 moss 进程
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let out_reader = stdout.map(|mut s| {
+            std::thread::spawn(move || {
+                let mut buf = String::new();
+                let _ = s.read_to_string(&mut buf);
+                buf
+            })
+        });
+        let err_reader = stderr.map(|mut s| {
+            std::thread::spawn(move || {
+                let mut buf = String::new();
+                let _ = s.read_to_string(&mut buf);
+                buf
+            })
+        });
+
+        {
+            let mut slot = self
+                .active_child
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *slot = Some(child);
+        }
+
+        // 轮询等待：可被 cancel 打断；timeout_minutes > 0 时超时终止
+        let deadline = (self.timeout_minutes > 0)
+            .then(|| Instant::now() + Duration::from_secs(self.timeout_minutes as u64 * 60));
+        let status = loop {
+            if self.cancelled.load(Ordering::SeqCst) {
+                // cancel 已 kill 子进程并置空 active_child
+                return Err(AsrError::Worker("MOSS 转写已取消".into()));
+            }
+            let mut slot = self
+                .active_child
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match slot.as_mut() {
+                Some(c) => match c.try_wait() {
+                    Ok(Some(status)) => {
+                        *slot = None;
+                        break status;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        *slot = None;
+                        return Err(AsrError::Worker(format!("MOSS 进程异常: {}", e)));
+                    }
+                },
+                None => return Err(AsrError::Worker("MOSS 转写已取消".into())),
+            }
+            drop(slot);
+            if let Some(d) = deadline {
+                if Instant::now() >= d {
+                    self.cancel();
+                    return Err(AsrError::Worker(format!(
+                        "MOSS 转写超时（{} 分钟），已终止子进程",
+                        self.timeout_minutes
+                    )));
+                }
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+
+        let stdout = out_reader
+            .map(|h| h.join().unwrap_or_default())
+            .unwrap_or_default();
+        let stderr = err_reader
+            .map(|h| h.join().unwrap_or_default())
+            .unwrap_or_default();
+        if !status.success() {
             return Err(AsrError::Worker(format!(
                 "MOSS 转写失败（{}）：{}",
-                output.status,
+                status,
                 stderr.trim()
             )));
         }
-        parse_segments(&String::from_utf8_lossy(&output.stdout))
+        parse_segments(&stdout)
+    }
+
+    /// 终止当前转写子进程（无活动进程时仅置取消标志，无副作用）。
+    /// 供前端"取消 ASR"、超时与应用退出钩子调用。
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        if let Ok(mut slot) = self.active_child.lock() {
+            if let Some(child) = slot.as_mut() {
+                let _ = child.kill();
+                let _ = child.wait();
+                *slot = None;
+            }
+        }
     }
 }
 
@@ -149,11 +251,17 @@ impl AsrProvider for MossProvider {
         if !self.is_ready() {
             return Err(AsrError::NotReady);
         }
+        // 每次转写重置取消标志：上一次取消不污染本次
+        self.cancelled.store(false, Ordering::SeqCst);
         let result = self.run_transcribe(audio_path);
         if let Err(e) = &result {
             self.set_error(&e.to_string());
         }
         result
+    }
+
+    fn cancel(&self) {
+        MossProvider::cancel(self);
     }
 }
 
