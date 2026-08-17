@@ -34,12 +34,12 @@ const EXPORT_FORMATS = [
 async function onExport(format: string) {
   const track = focusedTrack.value;
   if (!track) return;
-  const path = await save({
-    defaultPath: `${track.name}.${format}`,
-    filters: [{ name: `${format.toUpperCase()} 字幕`, extensions: [format] }],
-  });
-  if (!path) return; // 用户取消
   try {
+    const path = await save({
+      defaultPath: `${track.name}.${format}`,
+      filters: [{ name: `${format.toUpperCase()} 字幕`, extensions: [format] }],
+    });
+    if (!path) return; // 用户取消
     const count = await invoke<number>("export_track_subtitle", {
       track,
       format,

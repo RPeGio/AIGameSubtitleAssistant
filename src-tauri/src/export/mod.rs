@@ -69,9 +69,9 @@ fn event_text(ev: &TimelineEvent) -> &str {
     }
 }
 
-/// 秒 → 毫秒（四舍五入）
+/// 秒 → 毫秒（四舍五入，防御负值：视频时间码不可能为负）
 fn ms(s: f64) -> i64 {
-    (s * 1000.0).round() as i64
+    ((s * 1000.0).round() as i64).max(0)
 }
 
 /// SRT 时间戳: HH:MM:SS,mmm
@@ -101,19 +101,31 @@ fn lrc_ts(ms: i64) -> String {
     format!("[{:02}:{:02}.{:02}]", ms / 60_000, ms / 1000 % 60, ms / 10 % 100)
 }
 
-/// SRT：序号 + 时间范围 + 文本（保留换行）
+/// SRT：序号 + 时间范围 + 文本（保留换行，连续空行折叠为单行防拆条）
 fn format_srt(lines: &[SubtitleLine]) -> String {
     let mut out = String::new();
     for (i, l) in lines.iter().enumerate() {
+        let text = l.text.split('\n').filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
         out.push_str(&format!(
             "{}\n{} --> {}\n{}\n\n",
             i + 1,
             srt_ts(l.start_ms),
             srt_ts(l.end_ms),
-            l.text
+            text
         ));
     }
     out
+}
+
+/// ASS 转义：`\` 是转义符、`{...}` 是内联 override 块。
+/// 游戏文本可能含快捷键/路径（如 "按 {F} 打开 C:\game"），
+/// 不转义会被渲染器吞掉或误解析。顺序：先 `\` 再换行再括号，
+/// 避免转义掉自己生成的 `\N`
+fn escape_ass_text(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace('\n', "\\N")
+        .replace('{', "\\{")
+        .replace('}', "\\}")
 }
 
 /// ASS：固定默认样式（Microsoft YaHei 40，底部居中），换行转 \N
@@ -130,7 +142,7 @@ fn format_ass(lines: &[SubtitleLine]) -> String {
     out.push_str("\n[Events]\n");
     out.push_str("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n");
     for l in lines {
-        let text = l.text.replace('\n', "\\N");
+        let text = escape_ass_text(&l.text);
         out.push_str(&format!(
             "Dialogue: 0,{},{},Default,,0,0,0,,{}\n",
             ass_ts(l.start_ms),
@@ -160,6 +172,15 @@ fn format_txt(lines: &[SubtitleLine]) -> String {
     out
 }
 
+/// 中文 + Windows 播放器兼容：SRT/LRC/TXT 带 UTF-8 BOM，
+/// 否则部分播放器按系统代码页（GBK）读会乱码；ASS 保持无 BOM（播放器普遍识别 UTF-8）
+fn with_bom(format: SubtitleFormat, content: String) -> String {
+    match format {
+        SubtitleFormat::Ass => content,
+        _ => format!("\u{feff}{content}"),
+    }
+}
+
 /// Tauri 命令：导出单轨字幕。返回导出的字幕条数
 #[tauri::command]
 pub fn export_track_subtitle(
@@ -174,7 +195,7 @@ pub fn export_track_subtitle(
         SubtitleFormat::Lrc => format_lrc(&lines),
         SubtitleFormat::Txt => format_txt(&lines),
     };
-    fs::write(&dest_path, content).map_err(|e| format!("写入文件失败: {e}"))?;
+    fs::write(&dest_path, with_bom(format, content)).map_err(|e| format!("写入文件失败: {e}"))?;
     Ok(lines.len())
 }
 
@@ -327,12 +348,54 @@ mod tests {
     }
 
     #[test]
+    fn test_ass_escapes_override_and_backslash() {
+        let track = Track {
+            events: vec![TimelineEvent::Manual(ManualEvent {
+                id: "m1".into(),
+                start: 0.0,
+                end: 1.0,
+                text: "按 {F} 打开 C:\\game".into(),
+                character: None,
+            })],
+            ..sample_track()
+        };
+        let ass = format_ass(&extract_lines(&track));
+        assert!(ass.contains("按 \\{F\\} 打开 C:\\\\game\n"));
+    }
+
+    #[test]
+    fn test_srt_collapses_blank_lines() {
+        let track = Track {
+            events: vec![TimelineEvent::Manual(ManualEvent {
+                id: "m1".into(),
+                start: 0.0,
+                end: 1.0,
+                text: "第一段\n\n第二段".into(),
+                character: None,
+            })],
+            ..sample_track()
+        };
+        let srt = format_srt(&extract_lines(&track));
+        assert!(srt.contains("第一段\n第二段"));
+        assert!(!srt.contains("\n\n\n"));
+    }
+
+    #[test]
+    fn test_with_bom() {
+        assert!(with_bom(SubtitleFormat::Srt, "x".into()).starts_with('\u{feff}'));
+        assert!(with_bom(SubtitleFormat::Lrc, "x".into()).starts_with('\u{feff}'));
+        assert!(with_bom(SubtitleFormat::Txt, "x".into()).starts_with('\u{feff}'));
+        assert!(!with_bom(SubtitleFormat::Ass, "x".into()).starts_with('\u{feff}'));
+    }
+
+    #[test]
     fn test_ms_rounding() {
         // 2.345s → 2345ms；2.3456s → 2346ms（四舍五入）
         assert_eq!(ms(2.345), 2345);
         assert_eq!(ms(2.3456), 2346);
         assert_eq!(ms(1.5), 1500);
-        // 负值防御：0.0 → 0
+        // 负值防御：clamp 到 0
+        assert_eq!(ms(-1.5), 0);
         assert_eq!(ms(0.0), 0);
     }
 }
