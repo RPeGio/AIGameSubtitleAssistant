@@ -231,20 +231,22 @@ impl FunAsrProvider {
             .spawn()
             .map_err(|e| AsrError::Worker(format!("无法启动 FunASR 转写: {}", e)))?;
 
-        // 分离管道交给读线程：防止管道缓冲写满阻塞 python 进程
+        // 分离管道交给读线程：防止管道缓冲写满阻塞 python 进程。
+        // stdout 按原始字节收集：zh-CN locale 下库可能向 stdout 打印 GBK 噪音，
+        // read_to_string 遇无效 UTF-8 会整体失败，改为字节收集后 lossy 解码
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let out_reader = stdout.map(|mut s| {
             std::thread::spawn(move || {
-                let mut buf = String::new();
-                let _ = s.read_to_string(&mut buf);
+                let mut buf = Vec::new();
+                let _ = s.read_to_end(&mut buf);
                 buf
             })
         });
         let err_reader = stderr.map(|mut s| {
             std::thread::spawn(move || {
-                let mut buf = String::new();
-                let _ = s.read_to_string(&mut buf);
+                let mut buf = Vec::new();
+                let _ = s.read_to_end(&mut buf);
                 buf
             })
         });
@@ -299,10 +301,10 @@ impl FunAsrProvider {
         };
 
         let stdout = out_reader
-            .map(|h| h.join().unwrap_or_default())
+            .map(|h| String::from_utf8_lossy(&h.join().unwrap_or_default()).into_owned())
             .unwrap_or_default();
         let stderr = err_reader
-            .map(|h| h.join().unwrap_or_default())
+            .map(|h| String::from_utf8_lossy(&h.join().unwrap_or_default()).into_owned())
             .unwrap_or_default();
         if !status.success() {
             return Err(AsrError::Worker(format!(
@@ -313,9 +315,8 @@ impl FunAsrProvider {
         }
         // funasr 可能在 stdout 打印版本/警告行（非日志通道），
         // 定位 JSON 数组起始处截断，只解析段数组部分。
-        // 锚定 "[{"（非空数组首元素）或 "[]"（静音/空转写）：
-        // 噪音行几乎不会含这两种连续模式，比回退到裸 '[' 稳健
-        let json_start = stdout.find("[{").or_else(|| stdout.find("[]")).unwrap_or(0);
+        // 优先锚定 "[{"（噪音行几乎不会以它开头），空数组时回退到 '['
+        let json_start = stdout.find("[{").or_else(|| stdout.find('[')).unwrap_or(0);
         parse_segments(&stdout[json_start..])
     }
 
@@ -353,8 +354,14 @@ impl AsrProvider for FunAsrProvider {
         // 每次转写重置取消标志：上一次取消不污染本次
         self.cancelled.store(false, Ordering::SeqCst);
         let result = self.run_transcribe(audio_path);
-        if let Err(e) = &result {
-            self.set_error(&e.to_string());
+        match &result {
+            Err(e) => self.set_error(&e.to_string()),
+            // 成功时清除历史错误：避免取消/失败的残留一直显示在状态探测里
+            Ok(_) => {
+                if let Ok(mut slot) = self.last_error.lock() {
+                    *slot = None;
+                }
+            }
         }
         result
     }

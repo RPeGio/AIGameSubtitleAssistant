@@ -531,7 +531,8 @@ export const useProjectStore = defineStore("project", () => {
   function normalizeAsrError(e: unknown): string {
     const msg = String(e);
     if (msg.includes("已取消")) return "ASR 已取消";
-    if (msg.includes("超时")) return msg.replace(/MOSS 转写超时（\d+ 分钟），已终止子进程/, "ASR 转写超时，已终止");
+    // 超时消息兼容 MOSS / FunASR 两个 provider
+    if (msg.includes("超时")) return msg.replace(/(?:MOSS|FunASR) 转写超时（\d+ 分钟），已终止子进程/, "ASR 转写超时，已终止");
     if (msg.includes("未就绪")) return "ASR 运行环境未就绪，请先运行环境引导脚本";
     return msg;
   }

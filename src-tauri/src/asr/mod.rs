@@ -51,6 +51,18 @@ where
     if !ready {
         return Err("ASR 运行环境未就绪".into());
     }
+    // 后端重入守卫：Arc 去锁后无天然串行，防并发转写互相覆盖 active_child /
+    // 互相清理对方子进程（前端 asrRunning 已防 UI 路径，此为兜底）
+    if !manager.try_begin_transcribe() {
+        return Err("已有 ASR 转写在进行中，请等待完成".into());
+    }
+    struct TranscribeGuard<'a>(&'a AsrManager);
+    impl Drop for TranscribeGuard<'_> {
+        fn drop(&mut self) {
+            self.0.finish_transcribe();
+        }
+    }
+    let _guard = TranscribeGuard(manager);
 
     let dev_debug = manager.config().dev_debug;
 

@@ -51,7 +51,12 @@ async function startAsr() {
     await projectStore.runAsr();
     message.success("ASR 完成");
   } catch (e) {
-    message.error(String(e));
+    // 用户主动取消是预期行为，用中性提示而非错误
+    if (String(e).includes("已取消")) {
+      message.info("ASR 已取消");
+    } else {
+      message.error(String(e));
+    }
   }
 }
 

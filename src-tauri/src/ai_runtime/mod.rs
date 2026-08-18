@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
@@ -499,6 +500,9 @@ pub struct AsrManager {
     config: RuntimeConfig,
     runtime_dir: PathBuf,
     provider: Arc<dyn AsrProvider>,
+    /// 转写进行中标志（test-and-set）：Arc 去锁后不再天然串行转写，
+    /// 该标志是后端兜底，防并发转写互相覆盖 active_child / 互相清理
+    transcribing: AtomicBool,
 }
 
 impl AsrManager {
@@ -527,6 +531,7 @@ impl AsrManager {
             config,
             runtime_dir,
             provider: Arc::from(provider),
+            transcribing: AtomicBool::new(false),
         }
     }
 
@@ -541,6 +546,19 @@ impl AsrManager {
     /// 访问 provider（无锁：provider 内部自带同步，transcribe 与 cancel 可并发）
     pub fn with_provider<R>(&self, f: impl FnOnce(&dyn AsrProvider) -> R) -> R {
         f(&*self.provider)
+    }
+
+    /// 尝试开始一次转写（test-and-set）：已有转写在进行时返回 false。
+    /// 成功后必须调用 finish_transcribe 释放。
+    pub fn try_begin_transcribe(&self) -> bool {
+        self.transcribing
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    /// 结束转写（成功/失败/取消后调用，配合 try_begin_transcribe）
+    pub fn finish_transcribe(&self) {
+        self.transcribing.store(false, Ordering::SeqCst);
     }
 
     /// 汇总当前运行时状态（供 check_asr_runtime 命令）
@@ -651,6 +669,17 @@ mod asr_tests {
         config.moss_binary = "bin/moss-transcribe.exe".into();
         let manager = AsrManager::new(config, PathBuf::from("no_such_runtime_xyz"));
         assert_eq!(manager.with_provider(|p| p.name().to_string()), "moss");
+    }
+
+    #[test]
+    fn test_asr_manager_blocks_concurrent_transcribe() {
+        // 后端重入守卫：第二次 try_begin 应失败，finish 后恢复
+        let mgr = AsrManager::new(RuntimeConfig::default(), PathBuf::from("runtime"));
+        assert!(mgr.try_begin_transcribe());
+        assert!(!mgr.try_begin_transcribe(), "并发转写应被拒绝");
+        mgr.finish_transcribe();
+        assert!(mgr.try_begin_transcribe(), "finish 后应恢复可用");
+        mgr.finish_transcribe();
     }
 
     #[test]

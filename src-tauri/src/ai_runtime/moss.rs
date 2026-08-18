@@ -312,8 +312,14 @@ impl AsrProvider for MossProvider {
         // 每次转写重置取消标志：上一次取消不污染本次
         self.cancelled.store(false, Ordering::SeqCst);
         let result = self.run_transcribe(audio_path);
-        if let Err(e) = &result {
-            self.set_error(&e.to_string());
+        match &result {
+            Err(e) => self.set_error(&e.to_string()),
+            // 成功时清除历史错误：避免取消/失败的残留一直显示在状态探测里
+            Ok(_) => {
+                if let Ok(mut slot) = self.last_error.lock() {
+                    *slot = None;
+                }
+            }
         }
         result
     }
