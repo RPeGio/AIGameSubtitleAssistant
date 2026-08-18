@@ -12,7 +12,7 @@ stdout: [{"start":0.5,"end":2.3,"speaker":"SPK0","text":"..."}, ...]
 
 模型组合（完整 id，不用 "fsmn-vad"/"cam++"/"ct-punc" 别名，防版本映射漂移）：
   Fun-ASR-Nano-2512（识别）+ speech_fsmn_vad_zh-cn-16k-common-pytorch（VAD 分段）
-  + speech_campplus_sv_zh-cn_16k-common（说话人）+ punc_ct-transformer_cn-en-common（标点）。
+   + speech_campplus_sv_zh-cn_16k-common（说话人）+ punc_ct-transformer_cn-en-common-vocab471067-large（标点）。
 sentence_info 的 start/end 是 VAD 段边界（官方确认可靠，非字符级时间戳），单位毫秒。
 """
 
