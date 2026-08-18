@@ -68,6 +68,7 @@ pub fn run() {
             // ai_runtime 模块
             ai_runtime::check_ocr_runtime,
             ai_runtime::check_asr_runtime,
+            ai_runtime::check_asr_engines,
             ai_runtime::check_llm_runtime,
             ai_runtime::asr_cancel,
             // ocr 模块

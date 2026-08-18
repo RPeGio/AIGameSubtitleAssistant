@@ -2,7 +2,8 @@
 // 串起完整 ASR 流水线（提取音频 → MOSS 转写），仿 ocr 模块的
 // run_ocr 结构：后台线程 + 进度事件 + 返回段列表由前端写入轨道。
 
-use crate::ai_runtime::{AsrManager, AsrSegment};
+use crate::ai_runtime::{AsrManager, AsrSegment, AsrTranscribeOptions};
+use serde::Deserialize;
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager};
@@ -10,6 +11,17 @@ use uuid::Uuid;
 
 /// ASR 进度事件名（前端需保持一致）
 pub const ASR_PROGRESS_EVENT: &str = "asr-progress";
+
+/// ASR 运行参数（前端配置面板传入）
+#[derive(Deserialize)]
+pub struct AsrRunParams {
+    /// 引擎："funasr" | "moss"
+    pub engine: String,
+    /// 说话人上限：None = 自动估计（仅 funasr+diarize 生效；moss 自动估计）
+    pub max_speakers: Option<u32>,
+    /// 识别语言：None/空 = 自动检测（仅 funasr 生效；moss 自动识别）
+    pub language: Option<String>,
+}
 
 /// 进度事件载荷。ASR 为单次转写，无 clip 概念，只有整体进度 0.0 ~ 1.0。
 #[derive(Clone, Serialize)]
@@ -34,7 +46,7 @@ impl Drop for TempDirGuard {
     }
 }
 
-/// 串起完整 ASR 流水线（提取音频 → MOSS 转写）。
+/// 串起完整 ASR 流水线（提取音频 → 按面板参数选择引擎转写）。
 ///
 /// 抽取为独立函数便于集成测试直接调用（不依赖 Tauri 命令栈）。
 /// `on_progress(progress, message)` 每次阶段推进调用一次；转写为
@@ -42,14 +54,20 @@ impl Drop for TempDirGuard {
 pub fn run_asr_pipeline<F>(
     manager: &AsrManager,
     video_path: &str,
+    params: &AsrRunParams,
     mut on_progress: F,
 ) -> Result<Vec<AsrSegment>, String>
 where
     F: FnMut(f64, String),
 {
-    let ready = manager.with_provider(|p| p.is_ready());
+    let engine = if params.engine == "moss" {
+        "moss"
+    } else {
+        "funasr"
+    };
+    let ready = manager.with_engine(engine, |p| p.is_ready());
     if !ready {
-        return Err("ASR 运行环境未就绪".into());
+        return Err(format!("ASR 运行环境未就绪（{}）", engine));
     }
     // 后端重入守卫：Arc 去锁后无天然串行，防并发转写互相覆盖 active_child /
     // 互相清理对方子进程（前端 asrRunning 已防 UI 路径，此为兜底）
@@ -95,9 +113,17 @@ where
         eprintln!("[asr] 音频: {}", audio.display());
     }
 
-    on_progress(0.2, "ASR 转写中…（可能需要数分钟）".into());
+    on_progress(0.2, format!("{} 转写中…（可能需要数分钟）", engine));
     let segments = manager
-        .with_provider(|p| p.transcribe(&audio))
+        .with_engine(engine, |p| {
+            p.transcribe(
+                &audio,
+                &AsrTranscribeOptions {
+                    language: params.language.clone(),
+                    max_speakers: params.max_speakers,
+                },
+            )
+        })
         .map_err(|e| format!("ASR 转写失败: {}", e))?;
 
     if dev_debug {
@@ -125,12 +151,13 @@ where
 pub async fn run_asr(
     app: AppHandle,
     video_path: String,
+    params: AsrRunParams,
 ) -> Result<Vec<AsrSegment>, String> {
     let app_handle = app.clone();
 
     tauri::async_runtime::spawn_blocking(move || {
         let manager = app_handle.state::<AsrManager>();
-        run_asr_pipeline(&manager, &video_path, |progress, message| {
+        run_asr_pipeline(&manager, &video_path, &params, |progress, message| {
             let _ = app_handle.emit(ASR_PROGRESS_EVENT, AsrProgress { progress, message });
         })
     })
@@ -149,8 +176,13 @@ mod tests {
     #[test]
     fn test_pipeline_not_ready_errors() {
         let manager = AsrManager::new(RuntimeConfig::default(), PathBuf::from("runtime"));
+        let params = AsrRunParams {
+            engine: "funasr".into(),
+            max_speakers: None,
+            language: None,
+        };
         let mut called = false;
-        let result = run_asr_pipeline(&manager, "dummy.mp4", |_, _| called = true);
+        let result = run_asr_pipeline(&manager, "dummy.mp4", &params, |_, _| called = true);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("未就绪"));
         assert!(!called, "未就绪时不应触发进度回调");

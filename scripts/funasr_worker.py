@@ -9,6 +9,7 @@ stdout: [{"start":0.5,"end":2.3,"speaker":"SPK0","text":"..."}, ...]
   - MODELSCOPE_CACHE：runtime/models/funasr（模型缓存，bootstrap 预下载）
   - GSA_FUNASR_DEVICE："cuda"（默认，不可用时自动回退 cpu）| "cpu"
   - GSA_FUNASR_LANGUAGE：识别语言（空/auto = 自动检测；Fun-ASR-Nano-2512 支持 中文/英文/日文）
+  - GSA_FUNASR_MAX_SPEAKERS：说话人上限（空 = 自动估计；非法值忽略）
   - GSA_FUNASR_SPK_ENGINE：说话人分离引擎，"diarize"（默认）| "funasr"
     - diarize：独立说话人分离流水线（Silero VAD + WeSpeaker ResNet34-LM + 谱聚类，
       外网多语言切片效果远好于 funasr 内建聚类；CPU 运行，约 8 倍实时）。
@@ -245,13 +246,28 @@ def main():
                 segments.append(piece)
 
     # diarize 引擎：说话人时间线与 ASR 段按重叠分配（失败时降级，全部标 SPK0）。
-    # 不传 max_speakers（自动估计，默认 1-20）：曾误加 max_speakers=4 压制，
+    # 默认不传 max_speakers（自动估计，默认 1-20）：曾误加 max_speakers=4 压制，
     # 实测 6 人对话被压成 4 簇（应用里说话人一团糟）。
     # 短音频（<1min）上 GMM BIC 估计会失效（30s 截段 2 人被判 13 人），
     # 但完整转写场景音频数分钟，全片自动估计与 MOSS 参考（6 人）接近（5 人）。
+    # GSA_FUNASR_MAX_SPEAKERS：前端面板"最大说话人数量"（用户确知人数时用，
+    # 强制聚类上界；非法值忽略走自动估计）
+    max_spk = None
+    env_max_spk = os.environ.get("GSA_FUNASR_MAX_SPEAKERS", "").strip()
+    if env_max_spk:
+        try:
+            max_spk = int(env_max_spk)
+        except ValueError:
+            sys.stderr.write(
+                "[funasr] GSA_FUNASR_MAX_SPEAKERS=%r 不是整数，忽略（自动估计）\n"
+                % env_max_spk
+            )
     if diarize_enabled:
         try:
-            diar_res = diarize_fn(wav)
+            if max_spk:
+                diar_res = diarize_fn(wav, max_speakers=max_spk)
+            else:
+                diar_res = diarize_fn(wav)
             segments = assign_speakers(segments, diar_res.to_list())
         except Exception as e:
             sys.stderr.write("[funasr] diarize 运行失败（%s），说话人全部标 SPK0\n" % e)

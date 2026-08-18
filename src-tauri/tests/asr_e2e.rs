@@ -4,7 +4,7 @@
 
 use ai_game_subtitle_assistant_lib::ai_runtime::config::RuntimeConfig;
 use ai_game_subtitle_assistant_lib::ai_runtime::{AsrManager, AsrSegment};
-use ai_game_subtitle_assistant_lib::asr::run_asr_pipeline;
+use ai_game_subtitle_assistant_lib::asr::{run_asr_pipeline, AsrRunParams};
 use ai_game_subtitle_assistant_lib::ocr::fmt_time;
 use ai_game_subtitle_assistant_lib::video::get_video_metadata;
 use std::path::PathBuf;
@@ -30,8 +30,13 @@ fn test_asr_end_to_end() {
     let config = RuntimeConfig::load(&runtime_dir).expect("读取 runtime 配置失败");
     let manager = AsrManager::new(config, runtime_dir);
 
-    let ready = manager.with_provider(|p| p.is_ready());
-    assert!(ready, "MOSS 环境未就绪");
+    let params = AsrRunParams {
+        engine: "funasr".into(),
+        max_speakers: None,
+        language: None,
+    };
+    let ready = manager.with_engine(&params.engine, |p| p.is_ready());
+    assert!(ready, "ASR 环境未就绪");
 
     let meta = get_video_metadata(video.to_string_lossy().into_owned()).expect("读取视频元数据失败");
 
@@ -40,6 +45,7 @@ fn test_asr_end_to_end() {
     let segments = run_asr_pipeline(
         &manager,
         &video.to_string_lossy(),
+        &params,
         |progress, message| {
             assert!(
                 progress >= last_progress,

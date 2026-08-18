@@ -10,7 +10,9 @@
 // 防残留叠加：每次转写前用 tasklist/taskkill 清理系统上历史残留的
 // moss-transcribe 孤儿进程（异常崩溃等可能绕过退出钩子，导致多实例抢 CPU）。
 
-use crate::ai_runtime::{resolve_path, AsrError, AsrProvider, AsrSegment, RuntimeConfig};
+use crate::ai_runtime::{
+    resolve_path, AsrError, AsrProvider, AsrSegment, AsrTranscribeOptions, RuntimeConfig,
+};
 use serde::Deserialize;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -305,7 +307,12 @@ impl AsrProvider for MossProvider {
         self.last_error.lock().ok().and_then(|g| g.clone()).unwrap_or_default()
     }
 
-    fn transcribe(&self, audio_path: &Path) -> Result<Vec<AsrSegment>, AsrError> {
+    fn transcribe(
+        &self,
+        audio_path: &Path,
+        // MOSS 内置说话人分离与多语言识别，无语言/说话人上限参数，忽略 options
+        _options: &AsrTranscribeOptions,
+    ) -> Result<Vec<AsrSegment>, AsrError> {
         if !self.is_ready() {
             return Err(AsrError::NotReady);
         }

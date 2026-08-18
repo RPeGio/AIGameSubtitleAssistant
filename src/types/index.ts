@@ -120,6 +120,22 @@ export interface AsrSegment {
   confidence: number | null;
 }
 
+export interface AsrRunParams {
+  /// 引擎："funasr" | "moss"
+  engine: string;
+  /// 说话人上限：null = 自动估计（仅 funasr+diarize 生效；moss 忽略）
+  max_speakers: number | null;
+  /// 识别语言：null = 自动检测（仅 funasr 生效；moss 自动识别）
+  language: string | null;
+}
+
+export interface AsrEngineStatus {
+  /// "funasr" | "moss"
+  engine: string;
+  ready: boolean;
+  message: string;
+}
+
 export interface AsrProgress {
   progress: number;
   message: string;
