@@ -130,7 +130,7 @@ if ((Test-Path $modelPath) -and -not $Force) {
   $base = if ($HfMirror) { $HfMirror } else { "https://huggingface.co" }
   $url = "$base/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/$modelFile"
 
-  Write-Host "==> 下载模型 $modelFile（约 470MB，请耐心等待）..."
+  Write-Host "==> 下载模型 $modelFile（约 1.9GB，请耐心等待）..."
   Write-Host "    来源: $url"
   curl.exe -L --fail --retry 3 --retry-delay 5 --max-time 3600 -o $modelPath $url
   if ($LASTEXITCODE -ne 0) {

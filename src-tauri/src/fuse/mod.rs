@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 /// 单批最多 ASR 段数
 const BATCH_SIZE: usize = 30;
-/// 融合批生成上限：30 段 JSON 输出（text + character）需要大余量；
+/// 融合批生成上限：30 段 JSON 输出（index/ocr_index/character）需要余量；
 /// 仅作上限，正常输出远小于此
 const MAX_TOKENS: u32 = 4096;
 
@@ -85,12 +85,13 @@ fn build_prompt(ocr_texts: &[String], batch: &[FuseAsrInput]) -> String {
     p
 }
 
-/// LLM 输出的单段（index = ASR 输入编号）
+/// LLM 输出的单段（index = ASR 输入编号；ocr_index = 对应的 OCR 编号，0/缺省=无对应）
 #[derive(Debug, Deserialize)]
 struct RawFusedSegment {
     #[serde(deserialize_with = "deser_index")]
     index: usize,
-    text: String,
+    #[serde(default, deserialize_with = "deser_index_opt")]
+    ocr_index: Option<usize>,
     #[serde(default)]
     character: Option<String>,
 }
@@ -101,7 +102,6 @@ fn deser_index<'de, D>(deserializer: D) -> Result<usize, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    use serde::de::Error;
     struct IndexVisitor;
     impl<'de> serde::de::Visitor<'de> for IndexVisitor {
         type Value = usize;
@@ -117,8 +117,34 @@ where
                 .parse::<usize>()
                 .map_err(|_| E::custom(format!("index 无法解析: {s:?}")))
         }
+        // null（模型输出 "ocr_index":null）：opt 场景视为无对应；index 场景=0 会被 merge 忽略
+        fn visit_unit<E: serde::de::Error>(self) -> Result<usize, E> {
+            Ok(0)
+        }
     }
     deserializer.deserialize_any(IndexVisitor)
+}
+
+/// ocr_index 的宽松解析：0、空串视为无对应（None）
+fn deser_index_opt<'de, D>(deserializer: D) -> Result<Option<usize>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deser_index(deserializer).map(|v| (v != 0).then_some(v))
+}
+
+/// 去掉 OCR 文本开头的"角色名："前缀（中英文冒号都支持）
+fn strip_prefix(text: &str, character: Option<&str>) -> String {
+    let trimmed = text.trim();
+    if let Some(name) = character.filter(|c| !c.trim().is_empty()) {
+        let name = name.trim();
+        for sep in [':', '：'] {
+            if let Some(rest) = trimmed.strip_prefix(&format!("{name}{sep}")) {
+                return rest.trim().to_string();
+            }
+        }
+    }
+    trimmed.to_string()
 }
 
 /// LLM 输出整体结构：{"segments":[...]}
@@ -149,9 +175,15 @@ fn parse_fusion_output(raw: &str) -> Result<Vec<RawFusedSegment>, String> {
     Err(format!("无法从输出中解析 JSON: {}", &trimmed.chars().take(120).collect::<String>()))
 }
 
-/// 把 LLM 解析结果合并回输入序列：未输出/越界 index 保留 ASR 原文本；
-/// 重复 index 以后者为准。
-fn merge_results(inputs: &[FuseAsrInput], raw: Vec<RawFusedSegment>) -> Vec<FusedSegment> {
+/// 把 LLM 解析结果合并回输入序列：
+/// - 命中对应 OCR（ocr_index 在 1..=ocr_texts.len()）：text 逐字取 OCR 文本并去角色名前缀；
+/// - 未命中/越界：保留 ASR 原文本；
+/// - 重复 index 以后者为准。
+fn merge_results(
+    ocr_texts: &[String],
+    inputs: &[FuseAsrInput],
+    raw: Vec<RawFusedSegment>,
+) -> Vec<FusedSegment> {
     let mut by_index: std::collections::HashMap<usize, RawFusedSegment> = std::collections::HashMap::new();
     for r in raw {
         by_index.insert(r.index, r);
@@ -159,17 +191,25 @@ fn merge_results(inputs: &[FuseAsrInput], raw: Vec<RawFusedSegment>) -> Vec<Fuse
     inputs
         .iter()
         .map(|s| match by_index.get(&s.index) {
-            Some(r) => FusedSegment {
-                start: s.start,
-                end: s.end,
-                text: r.text.trim().to_string(),
-                character: r
-                    .character
-                    .as_ref()
-                    .filter(|c| !c.trim().is_empty())
-                    .cloned(),
-                matched: true,
-            },
+            Some(r) => {
+                // 边界过滤：模型可能幻觉越界编号，越界视为未命中（文本与 matched 共用同一条件）
+                let in_range = r.ocr_index.filter(|&oi| (1..=ocr_texts.len()).contains(&oi));
+                let text = match in_range {
+                    Some(oi) => strip_prefix(&ocr_texts[oi - 1], r.character.as_deref()),
+                    None => s.text.trim().to_string(),
+                };
+                FusedSegment {
+                    start: s.start,
+                    end: s.end,
+                    text,
+                    character: r
+                        .character
+                        .as_ref()
+                        .filter(|c| !c.trim().is_empty())
+                        .cloned(),
+                    matched: in_range.is_some(),
+                }
+            }
             None => FusedSegment {
                 start: s.start,
                 end: s.end,
@@ -226,14 +266,14 @@ where
         }
         match parsed {
             Ok(raw) => {
-                let out = merge_results(chunk, raw);
+                let out = merge_results(ocr_texts, chunk, raw);
                 matched += out.iter().filter(|s| s.matched).count();
                 segments.extend(out);
             }
             Err(e) => {
                 failed_batches += 1;
                 eprintln!("[fuse] 批次 {} 解析失败，保留 ASR 原文本: {}", b + 1, e);
-                segments.extend(merge_results(chunk, Vec::new()));
+                segments.extend(merge_results(ocr_texts, chunk, Vec::new()));
             }
         }
     }
@@ -305,31 +345,34 @@ mod tests {
 
     #[test]
     fn test_parse_fusion_output_plain_json() {
-        let raw = r#"{"segments":[{"index":1,"text":"旅行者，你来了","character":"派蒙"}]}"#;
+        let raw = r#"{"segments":[{"index":1,"ocr_index":1,"character":"派蒙"}]}"#;
         let v = parse_fusion_output(raw).unwrap();
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].index, 1);
-        assert_eq!(v[0].text, "旅行者，你来了");
+        assert_eq!(v[0].ocr_index, Some(1));
         assert_eq!(v[0].character.as_deref(), Some("派蒙"));
     }
 
     #[test]
     fn test_parse_fusion_output_with_noise() {
         // 模型夹带围栏/说明文字：截取花括号片段
-        let raw = "好的，结果如下：\n```json\n{\"segments\":[{\"index\":2,\"text\":\"你好\",\"character\":\"\"}]}\n```";
+        let raw = "好的，结果如下：\n```json\n{\"segments\":[{\"index\":2,\"ocr_index\":0,\"character\":\"\"}]}\n```";
         let v = parse_fusion_output(raw).unwrap();
         assert_eq!(v[0].index, 2);
+        assert_eq!(v[0].ocr_index, None, "ocr_index 0 视为无对应");
         assert_eq!(v[0].character, Some(String::new()));
     }
 
     #[test]
     fn test_parse_fusion_output_string_index() {
         // 3B 模型实测会回显 "ASR[1]" 带前缀字符串：宽容提取数字
-        let raw = r#"{"segments":[{"index":"ASR[1]","text":"旅行者，你来了","character":"派蒙"},{"index":"2","text":"继续","character":""}]}"#;
+        let raw = r#"{"segments":[{"index":"ASR[1]","ocr_index":"OCR[2]","character":"派蒙"},{"index":"2","ocr_index":null,"character":""}]}"#;
         let v = parse_fusion_output(raw).unwrap();
         assert_eq!(v.len(), 2);
         assert_eq!(v[0].index, 1);
+        assert_eq!(v[0].ocr_index, Some(2));
         assert_eq!(v[1].index, 2);
+        assert_eq!(v[1].ocr_index, None, "null 视为无对应");
     }
 
     #[test]
@@ -339,35 +382,48 @@ mod tests {
     }
 
     #[test]
+    fn test_strip_prefix() {
+        assert_eq!(strip_prefix("派蒙：旅行者你来了", Some("派蒙")), "旅行者你来了");
+        assert_eq!(strip_prefix("Paimon: hello", Some("Paimon")), "hello");
+        // 角色名与文本无前缀/不匹配：原样保留
+        assert_eq!(strip_prefix("旅行者你来了", Some("派蒙")), "旅行者你来了");
+        assert_eq!(strip_prefix("派蒙：旅行者你来了", None), "派蒙：旅行者你来了");
+    }
+
+    #[test]
     fn test_merge_results_partial_match() {
+        let ocr = vec!["派蒙：旅行者你来了".to_string(), "安柏：前方有敌人".to_string()];
         let inputs = sample_inputs(3);
         let raw = vec![
-            RawFusedSegment { index: 1, text: " 派蒙台词 ".into(), character: Some("派蒙".into()) },
-            RawFusedSegment { index: 3, text: "第三条".into(), character: None },
+            RawFusedSegment { index: 1, ocr_index: Some(1), character: Some("派蒙".into()) },
+            RawFusedSegment { index: 3, ocr_index: None, character: None },
         ];
-        let out = merge_results(&inputs, raw);
+        let out = merge_results(&ocr, &inputs, raw);
         assert_eq!(out.len(), 3);
-        assert_eq!(out[0].text, "派蒙台词");
+        // index 1 → OCR[1] 去角色名前缀
+        assert_eq!(out[0].text, "旅行者你来了");
         assert_eq!(out[0].character.as_deref(), Some("派蒙"));
         assert!(out[0].matched);
         // index 2 未匹配：保留 ASR 原文本
         assert_eq!(out[1].text, "语音2");
         assert!(!out[1].matched);
         assert_eq!(out[1].character, None);
-        assert_eq!(out[2].text, "第三条");
-        assert!(out[2].matched);
+        // index 3：无对应 OCR → ASR 原文本
+        assert_eq!(out[2].text, "语音3");
+        assert!(!out[2].matched);
     }
 
     #[test]
     fn test_merge_results_ignores_out_of_range_and_dup() {
+        let ocr = vec!["派蒙：旅行者你来了".to_string()];
         let inputs = sample_inputs(2);
         let raw = vec![
-            RawFusedSegment { index: 1, text: "第一".into(), character: None },
-            RawFusedSegment { index: 1, text: "第一覆盖".into(), character: None },
-            RawFusedSegment { index: 99, text: "越界".into(), character: None },
+            RawFusedSegment { index: 1, ocr_index: Some(1), character: Some("派蒙".into()) },
+            RawFusedSegment { index: 1, ocr_index: Some(2), character: None },
+            RawFusedSegment { index: 99, ocr_index: Some(1), character: None },
         ];
-        let out = merge_results(&inputs, raw);
-        assert_eq!(out[0].text, "第一覆盖", "重复 index 后者覆盖");
+        let out = merge_results(&ocr, &inputs, raw);
+        assert_eq!(out[0].text, "语音1", "重复 index 后者覆盖；其 ocr_index=2 越界 → 保留 ASR 原文");
         assert_eq!(out[1].text, "语音2", "越界 index 不影响");
     }
 }
