@@ -1,11 +1,11 @@
 ﻿<#
-bootstrap_llm.ps1 —— 搭建本地 LLM 运行环境（llama.cpp + Qwen2.5-0.5B）
+bootstrap_llm.ps1 —— 搭建本地 LLM 运行环境（llama.cpp + Qwen2.5-3B）
 1. 下载 llama.cpp 官方预编译 release zip 到 runtime/bin/llm/（与 moss 分目录：
    两者的 ggml.dll 等共享库同名且互相不兼容，DLL 从 exe 所在目录优先加载）
    -Backend cpu  → llama-<ver>-bin-win-cpu-x64.zip
    -Backend cuda → llama-<ver>-bin-win-cuda-12.4-x64.zip（NVIDIA 显卡）
    -Backend vulkan → llama-<ver>-bin-win-vulkan-x64.zip（AMD/Intel 显卡）
-2. 下载 Qwen2.5-0.5B-Instruct GGUF 到 runtime/models/qwen/，
+2. 下载 Qwen2.5-3B-Instruct GGUF 到 runtime/models/qwen/，
    SHA256 从 HF API 取官方 LFS hash 校验（API 不可达时告警跳过）
 3. 合并写 runtime/config.json（保留 OCR/MOSS 等既有字段）
 
@@ -35,7 +35,7 @@ $runtime = Join-Path $root "runtime"
 $llmDir = Join-Path $runtime "bin\llm"
 $targetExe = Join-Path $llmDir "llama-cli.exe"
 $modelDir = Join-Path $runtime "models\qwen"
-$modelFile = "qwen2.5-0.5b-instruct-q4_k_m.gguf"
+$modelFile = "qwen2.5-3b-instruct-q4_k_m.gguf"
 $modelPath = Join-Path $modelDir $modelFile
 
 # 白名单校验，防路径/URL 注入
@@ -128,7 +128,7 @@ if ((Test-Path $modelPath) -and -not $Force) {
   Write-Host "==> 模型已存在，跳过下载（-Force 重新下载）"
 } else {
   $base = if ($HfMirror) { $HfMirror } else { "https://huggingface.co" }
-  $url = "$base/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/$modelFile"
+  $url = "$base/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/$modelFile"
 
   Write-Host "==> 下载模型 $modelFile（约 470MB，请耐心等待）..."
   Write-Host "    来源: $url"
@@ -142,7 +142,7 @@ if ((Test-Path $modelPath) -and -not $Force) {
   # 从 HF API 取官方 LFS OID（Git-LFS OID 即文件 SHA256）校验；API 不可达时告警跳过
   $sha256 = $null
   try {
-    $files = Invoke-RestMethod -Uri "$base/api/models/Qwen/Qwen2.5-0.5B-Instruct-GGUF/tree/main" -TimeoutSec 30
+    $files = Invoke-RestMethod -Uri "$base/api/models/Qwen/Qwen2.5-3B-Instruct-GGUF/tree/main" -TimeoutSec 30
     foreach ($f in $files) {
       if ($f.path -eq $modelFile -and $f.lfs.oid) { $sha256 = $f.lfs.oid; break }
     }

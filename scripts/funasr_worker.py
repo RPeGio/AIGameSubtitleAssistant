@@ -38,6 +38,14 @@ def pick_device(want):
 def main():
     # 强制 UTF-8：中文 locale Windows 下 stdout 默认 GBK，Rust 侧按 UTF-8 解析会乱码
     stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    # Python 3.12 移除了 distutils；PYTHONPATH 目录的 .pth 不被自动执行，
+    # 需手动激活 setuptools 的 distutils shim（funasr 部分模型模块仍 import distutils）
+    try:
+        import _distutils_hack
+
+        _distutils_hack.add_shim()
+    except Exception:
+        pass
     if len(sys.argv) < 2:
         sys.stderr.write("用法: python funasr_worker.py <audio.wav>\n")
         sys.exit(2)
@@ -47,12 +55,14 @@ def main():
 
     from funasr import AutoModel
 
+    # 模型用完整 id（不用 "fsmn-vad"/"cam++"/"ct-punc" 别名）：
+    # 别名映射随 funasr 版本变动，bootstrap 预下载与这里必须一一对应
     model = AutoModel(
         model="FunAudioLLM/Fun-ASR-Nano-2512",
         trust_remote_code=True,
-        vad_model="fsmn-vad",
-        spk_model="cam++",
-        punc_model="ct-punc",
+        vad_model="iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
+        spk_model="iic/speech_campplus_sv_zh-cn_16k-common",
+        punc_model="iic/punc_ct-transformer_cn-en-common-vocab471067-large",
         device=device,
         disable_update=True,
     )
@@ -66,11 +76,14 @@ def main():
 
     segments = []
     for sent in res[0].get("sentence_info", []):
+        text = sent.get("sentence", "").strip()
+        if not text:
+            continue
         segments.append({
             "start": sent.get("start", 0) / 1000.0,
             "end": sent.get("end", 0) / 1000.0,
             "speaker": "SPK%d" % sent.get("spk", 0),
-            "text": sent.get("sentence", "").strip(),
+            "text": text,
         })
     stdout.write(json.dumps(segments, ensure_ascii=False))
 

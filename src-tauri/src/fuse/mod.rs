@@ -57,18 +57,20 @@ pub struct FuseResult {
 /// 构建单批 prompt：指令 + OCR 全量编号列表 + 本批 ASR 编号列表。
 /// 编号带前缀区分（OCR[n] / ASR[n]）：批 ≥2 时 ASR 编号是全局顺序，
 /// 无前缀会让小模型混淆两套编号，把 OCR 编号误当 ASR 编号输出。
-/// 跨语言语义对齐：LLM 自己建立对应关系，只输出 JSON。
+/// 跨语言语义对齐：LLM 只输出对应关系（ocr_index + character），
+/// 最终文本由代码从 OCR 列表逐字复制——实测小模型无法可靠"复制文本"。
 fn build_prompt(ocr_texts: &[String], batch: &[FuseAsrInput]) -> String {
     let mut p = String::new();
     p.push_str(
         "你是游戏字幕融合助手。下面是可靠的剧情字幕文本（OCR）和游戏语音转写文本（ASR，语言可能与字幕不同）。\n\
-         请把每条 ASR 文本与语义相同的 OCR 字幕文本对应（跨语言对应），输出最终字幕文本：\n\
-         - 找到对应字幕：最终文本用 OCR 字幕文本（去掉角色名前缀，如“派蒙：”），并提取角色名；\n\
-         - 找不到对应：最终文本保留 ASR 原文，角色名为空。\n\
-         - 最终输出文本语言与字幕文本语言一致。\n\
-         修正 OCR/ASR 中的明显识别错误，如对于 OCR 文本中明显为被截断的，且后面紧跟着完整文本的对话，合并二者时间为一段并采用其中完整的那段对话。\n\
-         严格只输出 JSON，严禁输出任何其他内容，格式：{\"segments\":[{\"index\":ASR编号,\"text\":\"最终文本\",\"character\":\"角色名或空\"}]}\n\
-         index 必须是 ASR[n] 里的编号。\n\n",
+         请把每条 ASR 文本与语义相同的 OCR 字幕文本对应（跨语言对应）：\n\
+         - 找到对应字幕：ocr_index 填该 OCR 字幕的编号，character 从该字幕开头的角色名前缀提取（如 OCR 文本“派蒙：旅行者你来了”→ character 为“派蒙”）；\n\
+         - 找不到对应：ocr_index 填 0，character 留空。\n\
+         若 OCR 中同一句对话同时存在被截断版和完整版，选择完整版对应的编号。\n\
+         严格只输出 JSON，严禁输出任何其他内容，格式：{\"segments\":[{\"index\":ASR编号,\"ocr_index\":OCR编号或0,\"character\":\"角色名或空\"}]}\n\
+         index 和 ocr_index 都是纯数字（如 17），不要写成 \"ASR[17]\"。\n\
+         示例（OCR[1] 是“派蒙：旅行者你来了”，ASR[3] 是“トラベラー来たな”，两处对应）：\n\
+         {\"segments\":[{\"index\":3,\"ocr_index\":1,\"character\":\"派蒙\"}]}\n\n",
     );
     p.push_str("== 字幕文本（OCR）==\n");
     for (i, t) in ocr_texts.iter().enumerate() {
@@ -86,10 +88,37 @@ fn build_prompt(ocr_texts: &[String], batch: &[FuseAsrInput]) -> String {
 /// LLM 输出的单段（index = ASR 输入编号）
 #[derive(Debug, Deserialize)]
 struct RawFusedSegment {
+    #[serde(deserialize_with = "deser_index")]
     index: usize,
     text: String,
     #[serde(default)]
     character: Option<String>,
+}
+
+/// index 字段宽容反序列化：3B 模型实测会把编号原样回显成 "ASR[17]"
+/// （带前缀的字符串），纯 usize 解析会整批失败降级。兼容数字/字符串。
+fn deser_index<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    struct IndexVisitor;
+    impl<'de> serde::de::Visitor<'de> for IndexVisitor {
+        type Value = usize;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            write!(f, "数字或含数字的字符串（如 17、\"ASR[17]\"）")
+        }
+        fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<usize, E> {
+            usize::try_from(v).map_err(|_| E::custom("index 过大"))
+        }
+        fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<usize, E> {
+            let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+            digits
+                .parse::<usize>()
+                .map_err(|_| E::custom(format!("index 无法解析: {s:?}")))
+        }
+    }
+    deserializer.deserialize_any(IndexVisitor)
 }
 
 /// LLM 输出整体结构：{"segments":[...]}
@@ -291,6 +320,16 @@ mod tests {
         let v = parse_fusion_output(raw).unwrap();
         assert_eq!(v[0].index, 2);
         assert_eq!(v[0].character, Some(String::new()));
+    }
+
+    #[test]
+    fn test_parse_fusion_output_string_index() {
+        // 3B 模型实测会回显 "ASR[1]" 带前缀字符串：宽容提取数字
+        let raw = r#"{"segments":[{"index":"ASR[1]","text":"旅行者，你来了","character":"派蒙"},{"index":"2","text":"继续","character":""}]}"#;
+        let v = parse_fusion_output(raw).unwrap();
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].index, 1);
+        assert_eq!(v[1].index, 2);
     }
 
     #[test]

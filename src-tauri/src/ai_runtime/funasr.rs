@@ -311,7 +311,10 @@ impl FunAsrProvider {
                 stderr.trim()
             )));
         }
-        parse_segments(&stdout)
+        // funasr 可能在 stdout 打印版本/警告行（非日志通道），
+        // 定位 JSON 数组起始处截断，只解析段数组部分
+        let json_start = stdout.find('[').unwrap_or(0);
+        parse_segments(&stdout[json_start..])
     }
 
     /// 终止当前转写子进程（无活动进程时仅置取消标志，无副作用）。
