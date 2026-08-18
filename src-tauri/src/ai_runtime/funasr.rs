@@ -312,8 +312,9 @@ impl FunAsrProvider {
             )));
         }
         // funasr 可能在 stdout 打印版本/警告行（非日志通道），
-        // 定位 JSON 数组起始处截断，只解析段数组部分
-        let json_start = stdout.find('[').unwrap_or(0);
+        // 定位 JSON 数组起始处截断，只解析段数组部分。
+        // 优先锚定 "[{"（噪音行几乎不会以它开头），空数组时回退到 '['
+        let json_start = stdout.find("[{").or_else(|| stdout.find('[')).unwrap_or(0);
         parse_segments(&stdout[json_start..])
     }
 

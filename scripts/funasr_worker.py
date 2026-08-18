@@ -10,7 +10,9 @@ stdout: [{"start":0.5,"end":2.3,"speaker":"SPK0","text":"..."}, ...]
   - GSA_FUNASR_DEVICE："cuda"（默认，不可用时自动回退 cpu）| "cpu"
   - GSA_FUNASR_LANGUAGE：识别语言（默认"中文"，Fun-ASR-Nano 支持 中文/英文/日文）
 
-模型组合：Fun-ASR-Nano-2512（识别）+ fsmn-vad（VAD 分段）+ cam++（说话人）+ ct-punc（标点）。
+模型组合（完整 id，不用 "fsmn-vad"/"cam++"/"ct-punc" 别名，防版本映射漂移）：
+  Fun-ASR-Nano-2512（识别）+ speech_fsmn_vad_zh-cn-16k-common-pytorch（VAD 分段）
+  + speech_campplus_sv_zh-cn_16k-common（说话人）+ punc_ct-transformer_cn-en-common（标点）。
 sentence_info 的 start/end 是 VAD 段边界（官方确认可靠，非字符级时间戳），单位毫秒。
 """
 
