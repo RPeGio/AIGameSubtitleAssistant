@@ -69,6 +69,7 @@ pub fn run() {
             ai_runtime::check_ocr_runtime,
             ai_runtime::check_asr_runtime,
             ai_runtime::check_llm_runtime,
+            ai_runtime::asr_cancel,
             // ocr 模块
             ocr::run_ocr,
             // asr 模块
@@ -80,6 +81,15 @@ pub fn run() {
             // export 模块
             export::export_track_subtitle,
         ])
-        .run(tauri::generate_context!())
-        .expect("启动应用失败");
+        .build(tauri::generate_context!())
+        .expect("构建应用失败")
+        // 退出钩子：终止活动的 MOSS 子进程，避免关应用后孤儿进程残留占满 CPU
+        .run(|app_handle, event| match event {
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                if let Some(asr) = app_handle.try_state::<AsrManager>() {
+                    asr.cancel();
+                }
+            }
+            _ => {}
+        });
 }

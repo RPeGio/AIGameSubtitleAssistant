@@ -43,6 +43,10 @@ pub struct RuntimeConfig {
     /// 文档建议的 8 线程反而慢 ~72%（解码带宽受限，甜点依机器而异）
     #[serde(default)]
     pub moss_threads: u32,
+    /// MOSS 转写超时（分钟）：0 = 不限。防御模型/音频异常导致的卡死，
+    /// 超时后终止子进程并报错（正常长音频按需调大）
+    #[serde(default)]
+    pub moss_timeout_minutes: u32,
     /// LLM 推理可执行文件（llama-cli）：相对 runtime（如 "bin/llama-cli.exe"，机器无关）或绝对路径；空 = 未配置
     #[serde(default)]
     pub llm_binary: String,
@@ -52,6 +56,27 @@ pub struct RuntimeConfig {
     /// LLM 推理线程数：0 = 不设置（llama-cli 默认全核），沿用 MOSS 的实测结论
     #[serde(default)]
     pub llm_threads: u32,
+    /// ASR provider 选择："moss" | "funasr" | 空（自动：funasr 配置存在则 funasr，否则 moss）
+    #[serde(default)]
+    pub asr_provider: String,
+    /// FunASR worker 脚本路径（相对 runtime，如 worker/funasr_worker.py）；空 = 未配置
+    #[serde(default)]
+    pub funasr_worker: String,
+    /// FunASR 依赖目录（相对 runtime，如 deps_funasr，pip install --target 安装）
+    #[serde(default)]
+    pub funasr_deps: String,
+    /// FunASR 模型缓存目录（相对 runtime，如 models/funasr，MODELSCOPE_CACHE 指向）
+    #[serde(default)]
+    pub funasr_model_dir: String,
+    /// FunASR 推理设备："cuda"（默认，不可用时 worker 自动回退 cpu）| "cpu"
+    #[serde(default = "default_funasr_device")]
+    pub funasr_device: String,
+    /// FunASR 识别语言：默认"中文"（Fun-ASR-Nano-2512 支持 中文/英文/日文）
+    #[serde(default = "default_funasr_language")]
+    pub funasr_language: String,
+    /// FunASR 转写超时（分钟）：0 = 不限。含模型加载时间（约 20-40s）
+    #[serde(default)]
+    pub funasr_timeout_minutes: u32,
 }
 
 fn default_ocr_model() -> String {
@@ -60,6 +85,14 @@ fn default_ocr_model() -> String {
 
 fn default_dev_debug() -> bool {
     true
+}
+
+fn default_funasr_device() -> String {
+    "cuda".into()
+}
+
+fn default_funasr_language() -> String {
+    "中文".into()
 }
 
 impl Default for RuntimeConfig {
@@ -75,9 +108,17 @@ impl Default for RuntimeConfig {
             moss_binary: String::new(),
             moss_model: String::new(),
             moss_threads: 0,
+            moss_timeout_minutes: 0,
             llm_binary: String::new(),
             llm_model: String::new(),
             llm_threads: 0,
+            asr_provider: String::new(),
+            funasr_worker: String::new(),
+            funasr_deps: String::new(),
+            funasr_model_dir: String::new(),
+            funasr_device: default_funasr_device(),
+            funasr_language: default_funasr_language(),
+            funasr_timeout_minutes: 0,
         }
     }
 }
@@ -167,7 +208,7 @@ impl RuntimeConfig {
 
     /// 校验各路径的合法性：
     /// - worker_script / deps_dir / model_dir / moss_binary / moss_model / llm_binary / llm_model
-    ///   必须解析在 runtime 目录内（防路径穿越）
+    ///   / funasr_worker / funasr_deps / funasr_model_dir 必须解析在 runtime 目录内（防路径穿越）
     /// - python_path 解析后（相对则按 runtime 目录解析）必须存在
     /// - moss_binary / llm_binary 非空时必须存在（缺失时对应运行时不可用，由 provider 报告原因）
     /// - moss_model / llm_model 不做存在性检查（模型缺失时由 provider 报告"未就绪"原因）
@@ -180,6 +221,9 @@ impl RuntimeConfig {
             ("moss_model", &self.moss_model),
             ("llm_binary", &self.llm_binary),
             ("llm_model", &self.llm_model),
+            ("funasr_worker", &self.funasr_worker),
+            ("funasr_deps", &self.funasr_deps),
+            ("funasr_model_dir", &self.funasr_model_dir),
         ] {
             let pb = PathBuf::from(value);
             let joined = if pb.is_absolute() {
@@ -260,9 +304,17 @@ mod tests {
             moss_binary: "bin/moss-transcribe.exe".into(),
             moss_model: "models/moss/moss-transcribe-q5_k.gguf".into(),
             moss_threads: 8,
+            moss_timeout_minutes: 30,
             llm_binary: "bin/llama-cli.exe".into(),
             llm_model: "models/qwen/Qwen3-4B-Q4_K_M.gguf".into(),
             llm_threads: 4,
+            asr_provider: "funasr".into(),
+            funasr_worker: "worker/funasr_worker.py".into(),
+            funasr_deps: "deps_funasr".into(),
+            funasr_model_dir: "models/funasr".into(),
+            funasr_device: "cpu".into(),
+            funasr_language: "英文".into(),
+            funasr_timeout_minutes: 45,
         };
         cfg.save(&dir).unwrap();
 
@@ -277,9 +329,17 @@ mod tests {
         assert_eq!(loaded.moss_binary, "bin/moss-transcribe.exe");
         assert_eq!(loaded.moss_model, "models/moss/moss-transcribe-q5_k.gguf");
         assert_eq!(loaded.moss_threads, 8);
+        assert_eq!(loaded.moss_timeout_minutes, 30);
         assert_eq!(loaded.llm_binary, "bin/llama-cli.exe");
         assert_eq!(loaded.llm_model, "models/qwen/Qwen3-4B-Q4_K_M.gguf");
         assert_eq!(loaded.llm_threads, 4);
+        assert_eq!(loaded.asr_provider, "funasr");
+        assert_eq!(loaded.funasr_worker, "worker/funasr_worker.py");
+        assert_eq!(loaded.funasr_deps, "deps_funasr");
+        assert_eq!(loaded.funasr_model_dir, "models/funasr");
+        assert_eq!(loaded.funasr_device, "cpu");
+        assert_eq!(loaded.funasr_language, "英文");
+        assert_eq!(loaded.funasr_timeout_minutes, 45);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -319,9 +379,17 @@ mod tests {
             moss_binary: "moss-transcribe.exe".into(),
             moss_model: "models/moss/moss-transcribe-q5_k.gguf".into(),
             moss_threads: 8,
+            moss_timeout_minutes: 0,
             llm_binary: "llama-cli.exe".into(),
             llm_model: "models/qwen/Qwen3-4B-Q4_K_M.gguf".into(),
             llm_threads: 4,
+            asr_provider: String::new(),
+            funasr_worker: String::new(),
+            funasr_deps: String::new(),
+            funasr_model_dir: String::new(),
+            funasr_device: "cuda".into(),
+            funasr_language: "中文".into(),
+            funasr_timeout_minutes: 0,
         };
         assert!(cfg.validate(&dir).is_ok());
         let _ = fs::remove_dir_all(&dir);
@@ -373,6 +441,15 @@ mod tests {
         assert_eq!(cfg.llm_binary, "");
         assert_eq!(cfg.llm_model, "");
         assert_eq!(cfg.llm_threads, 0);
+        assert_eq!(cfg.moss_timeout_minutes, 0);
+        // funasr 字段（Phase 之后）也应取默认值
+        assert_eq!(cfg.asr_provider, "");
+        assert_eq!(cfg.funasr_worker, "");
+        assert_eq!(cfg.funasr_deps, "");
+        assert_eq!(cfg.funasr_model_dir, "");
+        assert_eq!(cfg.funasr_device, "cuda");
+        assert_eq!(cfg.funasr_language, "中文");
+        assert_eq!(cfg.funasr_timeout_minutes, 0);
         let _ = fs::remove_dir_all(&dir);
     }
 

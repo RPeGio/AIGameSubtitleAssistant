@@ -518,9 +518,20 @@ export const useProjectStore = defineStore("project", () => {
     }
   }
 
+  /// 请求取消当前 ASR 转写（后端终止 MOSS 子进程，runAsr 的 invoke 会返回"已取消"错误）
+  async function cancelAsr() {
+    try {
+      await invoke("asr_cancel");
+    } catch (e) {
+      console.error("取消 ASR 失败:", e);
+    }
+  }
+
   /// 把 IPC/后端错误映射为用户可读的信息，未识别时才回退原文
   function normalizeAsrError(e: unknown): string {
     const msg = String(e);
+    if (msg.includes("已取消")) return "ASR 已取消";
+    if (msg.includes("超时")) return msg.replace(/MOSS 转写超时（\d+ 分钟），已终止子进程/, "ASR 转写超时，已终止");
     if (msg.includes("未就绪")) return "ASR 运行环境未就绪，请先运行环境引导脚本";
     return msg;
   }
@@ -881,6 +892,7 @@ export const useProjectStore = defineStore("project", () => {
     asrProgress,
     asrMessage,
     runAsr,
+    cancelAsr,
     llmRunning,
     llmProgress,
     llmMessage,

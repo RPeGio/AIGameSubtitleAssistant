@@ -8,6 +8,7 @@
 
 pub mod config;
 pub mod dhash;
+pub mod funasr;
 pub mod llm;
 pub mod moss;
 pub mod paddle;
@@ -16,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 pub use config::RuntimeConfig;
@@ -382,8 +383,9 @@ impl std::error::Error for AsrError {
 // ─── ASR Provider 抽象 ───────────────────────────────────
 
 /// ASR 提供者。整段音频一次转写为第一接口（与 MOSS CLI 的 JSON 输出对应）。
-/// 只要求 `Send`，管理器外套 Mutex 提供 `Sync`。
-pub trait AsrProvider: Send {
+/// 要求 `Send + Sync`：transcribe 是分钟级阻塞调用，管理器以 `Arc` 共享、
+/// 不加锁——cancel()（取消/超时/退出钩子）必须能与转写并发执行。
+pub trait AsrProvider: Send + Sync {
     /// provider 名称（"none" / "moss" 等）
     fn name(&self) -> &str;
     /// 运行环境是否就绪
@@ -394,6 +396,9 @@ pub trait AsrProvider: Send {
     }
     /// 转写整段音频（WAV 文件路径），返回带说话人标签的时间轴段
     fn transcribe(&self, audio_path: &Path) -> Result<Vec<AsrSegment>, AsrError>;
+    /// 取消当前转写（默认无操作；MOSS 实现为终止活动子进程）。
+    /// 供前端"取消 ASR"、超时与应用退出钩子调用。
+    fn cancel(&self) {}
 }
 
 /// 占位 provider —— 环境未就绪时使用，保证管线可编译
@@ -447,10 +452,12 @@ pub enum AsrProviderKind {
     None,
     /// MOSS 转写 CLI（Phase 3 接入）
     Moss,
+    /// FunASR Python worker（Fun-ASR-Nano + VAD + cam++ 说话人 + 标点）
+    FunAsr,
 }
 
 /// 根据类型与配置创建 provider 实例
-/// Moss 创建失败时返回 BrokenProvider（携带原因），不 panic
+/// 创建失败时返回 BrokenProvider（携带原因），不 panic
 pub fn create_asr_provider(
     kind: AsrProviderKind,
     config: &RuntimeConfig,
@@ -462,6 +469,13 @@ pub fn create_asr_provider(
             Ok(p) => Box::new(p),
             Err(e) => Box::new(AsrBrokenProvider {
                 name: "moss".into(),
+                message: e.to_string(),
+            }),
+        },
+        AsrProviderKind::FunAsr => match funasr::FunAsrProvider::spawn(config, runtime_dir) {
+            Ok(p) => Box::new(p),
+            Err(e) => Box::new(AsrBrokenProvider {
+                name: "funasr".into(),
                 message: e.to_string(),
             }),
         },
@@ -478,26 +492,41 @@ pub struct AsrRuntimeStatus {
     pub message: String,
 }
 
-/// 全局 ASR 管理器 —— 持有配置与当前 provider
+/// 全局 ASR 管理器 —— 持有配置与当前 provider。
+/// provider 以 Arc 共享、无互斥锁：transcribe 阻塞调用与 cancel
+/// （取消/超时/退出钩子）需要并发，锁会把取消拖到转写结束（失效）。
 pub struct AsrManager {
     config: RuntimeConfig,
     runtime_dir: PathBuf,
-    provider: Mutex<Box<dyn AsrProvider>>,
+    provider: Arc<dyn AsrProvider>,
 }
 
 impl AsrManager {
     pub fn new(config: RuntimeConfig, runtime_dir: PathBuf) -> Self {
-        // 已配置 MOSS 可执行文件则走 Moss；否则用 None 占位
-        let kind = if config.moss_binary.is_empty() {
-            AsrProviderKind::None
-        } else {
-            AsrProviderKind::Moss
+        // 按 asr_provider 字段显式选择；空 = 自动（funasr 配置存在则 funasr，否则 moss）
+        let kind = match config.asr_provider.as_str() {
+            "funasr" => AsrProviderKind::FunAsr,
+            "moss" => AsrProviderKind::Moss,
+            _ => {
+                // 自动：funasr 三路径字段齐全（worker/deps/model_dir，bootstrap 一次写全）
+                // 才算配置了 funasr，否则回退 moss——半配置（只填了 worker）不劫持 moss
+                if !config.funasr_worker.is_empty()
+                    && !config.funasr_deps.is_empty()
+                    && !config.funasr_model_dir.is_empty()
+                {
+                    AsrProviderKind::FunAsr
+                } else if !config.moss_binary.is_empty() {
+                    AsrProviderKind::Moss
+                } else {
+                    AsrProviderKind::None
+                }
+            }
         };
         let provider = create_asr_provider(kind, &config, &runtime_dir);
         Self {
             config,
             runtime_dir,
-            provider: Mutex::new(provider),
+            provider: Arc::from(provider),
         }
     }
 
@@ -509,14 +538,9 @@ impl AsrManager {
         &self.runtime_dir
     }
 
-    /// 作用域化访问 provider：内部加锁，避免把 MutexGuard 泄漏到调用方。
-    /// 锁被污染时退化为使用被污染的 guard 内的值，保证调用不中断。
+    /// 访问 provider（无锁：provider 内部自带同步，transcribe 与 cancel 可并发）
     pub fn with_provider<R>(&self, f: impl FnOnce(&dyn AsrProvider) -> R) -> R {
-        let guard = self
-            .provider
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        f(&**guard)
+        f(&*self.provider)
     }
 
     /// 汇总当前运行时状态（供 check_asr_runtime 命令）
@@ -538,6 +562,11 @@ impl AsrManager {
             ready,
             message,
         }
+    }
+
+    /// 请求取消当前转写（终止活动的 MOSS 子进程；无活动任务时无操作）
+    pub fn cancel(&self) {
+        self.provider.cancel();
     }
 }
 
@@ -578,6 +607,53 @@ mod asr_tests {
     }
 
     #[test]
+    fn test_asr_manager_selects_funasr_kind() {
+        // 显式 asr_provider="funasr" → funasr（即使 moss 也配置了）
+        let mut config = RuntimeConfig::default();
+        config.asr_provider = "funasr".into();
+        config.funasr_worker = "worker/funasr_worker.py".into();
+        config.funasr_deps = "deps_funasr".into();
+        config.moss_binary = "bin/moss-transcribe.exe".into();
+        let manager = AsrManager::new(config, PathBuf::from("no_such_runtime_xyz"));
+        let status = manager.status();
+        assert_eq!(status.provider, "funasr");
+        assert!(!status.ready);
+    }
+
+    #[test]
+    fn test_asr_manager_auto_selects_funasr_when_configured() {
+        // 空 asr_provider + funasr 三路径字段齐全 → 自动选 funasr
+        let mut config = RuntimeConfig::default();
+        config.funasr_worker = "worker/funasr_worker.py".into();
+        config.funasr_deps = "deps_funasr".into();
+        config.funasr_model_dir = "models/funasr".into();
+        config.moss_binary = "bin/moss-transcribe.exe".into();
+        let manager = AsrManager::new(config, PathBuf::from("no_such_runtime_xyz"));
+        assert_eq!(manager.with_provider(|p| p.name().to_string()), "funasr");
+    }
+
+    #[test]
+    fn test_asr_manager_auto_falls_back_to_moss_on_partial_funasr() {
+        // 只填了 funasr_worker（半配置）→ 不劫持 moss，自动回退 moss
+        let mut config = RuntimeConfig::default();
+        config.funasr_worker = "worker/funasr_worker.py".into();
+        config.moss_binary = "bin/moss-transcribe.exe".into();
+        let manager = AsrManager::new(config, PathBuf::from("no_such_runtime_xyz"));
+        assert_eq!(manager.with_provider(|p| p.name().to_string()), "moss");
+    }
+
+    #[test]
+    fn test_asr_manager_explicit_moss_overrides_auto() {
+        // 显式 asr_provider="moss" 时，即使 funasr 已配置也用 moss
+        let mut config = RuntimeConfig::default();
+        config.asr_provider = "moss".into();
+        config.funasr_worker = "worker/funasr_worker.py".into();
+        config.moss_binary = "bin/moss-transcribe.exe".into();
+        let manager = AsrManager::new(config, PathBuf::from("no_such_runtime_xyz"));
+        assert_eq!(manager.with_provider(|p| p.name().to_string()), "moss");
+    }
+
+    #[test]
     fn test_asr_broken_provider_reports_reason() {
         let p = AsrBrokenProvider {
             name: "moss".into(),
@@ -590,19 +666,12 @@ mod asr_tests {
     }
 
     #[test]
-    fn test_asr_manager_survives_poisoned_lock() {
-        // 构造一个已污染的 Mutex：持有 guard 时 panic
-        let mutex = Mutex::new(Box::new(AsrNoneProvider) as Box<dyn AsrProvider>);
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = mutex.lock().unwrap();
-            std::panic::panic_any("poison");
-        }));
-        let mgr = AsrManager {
-            config: RuntimeConfig::default(),
-            runtime_dir: PathBuf::from("runtime"),
-            provider: mutex,
-        };
-        // with_provider 应退化为使用被污染 guard 内的值，不 panic
+    fn test_asr_manager_shares_provider_without_lock() {
+        // provider 以 Arc 共享（无互斥锁）：transcribe 阻塞期间 cancel 可并发；
+        // 无活动任务时 cancel 无副作用、不 panic
+        let mgr = AsrManager::new(RuntimeConfig::default(), PathBuf::from("runtime"));
+        assert_eq!(mgr.with_provider(|p| p.name().to_string()), "none");
+        mgr.cancel();
         let status = mgr.status();
         assert_eq!(status.provider, "none");
         assert!(!status.ready);
@@ -615,6 +684,12 @@ mod asr_tests {
 #[tauri::command]
 pub fn check_asr_runtime(state: tauri::State<'_, AsrManager>) -> AsrRuntimeStatus {
     state.status()
+}
+
+/// Tauri 命令：取消当前 ASR 转写（终止活动的 MOSS 子进程）
+#[tauri::command]
+pub fn asr_cancel(state: tauri::State<'_, AsrManager>) {
+    state.cancel();
 }
 
 // ─── LLM 数据与错误 ──────────────────────────────────────

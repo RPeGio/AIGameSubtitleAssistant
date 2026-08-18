@@ -83,7 +83,7 @@ where
         eprintln!("[asr] 音频: {}", audio.display());
     }
 
-    on_progress(0.2, "MOSS 转写中…（可能需要数分钟）".into());
+    on_progress(0.2, "ASR 转写中…（可能需要数分钟）".into());
     let segments = manager
         .with_provider(|p| p.transcribe(&audio))
         .map_err(|e| format!("ASR 转写失败: {}", e))?;
