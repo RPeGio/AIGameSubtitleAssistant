@@ -10,10 +10,12 @@ bootstrap_funasr.ps1 —— 搭建 FunASR ASR 运行环境（Fun-ASR-Nano + VAD 
    （MODELSCOPE_CACHE 指向该目录，与 worker 运行时同缓存，避免重复下载）：
    - FunAudioLLM/Fun-ASR-Nano-2512（识别主模型，zh/en/ja，自带标点，~1.6GB）
    - iic/speech_fsmn_vad_zh-cn-16k-common-pytorch（VAD 分段）
-   - iic/speech_campplus_sv_zh-cn_16k-common（说话人，默认）
-   - iic/speech_eres2netv2_sv_zh-cn_16k-common（说话人备选，A/B 对比用）
-   注意：不下载标点模型 —— Fun-ASR-Nano 自带标点，配 punc_model 会二次标点
-   破坏句子边界与说话人分配（FunASR issue #2857，官方确认）
+    - iic/speech_campplus_sv_zh-cn_16k-common（说话人，funasr 内建引擎回退用）
+    - iic/speech_eres2netv2_sv_zh-cn_16k-common（说话人备选，funasr 内建引擎 A/B 用）
+    注意：不下载标点模型 —— Fun-ASR-Nano 自带标点，配 punc_model 会二次标点
+    破坏句子边界与说话人分配（FunASR issue #2857，官方确认）
+    diarize（说话人分离，默认引擎）的 WeSpeaker ResNet34-LM 嵌入模型预下载到
+    ~/.wespeaker/en/model.onnx（wespeakerruntime 固定缓存位，首次转写时也会自动下载）
 4. 拷贝 scripts/funasr_worker.py -> runtime/worker/
 5. 合并写 runtime/config.json（保留 OCR/MOSS/LLM 等既有字段），asr_provider=funasr
 
@@ -99,6 +101,26 @@ if ($Force -or -not $funasrInstalled) {
   Write-Host "==> deps_funasr 已存在且含 funasr，跳过安装（-Force 重装）"
 }
 
+# diarize 说话人分离库（独立幂等段：deps_funasr 已存在时也会执行/补齐）。
+# --no-deps 分批安装：pip 在 --target 模式下不信任已装包，直接装 diarize 会让它
+# 重新解析 torch（CPU 版 2.8.0 会覆盖 CUDA 版 2.6.0，实测踩坑）。
+# diarize 的传递依赖（torch/torchaudio/numpy/scipy/joblib/threadpoolctl/cffi 等）
+# 已由 funasr 安装带上，这里只补缺失的新依赖。
+$basePipArgs = @("--disable-pip-version-check", "--no-warn-script-location", "--no-cache-dir", "--target", $depsDir)
+if ($PipMirror) {
+  $basePipArgs += @("--index-url", $PipMirror)
+}
+$diarizeInstalled = Test-Path (Join-Path $depsDir "diarize")
+if ($Force -or -not $diarizeInstalled) {
+  Write-Host "==> 安装 diarize（说话人分离）到 $depsDir ..."
+  & $pythonExe -m pip install $basePipArgs --no-deps diarize wespeakerruntime silero-vad scikit-learn onnxruntime soundfile pydantic kaldiio tqdm joblib threadpoolctl
+  if ($LASTEXITCODE -ne 0) { throw "diarize 安装失败" }
+  $torchVer = & $pythonExe -c "import torch; print(torch.__version__, torch.cuda.is_available())" 2>&1
+  Write-Host "==> torch 版本确认: $torchVer"
+} else {
+  Write-Host "==> diarize 已存在，跳过安装"
+}
+
 # ── 3. 预下载模型（MODELSCOPE_CACHE 与 worker 运行时同目录，避免重复下载）──
 $models = @(
   "FunAudioLLM/Fun-ASR-Nano-2512",
@@ -122,6 +144,23 @@ foreach ($m in $models) {
 }
 Remove-Item Env:\MODELSCOPE_CACHE -ErrorAction SilentlyContinue
 Remove-Item Env:\PYTHONPATH -ErrorAction SilentlyContinue
+
+# ── 3b. 预下载 diarize 的 WeSpeaker 说话人嵌入模型（voxceleb ResNet34-LM ONNX）──
+# wespeakerruntime 固定缓存 ~/.wespeaker/en/model.onnx（无 WESPEAKER_HOME 支持），
+# 首次 diarize() 调用会从腾讯云 COS 自动下载；这里预下载避免转写时联网失败。
+$wespeakerPath = Join-Path $HOME ".wespeaker\en\model.onnx"
+if ((Test-Path $wespeakerPath) -and -not $Force) {
+  Write-Host "==> WeSpeaker 嵌入模型已存在，跳过下载: $wespeakerPath"
+} else {
+  New-Item -ItemType Directory -Force -Path (Split-Path $wespeakerPath) | Out-Null
+  $wespeakerUrl = "https://wespeaker-1256283475.cos.ap-shanghai.myqcloud.com/models/voxceleb/voxceleb_resnet34_LM.onnx"
+  Write-Host "==> 下载 WeSpeaker 嵌入模型（~85MB，腾讯云 COS）..."
+  try {
+    Invoke-WebRequest -Uri $wespeakerUrl -OutFile $wespeakerPath -UseBasicParsing
+  } catch {
+    Write-Warning "WeSpeaker 模型预下载失败（首次转写时 worker 会自动重试下载）: $($_.Exception.Message)"
+  }
+}
 
 # ── 4. 拷贝 worker 脚本 ──
 Write-Host "==> 拷贝 worker 脚本 ..."
