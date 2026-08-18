@@ -27,6 +27,13 @@ stdout: [{"start":0.5,"end":2.3,"speaker":"SPK0","text":"..."}, ...]
 句子边界错乱、时间戳与说话人分配错误（FunASR issue #2857，官方确认）。
 断句粒度由 Nano 的 LLM 语义理解 + VAD 段边界共同决定。
 sentence_info 的 start/end 单位毫秒。
+
+VAD 分段参数（vad_kwargs）：
+  - max_single_segment_time=30000：单段上限 30s，防超长字幕
+  - max_end_silence_time=300：静音 300ms 即切段（默认 800ms）。
+    游戏 BGM 下说话人切换停顿通常 <800ms，默认值会把多人对话合并成
+    长段（实测 14.8s 段混 3 人 → 说话人分配必然错），调小后按 MOSS
+    参考（whisper silero VAD 切分）粒度一致，说话人正确率大幅提升。
 """
 
 import io
@@ -214,7 +221,7 @@ def main():
         model="FunAudioLLM/Fun-ASR-Nano-2512",
         trust_remote_code=True,
         vad_model="iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
-        vad_kwargs={"max_single_segment_time": 30000},
+        vad_kwargs={"max_single_segment_time": 30000, "max_end_silence_time": 300},
         spk_model=spk_model,
         device=device,
         disable_update=True,
@@ -238,12 +245,13 @@ def main():
                 segments.append(piece)
 
     # diarize 引擎：说话人时间线与 ASR 段按重叠分配（失败时降级，全部标 SPK0）。
-    # max_speakers=4：游戏 BGM/音效底噪会让 GMM BIC 计数随上界爬升
-    # （默认 20 时两人对话被数成 13 人，实测），限制上界宁合勿碎；
-    # 字幕场景常见说话人 <=4，单人视频自动判 1 人。
+    # 不传 max_speakers（自动估计，默认 1-20）：曾误加 max_speakers=4 压制，
+    # 实测 6 人对话被压成 4 簇（应用里说话人一团糟）。
+    # 短音频（<1min）上 GMM BIC 估计会失效（30s 截段 2 人被判 13 人），
+    # 但完整转写场景音频数分钟，全片自动估计与 MOSS 参考（6 人）接近（5 人）。
     if diarize_enabled:
         try:
-            diar_res = diarize_fn(wav, min_speakers=1, max_speakers=4)
+            diar_res = diarize_fn(wav)
             segments = assign_speakers(segments, diar_res.to_list())
         except Exception as e:
             sys.stderr.write("[funasr] diarize 运行失败（%s），说话人全部标 SPK0\n" % e)
