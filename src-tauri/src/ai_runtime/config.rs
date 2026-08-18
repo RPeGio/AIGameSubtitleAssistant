@@ -71,7 +71,7 @@ pub struct RuntimeConfig {
     /// FunASR 推理设备："cuda"（默认，不可用时 worker 自动回退 cpu）| "cpu"
     #[serde(default = "default_funasr_device")]
     pub funasr_device: String,
-    /// FunASR 识别语言：默认"中文"（Fun-ASR-Nano-2512 支持 中文/英文/日文）
+    /// FunASR 识别语言：空 = 自动检测（默认）。Fun-ASR-Nano-2512 支持 中文/英文/日文
     #[serde(default = "default_funasr_language")]
     pub funasr_language: String,
     /// FunASR 转写超时（分钟）：0 = 不限。含模型加载时间（约 20-40s）
@@ -92,7 +92,8 @@ fn default_funasr_device() -> String {
 }
 
 fn default_funasr_language() -> String {
-    "中文".into()
+    // 空 = auto：外网游戏切片英/日居多，硬编码"中文"会让 Nano 的 prompt 语言提示错误
+    String::new()
 }
 
 impl Default for RuntimeConfig {
@@ -388,7 +389,7 @@ mod tests {
             funasr_deps: String::new(),
             funasr_model_dir: String::new(),
             funasr_device: "cuda".into(),
-            funasr_language: "中文".into(),
+            funasr_language: String::new(), // 空 = auto 自动检测
             funasr_timeout_minutes: 0,
         };
         assert!(cfg.validate(&dir).is_ok());
@@ -448,7 +449,7 @@ mod tests {
         assert_eq!(cfg.funasr_deps, "");
         assert_eq!(cfg.funasr_model_dir, "");
         assert_eq!(cfg.funasr_device, "cuda");
-        assert_eq!(cfg.funasr_language, "中文");
+        assert_eq!(cfg.funasr_language, ""); // 空 = auto 自动检测
         assert_eq!(cfg.funasr_timeout_minutes, 0);
         let _ = fs::remove_dir_all(&dir);
     }

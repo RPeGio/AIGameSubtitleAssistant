@@ -1,5 +1,5 @@
 ﻿<#
-bootstrap_funasr.ps1 —— 搭建 FunASR ASR 运行环境（Fun-ASR-Nano + VAD + cam++ + 标点）
+bootstrap_funasr.ps1 —— 搭建 FunASR ASR 运行环境（Fun-ASR-Nano + VAD + 说话人）
 
 1. 复用 runtime/python（OCR 的内嵌解释器；缺失时提示先跑 bootstrap_ocr.ps1）
 2. pip install --target runtime/deps_funasr：
@@ -8,10 +8,12 @@ bootstrap_funasr.ps1 —— 搭建 FunASR ASR 运行环境（Fun-ASR-Nano + VAD 
    - deps_funasr 独立于 OCR 的 runtime/deps，避免 torch 与 paddleocr 依赖版本冲突
 3. 用 modelscope snapshot_download 预下载 4 个模型到 runtime/models/funasr
    （MODELSCOPE_CACHE 指向该目录，与 worker 运行时同缓存，避免重复下载）：
-   - FunAudioLLM/Fun-ASR-Nano-2512（识别主模型，~1.6GB）
+   - FunAudioLLM/Fun-ASR-Nano-2512（识别主模型，zh/en/ja，自带标点，~1.6GB）
    - iic/speech_fsmn_vad_zh-cn-16k-common-pytorch（VAD 分段）
-   - iic/speech_campplus_sv_zh-cn_16k-common（说话人）
-   - iic/punc_ct-transformer_cn-en-common-vocab471067-large（标点，中英）
+   - iic/speech_campplus_sv_zh-cn_16k-common（说话人，默认）
+   - iic/speech_eres2netv2_sv_zh-cn_16k-common（说话人备选，A/B 对比用）
+   注意：不下载标点模型 —— Fun-ASR-Nano 自带标点，配 punc_model 会二次标点
+   破坏句子边界与说话人分配（FunASR issue #2857，官方确认）
 4. 拷贝 scripts/funasr_worker.py -> runtime/worker/
 5. 合并写 runtime/config.json（保留 OCR/MOSS/LLM 等既有字段），asr_provider=funasr
 
@@ -102,7 +104,7 @@ $models = @(
   "FunAudioLLM/Fun-ASR-Nano-2512",
   "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
   "iic/speech_campplus_sv_zh-cn_16k-common",
-  "iic/punc_ct-transformer_cn-en-common-vocab471067-large"
+  "iic/speech_eres2netv2_sv_zh-cn_16k-common"
 )
 $env:MODELSCOPE_CACHE = $modelCache
 # modelscope 装在 deps_funasr（--target），模型下载段需把 deps 加入模块搜索路径
@@ -144,7 +146,7 @@ $cfg | Add-Member -NotePropertyName "funasr_worker"          -NotePropertyValue 
 $cfg | Add-Member -NotePropertyName "funasr_deps"            -NotePropertyValue "deps_funasr" -Force
 $cfg | Add-Member -NotePropertyName "funasr_model_dir"       -NotePropertyValue "models/funasr" -Force
 $cfg | Add-Member -NotePropertyName "funasr_device"          -NotePropertyValue $Device -Force
-$cfg | Add-Member -NotePropertyName "funasr_language"        -NotePropertyValue "中文" -Force
+$cfg | Add-Member -NotePropertyName "funasr_language"        -NotePropertyValue "" -Force
 $cfg | Add-Member -NotePropertyName "funasr_timeout_minutes" -NotePropertyValue 0 -Force
 
 # 无 BOM 写入（Rust 端 serde_json 解析需要）
