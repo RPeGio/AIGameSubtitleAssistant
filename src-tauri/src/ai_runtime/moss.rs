@@ -53,6 +53,8 @@ pub struct MossProvider {
     model: PathBuf,
     /// 推理线程数：0 = 不设置 MTD_THREADS（CLI 默认全核）
     threads: u32,
+    /// 推理后端设备：空 = 不设置 MTD_DEVICE（ggml 自动选最优）| "cpu" | "cuda" | "vulkan"
+    device: String,
     /// 转写超时（分钟）：0 = 不限；超时终止子进程并报错
     timeout_minutes: u32,
     ready: AtomicBool,
@@ -89,6 +91,7 @@ impl MossProvider {
             binary,
             model,
             threads: config.moss_threads,
+            device: config.moss_device.clone(),
             timeout_minutes: config.moss_timeout_minutes,
             ready: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
@@ -192,6 +195,10 @@ impl MossProvider {
             .stderr(Stdio::piped());
         if self.threads > 0 {
             cmd.env("MTD_THREADS", self.threads.to_string());
+        }
+        // 显式指定推理后端（空 = 不设置，ggml 自动选最优：有 CUDA/Vulkan DLL 即 GPU）
+        if !self.device.is_empty() {
+            cmd.env("MTD_DEVICE", &self.device);
         }
         let mut child = cmd
             .spawn()

@@ -286,6 +286,7 @@ mod tests {
             moss_binary: String::new(),
             moss_model: String::new(),
             moss_threads: 0,
+            moss_device: String::new(),
             moss_timeout_minutes: 0,
             llm_binary: String::new(),
             llm_model: String::new(),

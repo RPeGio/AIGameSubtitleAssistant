@@ -1,6 +1,10 @@
-//! 端到端集成测试：真实视频 + 真实 MOSS 环境。
+//! 端到端集成测试：真实视频 + 真实 ASR 环境。
 //! 默认忽略（需先跑 scripts/bootstrap_moss.ps1 就绪 runtime/bin + 模型），
 //! 运行：cargo test --release --test asr_e2e -- --ignored --nocapture
+//!
+//! 引擎与视频可通过环境变量覆盖（默认 funasr + examples/asr_test.mp4）：
+//!   GSA_E2E_ENGINE=moss   选 MOSS 引擎（GPU/CPU 回归对比用）
+//!   GSA_E2E_VIDEO=<path>  指定测试视频（相对仓库根或绝对路径）
 
 use ai_game_subtitle_assistant_lib::ai_runtime::config::RuntimeConfig;
 use ai_game_subtitle_assistant_lib::ai_runtime::{AsrManager, AsrSegment};
@@ -19,7 +23,14 @@ fn repo_root() -> PathBuf {
 #[ignore]
 fn test_asr_end_to_end() {
     let root = repo_root();
-    let video = root.join(r"examples\asr_test.mp4");
+    let video = std::env::var("GSA_E2E_VIDEO").map_or_else(
+        |_| root.join(r"examples\asr_test.mp4"),
+        |p| {
+            let pb = PathBuf::from(&p);
+            if pb.is_absolute() { pb } else { root.join(pb) }
+        },
+    );
+    let engine = std::env::var("GSA_E2E_ENGINE").unwrap_or_else(|_| "funasr".into());
     let runtime_dir = root.join("runtime");
     assert!(video.is_file(), "缺少测试视频: {}", video.display());
     assert!(
@@ -31,7 +42,7 @@ fn test_asr_end_to_end() {
     let manager = AsrManager::new(config, runtime_dir);
 
     let params = AsrRunParams {
-        engine: "funasr".into(),
+        engine,
         max_speakers: None,
         language: None,
     };
