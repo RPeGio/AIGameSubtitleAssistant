@@ -39,28 +39,28 @@ const DEFAULT_MAX_NEW_TOKENS: u32 = 5120;
 /// 取 15 作为安全系数（约 2 倍余量），覆盖对话更密集的游戏剧情场景。
 const MAX_NEW_TOKENS_PER_SECOND: f64 = 15.0;
 
-/// 超过该时长（秒）的音频触发分段转写。
+/// 超过该时长（秒）的音频触发分段转写（由 asr 编排层驱动）。
 /// 依据：moss-transcribe.cpp 单次 prefill 全量 seq，注意力激活随 seq² 增长，
-/// 8GB 显存安全段长 ≈ 8 分钟（seq≈6000，prefill 激活 ~2.8GB）。
-/// 分段逐段转写可同时规避 prefill OOM 与 max_new=5120 截断。
-const SEGMENT_SECONDS: u32 = 480;
+/// 8GB 显存安全段长 ≈ 8 分钟；固定 5 分钟一段：段更短转写更快，且为
+/// 说话人跨段序号不一致的手动修正提供固定边界（时间轴分割线同此间隔）。
+pub const SEGMENT_SECONDS: u32 = 300;
 
 /// WAV 解析结果：时长（秒）与 PCM 布局（采样率/声道/位深/data 偏移）。
-struct WavInfo {
-    seconds: f64,
-    sample_rate: u32,
-    channels: u16,
-    bits_per_sample: u16,
+pub struct WavInfo {
+    pub seconds: f64,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub bits_per_sample: u16,
     /// data 子块在文件中的偏移
-    data_offset: u32,
+    pub data_offset: u32,
     /// data 子块字节数
-    data_len: u32,
+    pub data_len: u32,
 }
 
 /// 解析 PCM WAV 头（RIFF/fmt/data），返回时长与布局。
 /// ffmpeg 生成的 wav 在 fmt 后可能插 LIST（INFO）等块，故按块链遍历找 data。
 /// 解析失败返回 None（调用方回退默认，不阻断转写）。
-fn wav_info(path: &Path) -> Option<WavInfo> {
+pub fn wav_info(path: &Path) -> Option<WavInfo> {
     let mut f = std::fs::File::open(path).ok()?;
     // 头部读大些以容纳 fmt + 可能的 LIST/扩展块（常见 ffmpeg 输出 < 256B）
     let mut header = [0u8; 1024];
@@ -139,7 +139,7 @@ fn wav_info(path: &Path) -> Option<WavInfo> {
 /// 依据 WAV 时长计算 `--max-new`：保证长音频不被默认 5120 上限截断。
 /// 解析失败时回退默认值。调用方应保证 audio_path 是完整（未分段）文件，
 /// 分段场景逐段计算（每段时长更短，预算安全）。
-fn compute_max_new(seconds: f64) -> u32 {
+pub fn compute_max_new(seconds: f64) -> u32 {
     if seconds <= 0.0 {
         return DEFAULT_MAX_NEW_TOKENS;
     }
@@ -149,7 +149,7 @@ fn compute_max_new(seconds: f64) -> u32 {
 
 /// 从 PCM WAV 切出 [start_sec, end_sec) 子段，写成标准 44 字节头 + data 子块。
 /// 帧对齐（按 bytes_per_sample 对齐），end_sec 超过尾部时截到尾部。
-fn slice_wav(
+pub fn slice_wav(
     src: &Path,
     info: &WavInfo,
     start_sec: u32,
@@ -492,7 +492,6 @@ impl AsrProvider for MossProvider {
     fn transcribe(
         &self,
         audio_path: &Path,
-        // MOSS 内置说话人分离与多语言识别，无语言/说话人上限参数，忽略 options
         _options: &AsrTranscribeOptions,
     ) -> Result<Vec<AsrSegment>, AsrError> {
         if !self.is_ready() {
@@ -500,7 +499,9 @@ impl AsrProvider for MossProvider {
         }
         // 每次转写重置取消标志：上一次取消不污染本次
         self.cancelled.store(false, Ordering::SeqCst);
-        let result = self.transcribe_audio(audio_path);
+        // 单段直转：max_new 按音频时长计算（规避默认 5120 的截断）
+        let seconds = wav_info(audio_path).map(|i| i.seconds).unwrap_or(0.0);
+        let result = self.run_transcribe(audio_path, compute_max_new(seconds));
         match &result {
             Err(e) => self.set_error(&e.to_string()),
             // 成功时清除历史错误：避免取消/失败的残留一直显示在状态探测里
@@ -515,63 +516,6 @@ impl AsrProvider for MossProvider {
 
     fn cancel(&self) {
         MossProvider::cancel(self);
-    }
-}
-
-impl MossProvider {
-    /// 转写入口：检测音频时长，超过阈值时切段逐段转写（规避 prefill OOM
-    /// 与 max_new 截断），否则单段直转。分段结果按段偏移合并。
-    fn transcribe_audio(&self, audio_path: &Path) -> Result<Vec<AsrSegment>, AsrError> {
-        let info = wav_info(audio_path);
-        let total_seconds = info.as_ref().map(|i| i.seconds).unwrap_or(0.0);
-
-        // 短音频（或 WAV 头无法解析）：单段直转，max_new 按总时长计算
-        if total_seconds <= SEGMENT_SECONDS as f64 {
-            let max_new = compute_max_new(total_seconds);
-            return self.run_transcribe(audio_path, max_new);
-        }
-
-        // 长音频：切段转写 + 偏移合并。每段时长 = SEGMENT_SECONDS，
-        // 最后一段为余量。段内时间戳是相对段首的，合并时加段偏移。
-        let info = info.ok_or_else(|| {
-            AsrError::Worker("MOSS 长音频分段需要可解析的 PCM WAV 头".into())
-        })?;
-        if self.dev_debug {
-            eprintln!("[moss] 音频 {:.0}s 超过分段阈值 {}s，分段转写", total_seconds, SEGMENT_SECONDS);
-        }
-        let seg_dir = audio_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf();
-        let mut all: Vec<AsrSegment> = Vec::new();
-        let n_segs = (total_seconds as u32).div_ceil(SEGMENT_SECONDS);
-        for seg in 0..n_segs {
-            if self.cancelled.load(Ordering::SeqCst) {
-                return Err(AsrError::Worker("MOSS 转写已取消".into()));
-            }
-            let start = seg * SEGMENT_SECONDS;
-            let end = ((seg + 1) * SEGMENT_SECONDS).min(total_seconds as u32);
-            let seg_wav = seg_dir.join(format!(
-                "seg_{:03}_{}_{}.wav",
-                seg,
-                start,
-                std::process::id()
-            ));
-            slice_wav(audio_path, &info, start, end, &seg_wav)?;
-            if self.dev_debug {
-                eprintln!("[moss] 分段 {}/{}: [{}-{}s]", seg + 1, n_segs, start, end);
-            }
-            // 每段 max_new 按段时长计算（短段预算安全）
-            let seg_max_new = compute_max_new((end - start) as f64);
-            let segs = self.run_transcribe(&seg_wav, seg_max_new)?;
-            let _ = std::fs::remove_file(&seg_wav);
-            for mut s in segs {
-                s.start += start as f64;
-                s.end += start as f64;
-                all.push(s);
-            }
-        }
-        Ok(all)
     }
 }
 

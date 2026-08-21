@@ -2,6 +2,7 @@
 // 串起完整 ASR 流水线（提取音频 → MOSS 转写），仿 ocr 模块的
 // run_ocr 结构：后台线程 + 进度事件 + 返回段列表由前端写入轨道。
 
+use crate::ai_runtime::moss::SEGMENT_SECONDS;
 use crate::ai_runtime::{AsrManager, AsrSegment, AsrTranscribeOptions};
 use serde::Deserialize;
 use serde::Serialize;
@@ -114,17 +115,59 @@ where
     }
 
     on_progress(0.2, format!("{} 转写中…（可能需要数分钟）", engine));
-    let segments = manager
-        .with_engine(engine, |p| {
-            p.transcribe(
-                &audio,
-                &AsrTranscribeOptions {
-                    language: params.language.clone(),
-                    max_speakers: params.max_speakers,
-                },
-            )
-        })
-        .map_err(|e| format!("ASR 转写失败: {}", e))?;
+    let options = AsrTranscribeOptions {
+        language: params.language.clone(),
+        max_speakers: params.max_speakers,
+    };
+    // MOSS 长音频按固定 5 分钟分段转写：规避单次 prefill 显存 OOM 与
+    // max_new=5120 截断，且逐段上报进度（已完成段数/总段数，供前端显示）。
+    // FunASR 单次转写（worker 自带分段），进度保持 0.2 直至完成。
+    let segments = if engine == "moss" {
+        let seg_seconds = crate::ai_runtime::moss::SEGMENT_SECONDS as f64;
+        let info = crate::ai_runtime::moss::wav_info(&audio);
+        let total = info.as_ref().map(|i| i.seconds).unwrap_or(0.0);
+        if total <= seg_seconds {
+            // 短音频单段直转
+            manager
+                .with_engine(engine, |p| p.transcribe(&audio, &options))
+                .map_err(|e| format!("ASR 转写失败: {}", e))?
+        } else {
+            // 长音频分段：切片 → 逐段转写 → 段内偏移合并 → 段完成上报进度
+            let info = info.ok_or("MOSS 长音频分段需要可解析的 PCM WAV 头")?;
+            let n_segs = (total as u32).div_ceil(SEGMENT_SECONDS);
+            let mut all: Vec<AsrSegment> = Vec::new();
+            for seg in 0..n_segs {
+                let start = seg * SEGMENT_SECONDS;
+                let end = ((seg + 1) * SEGMENT_SECONDS).min(total as u32);
+                let seg_wav = base_dir.join(format!("moss_seg_{}.wav", seg));
+                crate::ai_runtime::moss::slice_wav(&audio, &info, start, end, &seg_wav)
+                    .map_err(|e| e.to_string())?;
+                if dev_debug {
+                    eprintln!("[asr] MOSS 分段 {}/{}: [{}-{}s]", seg + 1, n_segs, start, end);
+                }
+                let segs = manager
+                    .with_engine(engine, |p| p.transcribe(&seg_wav, &options))
+                    .map_err(|e| format!("ASR 转写失败（第 {} 段）: {}", seg + 1, e))?;
+                let _ = std::fs::remove_file(&seg_wav);
+                // 段完成即上报：已完成段数/总段数（0.25~0.95 区间）
+                on_progress(
+                    0.25 + 0.70 * ((seg + 1) as f64 / n_segs as f64),
+                    format!("MOSS 分段转写 {}/{}（第 {} 段 {}-{}s）", seg + 1, n_segs, seg + 1, start, end),
+                );
+                for mut s in segs {
+                    s.start += start as f64;
+                    s.end += start as f64;
+                    all.push(s);
+                }
+            }
+            all
+        }
+    } else {
+        manager
+            .with_engine(engine, |p| p.transcribe(&audio, &options))
+            .map_err(|e| format!("ASR 转写失败: {}", e))?
+    };
+    drop(options);
 
     if dev_debug {
         eprintln!("[asr] 转写完成，共 {} 段：", segments.len());

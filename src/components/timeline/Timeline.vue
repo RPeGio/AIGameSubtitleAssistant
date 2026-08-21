@@ -16,6 +16,24 @@ const projectStore = useProjectStore();
 const TOOL_WIDTH = 40;
 const LABEL_WIDTH = 220;
 
+/// MOSS ASR 分段间隔（秒）：与后端 SEGMENT_SECONDS 保持一致，
+/// 时间轴上用分割线标出每个 5 分钟分段边界，便于人工修正
+/// 跨段说话人序号不一致的问题。
+const SEGMENT_SECONDS = 300;
+
+/// 分段边界在内容区（相对滚动视口）的 x 坐标列表（跳过 0：不画起点）
+const segmentDividers = computed(() => {
+  const pps = timeline.pixelsPerSecond;
+  const dur = timeline.duration;
+  if (pps <= 0 || dur <= SEGMENT_SECONDS) return [];
+  const xs: number[] = [];
+  for (let t = SEGMENT_SECONDS; t < dur; t += SEGMENT_SECONDS) {
+    const x = t * pps - timeline.scrollLeft;
+    if (x >= -4 && x <= timeline.viewportWidth + 4) xs.push(x);
+  }
+  return xs;
+});
+
 function isTextTrackType(type: string): boolean {
   return TEXT_TRACK_TYPES.includes(type);
 }
@@ -302,6 +320,12 @@ onUnmounted(() => {
           class="tl-content"
           @mousedown="onRulerMouseDown"
         >
+          <div
+            v-for="x in segmentDividers"
+            :key="'ruler-seg-' + x"
+            class="segment-divider segment-divider-ruler"
+            :style="{ left: x + 'px' }"
+          />
           <TimelineRuler />
         </div>
       </div>
@@ -365,6 +389,12 @@ onUnmounted(() => {
             :data-track-type="track.type"
             @mousedown="onTrackAreaMouseDown"
           >
+            <div
+              v-for="x in segmentDividers"
+              :key="'seg-' + track.id + '-' + x"
+              class="segment-divider"
+              :style="{ left: x + 'px' }"
+            />
             <template v-if="track.events.length > 0">
               <TimelineClip
                 v-for="event in track.events"
@@ -608,6 +638,24 @@ onUnmounted(() => {
   overflow: hidden;
   position: relative;
   min-height: 40px;
+}
+
+/* MOSS ASR 5 分钟分段分割线：虚线 + 稍深色，pointer-events:none 不挡轨道交互 */
+.segment-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dashed var(--color-text-3);
+  opacity: 0.55;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.segment-divider-ruler {
+  z-index: 25;
+  border-left-style: solid;
+  opacity: 0.75;
 }
 
 .empty-hint {
