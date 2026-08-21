@@ -30,6 +30,172 @@ struct RawSegment {
     text: String,
 }
 
+/// GGUF 内嵌的默认生成 token 上限（mtd.default_max_new_tokens=5120）。
+/// moss-transcribe CLI 未传 --max-new 时用它，长音频会在该处被硬截断
+/// （实测约 5120 token 仅覆盖 ~11.6 分钟音频的转录量）。
+const DEFAULT_MAX_NEW_TOKENS: u32 = 5120;
+
+/// 每秒钟音频的生成 token 消耗率（实测 5120 token / 693s ≈ 7.4 token/s）。
+/// 取 15 作为安全系数（约 2 倍余量），覆盖对话更密集的游戏剧情场景。
+const MAX_NEW_TOKENS_PER_SECOND: f64 = 15.0;
+
+/// 超过该时长（秒）的音频触发分段转写。
+/// 依据：moss-transcribe.cpp 单次 prefill 全量 seq，注意力激活随 seq² 增长，
+/// 8GB 显存安全段长 ≈ 8 分钟（seq≈6000，prefill 激活 ~2.8GB）。
+/// 分段逐段转写可同时规避 prefill OOM 与 max_new=5120 截断。
+const SEGMENT_SECONDS: u32 = 480;
+
+/// WAV 解析结果：时长（秒）与 PCM 布局（采样率/声道/位深/data 偏移）。
+struct WavInfo {
+    seconds: f64,
+    sample_rate: u32,
+    channels: u16,
+    bits_per_sample: u16,
+    /// data 子块在文件中的偏移
+    data_offset: u32,
+    /// data 子块字节数
+    data_len: u32,
+}
+
+/// 解析 PCM WAV 头（RIFF/fmt/data），返回时长与布局。
+/// ffmpeg 生成的 wav 在 fmt 后可能插 LIST（INFO）等块，故按块链遍历找 data。
+/// 解析失败返回 None（调用方回退默认，不阻断转写）。
+fn wav_info(path: &Path) -> Option<WavInfo> {
+    let mut f = std::fs::File::open(path).ok()?;
+    // 头部读大些以容纳 fmt + 可能的 LIST/扩展块（常见 ffmpeg 输出 < 256B）
+    let mut header = [0u8; 1024];
+    // read() 不保证读满，需循环读满（或读到 EOF）
+    let mut n = 0usize;
+    while n < header.len() {
+        match f.read(&mut header[n..]) {
+            Ok(0) => break,
+            Ok(m) => n += m,
+            Err(_) => return None,
+        }
+    }
+    let header = &header[..n];
+    if header.len() < 12 || &header[0..4] != b"RIFF" || &header[8..12] != b"WAVE" {
+        return None;
+    }
+    // 遍历块链：@12 起，每块 8 字节头（id+size），块体后按 2 字节对齐推进
+    let mut audio_format = 0u16;
+    let mut channels = 0u16;
+    let mut sample_rate = 0u32;
+    let mut bits_per_sample = 0u16;
+    let mut data_offset = 0u32;
+    let mut data_len = 0u32;
+    let mut pos = 12usize;
+    while pos + 8 <= header.len() {
+        let id = &header[pos..pos + 4];
+        let size = u32::from_le_bytes([header[pos + 4], header[pos + 5], header[pos + 6], header[pos + 7]]) as usize;
+        let body = pos + 8;
+        match id {
+            b"fmt " if size >= 16 => {
+                // fmt 块体小（通常 16-40B），需完整读到
+                if body + 16 > header.len() {
+                    break;
+                }
+                audio_format = u16::from_le_bytes([header[body], header[body + 1]]);
+                channels = u16::from_le_bytes([header[body + 2], header[body + 3]]);
+                sample_rate = u32::from_le_bytes([
+                    header[body + 4], header[body + 5], header[body + 6], header[body + 7],
+                ]);
+                bits_per_sample = u16::from_le_bytes([header[body + 14], header[body + 15]]);
+            }
+            b"data" => {
+                // data 块体通常巨大且超出头部缓冲：只取 id+size 即可
+                data_offset = body as u32;
+                data_len = size as u32;
+                break;
+            }
+            _ => {
+                // 其他块（LIST 等）：块体超出头部则无法跳过，终止遍历
+                if body + size > header.len() {
+                    break;
+                }
+            }
+        }
+        // 块体按 2 字节对齐（WAV 规范：奇数大小补 1 字节）
+        pos = body + size + (size & 1);
+    }
+    if audio_format != 1 || channels == 0 || sample_rate == 0 || bits_per_sample == 0 || data_len == 0 {
+        return None;
+    }
+    let bytes_per_sample = (channels as u32) * (bits_per_sample as u32 / 8);
+    if bytes_per_sample == 0 {
+        return None;
+    }
+    let seconds = data_len as f64 / (sample_rate as f64 * bytes_per_sample as f64);
+    Some(WavInfo {
+        seconds,
+        sample_rate,
+        channels,
+        bits_per_sample,
+        data_offset,
+        data_len,
+    })
+}
+
+/// 依据 WAV 时长计算 `--max-new`：保证长音频不被默认 5120 上限截断。
+/// 解析失败时回退默认值。调用方应保证 audio_path 是完整（未分段）文件，
+/// 分段场景逐段计算（每段时长更短，预算安全）。
+fn compute_max_new(seconds: f64) -> u32 {
+    if seconds <= 0.0 {
+        return DEFAULT_MAX_NEW_TOKENS;
+    }
+    let estimated = (seconds * MAX_NEW_TOKENS_PER_SECOND).ceil() as u32;
+    estimated.max(DEFAULT_MAX_NEW_TOKENS)
+}
+
+/// 从 PCM WAV 切出 [start_sec, end_sec) 子段，写成标准 44 字节头 + data 子块。
+/// 帧对齐（按 bytes_per_sample 对齐），end_sec 超过尾部时截到尾部。
+fn slice_wav(
+    src: &Path,
+    info: &WavInfo,
+    start_sec: u32,
+    end_sec: u32,
+    out: &Path,
+) -> Result<(), AsrError> {
+    let bytes_per_sample = info.channels as u32 * (info.bits_per_sample as u32 / 8);
+    let start_byte = start_sec as u64 * info.sample_rate as u64 * bytes_per_sample as u64;
+    let end_byte = end_sec as u64 * info.sample_rate as u64 * bytes_per_sample as u64;
+    let start_byte = start_byte.min(info.data_len as u64);
+    let end_byte = end_byte.min(info.data_len as u64).max(start_byte);
+
+    let f = std::fs::File::open(src)
+        .map_err(|e| AsrError::Worker(format!("MOSS 分段读取失败: {}", e)))?;
+    use std::io::{Seek, SeekFrom};
+    let mut f = std::io::BufReader::new(f);
+    f.seek(SeekFrom::Start(info.data_offset as u64 + start_byte))
+        .map_err(|e| AsrError::Worker(format!("MOSS 分段定位失败: {}", e)))?;
+    let mut data = vec![0u8; (end_byte - start_byte) as usize];
+    f.read_exact(&mut data)
+        .map_err(|e| AsrError::Worker(format!("MOSS 分段读取失败: {}", e)))?;
+
+    // 标准 44 字节 WAV 头
+    let mut out_buf = Vec::with_capacity(44 + data.len());
+    let riff_size = 36u32 + data.len() as u32;
+    out_buf.extend_from_slice(b"RIFF");
+    out_buf.extend_from_slice(&riff_size.to_le_bytes());
+    out_buf.extend_from_slice(b"WAVE");
+    out_buf.extend_from_slice(b"fmt ");
+    out_buf.extend_from_slice(&16u32.to_le_bytes());
+    out_buf.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    out_buf.extend_from_slice(&info.channels.to_le_bytes());
+    out_buf.extend_from_slice(&info.sample_rate.to_le_bytes());
+    let byte_rate = info.sample_rate * info.channels as u32 * (info.bits_per_sample as u32 / 8);
+    out_buf.extend_from_slice(&byte_rate.to_le_bytes());
+    let block_align = info.channels * (info.bits_per_sample / 8);
+    out_buf.extend_from_slice(&block_align.to_le_bytes());
+    out_buf.extend_from_slice(&info.bits_per_sample.to_le_bytes());
+    out_buf.extend_from_slice(b"data");
+    out_buf.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    out_buf.extend_from_slice(&data);
+
+    std::fs::write(out, &out_buf)
+        .map_err(|e| AsrError::Worker(format!("MOSS 分段写入失败: {}", e)))
+}
+
 /// 解析 `--format json` 的 stdout：JSON 段数组 → AsrSegment 列表。
 /// MOSS 不输出置信度，confidence 置 None。
 fn parse_segments(json: &str) -> Result<Vec<AsrSegment>, AsrError> {
@@ -181,7 +347,12 @@ impl MossProvider {
 
     /// 执行一次转写（阻塞，长音频可达数分钟；由编排层放后台线程）。
     /// 子进程登记在 active_child：轮询等待（可被 cancel 打断）+ 超时终止。
-    fn run_transcribe(&self, audio_path: &Path) -> Result<Vec<AsrSegment>, AsrError> {
+    /// `max_new` 为本次转写的生成 token 上限（调用方按段时长计算）。
+    fn run_transcribe(
+        &self,
+        audio_path: &Path,
+        max_new: u32,
+    ) -> Result<Vec<AsrSegment>, AsrError> {
         // 防残留叠加：清理历史孤儿进程（本次子进程尚未 spawn，不误杀自己）
         self.cleanup_stale_moss_processes();
         let mut cmd = Command::new(&self.binary);
@@ -191,6 +362,10 @@ impl MossProvider {
             // 默认输出是原始流格式，--format json 才会输出结构化段
             .arg("--format")
             .arg("json")
+            // 显式放大生成上限：默认 5120 token 会在 ~10 分钟处硬截断
+            // （greedy_generate 达 max_new 即停），长音频后半段丢失
+            .arg("--max-new")
+            .arg(max_new.to_string())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if self.threads > 0 {
@@ -325,7 +500,7 @@ impl AsrProvider for MossProvider {
         }
         // 每次转写重置取消标志：上一次取消不污染本次
         self.cancelled.store(false, Ordering::SeqCst);
-        let result = self.run_transcribe(audio_path);
+        let result = self.transcribe_audio(audio_path);
         match &result {
             Err(e) => self.set_error(&e.to_string()),
             // 成功时清除历史错误：避免取消/失败的残留一直显示在状态探测里
@@ -340,6 +515,63 @@ impl AsrProvider for MossProvider {
 
     fn cancel(&self) {
         MossProvider::cancel(self);
+    }
+}
+
+impl MossProvider {
+    /// 转写入口：检测音频时长，超过阈值时切段逐段转写（规避 prefill OOM
+    /// 与 max_new 截断），否则单段直转。分段结果按段偏移合并。
+    fn transcribe_audio(&self, audio_path: &Path) -> Result<Vec<AsrSegment>, AsrError> {
+        let info = wav_info(audio_path);
+        let total_seconds = info.as_ref().map(|i| i.seconds).unwrap_or(0.0);
+
+        // 短音频（或 WAV 头无法解析）：单段直转，max_new 按总时长计算
+        if total_seconds <= SEGMENT_SECONDS as f64 {
+            let max_new = compute_max_new(total_seconds);
+            return self.run_transcribe(audio_path, max_new);
+        }
+
+        // 长音频：切段转写 + 偏移合并。每段时长 = SEGMENT_SECONDS，
+        // 最后一段为余量。段内时间戳是相对段首的，合并时加段偏移。
+        let info = info.ok_or_else(|| {
+            AsrError::Worker("MOSS 长音频分段需要可解析的 PCM WAV 头".into())
+        })?;
+        if self.dev_debug {
+            eprintln!("[moss] 音频 {:.0}s 超过分段阈值 {}s，分段转写", total_seconds, SEGMENT_SECONDS);
+        }
+        let seg_dir = audio_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        let mut all: Vec<AsrSegment> = Vec::new();
+        let n_segs = (total_seconds as u32).div_ceil(SEGMENT_SECONDS);
+        for seg in 0..n_segs {
+            if self.cancelled.load(Ordering::SeqCst) {
+                return Err(AsrError::Worker("MOSS 转写已取消".into()));
+            }
+            let start = seg * SEGMENT_SECONDS;
+            let end = ((seg + 1) * SEGMENT_SECONDS).min(total_seconds as u32);
+            let seg_wav = seg_dir.join(format!(
+                "seg_{:03}_{}_{}.wav",
+                seg,
+                start,
+                std::process::id()
+            ));
+            slice_wav(audio_path, &info, start, end, &seg_wav)?;
+            if self.dev_debug {
+                eprintln!("[moss] 分段 {}/{}: [{}-{}s]", seg + 1, n_segs, start, end);
+            }
+            // 每段 max_new 按段时长计算（短段预算安全）
+            let seg_max_new = compute_max_new((end - start) as f64);
+            let segs = self.run_transcribe(&seg_wav, seg_max_new)?;
+            let _ = std::fs::remove_file(&seg_wav);
+            for mut s in segs {
+                s.start += start as f64;
+                s.end += start as f64;
+                all.push(s);
+            }
+        }
+        Ok(all)
     }
 }
 
@@ -420,5 +652,127 @@ mod tests {
         // 坏 PID 行（理论不会出现）应跳过而非崩溃
         let malformed = "\"moss-transcribe.exe\",\"abc\",\"Console\",\"1\",\"1,234 K\"\r\n";
         assert!(MossProvider::parse_tasklist_pids(malformed).is_empty());
+    }
+
+    /// 生成标准 44 字节 PCM WAV：16kHz 单声道 16bit，data 填 pattern。
+    /// `insert_list` 为 true 时在 fmt 与 data 之间插入 LIST(INFO) 块
+    /// （模拟 ffmpeg 输出，验证块链遍历解析）。
+    fn make_test_wav(path: &Path, sample_rate: u32, seconds: u32, insert_list: bool) {
+        let channels: u16 = 1;
+        let bits: u16 = 16;
+        let data_len = (sample_rate * seconds * channels as u32 * 2) as u32;
+        let mut buf = Vec::with_capacity(64 + data_len as usize);
+        buf.extend_from_slice(b"RIFF");
+        // RIFF size = 4(WAVE) + 块链总长
+        let list_len = if insert_list { 26u32 } else { 0u32 };
+        let list_padded = list_len + (list_len & 1);
+        buf.extend_from_slice(&(36 + list_padded + data_len).to_le_bytes());
+        buf.extend_from_slice(b"WAVE");
+        buf.extend_from_slice(b"fmt ");
+        buf.extend_from_slice(&16u32.to_le_bytes());
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&channels.to_le_bytes());
+        buf.extend_from_slice(&sample_rate.to_le_bytes());
+        buf.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+        buf.extend_from_slice(&2u16.to_le_bytes());
+        buf.extend_from_slice(&bits.to_le_bytes());
+        if insert_list {
+            // LIST(INFO) 块：26 字节体（ISFT=... 之类），模拟 ffmpeg
+            buf.extend_from_slice(b"LIST");
+            buf.extend_from_slice(&list_len.to_le_bytes());
+            buf.extend_from_slice(b"INFO");
+            buf.extend_from_slice(b"ISFT");
+            buf.extend_from_slice(&18u32.to_le_bytes());
+            buf.extend_from_slice(b"Lavf61.7.100\x00\x00");
+        }
+        buf.extend_from_slice(b"data");
+        buf.extend_from_slice(&data_len.to_le_bytes());
+        buf.resize(44 + list_padded as usize + data_len as usize, 0xAB);
+        std::fs::write(path, &buf).unwrap();
+    }
+
+    #[test]
+    fn test_wav_info_parses_duration_and_layout() {
+        let dir = std::env::temp_dir().join(format!("gsa_moss_wav_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = dir.join("t.wav");
+        make_test_wav(&wav, 16000, 10, false); // 10s，标准头
+        let info = wav_info(&wav).expect("wav_info 应解析成功");
+        assert_eq!(info.sample_rate, 16000);
+        assert_eq!(info.channels, 1);
+        assert_eq!(info.bits_per_sample, 16);
+        assert_eq!(info.data_offset, 44);
+        assert!((info.seconds - 10.0).abs() < 0.01);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_wav_info_parses_with_list_chunk() {
+        // ffmpeg 输出在 fmt 后插 LIST 块：块链遍历必须跳过它找到 data
+        let dir = std::env::temp_dir().join(format!("gsa_moss_wav_list_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = dir.join("t.wav");
+        make_test_wav(&wav, 16000, 20, true); // 20s，含 LIST
+        let info = wav_info(&wav).expect("wav_info 应跳过 LIST 解析成功");
+        assert_eq!(info.sample_rate, 16000);
+        assert!(info.data_offset > 44, "data 应在 LIST 之后，实际 {}", info.data_offset);
+        assert!((info.seconds - 20.0).abs() < 0.01, "时长 {}", info.seconds);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_wav_info_rejects_non_wav() {
+        let dir = std::env::temp_dir().join(format!("gsa_moss_wav_bad_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("not.wav");
+        std::fs::write(&f, b"NOT A WAVE FILE").unwrap();
+        assert!(wav_info(&f).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_compute_max_new_scales_with_duration() {
+        // 短音频不低于默认 5120；长音频按 15 token/s 放大
+        assert_eq!(compute_max_new(0.0), DEFAULT_MAX_NEW_TOKENS);
+        assert_eq!(compute_max_new(60.0), DEFAULT_MAX_NEW_TOKENS); // 60*15=900 < 5120
+        assert_eq!(compute_max_new(480.0), 7200); // 480*15=7200
+        assert_eq!(compute_max_new(1200.0), 18000); // 20 分钟
+    }
+
+    #[test]
+    fn test_slice_wav_produces_valid_subsegment() {
+        let dir = std::env::temp_dir().join(format!("gsa_moss_slice_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.wav");
+        make_test_wav(&src, 16000, 20, false); // 20s
+        let info = wav_info(&src).unwrap();
+
+        // 切 [5, 10)：应得 5s 数据，且能再次解析
+        let seg = dir.join("seg.wav");
+        slice_wav(&src, &info, 5, 10, &seg).unwrap();
+        let info2 = wav_info(&seg).expect("切片应可解析");
+        assert!((info2.seconds - 5.0).abs() < 0.01);
+        assert_eq!(info2.sample_rate, 16000);
+        assert_eq!(info2.channels, 1);
+        // 内容验证：data 区应全为填充字节 0xAB（非零，确保不是空切片）
+        let bytes = std::fs::read(&seg).unwrap();
+        assert_eq!(bytes.len(), 44 + 16000 * 5 * 2);
+        assert!(bytes[44..].iter().all(|&b| b == 0xAB));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_slice_wav_clamps_beyond_end() {
+        let dir = std::env::temp_dir().join(format!("gsa_moss_slice_end_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.wav");
+        make_test_wav(&src, 16000, 10, false);
+        let info = wav_info(&src).unwrap();
+        // 请求 [8, 999)：应截到 10s
+        let seg = dir.join("seg.wav");
+        slice_wav(&src, &info, 8, 999, &seg).unwrap();
+        let info2 = wav_info(&seg).unwrap();
+        assert!((info2.seconds - 2.0).abs() < 0.01);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
