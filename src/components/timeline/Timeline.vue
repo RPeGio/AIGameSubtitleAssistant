@@ -646,7 +646,7 @@ onUnmounted(() => {
   top: 0;
   bottom: 0;
   width: 0;
-  border-left: 1px dashed var(--color-text-3);
+  border-left: 1px dashed var(--color-text-secondary);
   opacity: 0.55;
   pointer-events: none;
   z-index: 5;

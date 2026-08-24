@@ -485,6 +485,12 @@ impl AsrProvider for MossProvider {
         self.ready.load(Ordering::SeqCst)
     }
 
+    fn reset(&self) {
+        // 每次完整转写任务开始前清除取消标志（由 asr pipeline 调用；
+        // 不能放在 transcribe 入口，见 transcribe 内注释）
+        self.cancelled.store(false, Ordering::SeqCst);
+    }
+
     fn describe(&self) -> String {
         self.last_error.lock().ok().and_then(|g| g.clone()).unwrap_or_default()
     }
@@ -497,8 +503,9 @@ impl AsrProvider for MossProvider {
         if !self.is_ready() {
             return Err(AsrError::NotReady);
         }
-        // 每次转写重置取消标志：上一次取消不污染本次
-        self.cancelled.store(false, Ordering::SeqCst);
+        // 注意：不在入口清除取消标志——分段转写中段间窗口的取消必须保留到
+        // 下一段（由 run_transcribe 的轮询立即捕获）；标志由 reset() 在
+        // 每次完整转写任务开始时统一清除。
         // 单段直转：max_new 按音频时长计算（规避默认 5120 的截断）
         let seconds = wav_info(audio_path).map(|i| i.seconds).unwrap_or(0.0);
         let result = self.run_transcribe(audio_path, compute_max_new(seconds));

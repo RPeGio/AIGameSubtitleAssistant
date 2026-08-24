@@ -83,6 +83,10 @@ where
     }
     let _guard = TranscribeGuard(manager);
 
+    // 一次完整转写任务开始：清除引擎上一次的取消残留
+    // （MOSS 分段转写逐段调用 transcribe，取消标志按任务重置，见 AsrProvider::reset）
+    manager.with_engine(engine, |p| p.reset());
+
     let dev_debug = manager.config().dev_debug;
 
     // 临时目录：dev 时写仓库根 temp/asr/<uuid> 并保留；否则系统临时目录 + 自动清理
@@ -134,11 +138,12 @@ where
         } else {
             // 长音频分段：切片 → 逐段转写 → 段内偏移合并 → 段完成上报进度
             let info = info.ok_or("MOSS 长音频分段需要可解析的 PCM WAV 头")?;
-            let n_segs = (total as u32).div_ceil(SEGMENT_SECONDS);
+            // total 为 f64 秒，ceil 后按整秒切段，避免丢弃尾部的亚秒音频
+            let n_segs = (total.ceil() as u32).div_ceil(SEGMENT_SECONDS);
             let mut all: Vec<AsrSegment> = Vec::new();
             for seg in 0..n_segs {
                 let start = seg * SEGMENT_SECONDS;
-                let end = ((seg + 1) * SEGMENT_SECONDS).min(total as u32);
+                let end = ((seg + 1) * SEGMENT_SECONDS).min(total.ceil() as u32);
                 let seg_wav = base_dir.join(format!("moss_seg_{}.wav", seg));
                 crate::ai_runtime::moss::slice_wav(&audio, &info, start, end, &seg_wav)
                     .map_err(|e| e.to_string())?;

@@ -69,13 +69,19 @@ function engineStatus(engine: string): AsrEngineStatus | undefined {
   return asrEngines.value.find((e) => e.engine === engine);
 }
 
+/// 探测失败（asrEngines 为空）时直通：不阻塞用户，运行失败由错误提示兜底
+function probeFailed(): boolean {
+  return asrEngines.value.length === 0;
+}
+
 function engineReady(engine: string): boolean {
+  if (probeFailed()) return true;
   return engineStatus(engine)?.ready ?? false;
 }
 
 function engineDetail(engine: string): string {
   const s = engineStatus(engine);
-  if (!s) return "正在探测…";
+  if (!s) return probeFailed() ? "状态未知（探测失败，可直接尝试）" : "正在探测…";
   return s.ready ? "就绪" : s.message || "未配置";
 }
 

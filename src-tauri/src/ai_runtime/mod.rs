@@ -412,6 +412,10 @@ pub trait AsrProvider: Send + Sync {
         audio_path: &Path,
         options: &AsrTranscribeOptions,
     ) -> Result<Vec<AsrSegment>, AsrError>;
+    /// 开始一次新的转写任务前调用：清除上一次的取消/错误残留（默认无操作）。
+    /// 分段转写中 transcribe() 会被逐段调用，取消标志必须按"任务"而非"段"
+    /// 重置——否则段间窗口内的取消会在下一段入口被吞掉。
+    fn reset(&self) {}
     /// 取消当前转写（默认无操作；MOSS 实现为终止活动子进程）。
     /// 供前端"取消 ASR"、超时与应用退出钩子调用。
     fn cancel(&self) {}
