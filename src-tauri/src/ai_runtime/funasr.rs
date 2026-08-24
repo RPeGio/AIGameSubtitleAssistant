@@ -11,7 +11,9 @@
 // 注意进程是 python.exe（与 OCR worker 同名），必须按命令行含
 // funasr_worker.py 过滤，不能按映像名清理（否则会误杀 OCR worker）。
 
-use crate::ai_runtime::{resolve_path, AsrError, AsrProvider, AsrSegment, RuntimeConfig};
+use crate::ai_runtime::{
+    resolve_path, AsrError, AsrProvider, AsrSegment, AsrTranscribeOptions, RuntimeConfig,
+};
 use serde::Deserialize;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -213,10 +215,20 @@ impl FunAsrProvider {
     fn cleanup_stale_funasr_processes(&self) {}
 
     /// 执行一次转写（阻塞，含模型加载 20-40s；由编排层放后台线程）。
+    /// language/max_speakers 为本次运行参数（面板传入，覆盖 config 默认值）。
     /// 子进程登记在 active_child：轮询等待（可被 cancel 打断）+ 超时终止。
-    fn run_transcribe(&self, audio_path: &Path) -> Result<Vec<AsrSegment>, AsrError> {
+    fn run_transcribe(
+        &self,
+        audio_path: &Path,
+        language: Option<String>,
+        max_speakers: Option<u32>,
+    ) -> Result<Vec<AsrSegment>, AsrError> {
         // 防残留叠加：清理历史孤儿进程（本次子进程尚未 spawn，不误杀自己）
         self.cleanup_stale_funasr_processes();
+        // 本次运行语言优先于 config 默认（空 = worker 自动检测）
+        let language = language
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| self.language.clone());
         let mut cmd = Command::new(&self.python);
         cmd.arg(&self.worker)
             .arg(audio_path)
@@ -224,9 +236,12 @@ impl FunAsrProvider {
             .env("PYTHONPATH", &self.deps)
             .env("MODELSCOPE_CACHE", &self.model_dir)
             .env("GSA_FUNASR_DEVICE", &self.device)
-            .env("GSA_FUNASR_LANGUAGE", &self.language)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .env("GSA_FUNASR_LANGUAGE", &language);
+        // 说话人上限：None = 不设置（worker 自动估计，已验证的默认）
+        if let Some(n) = max_speakers {
+            cmd.env("GSA_FUNASR_MAX_SPEAKERS", n.to_string());
+        }
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = cmd
             .spawn()
             .map_err(|e| AsrError::Worker(format!("无法启动 FunASR 转写: {}", e)))?;
@@ -347,13 +362,21 @@ impl AsrProvider for FunAsrProvider {
         self.last_error.lock().ok().and_then(|g| g.clone()).unwrap_or_default()
     }
 
-    fn transcribe(&self, audio_path: &Path) -> Result<Vec<AsrSegment>, AsrError> {
+    fn transcribe(
+        &self,
+        audio_path: &Path,
+        options: &AsrTranscribeOptions,
+    ) -> Result<Vec<AsrSegment>, AsrError> {
         if !self.is_ready() {
             return Err(AsrError::NotReady);
         }
         // 每次转写重置取消标志：上一次取消不污染本次
         self.cancelled.store(false, Ordering::SeqCst);
-        let result = self.run_transcribe(audio_path);
+        let result = self.run_transcribe(
+            audio_path,
+            options.language.clone(),
+            options.max_speakers,
+        );
         match &result {
             Err(e) => self.set_error(&e.to_string()),
             // 成功时清除历史错误：避免取消/失败的残留一直显示在状态探测里

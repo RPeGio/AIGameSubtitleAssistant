@@ -9,16 +9,32 @@ stdout: [{"start":0.5,"end":2.3,"speaker":"SPK0","text":"..."}, ...]
   - MODELSCOPE_CACHE：runtime/models/funasr（模型缓存，bootstrap 预下载）
   - GSA_FUNASR_DEVICE："cuda"（默认，不可用时自动回退 cpu）| "cpu"
   - GSA_FUNASR_LANGUAGE：识别语言（空/auto = 自动检测；Fun-ASR-Nano-2512 支持 中文/英文/日文）
-  - GSA_FUNASR_SPK_MODEL：说话人模型完整 id（默认 cam++，可换 iic/speech_eres2netv2_sv_zh-cn_16k-common）
+  - GSA_FUNASR_MAX_SPEAKERS：说话人上限（空 = 自动估计；非法值忽略）
+  - GSA_FUNASR_SPK_ENGINE：说话人分离引擎，"diarize"（默认）| "funasr"
+    - diarize：独立说话人分离流水线（Silero VAD + WeSpeaker ResNet34-LM + 谱聚类，
+      外网多语言切片效果远好于 funasr 内建聚类；CPU 运行，约 8 倍实时）。
+      与 ASR 段按时间重叠分配说话人。不可用时自动回退 funasr 引擎。
+      注意：Nano 必须配 spk_model 才会输出 sentence_info（断句依赖），
+      所以 spk_model 照常加载，但说话人标签由 diarize 覆盖。
+    - funasr：AutoModel 内建聚类（GSA_FUNASR_SPK_MODEL 选模型）
+  - GSA_FUNASR_SPK_MODEL：说话人模型完整 id（默认 cam++，
+    可换 iic/speech_eres2netv2_sv_zh-cn_16k-common）
 
 模型组合（完整 id，不用 "fsmn-vad"/"cam++" 别名，防版本映射漂移）：
   Fun-ASR-Nano-2512（识别，zh/en/ja，自带标点与 LLM 语义断句）
    + speech_fsmn_vad_zh-cn-16k-common-pytorch（VAD 分段）
-   + speech_campplus_sv_zh-cn_16k-common（说话人，默认）
+  diarize 引擎：speech_campplus_sv_zh-cn_16k-common（说话人，回退引擎默认）
 重要：不要给 Fun-ASR-Nano 配 punc_model —— 它自带标点，二次标点会导致
 句子边界错乱、时间戳与说话人分配错误（FunASR issue #2857，官方确认）。
 断句粒度由 Nano 的 LLM 语义理解 + VAD 段边界共同决定。
 sentence_info 的 start/end 单位毫秒。
+
+VAD 分段参数（vad_kwargs）：
+  - max_single_segment_time=30000：单段上限 30s，防超长字幕
+  - max_end_silence_time=300：静音 300ms 即切段（默认 800ms）。
+    游戏 BGM 下说话人切换停顿通常 <800ms，默认值会把多人对话合并成
+    长段（实测 14.8s 段混 3 人 → 说话人分配必然错），调小后按 MOSS
+    参考（whisper silero VAD 切分）粒度一致，说话人正确率大幅提升。
 """
 
 import io
@@ -130,6 +146,39 @@ def split_long_segment(s):
     }]
 
 
+def assign_speakers(segments, diar_segments):
+    """把 diarize 说话人时间线映射到 ASR 段。
+
+    每个 ASR 段取与之重叠时长最大的说话人段；无重叠（VAD 边界差异）时
+    取中心点最近的说话人段。SPEAKER_XX 标签按首次出现顺序重映射为
+    SPK0/SPK1...，与 funasr 内建 spk 编号习惯一致（Rust 侧格式不变）。
+    diar_segments: [{"start":s,"end":e,"speaker":"SPEAKER_XX"}, ...]
+    """
+    if not diar_segments:
+        return segments
+    label_map = {}
+    label_order = []
+    for d in diar_segments:
+        lab = d["speaker"]
+        if lab not in label_map:
+            label_map[lab] = len(label_order)
+            label_order.append(lab)
+    for seg in segments:
+        s0, e0 = seg["start"], seg["end"]
+        best = max(
+            diar_segments,
+            key=lambda d: (min(e0, d["end"]) - max(s0, d["start"])),
+        )
+        if min(e0, best["end"]) - max(s0, best["start"]) <= 0:
+            c = (s0 + e0) / 2.0
+            best = min(
+                diar_segments,
+                key=lambda d: abs((d["start"] + d["end"]) / 2.0 - c),
+            )
+        seg["speaker"] = "SPK%d" % label_map[best["speaker"]]
+    return segments
+
+
 def main():
     # 强制 UTF-8：中文 locale Windows 下 stdout 默认 GBK，Rust 侧按 UTF-8 解析会乱码
     stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
@@ -147,24 +196,38 @@ def main():
     wav = sys.argv[1]
     device = pick_device(os.environ.get("GSA_FUNASR_DEVICE", ""))
     language = os.environ.get("GSA_FUNASR_LANGUAGE", "").strip()
+    spk_engine = os.environ.get("GSA_FUNASR_SPK_ENGINE", "diarize").strip().lower()
     spk_model = os.environ.get(
         "GSA_FUNASR_SPK_MODEL", "iic/speech_campplus_sv_zh-cn_16k-common"
     ).strip()
+
+    # diarize 引擎不可用（未安装/导入失败）时回退 funasr 内建引擎
+    diarize_enabled = spk_engine == "diarize"
+    if diarize_enabled:
+        try:
+            from diarize import diarize as diarize_fn
+        except Exception as e:
+            sys.stderr.write("[funasr] diarize 不可用（%s），回退 funasr 内建说话人引擎\n" % e)
+            diarize_enabled = False
 
     from funasr import AutoModel
 
     # 模型用完整 id（不用 "fsmn-vad"/"cam++" 别名）：
     # 别名映射随 funasr 版本变动，bootstrap 预下载与这里必须一一对应
     # 注意：不配 punc_model（Nano 自带标点，二次标点会破坏句子边界）
-    model = AutoModel(
+    # 说话人分离交给 diarize 时仍需 spk_model：Fun-ASR-Nano 只有配置 spk_model
+    # 才输出 sentence_info（含段级 start/end 与字级 timestamp，断句后处理依赖），
+    # 加载的 spk 结果会被 diarize 引擎覆盖，不影响最终 speaker 标签。
+    model_kwargs = dict(
         model="FunAudioLLM/Fun-ASR-Nano-2512",
         trust_remote_code=True,
         vad_model="iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
-        vad_kwargs={"max_single_segment_time": 30000},
+        vad_kwargs={"max_single_segment_time": 30000, "max_end_silence_time": 300},
         spk_model=spk_model,
         device=device,
         disable_update=True,
     )
+    model = AutoModel(**model_kwargs)
     gen_kwargs = dict(
         input=[wav],
         cache={},
@@ -181,6 +244,33 @@ def main():
         for piece in split_long_segment(sent):
             if piece["text"]:
                 segments.append(piece)
+
+    # diarize 引擎：说话人时间线与 ASR 段按重叠分配（失败时降级，全部标 SPK0）。
+    # 默认不传 max_speakers（自动估计，默认 1-20）：曾误加 max_speakers=4 压制，
+    # 实测 6 人对话被压成 4 簇（应用里说话人一团糟）。
+    # 短音频（<1min）上 GMM BIC 估计会失效（30s 截段 2 人被判 13 人），
+    # 但完整转写场景音频数分钟，全片自动估计与 MOSS 参考（6 人）接近（5 人）。
+    # GSA_FUNASR_MAX_SPEAKERS：前端面板"最大说话人数量"（用户确知人数时用，
+    # 强制聚类上界；非法值忽略走自动估计）
+    max_spk = None
+    env_max_spk = os.environ.get("GSA_FUNASR_MAX_SPEAKERS", "").strip()
+    if env_max_spk:
+        try:
+            max_spk = int(env_max_spk)
+        except ValueError:
+            sys.stderr.write(
+                "[funasr] GSA_FUNASR_MAX_SPEAKERS=%r 不是整数，忽略（自动估计）\n"
+                % env_max_spk
+            )
+    if diarize_enabled:
+        try:
+            if max_spk:
+                diar_res = diarize_fn(wav, max_speakers=max_spk)
+            else:
+                diar_res = diarize_fn(wav)
+            segments = assign_speakers(segments, diar_res.to_list())
+        except Exception as e:
+            sys.stderr.write("[funasr] diarize 运行失败（%s），说话人全部标 SPK0\n" % e)
     stdout.write(json.dumps(segments, ensure_ascii=False))
 
 

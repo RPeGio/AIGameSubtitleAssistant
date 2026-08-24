@@ -43,6 +43,10 @@ pub struct RuntimeConfig {
     /// 文档建议的 8 线程反而慢 ~72%（解码带宽受限，甜点依机器而异）
     #[serde(default)]
     pub moss_threads: u32,
+    /// MOSS 推理后端设备：空 = 不设置（ggml 自动选最优：有 CUDA/Vulkan DLL 即 GPU，否则 CPU）
+    /// | "cuda" | "cpu" | "vulkan"。由 build_moss.ps1 -Backend 构建对应 DLL 后生效
+    #[serde(default)]
+    pub moss_device: String,
     /// MOSS 转写超时（分钟）：0 = 不限。防御模型/音频异常导致的卡死，
     /// 超时后终止子进程并报错（正常长音频按需调大）
     #[serde(default)]
@@ -109,6 +113,7 @@ impl Default for RuntimeConfig {
             moss_binary: String::new(),
             moss_model: String::new(),
             moss_threads: 0,
+            moss_device: String::new(),
             moss_timeout_minutes: 0,
             llm_binary: String::new(),
             llm_model: String::new(),
@@ -254,6 +259,17 @@ impl RuntimeConfig {
         // moss_binary / llm_binary 非空时必须真的存在（与 python_path 同策略）
         ensure_binary_exists("moss_binary", &self.moss_binary, runtime_dir)?;
         ensure_binary_exists("llm_binary", &self.llm_binary, runtime_dir)?;
+
+        // moss_device 白名单：空（自动）/ cpu / cuda / vulkan
+        if !matches!(
+            self.moss_device.as_str(),
+            "" | "cpu" | "cuda" | "vulkan"
+        ) {
+            return Err(format!(
+                "moss_device 取值非法: {}（可选 空/cpu/cuda/vulkan）",
+                self.moss_device
+            ));
+        }
         Ok(())
     }
 }
@@ -305,6 +321,7 @@ mod tests {
             moss_binary: "bin/moss-transcribe.exe".into(),
             moss_model: "models/moss/moss-transcribe-q5_k.gguf".into(),
             moss_threads: 8,
+            moss_device: "cuda".into(),
             moss_timeout_minutes: 30,
             llm_binary: "bin/llama-cli.exe".into(),
             llm_model: "models/qwen/Qwen3-4B-Q4_K_M.gguf".into(),
@@ -330,6 +347,7 @@ mod tests {
         assert_eq!(loaded.moss_binary, "bin/moss-transcribe.exe");
         assert_eq!(loaded.moss_model, "models/moss/moss-transcribe-q5_k.gguf");
         assert_eq!(loaded.moss_threads, 8);
+        assert_eq!(loaded.moss_device, "cuda");
         assert_eq!(loaded.moss_timeout_minutes, 30);
         assert_eq!(loaded.llm_binary, "bin/llama-cli.exe");
         assert_eq!(loaded.llm_model, "models/qwen/Qwen3-4B-Q4_K_M.gguf");
@@ -380,6 +398,7 @@ mod tests {
             moss_binary: "moss-transcribe.exe".into(),
             moss_model: "models/moss/moss-transcribe-q5_k.gguf".into(),
             moss_threads: 8,
+            moss_device: "cpu".into(),
             moss_timeout_minutes: 0,
             llm_binary: "llama-cli.exe".into(),
             llm_model: "models/qwen/Qwen3-4B-Q4_K_M.gguf".into(),
@@ -439,6 +458,7 @@ mod tests {
         assert_eq!(cfg.moss_binary, "");
         assert_eq!(cfg.moss_model, "");
         assert_eq!(cfg.moss_threads, 0);
+        assert_eq!(cfg.moss_device, ""); // 老配置无此字段 → 空 = 自动选后端
         assert_eq!(cfg.llm_binary, "");
         assert_eq!(cfg.llm_model, "");
         assert_eq!(cfg.llm_threads, 0);
@@ -555,6 +575,33 @@ mod tests {
         let mut cfg = RuntimeConfig::default();
         cfg.python_path = "python.exe".into();
         assert!(cfg.validate(&dir).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_validate_rejects_bad_moss_device() {
+        // moss_device 只允许 空/cpu/cuda/vulkan
+        let dir = temp_dir("cfg_bad_moss_device");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("python.exe"), b"dummy").unwrap();
+        let mut cfg = RuntimeConfig::default();
+        cfg.python_path = "python.exe".into();
+        cfg.moss_device = "../evil".into();
+        assert!(cfg.validate(&dir).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_validate_accepts_all_moss_devices() {
+        let dir = temp_dir("cfg_ok_moss_devices");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("python.exe"), b"dummy").unwrap();
+        for device in ["", "cpu", "cuda", "vulkan"] {
+            let mut cfg = RuntimeConfig::default();
+            cfg.python_path = "python.exe".into();
+            cfg.moss_device = device.into();
+            assert!(cfg.validate(&dir).is_ok(), "moss_device={:?} 应通过校验", device);
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 }

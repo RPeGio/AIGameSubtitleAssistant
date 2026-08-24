@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useProjectStore } from "../stores/project";
 import { useTimelineStore } from "../stores/timeline";
-import type { OcrRunParams, LlmRuntimeStatus } from "../types";
+import type { OcrRunParams, AsrRunParams, AsrEngineStatus, LlmRuntimeStatus } from "../types";
 import AppSidebar from "../components/AppSidebar.vue";
 import VideoPlayer from "../components/VideoPlayer.vue";
 import Timeline from "../components/timeline/Timeline.vue";
@@ -18,6 +18,9 @@ import {
   NInput,
   NInputNumber,
   NProgress,
+  NRadio,
+  NRadioGroup,
+  NSelect,
   NText,
   useMessage,
 } from "naive-ui";
@@ -46,9 +49,55 @@ async function startOcr() {
   }
 }
 
-async function startAsr() {
+// ── ASR 控制 ────────────────────────────────────────────
+const showAsrConfig = ref(false);
+const asrParams = ref<AsrRunParams>({
+  engine: "funasr",
+  max_speakers: null,
+  language: null,
+});
+/// 两引擎运行环境（打开面板时探测，禁用不可用引擎）
+const asrEngines = ref<AsrEngineStatus[]>([]);
+
+const asrLanguageOptions = [
+  { label: "中文", value: "zh" },
+  { label: "English", value: "en" },
+  { label: "日本語", value: "ja" },
+];
+
+function engineStatus(engine: string): AsrEngineStatus | undefined {
+  return asrEngines.value.find((e) => e.engine === engine);
+}
+
+/// 探测失败（asrEngines 为空）时直通：不阻塞用户，运行失败由错误提示兜底
+function probeFailed(): boolean {
+  return asrEngines.value.length === 0;
+}
+
+function engineReady(engine: string): boolean {
+  if (probeFailed()) return true;
+  return engineStatus(engine)?.ready ?? false;
+}
+
+function engineDetail(engine: string): string {
+  const s = engineStatus(engine);
+  if (!s) return probeFailed() ? "状态未知（探测失败，可直接尝试）" : "正在探测…";
+  return s.ready ? "就绪" : s.message || "未配置";
+}
+
+async function openAsrConfig() {
   try {
-    await projectStore.runAsr();
+    asrEngines.value = await projectStore.getAsrEngines();
+  } catch {
+    asrEngines.value = [];
+  }
+  showAsrConfig.value = true;
+}
+
+async function startAsr() {
+  showAsrConfig.value = false;
+  try {
+    await projectStore.runAsr(asrParams.value);
     message.success("ASR 完成");
   } catch (e) {
     // 用户主动取消是预期行为，用中性提示而非错误
@@ -325,7 +374,7 @@ const resolutionLabel = computed(() => {
             size="small"
             type="primary"
             :disabled="projectStore.asrRunning"
-            @click="startAsr"
+            @click="openAsrConfig"
           >
             运行 ASR
           </NButton>
@@ -449,6 +498,80 @@ const resolutionLabel = computed(() => {
             <NSpace justify="end">
               <NButton size="small" @click="showOcrConfig = false">取消</NButton>
               <NButton size="small" type="primary" @click="startOcr">开始</NButton>
+            </NSpace>
+          </NSpace>
+        </NCard>
+      </NModal>
+
+      <!-- ASR 参数弹窗 -->
+      <NModal v-model:show="showAsrConfig" :mask-closable="false">
+        <NCard title="ASR 参数设置" style="width: 480px">
+          <NSpace vertical size="large">
+            <div class="cfg-field">
+              <NText depth="2">引擎（必选）</NText>
+              <NRadioGroup v-model:value="asrParams.engine">
+                <NSpace vertical>
+                  <NRadio value="funasr" :disabled="!engineReady('funasr')">
+                    <div class="engine-option">
+                      <div>FunASR + diarize（推荐，本地 GPU 快）</div>
+                      <NText depth="3" style="font-size: 12px">
+                        {{ engineDetail("funasr") }}
+                      </NText>
+                    </div>
+                  </NRadio>
+                  <NRadio value="moss" :disabled="!engineReady('moss')">
+                    <div class="engine-option">
+                      <div>MOSS-Transcribe-Diarize（慢但更准）</div>
+                      <NText depth="3" style="font-size: 12px">
+                        {{ engineDetail("moss") }}
+                      </NText>
+                    </div>
+                  </NRadio>
+                </NSpace>
+              </NRadioGroup>
+            </div>
+            <div class="cfg-field">
+              <NText depth="2">最大说话人数量（选填，默认自动估计）</NText>
+              <NInputNumber
+                v-model:value="asrParams.max_speakers"
+                :min="1"
+                :precision="0"
+                :step="1"
+                placeholder="自动估计"
+                :disabled="asrParams.engine === 'moss'"
+                style="width: 100%"
+              />
+              <NText v-if="asrParams.engine === 'moss'" depth="3" style="font-size: 12px">
+                MOSS 自动估计说话人，不支持手动限制
+              </NText>
+            </div>
+            <div class="cfg-field">
+              <NText depth="2">识别语言（选填，默认自动检测）</NText>
+              <NSelect
+                v-model:value="asrParams.language"
+                :options="asrLanguageOptions"
+                clearable
+                placeholder="自动检测"
+                :disabled="asrParams.engine === 'moss'"
+                style="width: 100%"
+              />
+              <NText v-if="asrParams.engine === 'moss'" depth="3" style="font-size: 12px">
+                MOSS 自动识别多语言，无需指定
+              </NText>
+            </div>
+            <NText depth="3" style="font-size: 12px">
+              提示：识别语言不准确时可在面板指定语言后重新运行。
+            </NText>
+            <NSpace justify="end">
+              <NButton size="small" @click="showAsrConfig = false">取消</NButton>
+              <NButton
+                size="small"
+                type="primary"
+                :disabled="!engineReady(asrParams.engine)"
+                @click="startAsr"
+              >
+                开始
+              </NButton>
             </NSpace>
           </NSpace>
         </NCard>
@@ -644,6 +767,12 @@ const resolutionLabel = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.engine-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .editor-empty {

@@ -9,7 +9,9 @@ import type {
   OcrRunParams,
   OcrSegment,
   OcrProgress,
+  AsrRunParams,
   AsrSegment,
+  AsrEngineStatus,
   AsrProgress,
   LlmProgress,
   LlmRuntimeStatus,
@@ -494,8 +496,8 @@ export const useProjectStore = defineStore("project", () => {
     track.events = segments.map(ocrTextToEvent).sort((a, b) => a.start - b.start);
   }
 
-  /// 运行 ASR 流水线：整段视频 → run_asr → 按 speaker 分组写入各 asr 轨道
-  async function runAsr() {
+  /// 运行 ASR 流水线：整段视频 → run_asr（面板参数：引擎/说话人上限/语言）→ 按 speaker 分组写入各 asr 轨道
+  async function runAsr(params: AsrRunParams) {
     if (asrRunning.value || !currentProject.value || !currentVideoMeta.value) return;
 
     asrRunning.value = true;
@@ -504,6 +506,7 @@ export const useProjectStore = defineStore("project", () => {
     try {
       const segments = await invoke<AsrSegment[]>("run_asr", {
         videoPath: currentVideoMeta.value.path,
+        params,
       });
       writeAsrSegments(segments);
       asrProgress.value = 1;
@@ -516,6 +519,11 @@ export const useProjectStore = defineStore("project", () => {
     } finally {
       asrRunning.value = false;
     }
+  }
+
+  /// 探测两个 ASR 引擎（funasr/moss）的运行环境（供配置面板禁用不可用引擎）
+  async function getAsrEngines(): Promise<AsrEngineStatus[]> {
+    return invoke<AsrEngineStatus[]>("check_asr_engines");
   }
 
   /// 请求取消当前 ASR 转写（后端终止 MOSS 子进程，runAsr 的 invoke 会返回"已取消"错误）
@@ -893,6 +901,7 @@ export const useProjectStore = defineStore("project", () => {
     asrProgress,
     asrMessage,
     runAsr,
+    getAsrEngines,
     cancelAsr,
     llmRunning,
     llmProgress,
