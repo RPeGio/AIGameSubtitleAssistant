@@ -420,6 +420,7 @@ onUnmounted(() => {
           </div>
           <div
             class="tl-content tl-track-body"
+            :class="{ 'swap-active': timeline.swapSegments }"
             :data-track-id="track.id"
             :data-track-type="track.type"
             @mousedown="onTrackAreaMouseDown"
@@ -439,7 +440,11 @@ onUnmounted(() => {
                 :style="{ left: r.x + 'px', width: r.width + 'px', ...maskStyle(r.key) }"
               />
               <button
-                v-if="ti < tracks().length - 1"
+                v-if="
+                  ti < tracks().length - 1 &&
+                  track.type === 'asr' &&
+                  tracks()[ti + 1].type === 'asr'
+                "
                 v-for="r in segmentRanges"
                 :key="'swap-' + track.id + '-' + r.key"
                 class="segment-swap-btn"
@@ -711,6 +716,11 @@ onUnmounted(() => {
 
 /* 轨道内容区允许子元素跨行边界显示（分段互换按钮压在行间分割线上） */
 .tl-track-body {
+  /* 默认裁切；仅分段互换模式放开（互换按钮越出轨道行下缘） */
+  overflow: hidden;
+}
+
+.tl-track-body.swap-active {
   overflow: visible;
 }
 

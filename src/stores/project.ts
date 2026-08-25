@@ -731,8 +731,9 @@ export const useProjectStore = defineStore("project", () => {
 
   /// 交换两条轨道在指定分段 [startSec, endSec) 内的 asr 事件归属：
   /// A 轨分段内的事件移到 B 轨，B 轨分段内的事件移到 A 轨。
-  /// 仅作用于分段内的事件（时间/文本不变），character 跟随目标轨道名；
-  /// 分段外的事件不受影响。用于手动修正跨段说话人归属错误。
+  /// 仅作用于完全位于分段内的事件（时间/文本不变），character 跟随目标轨道名；
+  /// 跨分段边界的事件不参与（避免长句被相邻分段来回移动）。
+  /// 用于手动修正跨段说话人归属错误。
   /// 返回是否成功（两轨均为 asr 类型且至少一侧有分段内事件）。
   function swapTrackEventsInSegment(
     trackAId: string,
@@ -746,7 +747,8 @@ export const useProjectStore = defineStore("project", () => {
     if (!ta || !tb || ta.id === tb.id) return false;
     if (ta.type !== "asr" || tb.type !== "asr") return false;
 
-    const inSeg = (e: TimelineEvent) => e.start < endSec && e.end > startSec;
+    // 完全包含于分段内的事件才交换
+    const inSeg = (e: TimelineEvent) => e.start >= startSec && e.end <= endSec;
     const aIn = ta.events.filter(inSeg);
     const bIn = tb.events.filter(inSeg);
     if (aIn.length === 0 && bIn.length === 0) return false;
