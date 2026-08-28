@@ -28,6 +28,57 @@ MODEL_MAP = {
     "server": ("PP-OCRv5_server_det", "PP-OCRv5_server_rec"),
 }
 
+# ─── 确定性后处理：字符白名单 + 低置信度行过滤 ──────────────
+# 只做机械清理，不尝试补字/改写 —— 保证字幕原文不被改动。
+# 白名单范围：
+#   - 0x20-0x7E    半角可打印 ASCII（字母/数字/英文标点）
+#   - 0x3000-0x303F CJK 标点（、。《》「」等，含全角空格）
+#   - 0x3040-0x30FF 日文假名
+#   - 0x3400-0x4DBF/0x4E00-0x9FFF CJK 统一表意文字（含扩展 A）
+#   - 0xFF00-0xFFEF 全角字母数字与全角标点
+_ALLOWED_RANGES = (
+    (0x20, 0x7E),
+    (0x3000, 0x303F),
+    (0x3040, 0x30FF),
+    (0x3400, 0x4DBF),
+    (0x4E00, 0x9FFF),
+    (0xFF00, 0xFFEF),
+)
+
+# 范围外但字幕常见、需额外保留的字符：
+# · 间隔号（"卡侬·桑娜妲"）、—/–/― 破折号、弯引号、… 省略号、※、← →
+_EXTRA_KEEP = frozenset(
+    chr(cp)
+    for cp in (
+        0x00B7, 0x2013, 0x2014, 0x2015, 0x2018, 0x2019,
+        0x201C, 0x201D, 0x2026, 0x203B, 0x2190, 0x2192,
+    )
+)
+
+# 单行识别置信度下限：低于此值的行视为噪音丢弃（GSA_OCR_CONF_THRESHOLD 覆盖）
+CONF_THRESHOLD = float(os.environ.get("GSA_OCR_CONF_THRESHOLD", "0.5"))
+
+
+def _char_allowed(ch):
+    if ch in _EXTRA_KEEP:
+        return True
+    cp = ord(ch)
+    return any(lo <= cp <= hi for lo, hi in _ALLOWED_RANGES)
+
+
+def _clean_text(text):
+    """白名单过滤 + 行级清理：去空行、行首尾空白、连续重复行。"""
+    lines = []
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        kept = [ch for ch in line if _char_allowed(ch)]
+        line = "".join(kept).strip()
+        if line and (not lines or line != lines[-1]):
+            lines.append(line)
+    return "\n".join(lines)
+
 
 def make_ocr():
     from paddleocr import PaddleOCR
@@ -66,7 +117,11 @@ def _extract_lines(res):
 
 
 def _extract_result(result):
-    """从单条 predict 结果提取 (text, confidence)。"""
+    """从单条 predict 结果提取 (text, confidence)。
+
+    后处理链：低置信度行过滤（conf < CONF_THRESHOLD 丢弃）→
+    白名单/行级清理（_clean_text）。整体置信度取剩余行最低值。
+    """
     if result is None:
         return "", 0.0
     res = None
@@ -86,10 +141,13 @@ def _extract_result(result):
     confs = []
     for text, conf in _extract_lines(res):
         text = (text or "").strip()
-        if text:
+        if text and conf >= CONF_THRESHOLD:
             texts.append(text)
             confs.append(conf)
-    return "\n".join(texts), min(confs) if confs else 0.0
+    if not texts:
+        return "", 0.0
+    cleaned = _clean_text("\n".join(texts))
+    return cleaned, min(confs) if cleaned else 0.0
 
 
 def respond(stdout, rid, **payload):
