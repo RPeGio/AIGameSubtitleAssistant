@@ -77,6 +77,27 @@ const timeline = useTimelineStore();
     </button>
     <button
       class="tool-btn"
+      :class="{ active: timeline.swapSegments }"
+      :title="timeline.swapSegments ? '分段互换：开启（点轨道边界按钮交换分段内片段）' : '分段互换：关闭'"
+      @click="timeline.toggleSwapSegments()"
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="20"
+        height="20"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M2.5 2v6h6M21.5 22v-6h-6" />
+        <path d="M22 11.5A10 10 0 0 0 3.2 7.2M2 12.5a10 10 0 0 0 18.8 4.2" />
+      </svg>
+    </button>
+    <button
+      class="tool-btn"
       :class="{ active: timeline.snapEnabled }"
       :title="timeline.snapEnabled ? '吸附：开启' : '吸附：关闭'"
       @click="timeline.toggleSnap()"

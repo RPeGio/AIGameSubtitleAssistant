@@ -16,6 +16,59 @@ const projectStore = useProjectStore();
 const TOOL_WIDTH = 40;
 const LABEL_WIDTH = 220;
 
+/// MOSS ASR 分段间隔（秒）：与后端 SEGMENT_SECONDS 保持一致，
+/// 时间轴上用分割线标出每个 5 分钟分段边界，便于人工修正
+/// 跨段说话人序号不一致的问题。
+const SEGMENT_SECONDS = 300;
+
+/// 分段边界在内容区（相对滚动视口）的 x 坐标列表（跳过 0：不画起点）
+const segmentDividers = computed(() => {
+  const pps = timeline.pixelsPerSecond;
+  const dur = timeline.duration;
+  if (pps <= 0 || dur <= SEGMENT_SECONDS) return [];
+  const xs: number[] = [];
+  for (let t = SEGMENT_SECONDS; t < dur; t += SEGMENT_SECONDS) {
+    const x = t * pps - timeline.scrollLeft;
+    if (x >= -4 && x <= timeline.viewportWidth + 4) xs.push(x);
+  }
+  return xs;
+});
+
+/// 分段区间（遮罩用）：每个 [segStart, segEnd) 在内容区的 x 与宽度，按视口裁剪
+const segmentRanges = computed(() => {
+  const pps = timeline.pixelsPerSecond;
+  const dur = timeline.duration;
+  if (pps <= 0 || dur <= SEGMENT_SECONDS) return [];
+  const ranges: { key: string; x: number; width: number }[] = [];
+  for (let t = 0; t < dur; t += SEGMENT_SECONDS) {
+    const segEnd = Math.min(t + SEGMENT_SECONDS, dur);
+    const x0 = t * pps - timeline.scrollLeft;
+    const x1 = segEnd * pps - timeline.scrollLeft;
+    // 视口裁剪（含边缘余量），完全不可见的分段跳过
+    const left = Math.max(x0, -2);
+    const right = Math.min(x1, timeline.viewportWidth + 2);
+    if (right <= left) continue;
+    ranges.push({ key: `${t}-${segEnd}`, x: left, width: right - left });
+  }
+  return ranges;
+});
+
+/// 随机浅色遮罩：按分段 key 生成稳定色相（同分段跨渲染一致）
+const SEGMENT_MASK_HUES = [210, 150, 280, 30, 90, 340, 45, 200];
+function maskStyle(key: string) {
+  const idx = key.split("-").map(Number)[0] ?? 0;
+  const seg = Math.floor(idx / SEGMENT_SECONDS);
+  const hue = SEGMENT_MASK_HUES[seg % SEGMENT_MASK_HUES.length];
+  return { background: `hsla(${hue}, 60%, 60%, 0.08)` };
+}
+
+/// 点击轨道边界互换按钮：交换该分段内上下两条轨道的 asr 事件
+/// （两侧均无分段内事件时 store 返回 false，静默无操作）
+function onSwapSegment(trackAId: string, trackBId: string, segKey: string) {
+  const [s, e] = segKey.split("-").map(Number);
+  projectStore.swapTrackEventsInSegment(trackAId, trackBId, s, e);
+}
+
 function isTextTrackType(type: string): boolean {
   return TEXT_TRACK_TYPES.includes(type);
 }
@@ -302,6 +355,12 @@ onUnmounted(() => {
           class="tl-content"
           @mousedown="onRulerMouseDown"
         >
+          <div
+            v-for="x in segmentDividers"
+            :key="'ruler-seg-' + x"
+            class="segment-divider segment-divider-ruler"
+            :style="{ left: x + 'px' }"
+          />
           <TimelineRuler />
         </div>
       </div>
@@ -309,7 +368,7 @@ onUnmounted(() => {
       <!-- Track rows（垂直滚动区：轨道多时滚动，行高固定不被压缩） -->
       <div class="tl-tracks">
           <div
-            v-for="track in tracks()"
+            v-for="(track, ti) in tracks()"
             :key="track.id"
             class="tl-row track-row"
             :class="{ 'v-drop-target': vDragTargetId === track.id }"
@@ -361,10 +420,55 @@ onUnmounted(() => {
           </div>
           <div
             class="tl-content tl-track-body"
+            :class="{ 'swap-active': timeline.swapSegments }"
             :data-track-id="track.id"
             :data-track-type="track.type"
             @mousedown="onTrackAreaMouseDown"
           >
+            <div
+              v-for="x in segmentDividers"
+              :key="'seg-' + track.id + '-' + x"
+              class="segment-divider"
+              :style="{ left: x + 'px' }"
+            />
+            <!-- 分段互换模式：分段遮罩 + 与下一条轨道边界上的互换按钮 -->
+            <template v-if="timeline.swapSegments">
+              <div
+                v-for="r in segmentRanges"
+                :key="'mask-' + track.id + '-' + r.key"
+                class="segment-mask"
+                :style="{ left: r.x + 'px', width: r.width + 'px', ...maskStyle(r.key) }"
+              />
+              <button
+                v-if="
+                  ti < tracks().length - 1 &&
+                  track.type === 'asr' &&
+                  tracks()[ti + 1].type === 'asr'
+                "
+                v-for="r in segmentRanges"
+                :key="'swap-' + track.id + '-' + r.key"
+                class="segment-swap-btn"
+                :style="{ left: r.x + r.width / 2 + 'px' }"
+                :title="`交换分段 ${r.key}s 内上下两条轨道的片段`"
+                @mousedown.stop
+                @click.stop="onSwapSegment(track.id, tracks()[ti + 1].id, r.key)"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M2.5 2v6h6M21.5 22v-6h-6" />
+                  <path d="M22 11.5A10 10 0 0 0 3.2 7.2M2 12.5a10 10 0 0 0 18.8 4.2" />
+                </svg>
+              </button>
+            </template>
             <template v-if="track.events.length > 0">
               <TimelineClip
                 v-for="event in track.events"
@@ -608,6 +712,71 @@ onUnmounted(() => {
   overflow: hidden;
   position: relative;
   min-height: 40px;
+}
+
+/* 轨道内容区允许子元素跨行边界显示（分段互换按钮压在行间分割线上） */
+.tl-track-body {
+  /* 默认裁切；仅分段互换模式放开（互换按钮越出轨道行下缘） */
+  overflow: hidden;
+}
+
+.tl-track-body.swap-active {
+  overflow: visible;
+}
+
+/* MOSS ASR 5 分钟分段分割线：虚线 + 稍深色，pointer-events:none 不挡轨道交互 */
+.segment-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dashed var(--color-text-secondary);
+  opacity: 0.55;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.segment-divider-ruler {
+  z-index: 25;
+  border-left-style: solid;
+  opacity: 0.75;
+}
+
+/* 分段互换模式：分段遮罩（低透明度、不阻交互；置于 clip 之下仅作背景标示） */
+.segment-mask {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* 分段互换按钮：位于本轨与下一条轨道的水平分割线上、分段居中 */
+.segment-swap-btn {
+  position: absolute;
+  left: 0;
+  bottom: -10px;
+  transform: translateX(-50%);
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--color-border);
+  border-radius: 50%;
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 20;
+  padding: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition: all 0.15s;
+}
+
+.segment-swap-btn:hover {
+  background: var(--color-accent);
+  color: #fff;
+  border-color: var(--color-accent);
 }
 
 .empty-hint {

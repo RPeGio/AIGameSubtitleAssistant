@@ -286,9 +286,18 @@ mod tests {
             moss_binary: String::new(),
             moss_model: String::new(),
             moss_threads: 0,
+            moss_device: String::new(),
+            moss_timeout_minutes: 0,
             llm_binary: String::new(),
             llm_model: String::new(),
             llm_threads: 0,
+            asr_provider: String::new(),
+            funasr_worker: String::new(),
+            funasr_deps: String::new(),
+            funasr_model_dir: String::new(),
+            funasr_device: "cuda".into(),
+            funasr_language: "中文".into(),
+            funasr_timeout_minutes: 0,
         };
         assert_eq!(
             runtime.join(&cfg.worker_script),

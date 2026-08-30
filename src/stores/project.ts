@@ -9,7 +9,9 @@ import type {
   OcrRunParams,
   OcrSegment,
   OcrProgress,
+  AsrRunParams,
   AsrSegment,
+  AsrEngineStatus,
   AsrProgress,
   LlmProgress,
   LlmRuntimeStatus,
@@ -494,8 +496,8 @@ export const useProjectStore = defineStore("project", () => {
     track.events = segments.map(ocrTextToEvent).sort((a, b) => a.start - b.start);
   }
 
-  /// 运行 ASR 流水线：整段视频 → run_asr → 按 speaker 分组写入各 asr 轨道
-  async function runAsr() {
+  /// 运行 ASR 流水线：整段视频 → run_asr（面板参数：引擎/说话人上限/语言）→ 按 speaker 分组写入各 asr 轨道
+  async function runAsr(params: AsrRunParams) {
     if (asrRunning.value || !currentProject.value || !currentVideoMeta.value) return;
 
     asrRunning.value = true;
@@ -504,6 +506,7 @@ export const useProjectStore = defineStore("project", () => {
     try {
       const segments = await invoke<AsrSegment[]>("run_asr", {
         videoPath: currentVideoMeta.value.path,
+        params,
       });
       writeAsrSegments(segments);
       asrProgress.value = 1;
@@ -518,9 +521,26 @@ export const useProjectStore = defineStore("project", () => {
     }
   }
 
+  /// 探测两个 ASR 引擎（funasr/moss）的运行环境（供配置面板禁用不可用引擎）
+  async function getAsrEngines(): Promise<AsrEngineStatus[]> {
+    return invoke<AsrEngineStatus[]>("check_asr_engines");
+  }
+
+  /// 请求取消当前 ASR 转写（后端终止 MOSS 子进程，runAsr 的 invoke 会返回"已取消"错误）
+  async function cancelAsr() {
+    try {
+      await invoke("asr_cancel");
+    } catch (e) {
+      console.error("取消 ASR 失败:", e);
+    }
+  }
+
   /// 把 IPC/后端错误映射为用户可读的信息，未识别时才回退原文
   function normalizeAsrError(e: unknown): string {
     const msg = String(e);
+    if (msg.includes("已取消")) return "ASR 已取消";
+    // 超时消息兼容 MOSS / FunASR 两个 provider
+    if (msg.includes("超时")) return msg.replace(/(?:MOSS|FunASR) 转写超时（\d+ 分钟），已终止子进程/, "ASR 转写超时，已终止");
     if (msg.includes("未就绪")) return "ASR 运行环境未就绪，请先运行环境引导脚本";
     return msg;
   }
@@ -709,6 +729,46 @@ export const useProjectStore = defineStore("project", () => {
     return true;
   }
 
+  /// 交换两条轨道在指定分段 [startSec, endSec) 内的 asr 事件归属：
+  /// A 轨分段内的事件移到 B 轨，B 轨分段内的事件移到 A 轨。
+  /// 仅作用于完全位于分段内的事件（时间/文本不变），character 跟随目标轨道名；
+  /// 跨分段边界的事件不参与（避免长句被相邻分段来回移动）。
+  /// 用于手动修正跨段说话人归属错误。
+  /// 返回是否成功（两轨均为 asr 类型且至少一侧有分段内事件）。
+  function swapTrackEventsInSegment(
+    trackAId: string,
+    trackBId: string,
+    startSec: number,
+    endSec: number
+  ): boolean {
+    if (!currentProject.value) return false;
+    const ta = findTrack(trackAId);
+    const tb = findTrack(trackBId);
+    if (!ta || !tb || ta.id === tb.id) return false;
+    if (ta.type !== "asr" || tb.type !== "asr") return false;
+
+    // 完全包含于分段内的事件才交换
+    const inSeg = (e: TimelineEvent) => e.start >= startSec && e.end <= endSec;
+    const aIn = ta.events.filter(inSeg);
+    const bIn = tb.events.filter(inSeg);
+    if (aIn.length === 0 && bIn.length === 0) return false;
+
+    recordSnapshot();
+    ta.events = ta.events.filter((e) => !inSeg(e));
+    tb.events = tb.events.filter((e) => !inSeg(e));
+    // 互换：原 A 的事件进 B 轨、原 B 的事件进 A 轨，character 跟随轨道名
+    const setChar = (e: TimelineEvent, name: string) => {
+      if ((e.type === "asr" || e.type === "manual") && name.trim().length > 0) {
+        e.character = name.trim();
+      }
+    };
+    for (const e of aIn) setChar(e, tb.name);
+    for (const e of bIn) setChar(e, ta.name);
+    ta.events = [...ta.events, ...bIn].sort((x, y) => x.start - y.start);
+    tb.events = [...tb.events, ...aIn].sort((x, y) => x.start - y.start);
+    return true;
+  }
+
   /// 重命名轨道：asr/manual 事件的 character 跟随轨道角色名（空名不改名）
   function renameTrack(trackId: string, name: string) {
     const track = currentProject.value?.tracks.find((t) => t.id === trackId);
@@ -856,6 +916,7 @@ export const useProjectStore = defineStore("project", () => {
     subtitlePreviewOn,
     toggleTrackPreview,
     moveEventToTrack,
+    swapTrackEventsInSegment,
     removeTrack,
     moveTrack,
     mergeTrack,
@@ -881,6 +942,8 @@ export const useProjectStore = defineStore("project", () => {
     asrProgress,
     asrMessage,
     runAsr,
+    getAsrEngines,
+    cancelAsr,
     llmRunning,
     llmProgress,
     llmMessage,

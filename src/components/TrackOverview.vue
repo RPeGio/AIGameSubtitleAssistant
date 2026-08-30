@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import { NSelect } from "naive-ui";
+import { NButton, NPopselect, NSelect, useMessage } from "naive-ui";
+import { invoke } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 import { useTimelineStore, CLIP_COLORS } from "../stores/timeline";
 import { useProjectStore } from "../stores/project";
 import type { TimelineEvent } from "../types";
 
 const timeline = useTimelineStore();
 const projectStore = useProjectStore();
+const message = useMessage();
 
 // 轨道内容属性选项（仅 asr 轨道显示）：默认游戏内容，主播语音由用户显式标记
 const TRACK_ROLE_OPTIONS = [
@@ -17,6 +20,35 @@ const TRACK_ROLE_OPTIONS = [
 function onTrackRoleChange(role: string | null) {
   const track = focusedTrack.value;
   if (track) projectStore.updateTrackRole(track.id, role ?? "game");
+}
+
+// ── 单轨字幕导出 ──
+const EXPORT_FORMATS = [
+  { label: "SRT（通用字幕）", value: "srt" },
+  { label: "ASS（带样式）", value: "ass" },
+  { label: "LRC（歌词）", value: "lrc" },
+  { label: "TXT（纯文本）", value: "txt" },
+];
+
+/// 选定格式 → 保存对话框选路径 → 后端生成内容并写文件
+async function onExport(format: string) {
+  const track = focusedTrack.value;
+  if (!track) return;
+  try {
+    const path = await save({
+      defaultPath: `${track.name}.${format}`,
+      filters: [{ name: `${format.toUpperCase()} 字幕`, extensions: [format] }],
+    });
+    if (!path) return; // 用户取消
+    const count = await invoke<number>("export_track_subtitle", {
+      track,
+      format,
+      destPath: path,
+    });
+    message.success(`已导出 ${count} 条字幕 → ${path}`);
+  } catch (e) {
+    message.error(`导出失败: ${e}`);
+  }
 }
 
 const focusedTrack = computed(() => projectStore.findTrack(timeline.focusedTrackId));
@@ -206,6 +238,15 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
           class="ov-track-role-select"
           @update:value="onTrackRoleChange"
         />
+        <NPopselect
+          v-if="isTextTrack"
+          :options="EXPORT_FORMATS"
+          trigger="click"
+          placement="bottom-end"
+          @update:value="onExport"
+        >
+          <NButton size="tiny" secondary title="导出当前轨道字幕">导出</NButton>
+        </NPopselect>
       </div>
       <span v-else class="ov-track-name">轨道总览</span>
       <span v-if="focusedTrack" class="ov-track-type">{{ focusedTrack.type }}</span>

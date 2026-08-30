@@ -1,4 +1,4 @@
-﻿// ─── OCR 字幕生成流水线 ────────────────────────────────────
+// ─── OCR 字幕生成流水线 ────────────────────────────────────
 // 纯函数部分：
 //   ocr_pass    —— 只 OCR 变化帧，未变化帧顺延文本，产出每帧的 FrameText
 //   merge_frames —— 连续相同文本合并成 OcrSegment（事件）
@@ -153,26 +153,52 @@ fn similar_text(a: &str, b: &str, threshold: f64) -> bool {
     edit_distance_ratio(a, b) <= threshold
 }
 
+/// 从 run 内所有相似帧文本做多数投票：选与其它帧总相似度最高者。
+///
+/// 替代"更长者胜出"：被噪声污染的更长文本与多数帧差异大，不会被选中；
+/// 完全相同的候选平局时取更长（与旧行为兼容）。
+fn vote_text(texts: &[(Arc<str>, f64)]) -> (Arc<str>, f64) {
+    let mut best: &(Arc<str>, f64) = &texts[0];
+    let mut best_score = f64::MIN;
+    for cand in texts {
+        let score: f64 = texts
+            .iter()
+            .map(|(t, _)| 1.0 - edit_distance_ratio(&cand.0, t))
+            .sum();
+        let is_longer = cand.0.chars().count() > best.0.chars().count();
+        if score > best_score + 1e-9 || ((score - best_score).abs() <= 1e-9 && is_longer) {
+            best_score = score;
+            best = cand;
+        }
+    }
+    (best.0.clone(), best.1)
+}
+
 /// 把连续相同（或高度相似）文本的帧合并成字幕事件。
 ///
 /// 契约：`frames` 必须按 time 升序，且文本已 trim 归一化（由 `ocr_pass` 保证）。
 ///
-/// - 空文本是边界：不产生事件，且打断 run
-/// - 相似文本（`merge_similarity`）视为同一句的过渡帧：合并、保留最长文本
+/// - 空文本是边界：不产生事件，且打断 run（连续空帧短于容错窗口时视为抖动不打断）
+/// - 相似文本（`merge_similarity`）视为同一句的过渡帧：合并，flush 时多数投票取最终文本
 /// - 事件 end = 该段最后一帧时间 + interval，并对 clip 结尾截断
 /// - 整段落在 clip 之外（start >= clip_end）时丢弃，不产生越界时间
-/// - confidence 取引入该段文本（或扩展为更长文本）的那次 OCR
+/// - confidence 取投票胜出文本对应帧的置信度
 pub fn merge_frames(
     frames: Vec<FrameText>,
     interval: f64,
     clip_end: f64,
     merge_similarity: f64,
 ) -> Vec<OcrSegment> {
+    // 空帧容错窗口：连续空帧短于此值视为 OCR 抖动，不打断 run
+    let empty_gap = (interval * 1.5).max(0.8);
+
     struct Run {
         start: f64,
-        text: Arc<str>,
-        confidence: f64,
+        /// run 内所有相似帧的 (文本, 置信度)；flush 时多数投票取最终文本
+        texts: Vec<(Arc<str>, f64)>,
         last: f64,
+        /// 当前连续空帧的起点时间（容错窗口内不打断 run）
+        empty_since: Option<f64>,
     }
 
     fn flush(segments: &mut Vec<OcrSegment>, run: &Run, interval: f64, clip_end: f64) {
@@ -181,11 +207,12 @@ pub fn merge_frames(
             return;
         }
         let end = (run.last + interval).min(clip_end).max(run.start);
+        let (text, confidence) = vote_text(&run.texts);
         segments.push(OcrSegment {
             start: run.start,
             end,
-            text: run.text.to_string(),
-            confidence: run.confidence,
+            text: text.to_string(),
+            confidence,
         });
     }
 
@@ -194,21 +221,29 @@ pub fn merge_frames(
 
     for f in frames {
         if f.text.is_empty() {
+            // 空帧容错：累计空帧时长 < empty_gap 时视为 OCR 抖动，run 继续
+            if let Some(r) = run.as_mut() {
+                let es = *r.empty_since.get_or_insert(f.time);
+                if f.time - es < empty_gap {
+                    continue;
+                }
+            }
             if let Some(r) = run.take() {
                 flush(&mut segments, &r, interval, clip_end);
             }
             continue;
         }
 
-        let is_same = matches!(&run, Some(r) if similar_text(&r.text, &f.text, merge_similarity));
+        // 相似基准 = run 内最近一帧文本（渐进时是超集，比较稳定）
+        let is_same = matches!(&run, Some(r) if {
+            let base: &str = r.texts.last().map(|(t, _)| t.as_ref()).unwrap_or("");
+            similar_text(base, f.text.as_ref(), merge_similarity)
+        });
         if is_same {
             if let Some(r) = run.as_mut() {
                 r.last = f.time;
-                // 取更完整的文本（更长者胜出）
-                if f.text.chars().count() > r.text.chars().count() {
-                    r.text = f.text.clone();
-                    r.confidence = f.confidence;
-                }
+                r.empty_since = None;
+                r.texts.push((f.text, f.confidence));
             }
         } else {
             if let Some(r) = run.take() {
@@ -216,9 +251,9 @@ pub fn merge_frames(
             }
             run = Some(Run {
                 start: f.time,
-                text: f.text,
-                confidence: f.confidence,
+                texts: vec![(f.text, f.confidence)],
                 last: f.time,
+                empty_since: None,
             });
         }
     }
@@ -226,6 +261,57 @@ pub fn merge_frames(
         flush(&mut segments, &r, interval, clip_end);
     }
     segments
+}
+
+/// 归一化：仅留 Unicode 字母数字（含 CJK），剔除空白与标点 —— 用于子序列近似匹配
+fn norm_chars(s: &str) -> Vec<char> {
+    s.chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
+/// 判断 a 的字符是否按序出现在 b 中（近似前缀/渐进片段匹配，双指针）
+fn is_subsequence(a: &[char], b: &[char]) -> bool {
+    let mut j = 0;
+    for &c in a {
+        while j < b.len() && b[j] != c {
+            j += 1;
+        }
+        if j >= b.len() {
+            return false;
+        }
+        j += 1;
+    }
+    true
+}
+
+/// 孤立短段并入相邻段：短段（≤ 2×interval）文本归一化后是相邻长段的子序列，
+/// 说明它是该句的渐进中间态/残缺帧 → 并入（取完整文本，时间合并）。
+/// 一遍正向扫描即可同时处理"短段在前"与"短段在后"两种方向。
+pub fn merge_fragments(segments: Vec<OcrSegment>, interval: f64) -> Vec<OcrSegment> {
+    let mut out: Vec<OcrSegment> = Vec::with_capacity(segments.len());
+    for seg in segments {
+        if let Some(last) = out.last_mut() {
+            let last_short = last.end - last.start <= interval * 2.0;
+            let seg_short = seg.end - seg.start <= interval * 2.0;
+            let ln = norm_chars(&last.text);
+            let sn = norm_chars(&seg.text);
+            if !ln.is_empty() && !sn.is_empty() {
+                if last_short && ln.len() < sn.len() && is_subsequence(&ln, &sn) {
+                    // 前段是后段的渐进片段 → 前段并入后段（取完整文本）
+                    last.text = seg.text;
+                    last.confidence = seg.confidence;
+                    last.end = seg.end;
+                    continue;
+                }
+                if seg_short && sn.len() < ln.len() && is_subsequence(&sn, &ln) {
+                    // 后段是前段的渐进片段 → 后段并入前段（文本不变，时间合并）
+                    last.end = seg.end;
+                    continue;
+                }
+            }
+        }
+        out.push(seg);
+    }
+    out
 }
 
 // ─── 编排命令 ─────────────────────────────────────────────
@@ -444,6 +530,8 @@ where
         }
 
         let segments = merge_frames(texts, frame_interval, clip.end, merge_similarity);
+        // 第二遍：孤立短段（渐进中间态/残缺帧）并入相邻完整段
+        let segments = merge_fragments(segments, frame_interval);
         if dev_debug {
             eprintln!("[ocr] clip {}/{}：合并 {} 条事件", i + 1, clip_count, segments.len());
             for seg in &segments {
@@ -713,5 +801,91 @@ mod tests {
         let frames = vec![ft(1.0, "甲", 0.9), ft(2.0, "乙", 0.8)];
         let segs = merge_frames(frames, 1.0, 10.0, 0.3);
         assert_eq!(segs.len(), 2);
+    }
+
+    // ── 多数投票 ──
+
+    #[test]
+    fn test_vote_ignores_noise_long_text() {
+        // 噪声帧更长但与多数帧差异大 → 投票选多数一致文本，不被更长噪声污染
+        let frames = vec![
+            ft(1.0, "前方似乎有什么东西在等待。", 0.9),
+            ft(2.0, "前方似乎有什么东西在等待。", 0.9),
+            ft(3.0, "前方似乎有什么东西在等待。前方似乎有什么东X乱码Z", 0.6),
+        ];
+        let segs = merge_frames(frames, 1.0, 10.0, 0.3);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].text, "前方似乎有什么东西在等待。");
+    }
+
+    // ── 空帧容错 ──
+
+    #[test]
+    fn test_merge_empty_tolerance_keeps_run() {
+        // 单帧空（interval 0.5 → 容错窗口 0.8s）视为 OCR 抖动，不打断 run
+        let frames = vec![
+            ft(1.0, "A", 0.9),
+            ft(2.0, "A", 0.9),
+            ft(2.5, "", 0.0),
+            ft(3.0, "A", 0.9),
+        ];
+        let segs = merge_frames(frames, 0.5, 10.0, 0.3);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].text, "A");
+        assert!((segs[0].end - 3.5).abs() < 1e-9); // last=3.0 + interval 0.5
+    }
+
+    #[test]
+    fn test_merge_empty_beyond_tolerance_breaks() {
+        // 连续空帧超过容错窗口（1.0s 间隔 → 窗口 1.5s）→ 打断
+        let frames = vec![
+            ft(1.0, "A", 0.9),
+            ft(2.0, "A", 0.9),
+            ft(3.0, "", 0.0),
+            ft(4.0, "", 0.0),
+            ft(5.0, "", 0.0),
+            ft(6.0, "B", 0.9),
+        ];
+        let segs = merge_frames(frames, 1.0, 10.0, 0.3);
+        assert_eq!(segs.len(), 2);
+    }
+
+    // ── 孤立短段并入 ──
+
+    #[test]
+    fn test_merge_fragments_absorb_prefix() {
+        // 渐进中间态短段在前、完整句在后 → 并入（诊断案例：卡侬·那是我本职工）
+        let segs = vec![
+            OcrSegment { start: 1.0, end: 2.0, text: "卡侬\n·那是我本职工".into(), confidence: 0.8 },
+            OcrSegment { start: 2.0, end: 9.0, text: "卡侬\n…那是我本职工作的一部分。他们的主祭呼唤我的名字。".into(), confidence: 0.9 },
+        ];
+        let out = merge_fragments(segs, 0.5);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].text.starts_with("卡侬\n…那是我本职工作的一部分"));
+        assert!((out[0].start - 1.0).abs() < 1e-9);
+        assert!((out[0].end - 9.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_merge_fragments_absorb_suffix() {
+        // 完整句在前、尾部残缺短段在后 → 并入（时间合并，文本不变）
+        let segs = vec![
+            OcrSegment { start: 1.0, end: 8.0, text: "卡侬\n…那是我本职工作的一部分。他们的主祭呼唤我的名字。".into(), confidence: 0.9 },
+            OcrSegment { start: 8.0, end: 9.0, text: "呼唤我的名字".into(), confidence: 0.8 },
+        ];
+        let out = merge_fragments(segs, 0.5);
+        assert_eq!(out.len(), 1);
+        assert!((out[0].end - 9.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_merge_fragments_keeps_real_short() {
+        // 真短句（非相邻段子序列）不并入
+        let segs = vec![
+            OcrSegment { start: 1.0, end: 2.0, text: "嗯？".into(), confidence: 0.9 },
+            OcrSegment { start: 2.0, end: 9.0, text: "我们出发吧。".into(), confidence: 0.9 },
+        ];
+        let out = merge_fragments(segs, 0.5);
+        assert_eq!(out.len(), 2);
     }
 }
