@@ -1,15 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { ref } from "vue";
 import { useProjectStore } from "../stores/project";
-import { useTimelineStore } from "../stores/timeline";
 import type { OcrRunParams, AsrRunParams, AsrEngineStatus, LlmRuntimeStatus } from "../types";
-import VideoPlayer from "../components/VideoPlayer.vue";
-import Timeline from "../components/timeline/Timeline.vue";
-import TrackOverview from "../components/TrackOverview.vue";
-import { useManualSave } from "../composables/useManualSave";
 import {
   NButton,
-  NTag,
   NSpace,
   NAlert,
   NCard,
@@ -25,8 +19,6 @@ import {
 } from "naive-ui";
 
 const projectStore = useProjectStore();
-const timeline = useTimelineStore();
-const { manualSave } = useManualSave();
 const message = useMessage();
 
 // ── OCR 控制 ────────────────────────────────────────────
@@ -156,296 +148,127 @@ async function startFuse() {
     message.error(String(e));
   }
 }
-
-watch(
-  () => timeline.duration,
-  (d) => {
-    if (d > 0) {
-      projectStore.ensureDefaultTrack(d);
-      // 默认聚焦 ocr 选区轨道，让遮罩立即可见
-      const ocrTrack = projectStore.currentProject?.tracks.find(
-        (t) => t.type === "ocr_region"
-      );
-      if (ocrTrack && !timeline.focusedTrackId) {
-        timeline.focusTrack(ocrTrack.id);
-      }
-    }
-  }
-);
-
-// 快捷键：Ctrl+S 立即保存；S 分割；Delete 删除；M 合并；
-// Ctrl+Z 撤销；Ctrl+Shift+Z / Ctrl+Y 重做
-function onGlobalKeydown(e: KeyboardEvent) {
-  const t = e.target as HTMLElement;
-  if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
-
-  // 撤销/重做（含聚焦悬空清理）
-  if (e.code === "KeyZ" && e.ctrlKey) {
-    e.preventDefault();
-    if (e.shiftKey) {
-      projectStore.redo();
-    } else {
-      projectStore.undo();
-    }
-    cleanupFocus();
-    return;
-  }
-  if (e.code === "KeyY" && e.ctrlKey) {
-    e.preventDefault();
-    projectStore.redo();
-    cleanupFocus();
-    return;
-  }
-
-  if (e.code === "KeyS" && e.ctrlKey) {
-    e.preventDefault(); // 挡住浏览器默认保存对话框
-    manualSave();
-    return;
-  }
-
-  // Delete：删除聚焦 clip（输入框内由上面的 guard 排除）
-  if (e.key === "Delete") {
-    const id = timeline.focusedClipId;
-    if (!id) return;
-    projectStore.removeEvent(id);
-    timeline.focusClip(null);
-    return;
-  }
-
-  // M：聚焦 clip 与同轨下一个事件合并（输入框内由 guard 排除）
-  if (e.code === "KeyM" && !e.ctrlKey && !e.metaKey && !e.altKey) {
-    const id = timeline.focusedClipId;
-    if (id) projectStore.mergeAdjacent(id);
-    return;
-  }
-
-  if (e.code === "KeyS" && !e.metaKey && !e.altKey) {
-    const id = timeline.focusedClipId;
-    if (!id) return;
-    const rightId = projectStore.splitEvent(id, timeline.currentTime);
-    if (rightId) {
-      timeline.focusClip(rightId);
-      const found = projectStore.findEvent(rightId);
-      if (found) timeline.focusTrack(found.track.id);
-    }
-  }
-}
-
-// 撤销/重做后聚焦可能悬空（clip/轨道已被快照恢复移除），清理之
-function cleanupFocus() {
-  if (timeline.focusedClipId && !projectStore.findEvent(timeline.focusedClipId)) {
-    timeline.focusClip(null);
-  }
-  if (timeline.focusedTrackId && !projectStore.findTrack(timeline.focusedTrackId)) {
-    timeline.focusTrack(null);
-  }
-}
-
-onMounted(() => window.addEventListener("keydown", onGlobalKeydown));
-onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
-
-const meta = computed(() => projectStore.currentVideoMeta);
-const hasVideo = computed(() => meta.value !== null);
-
-const displayPath = computed(() => {
-  if (!meta.value) return "";
-  const parts = meta.value.path.replace(/\\/g, "/").split("/");
-  return parts[parts.length - 1] ?? meta.value.path;
-});
-
-const durationFormatted = computed(() => {
-  if (!meta.value) return "";
-  const s = Math.round(meta.value.duration);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
-  return `${m}:${String(sec).padStart(2, "0")}`;
-});
-
-const resolutionLabel = computed(() => {
-  if (!meta.value) return "";
-  const { width } = meta.value;
-  if (width >= 3840) return "4K";
-  if (width >= 2560) return "1440p";
-  if (width >= 1920) return "1080p";
-  if (width >= 1280) return "720p";
-  return "";
-});
 </script>
 
 <template>
-  <div class="editor-content">
-    <!-- video imported -->
-    <div v-if="hasVideo" class="editor-fill">
-      <div class="top-pane">
-          <div class="preview-row">
-            <div class="player-area">
-              <VideoPlayer :src="meta!.path" />
-            </div>
-
-            <div class="overview-area">
-              <TrackOverview />
-            </div>
-          </div>
-
-          <div class="info-bar">
-            <NSpace wrap size="small">
-              <NTag>{{ displayPath }}</NTag>
-              <NTag>{{ meta?.width }}×{{ meta?.height }}</NTag>
-              <NTag v-if="resolutionLabel">{{ resolutionLabel }}</NTag>
-              <NTag>{{ durationFormatted }}</NTag>
-              <NTag>{{ meta?.fps.toFixed(1) }}fps</NTag>
-              <NTag>{{ meta?.codec }}</NTag>
-            </NSpace>
-
-            <NButton size="small" type="primary" @click="projectStore.importVideo()">
-              更换视频
-            </NButton>
-          </div>
-        </div>
-
-        <!-- OCR 工具栏 -->
-        <div class="ocr-toolbar">
-          <button
-            class="history-btn"
-            :disabled="!projectStore.canUndo"
-            title="撤销（Ctrl+Z）"
-            aria-label="撤销"
-            @click="projectStore.undo(); cleanupFocus()"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0 .57-8.38" />
-            </svg>
-          </button>
-          <button
-            class="history-btn"
-            :disabled="!projectStore.canRedo"
-            title="重做（Ctrl+Shift+Z / Ctrl+Y）"
-            aria-label="重做"
-            @click="projectStore.redo(); cleanupFocus()"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38" />
-            </svg>
-          </button>
-          <NButton
-            size="small"
-            type="primary"
-            :disabled="projectStore.ocrRunning"
-            @click="showOcrConfig = true"
-          >
-            运行 OCR
-          </NButton>
-          <template v-if="projectStore.ocrRunning">
-            <NProgress
-              type="line"
-              class="ocr-progress"
-              :percentage="Math.round(projectStore.ocrProgress * 100)"
-              :show-indicator="false"
-            />
-            <span class="ocr-msg">{{ projectStore.ocrMessage }}</span>
-          </template>
-
-          <NButton
-            size="small"
-            type="primary"
-            :disabled="projectStore.asrRunning"
-            @click="openAsrConfig"
-          >
-            运行 ASR
-          </NButton>
-          <template v-if="projectStore.asrRunning">
-            <NProgress
-              type="line"
-              class="ocr-progress"
-              :percentage="Math.round(projectStore.asrProgress * 100)"
-              :show-indicator="false"
-            />
-            <span class="ocr-msg">{{ projectStore.asrMessage }}</span>
-            <NButton size="tiny" quaternary type="error" @click="cancelAsr">
-              取消
-            </NButton>
-          </template>
-
-          <NButton size="small" type="primary" @click="openLlmPanel">
-            LLM
-          </NButton>
-
-          <NButton
-            size="small"
-            type="primary"
-            :disabled="projectStore.fuseRunning"
-            @click="startFuse"
-          >
-            AI 融合
-          </NButton>
-          <template v-if="projectStore.fuseRunning">
-            <NProgress
-              type="line"
-              class="ocr-progress"
-              :percentage="Math.round(projectStore.llmProgress * 100)"
-              :show-indicator="false"
-            />
-            <span class="ocr-msg">{{ projectStore.llmMessage }}</span>
-          </template>
-        </div>
-
-        <div class="timeline-pane">
-          <Timeline />
-        </div>
-      </div>
-
-      <!-- empty state -->
-      <div v-else class="editor-empty">
-        <div class="empty-icon">📹</div>
-        <h2>{{ projectStore.currentProject?.name ?? "加载中..." }}</h2>
-        <p class="empty-desc">导入游戏录屏以开始字幕生产</p>
-
-        <NButton
-          size="large"
-          type="primary"
-          @click="projectStore.importVideo()"
-          class="import-btn"
+  <div class="workbench">
+    <!-- 操作台：AI 任务运行入口（结果实时出现在右侧校对区时间轴） -->
+    <div class="ocr-toolbar">
+      <button
+        class="history-btn"
+        :disabled="!projectStore.canUndo"
+        title="撤销（Ctrl+Z）"
+        aria-label="撤销"
+        @click="projectStore.undo()"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
         >
-          导入视频
+          <path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0 .57-8.38" />
+        </svg>
+      </button>
+      <button
+        class="history-btn"
+        :disabled="!projectStore.canRedo"
+        title="重做（Ctrl+Shift+Z / Ctrl+Y）"
+        aria-label="重做"
+        @click="projectStore.redo()"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38" />
+        </svg>
+      </button>
+      <NButton
+        size="small"
+        type="primary"
+        :disabled="projectStore.ocrRunning"
+        @click="showOcrConfig = true"
+      >
+        运行 OCR
+      </NButton>
+      <template v-if="projectStore.ocrRunning">
+        <NProgress
+          type="line"
+          class="ocr-progress"
+          :percentage="Math.round(projectStore.ocrProgress * 100)"
+          :show-indicator="false"
+        />
+        <span class="ocr-msg">{{ projectStore.ocrMessage }}</span>
+      </template>
+
+      <NButton
+        size="small"
+        type="primary"
+        :disabled="projectStore.asrRunning"
+        @click="openAsrConfig"
+      >
+        运行 ASR
+      </NButton>
+      <template v-if="projectStore.asrRunning">
+        <NProgress
+          type="line"
+          class="ocr-progress"
+          :percentage="Math.round(projectStore.asrProgress * 100)"
+          :show-indicator="false"
+        />
+        <span class="ocr-msg">{{ projectStore.asrMessage }}</span>
+        <NButton size="tiny" quaternary type="error" @click="cancelAsr">
+          取消
         </NButton>
+      </template>
 
-        <NAlert
-          v-if="projectStore.videoImportError"
-          type="error"
-          class="error-alert"
-          closable
-          @close="projectStore.videoImportError = null"
-        >
-          {{ projectStore.videoImportError }}
-        </NAlert>
+      <NButton size="small" type="primary" @click="openLlmPanel">
+        LLM
+      </NButton>
 
-        <p class="empty-hint">支持 mp4 / mkv / webm / avi / mov / flv</p>
-      </div>
+      <NButton
+        size="small"
+        type="primary"
+        :disabled="projectStore.fuseRunning"
+        @click="startFuse"
+      >
+        AI 融合
+      </NButton>
+      <template v-if="projectStore.fuseRunning">
+        <NProgress
+          type="line"
+          class="ocr-progress"
+          :percentage="Math.round(projectStore.llmProgress * 100)"
+          :show-indicator="false"
+        />
+        <span class="ocr-msg">{{ projectStore.llmMessage }}</span>
+      </template>
+    </div>
 
-      <!-- OCR 参数弹窗 -->
-      <NModal v-model:show="showOcrConfig" :mask-closable="false">
+    <!-- 工作区说明 -->
+    <div class="workbench-body">
+      <div class="empty-icon">🧰</div>
+      <h2>{{ projectStore.currentProject?.name ?? "加载中..." }}</h2>
+      <p class="empty-desc">
+        在此运行 OCR / ASR / LLM / AI 融合任务，结果实时出现在右侧校对区的时间轴上。
+      </p>
+    </div>
+
+    <!-- OCR 参数弹窗 -->
+    <NModal v-model:show="showOcrConfig" :mask-closable="false">
         <NCard title="OCR 参数设置" style="width: 440px">
           <NSpace vertical size="large">
             <div class="cfg-field">
@@ -622,69 +445,12 @@ const resolutionLabel = computed(() => {
 </template>
 
 <style scoped>
-.editor-content {
+.workbench {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-
-.editor-fill {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.top-pane {
-  flex: 1 1 65%;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 16px 24px 8px;
-}
-
-.preview-row {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  gap: 8px;
-}
-
-.player-area {
-  flex: 1 1 60%;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.overview-area {
-  flex: 1 1 40%;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.info-bar {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 10px 12px;
-  background: var(--color-bg-secondary);
-  border-radius: 8px;
-}
-
-.timeline-pane {
-  flex: 0 0 35%;
-  min-height: 0;
-  overflow: hidden;
-  padding: 0 12px 12px;
 }
 
 .ocr-toolbar {
@@ -692,7 +458,32 @@ const resolutionLabel = computed(() => {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 0 24px 8px;
+  padding: 16px 24px 8px;
+  flex-wrap: wrap;
+}
+
+.workbench-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--color-text-secondary);
+  max-width: 460px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.empty-icon {
+  font-size: 64px;
+  margin-bottom: 16px;
+}
+
+.empty-desc {
+  margin: 8px 0 24px;
+  font-size: 14px;
+  line-height: 1.7;
 }
 
 /* 撤销/重做：透明底色，可用时亮色图标，不可用时浅灰 */
@@ -763,37 +554,5 @@ const resolutionLabel = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
-}
-
-.editor-empty {
-  margin: auto;
-  text-align: center;
-  color: var(--color-text-secondary);
-  max-width: 400px;
-}
-
-.empty-icon {
-  font-size: 64px;
-  margin-bottom: 16px;
-}
-
-.empty-desc {
-  margin: 8px 0 24px;
-  font-size: 14px;
-}
-
-.import-btn {
-  margin-bottom: 16px;
-}
-
-.error-alert {
-  margin-top: 16px;
-  text-align: left;
-}
-
-.empty-hint {
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  opacity: 0.6;
 }
 </style>

@@ -1,7 +1,59 @@
 <script setup lang="ts">
+import { computed, watch } from "vue";
 import { useProjectStore } from "../stores/project";
+import { useTimelineStore } from "../stores/timeline";
+import VideoPlayer from "./VideoPlayer.vue";
+import Timeline from "./timeline/Timeline.vue";
+import TrackOverview from "./TrackOverview.vue";
+import { NButton, NSpace, NTag } from "naive-ui";
 
 const projectStore = useProjectStore();
+const timeline = useTimelineStore();
+
+const meta = computed(() => projectStore.currentVideoMeta);
+const hasVideo = computed(() => meta.value !== null);
+
+const displayPath = computed(() => {
+  if (!meta.value) return "";
+  const parts = meta.value.path.replace(/\\/g, "/").split("/");
+  return parts[parts.length - 1] ?? meta.value.path;
+});
+
+const durationFormatted = computed(() => {
+  if (!meta.value) return "";
+  const s = Math.round(meta.value.duration);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  return `${m}:${String(sec).padStart(2, "0")}`;
+});
+
+const resolutionLabel = computed(() => {
+  if (!meta.value) return "";
+  const { width } = meta.value;
+  if (width >= 3840) return "4K";
+  if (width >= 2560) return "1440p";
+  if (width >= 1920) return "1080p";
+  if (width >= 1280) return "720p";
+  return "";
+});
+
+// 视频加载后确保默认轨道（OCR 选区 + 剧情文本 mock），并聚焦选区轨道让遮罩立即可见
+watch(
+  () => timeline.duration,
+  (d) => {
+    if (d > 0) {
+      projectStore.ensureDefaultTrack(d);
+      const ocrTrack = projectStore.currentProject?.tracks.find(
+        (t) => t.type === "ocr_region"
+      );
+      if (ocrTrack && !timeline.focusedTrackId) {
+        timeline.focusTrack(ocrTrack.id);
+      }
+    }
+  }
+);
 </script>
 
 <template>
@@ -10,32 +62,76 @@ const projectStore = useProjectStore();
       <span class="review-title">校对区</span>
       <span class="review-sub">视频预览 · 轨道总览 · 时间轴</span>
     </div>
-    <div class="review-body">
-      <p class="placeholder">校对区组件将在后续步骤迁移至此（全局常驻，跟随切片视频时间轴）</p>
-      <p v-if="projectStore.currentProject?.video" class="video-path">
-        {{ projectStore.currentProject.video }}
-      </p>
-      <p v-else class="placeholder">尚未导入切片视频</p>
+
+    <!-- 已导入视频：预览 + 总览 + 时间轴 -->
+    <div v-if="hasVideo" class="review-fill">
+      <div class="info-bar">
+        <NSpace wrap size="small">
+          <NTag>{{ displayPath }}</NTag>
+          <NTag>{{ meta?.width }}×{{ meta?.height }}</NTag>
+          <NTag v-if="resolutionLabel">{{ resolutionLabel }}</NTag>
+          <NTag>{{ durationFormatted }}</NTag>
+          <NTag>{{ meta?.fps.toFixed(1) }}fps</NTag>
+          <NTag>{{ meta?.codec }}</NTag>
+        </NSpace>
+
+        <NButton size="small" type="primary" @click="projectStore.importVideo()">
+          更换视频
+        </NButton>
+      </div>
+
+      <div class="preview-row">
+        <div class="player-area">
+          <VideoPlayer :src="meta!.path" />
+        </div>
+
+        <div class="overview-area">
+          <TrackOverview />
+        </div>
+      </div>
+
+      <div class="timeline-pane">
+        <Timeline />
+      </div>
+    </div>
+
+    <!-- 空态：未导入视频 -->
+    <div v-else class="review-empty">
+      <div class="empty-icon">📹</div>
+      <p class="empty-desc">导入切片视频以开始字幕生产</p>
+
+      <NButton
+        size="large"
+        type="primary"
+        @click="projectStore.importVideo()"
+        class="import-btn"
+      >
+        导入视频
+      </NButton>
+
+      <p class="empty-hint">支持 mp4 / mkv / webm / avi / mov / flv</p>
     </div>
   </aside>
 </template>
 
 <style scoped>
 .review-pane {
-  width: 340px;
-  flex-shrink: 0;
+  flex: 1 1 65%;
+  min-width: 520px;
   display: flex;
   flex-direction: column;
   background: var(--color-bg-secondary);
   border-left: 1px solid var(--color-border);
+  overflow: hidden;
 }
 
 .review-header {
-  padding: 14px 16px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex-shrink: 0;
 }
 
 .review-title {
@@ -49,22 +145,81 @@ const projectStore = useProjectStore();
   color: var(--color-text-secondary);
 }
 
-.review-body {
+.review-fill {
   flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
-  padding: 16px;
 }
 
-.placeholder {
-  font-size: 13px;
+.preview-row {
+  flex: 1 1 65%;
+  min-height: 0;
+  display: flex;
+  gap: 8px;
+  padding: 0 12px 8px;
+}
+
+.info-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+}
+
+.player-area {
+  flex: 1 1 60%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.overview-area {
+  flex: 1 1 40%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.timeline-pane {
+  flex: 0 0 35%;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 12px 12px;
+}
+
+.review-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
   color: var(--color-text-secondary);
-  line-height: 1.6;
+  padding: 24px;
 }
 
-.video-path {
-  margin-top: 12px;
+.empty-icon {
+  font-size: 64px;
+  margin-bottom: 16px;
+}
+
+.empty-desc {
+  margin: 8px 0 24px;
+  font-size: 14px;
+}
+
+.import-btn {
+  margin-bottom: 16px;
+}
+
+.empty-hint {
   font-size: 12px;
   color: var(--color-text-secondary);
-  word-break: break-all;
+  opacity: 0.6;
 }
 </style>
