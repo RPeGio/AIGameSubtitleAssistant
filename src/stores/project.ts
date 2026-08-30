@@ -729,6 +729,46 @@ export const useProjectStore = defineStore("project", () => {
     return true;
   }
 
+  /// 交换两条轨道在指定分段 [startSec, endSec) 内的 asr 事件归属：
+  /// A 轨分段内的事件移到 B 轨，B 轨分段内的事件移到 A 轨。
+  /// 仅作用于完全位于分段内的事件（时间/文本不变），character 跟随目标轨道名；
+  /// 跨分段边界的事件不参与（避免长句被相邻分段来回移动）。
+  /// 用于手动修正跨段说话人归属错误。
+  /// 返回是否成功（两轨均为 asr 类型且至少一侧有分段内事件）。
+  function swapTrackEventsInSegment(
+    trackAId: string,
+    trackBId: string,
+    startSec: number,
+    endSec: number
+  ): boolean {
+    if (!currentProject.value) return false;
+    const ta = findTrack(trackAId);
+    const tb = findTrack(trackBId);
+    if (!ta || !tb || ta.id === tb.id) return false;
+    if (ta.type !== "asr" || tb.type !== "asr") return false;
+
+    // 完全包含于分段内的事件才交换
+    const inSeg = (e: TimelineEvent) => e.start >= startSec && e.end <= endSec;
+    const aIn = ta.events.filter(inSeg);
+    const bIn = tb.events.filter(inSeg);
+    if (aIn.length === 0 && bIn.length === 0) return false;
+
+    recordSnapshot();
+    ta.events = ta.events.filter((e) => !inSeg(e));
+    tb.events = tb.events.filter((e) => !inSeg(e));
+    // 互换：原 A 的事件进 B 轨、原 B 的事件进 A 轨，character 跟随轨道名
+    const setChar = (e: TimelineEvent, name: string) => {
+      if ((e.type === "asr" || e.type === "manual") && name.trim().length > 0) {
+        e.character = name.trim();
+      }
+    };
+    for (const e of aIn) setChar(e, tb.name);
+    for (const e of bIn) setChar(e, ta.name);
+    ta.events = [...ta.events, ...bIn].sort((x, y) => x.start - y.start);
+    tb.events = [...tb.events, ...aIn].sort((x, y) => x.start - y.start);
+    return true;
+  }
+
   /// 重命名轨道：asr/manual 事件的 character 跟随轨道角色名（空名不改名）
   function renameTrack(trackId: string, name: string) {
     const track = currentProject.value?.tracks.find((t) => t.id === trackId);
@@ -876,6 +916,7 @@ export const useProjectStore = defineStore("project", () => {
     subtitlePreviewOn,
     toggleTrackPreview,
     moveEventToTrack,
+    swapTrackEventsInSegment,
     removeTrack,
     moveTrack,
     mergeTrack,

@@ -28,6 +28,9 @@ export const useTimelineStore = defineStore("timeline", () => {
   const viewportWidth = ref(0);
   /// 吸附开关（默认开启）
   const snapEnabled = ref(true);
+  /// 分段垂直互换模式（默认关闭）：开启后时间轴显示分段遮罩与
+  /// 轨道边界互换按钮，用于手动修正跨段说话人归属
+  const swapSegments = ref(false);
   /// 吸附标记线位置（内容区像素坐标；null = 不显示）
   const snapGuideX = ref<number | null>(null);
 
@@ -108,6 +111,11 @@ export const useTimelineStore = defineStore("timeline", () => {
     snapGuideX.value = null;
   }
 
+  /// 切换分段互换模式
+  function toggleSwapSegments() {
+    swapSegments.value = !swapSegments.value;
+  }
+
   /// 设置吸附标记线位置（内容区像素坐标）；null 清除
   function setSnapGuide(x: number | null) {
     snapGuideX.value = x;
@@ -147,6 +155,7 @@ export const useTimelineStore = defineStore("timeline", () => {
     totalWidth,
     snapEnabled,
     snapGuideX,
+    swapSegments,
     tick,
     scrubbing,
     seek,
@@ -162,6 +171,7 @@ export const useTimelineStore = defineStore("timeline", () => {
     focusTrack,
     setTool,
     toggleSnap,
+    toggleSwapSegments,
     setSnapGuide,
     clipPosition,
     jumpTo,
