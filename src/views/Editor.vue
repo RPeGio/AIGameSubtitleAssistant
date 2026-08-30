@@ -3,7 +3,6 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useProjectStore } from "../stores/project";
 import { useTimelineStore } from "../stores/timeline";
 import type { OcrRunParams, AsrRunParams, AsrEngineStatus, LlmRuntimeStatus } from "../types";
-import AppSidebar from "../components/AppSidebar.vue";
 import VideoPlayer from "../components/VideoPlayer.vue";
 import Timeline from "../components/timeline/Timeline.vue";
 import TrackOverview from "../components/TrackOverview.vue";
@@ -276,12 +275,10 @@ const resolutionLabel = computed(() => {
 </script>
 
 <template>
-  <div class="editor-layout">
-    <AppSidebar />
-    <main class="editor-main">
-      <!-- video imported -->
-      <div v-if="hasVideo" class="editor-content">
-        <div class="top-pane">
+  <div class="editor-content">
+    <!-- video imported -->
+    <div v-if="hasVideo" class="editor-fill">
+      <div class="top-pane">
           <div class="preview-row">
             <div class="player-area">
               <VideoPlayer :src="meta!.path" />
@@ -621,28 +618,21 @@ const resolutionLabel = computed(() => {
           </NSpace>
         </NCard>
       </NModal>
-    </main>
   </div>
 </template>
 
 <style scoped>
-.editor-layout {
+.editor-content {
+  flex: 1;
+  min-width: 0;
   display: flex;
-  height: 100vh;
+  flex-direction: column;
   overflow: hidden;
 }
 
-.editor-main {
+.editor-fill {
   flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--color-bg-primary);
-}
-
-.editor-content {
-  width: 100%;
-  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -776,6 +766,7 @@ const resolutionLabel = computed(() => {
 }
 
 .editor-empty {
+  margin: auto;
   text-align: center;
   color: var(--color-text-secondary);
   max-width: 400px;

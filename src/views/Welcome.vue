@@ -31,7 +31,7 @@ async function handleCreateProject() {
   );
   showCreateModal.value = false;
   resetForm();
-  router.push(`/editor/${encodeURIComponent(project.path)}`);
+  router.push(`/project/${encodeURIComponent(project.path)}/editor`);
 }
 
 function resetForm() {
@@ -41,7 +41,7 @@ function resetForm() {
 
 async function handleOpenProject(path: string) {
   await projectStore.openProject(path);
-  router.push(`/editor/${encodeURIComponent(path)}`);
+  router.push(`/project/${encodeURIComponent(path)}/editor`);
 }
 
 function isValidPath(input: string) {

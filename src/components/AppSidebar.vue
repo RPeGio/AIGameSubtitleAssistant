@@ -1,11 +1,29 @@
 <script setup lang="ts">
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useProjectStore } from "../stores/project";
 import { NButton } from "naive-ui";
 import SaveStatusIndicator from "./SaveStatusIndicator.vue";
 
+const route = useRoute();
 const router = useRouter();
 const projectStore = useProjectStore();
+
+/// 工作流导航项：name = 路由名，path 段 = 子路由路径
+const NAV_ITEMS = [
+  { name: "corpus", segment: "corpus", icon: "📝", label: "文本语料" },
+  { name: "asr", segment: "asr", icon: "🎙️", label: "语音转写" },
+  { name: "fuse", segment: "fuse", icon: "🧩", label: "AI 融合" },
+  { name: "editor", segment: "editor", icon: "📹", label: "时间轴编辑" },
+];
+
+function isActive(name: string): boolean {
+  return route.name === name;
+}
+
+function navigate(name: string) {
+  const path = route.params.path as string | undefined;
+  router.push({ name, params: { path } });
+}
 
 function handleBack() {
   projectStore.closeProject();
@@ -21,17 +39,15 @@ function handleBack() {
     </div>
 
     <div class="sidebar-nav">
-      <div class="nav-item active">
-        <span class="nav-icon">📹</span>
-        <span class="nav-label">视频工作台</span>
-      </div>
-      <div class="nav-item">
-        <span class="nav-icon">📝</span>
-        <span class="nav-label">字幕编辑</span>
-      </div>
-      <div class="nav-item">
-        <span class="nav-icon">⚙️</span>
-        <span class="nav-label">项目设置</span>
+      <div
+        v-for="item in NAV_ITEMS"
+        :key="item.name"
+        class="nav-item"
+        :class="{ active: isActive(item.name) }"
+        @click="navigate(item.name)"
+      >
+        <span class="nav-icon">{{ item.icon }}</span>
+        <span class="nav-label">{{ item.label }}</span>
       </div>
     </div>
 
