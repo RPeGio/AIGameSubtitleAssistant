@@ -73,7 +73,10 @@ function isTextTrackType(type: string): boolean {
   return TEXT_TRACK_TYPES.includes(type);
 }
 
-const tracks = () => projectStore.currentProject?.tracks ?? [];
+// 校对区时间轴只显示产物轨（scope=output）：控制轨（OCR 选区等）在各工作流
+// 页面独立预览里呈现，不进全局时间轴，避免与切片视频时间轴混淆
+const tracks = () =>
+  (projectStore.currentProject?.tracks ?? []).filter((t) => t.scope !== "control");
 const rootRef = ref<HTMLElement | null>(null);
 const viewportRef = ref<HTMLElement | null>(null);
 let viewportObserver: ResizeObserver | null = null;

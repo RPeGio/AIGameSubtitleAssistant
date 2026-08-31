@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref } from "vue";
 import { useProjectStore } from "../stores/project";
-import { useTimelineStore } from "../stores/timeline";
 import SourceVideoPreview from "../components/SourceVideoPreview.vue";
+import SourceTimeline from "../components/SourceTimeline.vue";
 import type { OcrRunParams } from "../types";
 import {
   NButton,
@@ -15,7 +15,6 @@ import {
 } from "naive-ui";
 
 const projectStore = useProjectStore();
-const timeline = useTimelineStore();
 const message = useMessage();
 
 // ── 三个语料来源折叠标签（默认展开第一个）──────────────
@@ -32,16 +31,9 @@ const ocrParams = ref<OcrRunParams>({
 const sourceMeta = computed(() => projectStore.sourceVideoMeta);
 const hasSourceVideo = computed(() => sourceMeta.value !== null);
 
-// 视频 A 加载后聚焦其 OCR 选区控制轨，让遮罩立即可见（建轨由 importSourceVideo 统一负责）
-watch(
-  () => sourceMeta.value?.duration,
-  () => {
-    const track = projectStore.currentProject?.tracks.find(
-      (t) => t.type === "ocr_region" && t.video === "source"
-    );
-    if (track) timeline.focusTrack(track.id);
-  }
-);
+/// 共享播放状态：视频预览 ↔ 迷你时间轴同步
+const sourceTime = ref(0);
+const sourceDuration = ref(0);
 
 async function startOcr() {
   try {
@@ -82,12 +74,23 @@ const PLACEHOLDER_KEYS = ["screenshot", "manual"];
           </template>
 
           <template v-else>
-            <!-- 视频选区预览（独立于全局时间轴与全局空格） -->
+            <!-- 视频选区预览（独立于全局时间轴与全局空格，播放时间与下方迷你时间轴同步） -->
             <div class="preview-box">
-              <SourceVideoPreview />
+              <SourceVideoPreview
+                v-model:time="sourceTime"
+                v-model:duration="sourceDuration"
+              />
             </div>
+
+            <!-- 迷你时间轴：按时间段管理多条选区 -->
+            <SourceTimeline
+              v-model:time="sourceTime"
+              :duration="sourceDuration"
+              class="mini-timeline"
+            />
             <NText depth="3" style="font-size: 12px">
-              在预览画面中拖动选框以框定字幕区域（选区保存到项目，OCR 按此区域识别）
+              在预览中拖拽选框框定字幕区域；双击迷你时间轴空白添加不同时间段的选区，
+              拖动 clip 调整起止、点击跳转。OCR 按播放头所在时间段对应的选区识别。
             </NText>
 
             <!-- OCR 参数（内联，点击立即执行） -->
@@ -227,6 +230,10 @@ const PLACEHOLDER_KEYS = ["screenshot", "manual"];
   background: #000;
   border-radius: 8px;
   overflow: hidden;
+}
+
+.mini-timeline {
+  flex-shrink: 0;
 }
 
 .params {

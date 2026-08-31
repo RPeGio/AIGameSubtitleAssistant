@@ -491,6 +491,31 @@ export const useProjectStore = defineStore("project", () => {
     }
   }
 
+  /// 在指定 ocr_region 轨上新增一条选区事件（时间轴双击空白处添加不同时间段的选区）。
+  /// 默认矩形与 ensureCorpusRegionTrack 一致（宽 60%、高 20%、画面偏低居中）。
+  function addOcrRegionEvent(
+    trackId: string,
+    start: number,
+    end: number,
+    coords?: { x1: number; y1: number; x2: number; y2: number }
+  ) {
+    if (!currentProject.value || end <= start) return;
+    const track = currentProject.value.tracks.find((t) => t.id === trackId);
+    if (!track) return;
+    recordSnapshot();
+    track.events.push({
+      id: generateId(),
+      start,
+      end,
+      type: "ocr_region",
+      x1: coords?.x1 ?? 0.2,
+      y1: coords?.y1 ?? 0.7,
+      x2: coords?.x2 ?? 0.8,
+      y2: coords?.y2 ?? 0.9,
+    });
+    track.events.sort((a, b) => a.start - b.start);
+  }
+
   /// 更新带 text 字段的事件的文字（ocr_text / asr / manual，就地修改 reactive 对象）
   function updateEventText(id: string, text: string) {
     const found = findEvent(id);
@@ -1101,6 +1126,7 @@ export const useProjectStore = defineStore("project", () => {
     mergeAdjacent,
     splitEvent,
     updateOcrRegion,
+    addOcrRegionEvent,
     updateEventText,
     updateEventTime,
     recordSnapshot,

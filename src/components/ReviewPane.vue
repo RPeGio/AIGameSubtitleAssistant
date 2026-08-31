@@ -39,18 +39,18 @@ const resolutionLabel = computed(() => {
   return "";
 });
 
-// 视频加载后确保默认轨道（OCR 选区 + 剧情文本 mock），并聚焦选区轨道让遮罩立即可见
+// 视频加载后确保默认轨道（OCR 选区 + 剧情文本 mock），并聚焦产物轨让总览立即可见。
+// 控制轨（OCR 选区）不进全局时间轴，聚焦产物轨（ocr_text）供校对区总览展示。
 watch(
   () => timeline.duration,
   (d) => {
     if (d > 0) {
       projectStore.ensureDefaultTrack(d);
-      // 只聚焦切片视频（clip）的 OCR 选区轨，避免误聚焦语料页的 source 控制轨
-      const ocrTrack = projectStore.currentProject?.tracks.find(
-        (t) => t.type === "ocr_region" && t.video !== "source"
+      const outputTrack = projectStore.currentProject?.tracks.find(
+        (t) => t.scope !== "control"
       );
-      if (ocrTrack && !timeline.focusedTrackId) {
-        timeline.focusTrack(ocrTrack.id);
+      if (outputTrack && !timeline.focusedTrackId) {
+        timeline.focusTrack(outputTrack.id);
       }
     }
   }

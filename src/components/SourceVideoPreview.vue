@@ -9,12 +9,22 @@ const projectStore = useProjectStore();
 
 /// 语料页剧情录屏独立预览：
 /// - 完全独立于全局时间轴（不写 timeline store、不注册全局空格监听）
-/// - 选区：读取 source 控制轨的第一个 ocr_region 事件，支持拖拽调整
-/// - 播放用自有按钮
+/// - 播放时间通过 v-model 与语料页迷你时间轴共享（视频播放 ↔ 时间轴播放头同步）
+/// - 选区：按当前播放头所在 clip 显示（时间轴可分段添加多条选区），可拖拽调整
+
+const props = defineProps<{
+  /// 当前播放时间（v-model:time，父层持有共享）
+  time: number;
+  /// 视频总时长（v-model:duration）
+  duration: number;
+}>();
+
+const emit = defineEmits<{
+  "update:time": [t: number];
+  "update:duration": [d: number];
+}>();
 
 const videoRef = ref<HTMLVideoElement | null>(null);
-const currentTime = ref(0);
-const duration = ref(0);
 const isPlaying = ref(false);
 const isLoaded = ref(false);
 const loadError = ref<string | null>(null);
@@ -24,18 +34,27 @@ const { containerRef, contentRect } = useVideoContentRect();
 const src = computed(() => projectStore.sourceVideoMeta?.path ?? "");
 const assetUrl = computed(() => (src.value ? convertFileSrc(src.value) : ""));
 
-/// source 控制轨的第一个选区事件（RegionOverlay 语义：不随播放头变，固定显示整段选区）
-const regionEvent = computed(() => {
-  const track = projectStore.currentProject?.tracks.find(
+/// source 控制轨（可能存在多条选区事件）
+const sourceTrack = computed(() =>
+  projectStore.currentProject?.tracks.find(
     (t) => t.type === "ocr_region" && t.video === "source"
-  );
+  )
+);
+
+/// 当前播放头所在的选区事件；播放头不在任何 clip 内时取最后一个
+const regionEvent = computed(() => {
+  const track = sourceTrack.value;
   if (!track) return null;
-  const ev = track.events.find((e) => e.type === "ocr_region");
-  return ev && ev.type === "ocr_region" ? ev : null;
+  const t = props.time;
+  const regions = track.events.filter(
+    (e): e is Extract<typeof e, { type: "ocr_region" }> => e.type === "ocr_region"
+  );
+  const current = regions.find((e) => e.start <= t && e.end > t);
+  return current ?? (regions.length > 0 ? regions[regions.length - 1] : null);
 });
 
 const progressPct = computed(() =>
-  duration.value > 0 ? (currentTime.value / duration.value) * 100 : 0
+  props.duration > 0 ? (props.time / props.duration) * 100 : 0
 );
 
 const timeDisplay = computed(() => {
@@ -44,28 +63,40 @@ const timeDisplay = computed(() => {
     const sec = Math.floor(s % 60);
     return `${m}:${String(sec).padStart(2, "0")}`;
   };
-  return `${fmt(currentTime.value)} / ${fmt(duration.value)}`;
+  return `${fmt(props.time)} / ${fmt(props.duration)}`;
 });
 
 watch(src, () => {
   loadError.value = null;
   isLoaded.value = false;
-  currentTime.value = 0;
-  duration.value = 0;
+  emit("update:time", 0);
+  emit("update:duration", 0);
   isPlaying.value = false;
 });
+
+// 外部（迷你时间轴播放头）seek：视频跟随；容差避免与 timeupdate 回写互相打架
+watch(
+  () => props.time,
+  (t) => {
+    const v = videoRef.value;
+    if (!v || !isLoaded.value) return;
+    if (Math.abs(v.currentTime - t) > 0.05) {
+      v.currentTime = t;
+    }
+  }
+);
 
 function onLoadedMeta() {
   const v = videoRef.value;
   if (!v) return;
-  duration.value = v.duration;
+  emit("update:duration", v.duration);
   isLoaded.value = true;
 }
 
 function onTimeUpdate() {
   const v = videoRef.value;
   if (!v) return;
-  currentTime.value = v.currentTime;
+  emit("update:time", v.currentTime);
 }
 
 function onError() {
@@ -84,7 +115,7 @@ function seekTo(e: Event) {
   const v = videoRef.value;
   if (!v) return;
   const target = e.target as HTMLInputElement;
-  v.currentTime = (parseFloat(target.value) / 100) * duration.value;
+  v.currentTime = (parseFloat(target.value) / 100) * props.duration;
 }
 
 // ── 选区拖拽（不依赖 timeline store）────────────────────
