@@ -45,8 +45,9 @@ watch(
   (d) => {
     if (d > 0) {
       projectStore.ensureDefaultTrack(d);
+      // 只聚焦切片视频（clip）的 OCR 选区轨，避免误聚焦语料页的 source 控制轨
       const ocrTrack = projectStore.currentProject?.tracks.find(
-        (t) => t.type === "ocr_region"
+        (t) => t.type === "ocr_region" && t.video !== "source"
       );
       if (ocrTrack && !timeline.focusedTrackId) {
         timeline.focusTrack(ocrTrack.id);

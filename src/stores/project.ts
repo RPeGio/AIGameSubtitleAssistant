@@ -6,6 +6,7 @@ import type {
   VideoMetadata,
   TimelineEvent,
   Track,
+  CorpusItem,
   OcrRunParams,
   OcrSegment,
   OcrProgress,
@@ -68,7 +69,10 @@ function fusedToEvent(seg: FusedSegment): TimelineEvent {
 export const useProjectStore = defineStore("project", () => {
   const currentProject = ref<Project | null>(null);
   const recentProjects = ref<RecentProject[]>([]);
+  /// 切片视频（时间轴基准）元数据 —— 全局时间轴跟随它
   const currentVideoMeta = ref<VideoMetadata | null>(null);
+  /// 剧情录屏（文本源）元数据 —— 语料页 OCR 用，独立于全局时间轴
+  const sourceVideoMeta = ref<VideoMetadata | null>(null);
   const isLoading = ref(false);
   const videoImportError = ref<string | null>(null);
 
@@ -233,6 +237,17 @@ export const useProjectStore = defineStore("project", () => {
       if (project.video) {
         await loadVideoMeta(project.video);
       }
+      if (project.source_video) {
+        try {
+          const smeta = await invoke<VideoMetadata>("get_video_metadata", {
+            path: project.source_video,
+          });
+          sourceVideoMeta.value = smeta;
+          if (smeta.duration > 0) ensureCorpusRegionTrack(smeta.duration);
+        } catch {
+          sourceVideoMeta.value = null;
+        }
+      }
       await refreshRecentProjects();
       return project;
     } finally {
@@ -286,6 +301,38 @@ export const useProjectStore = defineStore("project", () => {
     }
   }
 
+  /// 导入剧情录屏（文本源视频 A），仅写 source_video 字段，不触碰全局时间轴。
+  /// 导入成功后统一确保 source 选区控制轨存在（单一建轨入口，避免多处重复创建）
+  async function importSourceVideo() {
+    const selected = await open({
+      multiple: false,
+      title: "选择剧情录屏视频",
+      filters: [
+        {
+          name: "视频文件",
+          extensions: ["mp4", "mkv", "webm", "avi", "mov", "flv"],
+        },
+      ],
+    });
+    if (!selected || !currentProject.value) return;
+
+    try {
+      const meta = await invoke<VideoMetadata>("get_video_metadata", {
+        path: selected,
+      });
+      sourceVideoMeta.value = meta;
+      currentProject.value.source_video = selected;
+      currentProject.value.updated_at = new Date().toISOString();
+      // 导入成功即建轨（幂等守卫），语料页 watch 与预览组件不再各自创建
+      if (meta.duration > 0) ensureCorpusRegionTrack(meta.duration);
+    } catch (e) {
+      const err = String(e);
+      videoImportError.value = err.includes("FFMPEG_NOT_FOUND")
+        ? "FFmpeg 未安装，请在项目设置中下载运行环境"
+        : err;
+    }
+  }
+
   async function refreshRecentProjects() {
     try {
       recentProjects.value = await invoke<RecentProject[]>("list_recent_projects");
@@ -298,8 +345,9 @@ export const useProjectStore = defineStore("project", () => {
     if (!currentProject.value) return;
     const tracks = currentProject.value.tracks;
 
-    // OCR 选区轨道：控制轨（页面工作状态），绑定切片视频，归 editor 页
-    if (!tracks.some((t) => t.type === "ocr_region")) {
+    // OCR 选区轨道：控制轨（页面工作状态），绑定切片视频，归 editor 页。
+    // 精确匹配 video!=="source"：避免语料页的 source 控制轨（同为 ocr_region）被误判为已存在
+    if (!tracks.some((t) => t.type === "ocr_region" && t.video !== "source")) {
       tracks.push({
         id: generateId(),
         name: "OCR 选区",
@@ -355,6 +403,44 @@ export const useProjectStore = defineStore("project", () => {
         ],
       });
     }
+  }
+
+  /// 语料页：确保剧情录屏（视频 A）的 OCR 选区控制轨存在。
+  /// 默认一个覆盖整段的选区（RegionOverlay 任意播放头都能命中，可直接拖拽调整）。
+  /// 守卫按 (type=ocr_region) + (video=source 或 page=corpus 或轨道名) 匹配：
+  /// 兼容 video 字段缺失的旧数据，避免更换视频时重复创建。
+  function ensureCorpusRegionTrack(duration: number) {
+    if (!currentProject.value) return;
+    const tracks = currentProject.value.tracks;
+    const exists = tracks.some(
+      (t) =>
+        t.type === "ocr_region" &&
+        (t.video === "source" || t.page === "corpus" || t.name === "OCR 选区（剧情录屏）")
+    );
+    if (exists) return;
+    tracks.push({
+      id: generateId(),
+      name: "OCR 选区（剧情录屏）",
+      type: "ocr_region",
+      track_role: "game",
+      scope: "control",
+      page: "corpus",
+      video: "source",
+      preview_visible: true,
+      events: [
+        {
+          id: generateId(),
+          start: 0,
+          end: duration,
+          type: "ocr_region",
+          // 默认矩形：宽 60%，高 20%，水平居中，保持在画面偏低位置
+          x1: 0.2,
+          y1: 0.7,
+          x2: 0.8,
+          y2: 0.9,
+        },
+      ],
+    });
   }
 
   /// 根据事件 id 跨所有轨道查找 { track, event }
@@ -424,11 +510,18 @@ export const useProjectStore = defineStore("project", () => {
   }
 
   /// 运行 OCR 流水线：收集所有 ocr_region 轨道的 clip → run_ocr → 写入 ocr_text 轨道
-  async function runOcr(params: OcrRunParams) {
-    if (ocrRunning.value || !currentProject.value || !currentVideoMeta.value) return;
+  /// `videoKey`：默认 "clip"（切片，编辑页 OCR）；"source" 用剧情录屏（语料页 OCR，meta 取 sourceVideoMeta）
+  async function runOcr(params: OcrRunParams, videoKey: "clip" | "source" = "clip") {
+    const meta = videoKey === "source" ? sourceVideoMeta.value : currentVideoMeta.value;
+    if (ocrRunning.value || !currentProject.value || !meta) return;
 
+    // 语料页只取挂在剧情录屏上的 OCR 选区控制轨；编辑页沿用全部选区
     const regionClips = currentProject.value.tracks
-      .filter((t) => t.type === "ocr_region")
+      .filter(
+        (t) =>
+          t.type === "ocr_region" &&
+          (videoKey === "source" ? t.video === "source" : t.video !== "source")
+      )
       .flatMap((t) => t.events)
       .filter((e): e is Extract<typeof e, { type: "ocr_region" }> => e.type === "ocr_region")
       .map((e) => ({
@@ -450,13 +543,18 @@ export const useProjectStore = defineStore("project", () => {
     ocrMessage.value = "准备中...";
     try {
       const segments = await invoke<OcrSegment[]>("run_ocr", {
-        videoPath: currentVideoMeta.value.path,
-        videoW: currentVideoMeta.value.width,
-        videoH: currentVideoMeta.value.height,
+        videoPath: meta.path,
+        videoW: meta.width,
+        videoH: meta.height,
         regionClips,
         params,
       });
-      writeOcrSegments(segments);
+      if (videoKey === "source") {
+        // 语料页：产物提取进 corpus（去时间轴，作为可靠文本语料）
+        writeOcrToCorpus(segments);
+      } else {
+        writeOcrSegments(segments);
+      }
       ocrProgress.value = 1;
       ocrMessage.value = "完成";
     } catch (e) {
@@ -504,6 +602,58 @@ export const useProjectStore = defineStore("project", () => {
     recordSnapshot();
     track.events = segments.map(ocrTextToEvent).sort((a, b) => a.start - b.start);
   }
+
+  // ── 文本语料（corpus）─────────────────────────────────
+
+  /// 把 OCR 段文本提取进 corpus（去时间轴，去重），供融合页消费
+  function writeOcrToCorpus(segments: OcrSegment[]) {
+    if (!currentProject.value) return;
+    const project = currentProject.value;
+    const existing = new Set(project.corpus.map((c) => c.text));
+    const now = new Date().toISOString();
+    const added: CorpusItem[] = [];
+    for (const seg of segments) {
+      const text = seg.text.trim();
+      if (!text || existing.has(text)) continue;
+      existing.add(text);
+      added.push({ id: generateId(), text, source: "ocr_track", created_at: now });
+    }
+    if (added.length > 0) {
+      recordSnapshot();
+      project.corpus.push(...added);
+    }
+  }
+
+  /// 手动添加一条语料（粘贴文本）
+  function addCorpusItem(text: string, source: CorpusItem["source"] = "paste") {
+    if (!currentProject.value || !text.trim()) return;
+    recordSnapshot();
+    currentProject.value.corpus.push({
+      id: generateId(),
+      text: text.trim(),
+      source,
+      created_at: new Date().toISOString(),
+    });
+  }
+
+  /// 删除一条语料
+  function removeCorpusItem(id: string) {
+    if (!currentProject.value) return;
+    recordSnapshot();
+    currentProject.value.corpus = currentProject.value.corpus.filter((c) => c.id !== id);
+  }
+
+  /// 语料就绪：corpus 非空
+  const corpusReady = computed(
+    () => (currentProject.value?.corpus.length ?? 0) > 0
+  );
+
+  /// 时间轴就绪：存在任一 ASR 段（融合消费转写文本）
+  const timelineReady = computed(() =>
+    (currentProject.value?.tracks ?? []).some(
+      (t) => t.type === "asr" && t.events.length > 0
+    )
+  );
 
   /// 运行 ASR 流水线：整段视频 → run_asr（面板参数：引擎/说话人上限/语言）→ 按 speaker 分组写入各 asr 轨道
   async function runAsr(params: AsrRunParams) {
@@ -592,28 +742,36 @@ export const useProjectStore = defineStore("project", () => {
   // ── AI 融合（Phase 4）──────────────────────────────────
   const fuseRunning = ref(false);
 
-  /// 收集 ocr_text 轨文本（全部）与 track_role="game" 的 ASR 段（按时间排序、编号），
+  /// 收集 corpus 语料文本（优先）与任意 ASR 段（按时间排序、编号），
   /// 调 run_fuse 交给 LLM 融合，结果写入 fused 最终产物轨道（重跑覆盖）
   async function runFuse(): Promise<FuseResult> {
     if (fuseRunning.value || !currentProject.value) throw new Error("当前无法执行 AI 融合");
     if (!currentVideoMeta.value) throw new Error("请先导入视频");
 
-    const ocrTrack = currentProject.value.tracks.find((t) => t.type === "ocr_text");
-    const ocrTexts = (ocrTrack?.events ?? [])
-      .filter((e): e is Extract<TimelineEvent, { type: "ocr_text" }> => e.type === "ocr_text")
-      .map((e) => e.text);
+    // 可靠文本：优先用 corpus 语料；无语料时回退 ocr_text 轨（旧数据流兼容）
+    const project = currentProject.value;
+    let ocrTexts: string[];
+    if (project.corpus.length > 0) {
+      ocrTexts = project.corpus.map((c) => c.text);
+    } else {
+      const ocrTrack = project.tracks.find((t) => t.type === "ocr_text");
+      ocrTexts = (ocrTrack?.events ?? [])
+        .filter((e): e is Extract<TimelineEvent, { type: "ocr_text" }> => e.type === "ocr_text")
+        .map((e) => e.text);
+    }
 
-    const gameAsr = currentProject.value.tracks
-      .filter((t) => t.type === "asr" && t.track_role === "game")
+    // 转写文本：任意 ASR 段（不区分主播/游戏，融合时由 LLM 对应）
+    const asrSegments: FuseAsrInput[] = project.tracks
+      .filter((t) => t.type === "asr")
       .flatMap((t) => t.events)
       .filter((e): e is Extract<TimelineEvent, { type: "asr" }> => e.type === "asr")
-      .sort((a, b) => a.start - b.start);
-    const asrSegments: FuseAsrInput[] = gameAsr.map((e, i) => ({
-      index: i + 1,
-      start: e.start,
-      end: e.end,
-      text: e.text,
-    }));
+      .sort((a, b) => a.start - b.start)
+      .map((e, i) => ({
+        index: i + 1,
+        start: e.start,
+        end: e.end,
+        text: e.text,
+      }));
 
     fuseRunning.value = true;
     llmProgress.value = 0;
@@ -907,6 +1065,7 @@ export const useProjectStore = defineStore("project", () => {
     saveNow();
     currentProject.value = null;
     currentVideoMeta.value = null;
+    sourceVideoMeta.value = null;
     videoImportError.value = null;
     saveState.value = "saved";
     clearHistory();
@@ -916,13 +1075,16 @@ export const useProjectStore = defineStore("project", () => {
     currentProject,
     recentProjects,
     currentVideoMeta,
+    sourceVideoMeta,
     isLoading,
     videoImportError,
     saveState,
     createProject,
     openProject,
     importVideo,
+    importSourceVideo,
     ensureDefaultTrack,
+    ensureCorpusRegionTrack,
     findEvent,
     findTrack,
     removeEvent,
@@ -953,6 +1115,11 @@ export const useProjectStore = defineStore("project", () => {
     ocrProgress,
     ocrMessage,
     runOcr,
+    writeOcrToCorpus,
+    addCorpusItem,
+    removeCorpusItem,
+    corpusReady,
+    timelineReady,
     asrRunning,
     asrProgress,
     asrMessage,
