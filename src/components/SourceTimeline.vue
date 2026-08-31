@@ -78,6 +78,7 @@ function onDblClickTrack(time: number) {
         :track-filter="trackFilter"
         :show-tool-strip="false"
         :click-seeks="true"
+        :label-width="132"
         @dblclick-track="onDblClickTrack"
       />
     </div>

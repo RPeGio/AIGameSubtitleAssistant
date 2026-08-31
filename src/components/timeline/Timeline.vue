@@ -22,8 +22,10 @@ const props = withDefaults(
     showToolStrip?: boolean;
     /// 点击 clip 是否跳转播放头到 clip 起点（迷你时间轴场景）
     clickSeeks?: boolean;
+    /// 轨道标签列宽度（px）；迷你时间轴可调窄，给时间轴窗口让出更多宽度
+    labelWidth?: number;
   }>(),
-  { showToolStrip: true, clickSeeks: false }
+  { showToolStrip: true, clickSeeks: false, labelWidth: 220 }
 );
 
 const emit = defineEmits<{
@@ -33,7 +35,6 @@ const emit = defineEmits<{
 
 // 布局常量：工具列宽度 + 轨道标签列宽度
 const TOOL_WIDTH = 40;
-const LABEL_WIDTH = 220;
 /// 实际工具条宽度：隐藏工具条（迷你时间轴）时为 0，播放头/吸附线偏移随之归零
 const toolWidth = computed(() => (props.showToolStrip ? TOOL_WIDTH : 0));
 
@@ -389,7 +390,7 @@ onUnmounted(() => {
     <div class="timeline-col">
       <!-- Header: ruler（仅这里可拖动播放头） -->
       <div class="tl-row">
-        <div class="tl-label-col" />
+        <div class="tl-label-col" :style="{ minWidth: props.labelWidth + 'px', maxWidth: props.labelWidth + 'px' }" />
         <div
           ref="viewportRef"
           class="tl-content"
@@ -416,6 +417,7 @@ onUnmounted(() => {
           <div
             class="tl-label-col"
             :class="{ 'track-focused': timeline.focusedTrackId === track.id }"
+            :style="{ minWidth: props.labelWidth + 'px', maxWidth: props.labelWidth + 'px' }"
             @click="onTrackLabelClicked(track)"
           >
             <div class="label-name">
@@ -533,7 +535,7 @@ onUnmounted(() => {
 
       <!-- Footer: scrollbar（固定贴底） -->
       <div class="tl-row timeline-footer">
-        <div class="tl-label-col" />
+        <div class="tl-label-col" :style="{ minWidth: props.labelWidth + 'px', maxWidth: props.labelWidth + 'px' }" />
         <div class="tl-content">
           <TimelineScrollbar />
         </div>
@@ -573,7 +575,7 @@ onUnmounted(() => {
     <!-- Playhead window：仅覆盖内容区，标头越界时被裁剪而不上溢到工具条/标签列 -->
     <div
       class="playhead-window"
-      :style="{ left: toolWidth + LABEL_WIDTH + 'px' }"
+      :style="{ left: toolWidth + props.labelWidth + 'px' }"
     >
       <div class="playhead-overlay" :style="{ left: playheadLeft }">
         <div class="playhead-head" />
@@ -586,7 +588,7 @@ onUnmounted(() => {
       v-if="timeline.snapGuideX !== null"
       class="snap-guide"
       :style="{
-        left: toolWidth + LABEL_WIDTH + timeline.snapGuideX - timeline.scrollLeft + 'px',
+        left: toolWidth + props.labelWidth + timeline.snapGuideX - timeline.scrollLeft + 'px',
       }"
     />
   </div>
@@ -643,8 +645,7 @@ onUnmounted(() => {
   z-index: 30;
   min-width: 220px;
   max-width: 220px;
-  border-right: 1px solid var(--color-border);
-  background: var(--color-bg-secondary);
+  border-right: 1px solid var(--color-border);  background: var(--color-bg-secondary);
   display: flex;
   flex-direction: column;
   justify-content: center;
