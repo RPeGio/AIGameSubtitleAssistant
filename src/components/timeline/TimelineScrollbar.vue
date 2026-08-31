@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
-import { useTimelineStore } from "../../stores/timeline";
+import { computed, inject, onMounted, onUnmounted, ref } from "vue";
+import { useTimelineStore, TIMELINE_STORE_KEY } from "../../stores/timeline";
 
-const timeline = useTimelineStore();
+const timeline = inject(TIMELINE_STORE_KEY, null) ?? useTimelineStore();
 const trackRef = ref<HTMLElement | null>(null);
 
 const trackWidth = ref(0);

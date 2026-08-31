@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, inject, nextTick, onMounted, onUnmounted, provide, ref, watch } from "vue";
 import { NModal, NPopconfirm, NSelect, NButton } from "naive-ui";
-import { useTimelineStore, CLIP_COLORS, TEXT_TRACK_TYPES } from "../../stores/timeline";
+import { useTimelineStore, TIMELINE_STORE_KEY, CLIP_COLORS, TEXT_TRACK_TYPES } from "../../stores/timeline";
 import { useProjectStore } from "../../stores/project";
 import type { Track } from "../../types";
 import TimelineRuler from "./TimelineRuler.vue";
@@ -9,12 +9,33 @@ import TimelineClip from "./TimelineClip.vue";
 import TimelineScrollbar from "./TimelineScrollbar.vue";
 import TimelineToolStrip from "./TimelineToolStrip.vue";
 
-const timeline = useTimelineStore();
+/// 支持注入独立 store 实例（页面级迷你时间轴用），未注入时回退全局 store
+const timeline = inject(TIMELINE_STORE_KEY, null) ?? useTimelineStore();
+provide(TIMELINE_STORE_KEY, timeline);
 const projectStore = useProjectStore();
+
+const props = withDefaults(
+  defineProps<{
+    /// 轨道过滤：只显示满足条件的轨道（默认 scope=output 产物轨）
+    trackFilter?: (t: Track) => boolean;
+    /// 是否显示工具条（分割/合并等校对工具；迷你时间轴隐藏）
+    showToolStrip?: boolean;
+    /// 点击 clip 是否跳转播放头到 clip 起点（迷你时间轴场景）
+    clickSeeks?: boolean;
+  }>(),
+  { showToolStrip: true, clickSeeks: false }
+);
+
+const emit = defineEmits<{
+  /// 双击轨道空白处（时间秒，内容区坐标换算）；供语料页添加选区
+  "dblclick-track": [time: number];
+}>();
 
 // 布局常量：工具列宽度 + 轨道标签列宽度
 const TOOL_WIDTH = 40;
 const LABEL_WIDTH = 220;
+/// 实际工具条宽度：隐藏工具条（迷你时间轴）时为 0，播放头/吸附线偏移随之归零
+const toolWidth = computed(() => (props.showToolStrip ? TOOL_WIDTH : 0));
 
 /// MOSS ASR 分段间隔（秒）：与后端 SEGMENT_SECONDS 保持一致，
 /// 时间轴上用分割线标出每个 5 分钟分段边界，便于人工修正
@@ -73,10 +94,13 @@ function isTextTrackType(type: string): boolean {
   return TEXT_TRACK_TYPES.includes(type);
 }
 
-// 校对区时间轴只显示产物轨（scope=output）：控制轨（OCR 选区等）在各工作流
-// 页面独立预览里呈现，不进全局时间轴，避免与切片视频时间轴混淆
+// 校对区时间轴默认只显示产物轨（scope=output）：控制轨（OCR 选区等）在各工作流
+// 页面独立预览里呈现，不进全局时间轴，避免与切片视频时间轴混淆；
+// 语料页等迷你时间轴通过 trackFilter 传入自己的轨道过滤
 const tracks = () =>
-  (projectStore.currentProject?.tracks ?? []).filter((t) => t.scope !== "control");
+  (projectStore.currentProject?.tracks ?? []).filter(
+    props.trackFilter ?? ((t: Track) => t.scope !== "control")
+  );
 const rootRef = ref<HTMLElement | null>(null);
 const viewportRef = ref<HTMLElement | null>(null);
 let viewportObserver: ResizeObserver | null = null;
@@ -156,6 +180,14 @@ function onTrackAreaMouseDown(e: MouseEvent) {
   timeline.focusClip(null);
 }
 
+/// 双击轨道空白：换算时间并 emit（语料页用其添加选区；校对区不监听则无副作用）
+function onTrackAreaDblClick(e: MouseEvent) {
+  const target = e.currentTarget as HTMLElement;
+  // clip 上双击不触发（clip 自身已有点击/拖动逻辑）
+  if ((e.target as HTMLElement).closest(".clip")) return;
+  emit("dblclick-track", timeline.timeAtPixel(e.clientX - target.getBoundingClientRect().left));
+}
+
 // 选择模式下点击 clip：聚焦 clip + 其所在轨道；
 // 合并工具下为点选合并：第一次点击记为第一选择，第二次点击相邻 clip 直接合并
 const mergeFirstId = ref<string | null>(null);
@@ -185,6 +217,11 @@ function onClipClicked(track: Track, clipId: string) {
   }
   timeline.focusClip(clipId);
   timeline.focusTrack(track.id);
+  // 迷你时间轴场景：点击 clip 跳转播放头到其起点（同步视频）
+  if (props.clickSeeks) {
+    const found = projectStore.findEvent(clipId);
+    if (found) timeline.seek(found.event.start);
+  }
 }
 
 // 点击轨道名称标签：聚焦该轨道
@@ -347,7 +384,7 @@ onUnmounted(() => {
 
 <template>
   <div class="timeline-root" ref="rootRef">
-    <TimelineToolStrip />
+    <TimelineToolStrip v-if="props.showToolStrip" />
 
     <div class="timeline-col">
       <!-- Header: ruler（仅这里可拖动播放头） -->
@@ -427,6 +464,7 @@ onUnmounted(() => {
             :data-track-id="track.id"
             :data-track-type="track.type"
             @mousedown="onTrackAreaMouseDown"
+            @dblclick="onTrackAreaDblClick"
           >
             <div
               v-for="x in segmentDividers"
@@ -535,7 +573,7 @@ onUnmounted(() => {
     <!-- Playhead window：仅覆盖内容区，标头越界时被裁剪而不上溢到工具条/标签列 -->
     <div
       class="playhead-window"
-      :style="{ left: TOOL_WIDTH + LABEL_WIDTH + 'px' }"
+      :style="{ left: toolWidth + LABEL_WIDTH + 'px' }"
     >
       <div class="playhead-overlay" :style="{ left: playheadLeft }">
         <div class="playhead-head" />
@@ -548,7 +586,7 @@ onUnmounted(() => {
       v-if="timeline.snapGuideX !== null"
       class="snap-guide"
       :style="{
-        left: TOOL_WIDTH + LABEL_WIDTH + timeline.snapGuideX - timeline.scrollLeft + 'px',
+        left: toolWidth + LABEL_WIDTH + timeline.snapGuideX - timeline.scrollLeft + 'px',
       }"
     />
   </div>

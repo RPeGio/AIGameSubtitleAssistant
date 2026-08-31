@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, inject, ref } from "vue";
 import type { TimelineEvent } from "../../types";
-import { useTimelineStore, SNAP_THRESHOLD_PX } from "../../stores/timeline";
+import { useTimelineStore, TIMELINE_STORE_KEY, SNAP_THRESHOLD_PX } from "../../stores/timeline";
 import { useProjectStore } from "../../stores/project";
 
-const timeline = useTimelineStore();
+const timeline = inject(TIMELINE_STORE_KEY, null) ?? useTimelineStore();
 const projectStore = useProjectStore();
 
 const props = defineProps<{

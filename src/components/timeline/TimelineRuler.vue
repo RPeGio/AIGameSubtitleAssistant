@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed } from "vue";
-import { useTimelineStore } from "../../stores/timeline";
+import { computed, inject } from "vue";
+import { useTimelineStore, TIMELINE_STORE_KEY } from "../../stores/timeline";
 import { NText } from "naive-ui";
 
-const timeline = useTimelineStore();
+const timeline = inject(TIMELINE_STORE_KEY, null) ?? useTimelineStore();
 
 const TICK_HEIGHT_MAJOR = 13;
 const TICK_HEIGHT_MINOR = 7;

@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
+import type { InjectionKey } from "vue";
 import type { TimelineEvent } from "../types";
 
 export const CLIP_COLORS: Record<string, string> = {
@@ -177,3 +178,9 @@ export const useTimelineStore = defineStore("timeline", () => {
     jumpTo,
   };
 });
+
+export type TimelineStore = ReturnType<typeof useTimelineStore>;
+
+/// 注入 key：允许页面级独立时间轴（如语料页迷你时间轴）注入自己的 store 实例，
+/// 子组件优先读取注入的实例，未注入时回退全局 store（保持校对区行为不变）。
+export const TIMELINE_STORE_KEY: InjectionKey<TimelineStore> = Symbol("timeline-store");
