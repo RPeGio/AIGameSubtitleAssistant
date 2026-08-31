@@ -298,13 +298,16 @@ export const useProjectStore = defineStore("project", () => {
     if (!currentProject.value) return;
     const tracks = currentProject.value.tracks;
 
-    // OCR 选区轨道：默认一个覆盖整段视频的选区
+    // OCR 选区轨道：控制轨（页面工作状态），绑定切片视频，归 editor 页
     if (!tracks.some((t) => t.type === "ocr_region")) {
       tracks.push({
         id: generateId(),
         name: "OCR 选区",
         type: "ocr_region",
         track_role: "game",
+        scope: "control",
+        page: "editor",
+        video: "clip",
         preview_visible: true,
         events: [
           {
@@ -328,6 +331,9 @@ export const useProjectStore = defineStore("project", () => {
         name: "剧情文本 (mock)",
         type: "ocr_text",
         track_role: "game",
+        scope: "output",
+        page: "",
+        video: "clip",
         preview_visible: true,
         events: [
           {
@@ -480,6 +486,9 @@ export const useProjectStore = defineStore("project", () => {
         name: "OCR 文本",
         type: "ocr_text",
         track_role: "game",
+        scope: "output",
+        page: "",
+        video: "clip",
         preview_visible: true,
         events: [],
       };
@@ -633,6 +642,9 @@ export const useProjectStore = defineStore("project", () => {
         name: "最终字幕",
         type: "fused",
         track_role: "game",
+        scope: "output",
+        page: "",
+        video: "clip",
         preview_visible: true,
         events: [],
       };
@@ -672,6 +684,9 @@ export const useProjectStore = defineStore("project", () => {
         type: "asr",
         // 默认游戏内容：主播语音轨由用户手动标记（run_fuse 只消费游戏内容轨）
         track_role: "game",
+        scope: "output",
+        page: "",
+        video: "clip",
         preview_visible: true,
         events: [],
       };
