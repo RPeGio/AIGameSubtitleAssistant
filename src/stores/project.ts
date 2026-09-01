@@ -673,10 +673,12 @@ export const useProjectStore = defineStore("project", () => {
     () => (currentProject.value?.corpus.length ?? 0) > 0
   );
 
-  /// 时间轴就绪：存在任一 ASR 段（融合消费转写文本）
+  /// 时间轴就绪：存在已标记为游戏内容（track_role=game）且非空的 ASR 轨。
+  /// 融合只消费游戏内语音（嵌字轴），主播语音轨（streamer）不参与，
+  /// 因此仅有主播轨时视为未就绪。
   const timelineReady = computed(() =>
     (currentProject.value?.tracks ?? []).some(
-      (t) => t.type === "asr" && t.events.length > 0
+      (t) => t.type === "asr" && t.track_role === "game" && t.events.length > 0
     )
   );
 
@@ -785,9 +787,11 @@ export const useProjectStore = defineStore("project", () => {
         .map((e) => e.text);
     }
 
-    // 转写文本：任意 ASR 段（不区分主播/游戏，融合时由 LLM 对应）
+    // 转写文本：只取已标记为游戏内容（track_role=game）的 ASR 轨。
+    // 主播语音轨（streamer）不参与融合（嵌字轴只替换游戏内语音），
+    // 与 timelineReady 的就绪判定保持一致。
     const asrSegments: FuseAsrInput[] = project.tracks
-      .filter((t) => t.type === "asr")
+      .filter((t) => t.type === "asr" && t.track_role === "game")
       .flatMap((t) => t.events)
       .filter((e): e is Extract<TimelineEvent, { type: "asr" }> => e.type === "asr")
       .sort((a, b) => a.start - b.start)

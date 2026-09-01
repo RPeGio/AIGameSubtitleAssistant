@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { useProjectStore } from "../stores/project";
 import type { AsrRunParams, AsrEngineStatus } from "../types";
 import {
@@ -83,6 +83,21 @@ function cancelAsr() {
   projectStore.cancelAsr();
 }
 
+// ── ASR 结果说话人标记 ────────────────────────────────
+/// 全部 asr 轨（仅显示非空轨道，按说话人名排序）
+const asrTracks = computed(() => {
+  const tracks = projectStore.currentProject?.tracks ?? [];
+  return tracks
+    .filter((t) => t.type === "asr" && t.events.length > 0)
+    .sort((a, b) => a.name.localeCompare(b.name));
+});
+
+/// 标记轨道角色（主播语音 / 游戏内容），"选择即生效"：
+/// 融合只消费游戏内容轨，主播轨仅供字幕轴参考
+function setTrackRole(trackId: string, role: string) {
+  projectStore.updateTrackRole(trackId, role);
+}
+
 // ── 占位标签 ──────────────────────────────────────────
 const PLACEHOLDER_KEY = "visual";
 </script>
@@ -153,6 +168,39 @@ const PLACEHOLDER_KEY = "visual";
               <NText v-if="asrParams.engine === 'moss'" depth="3" style="font-size: 12px">
                 MOSS 自动识别多语言，无需指定
               </NText>
+            </div>
+          </div>
+
+          <!-- 说话人标记：每条 ASR 轨标记为主播语音 / 游戏内容（"选择即生效"）。
+               融合只消费游戏内容轨（嵌字轴），主播轨仅供字幕轴参考 -->
+          <div v-if="asrTracks.length > 0" class="role-tags">
+            <div class="role-header">
+              <NText strong style="font-size: 13px">说话人标记</NText>
+              <NText depth="3" style="font-size: 12px">
+                标记为「游戏内容」的轨道参与 AI 融合；「主播语音」不参与
+              </NText>
+            </div>
+            <div v-for="track in asrTracks" :key="track.id" class="role-row">
+              <span class="role-name">{{ track.name }}</span>
+              <span class="role-count">{{ track.events.length }} 段</span>
+              <div class="role-btns">
+                <NButton
+                  size="tiny"
+                  :type="track.track_role === 'game' ? 'primary' : 'default'"
+                  :secondary="track.track_role !== 'game'"
+                  @click="setTrackRole(track.id, 'game')"
+                >
+                  游戏内容
+                </NButton>
+                <NButton
+                  size="tiny"
+                  :type="track.track_role === 'streamer' ? 'primary' : 'default'"
+                  :secondary="track.track_role !== 'streamer'"
+                  @click="setTrackRole(track.id, 'streamer')"
+                >
+                  主播语音
+                </NButton>
+              </div>
             </div>
           </div>
 
@@ -252,6 +300,47 @@ const PLACEHOLDER_KEY = "visual";
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+/* 说话人标记：每轨一行，两个水平互斥按钮 */
+.role-tags {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--color-bg-secondary);
+  border-radius: 8px;
+}
+
+.role-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 2px;
+}
+
+.role-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.role-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  min-width: 80px;
+}
+
+.role-count {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  min-width: 44px;
+}
+
+.role-btns {
+  display: flex;
+  gap: 6px;
 }
 
 .progress {
