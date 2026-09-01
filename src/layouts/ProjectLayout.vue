@@ -67,15 +67,8 @@ function onGlobalKeydown(e: KeyboardEvent) {
     return;
   }
 
-  // Delete：删除聚焦 clip（输入框内由上面的 guard 排除）
-  if (e.key === "Delete") {
-    const id = timeline.focusedClipId;
-    if (!id) return;
-    projectStore.removeEvent(id);
-    timeline.focusClip(null);
-    return;
-  }
-
+  // Delete：删除聚焦 clip 已下沉到 Timeline 组件内（每个实例处理自己的 store，
+  // 覆盖校对区全局时间轴与语料页独立时间轴），这里不再重复处理
   // M：聚焦 clip 与同轨下一个事件合并（输入框内由 guard 排除）
   if (e.code === "KeyM" && !e.ctrlKey && !e.metaKey && !e.altKey) {
     const id = timeline.focusedClipId;

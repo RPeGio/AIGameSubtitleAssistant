@@ -40,6 +40,9 @@ const drag = ref<{
   startY: number;
   origStart: number;
   origEnd: number;
+  /// 按下时的 scrollLeft：视口外自动滚动后，用累积滚动变化与累积鼠标位移
+  /// 同口径相加，保证 clip 始终跟随鼠标（仅本次增量会导致逐渐掉队）
+  origScrollLeft: number;
   moved: boolean;
   /// 垂直换轨模式：鼠标已跨过垂直阈值，只换轨道不改时间
   vMode: boolean;
@@ -177,6 +180,7 @@ function onClipMouseDown(e: MouseEvent, mode: DragMode) {
     startY: e.clientY,
     origStart: props.event.start,
     origEnd: props.event.end,
+    origScrollLeft: timeline.scrollLeft,
     moved: false,
     vMode: false,
     vTarget: null,
@@ -203,15 +207,12 @@ function onWindowMouseMove(e: MouseEvent) {
   const d = drag.value;
   if (!d) return;
   // 拖出可视区边缘自动滚动（补偿 scrollLeft 变化，保持鼠标与 clip 相对位置）
-  let scrollDelta = 0;
   if (d.bodyRect) {
-    const before = timeline.scrollLeft;
     if (e.clientX < d.bodyRect.left) {
       timeline.pan((e.clientX - d.bodyRect.left) * 0.3);
     } else if (e.clientX > d.bodyRect.right) {
       timeline.pan((e.clientX - d.bodyRect.right) * 0.3);
     }
-    scrollDelta = timeline.scrollLeft - before;
   }
   const dx = e.clientX - d.startX;
   const dy = e.clientY - d.startY;
@@ -254,7 +255,9 @@ function onWindowMouseMove(e: MouseEvent) {
   // 保持原位，且未记快照无需撤销
   if (!d.moved) return;
 
-  const dt = (dx + scrollDelta) / timeline.pixelsPerSecond;
+  // 时间位移 = (累积鼠标位移 + 自按下起的累积滚动变化) / pps：
+  // 两者同口径（都是相对按下时刻的总变化），拖出视口自动滚动时 clip 才不掉队
+  const dt = (dx + (timeline.scrollLeft - d.origScrollLeft)) / timeline.pixelsPerSecond;
 
   const { minStart, maxEnd, prev, next } = bounds();
   const dur0 = d.origEnd - d.origStart;

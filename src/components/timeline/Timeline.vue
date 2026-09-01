@@ -361,6 +361,19 @@ function onWheelRoot(e: WheelEvent) {
   timeline.pan(e.deltaY + e.deltaX);
 }
 
+// ── Delete：删除聚焦 clip ──
+// 每个 Timeline 实例处理自己的 store（校对区用全局 store；语料页迷你时间轴
+// 用注入的独立 store），输入框内不响应。
+function onKeydown(e: KeyboardEvent) {
+  const t = e.target as HTMLElement;
+  if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
+  if (e.key !== "Delete") return;
+  const id = timeline.focusedClipId;
+  if (!id) return;
+  projectStore.removeEvent(id);
+  timeline.focusClip(null);
+}
+
 onMounted(() => {
   if (viewportRef.value) {
     const update = () => {
@@ -372,12 +385,14 @@ onMounted(() => {
   }
   rootRef.value?.addEventListener("wheel", onWheelRoot, { passive: false });
   window.addEventListener("mousedown", onWindowMouseDown, true);
+  window.addEventListener("keydown", onKeydown);
 });
 
 onUnmounted(() => {
   viewportObserver?.disconnect();
   rootRef.value?.removeEventListener("wheel", onWheelRoot);
   window.removeEventListener("mousedown", onWindowMouseDown, true);
+  window.removeEventListener("keydown", onKeydown);
   window.removeEventListener("mousemove", onWindowMouseMove);
   window.removeEventListener("mouseup", onWindowMouseUp);
 });
