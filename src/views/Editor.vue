@@ -1,57 +1,128 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed } from "vue";
+import { useRouter } from "vue-router";
+import { invoke } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 import { useProjectStore } from "../stores/project";
-import type { LlmRuntimeStatus } from "../types";
+import { useTimelineStore } from "../stores/timeline";
+import type { FusedEvent } from "../types";
 import {
   NAlert,
   NButton,
-  NCard,
   NInput,
-  NModal,
-  NProgress,
-  NSpace,
-  NText,
+  NPopselect,
   useMessage,
 } from "naive-ui";
 
 const projectStore = useProjectStore();
+const timeline = useTimelineStore();
+const router = useRouter();
 const message = useMessage();
 
-// ── LLM 测试台（保留在编辑页，供调试）───────────────────
-const showLlmPanel = ref(false);
-const llmPrompt = ref("");
-const llmResult = ref("");
-const llmRuntimeStatus = ref<LlmRuntimeStatus | null>(null);
+/// 最终字幕轨（fused）：编辑页只做融合产物，避免与校对区时间轴职责重叠
+const fusedTrack = computed(() =>
+  projectStore.currentProject?.tracks.find((t) => t.type === "fused")
+);
 
-/// 打开面板：重置上次结果并探测运行时状态
-async function openLlmPanel() {
-  showLlmPanel.value = true;
-  llmResult.value = "";
-  try {
-    llmRuntimeStatus.value = await projectStore.checkLlmRuntime();
-  } catch {
-    // 探测失败也要给用户可见的反馈，不能静默
-    llmRuntimeStatus.value = {
-      provider: "",
-      ready: false,
-      message: "无法探测 LLM 运行环境状态",
-    };
+/// 按时间排序的最终字幕事件
+const clips = computed<FusedEvent[]>(() => {
+  const track = fusedTrack.value;
+  if (!track) return [];
+  return [...track.events]
+    .filter((e): e is FusedEvent => e.type === "fused")
+    .sort((a, b) => a.start - b.start);
+});
+
+function fmtTime(s: number): string {
+  const totalMs = Math.round(s * 1000);
+  const ms = totalMs % 1000;
+  const sec = Math.floor(totalMs / 1000) % 60;
+  const min = Math.floor(totalMs / 60000);
+  return `${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}.${String(ms).padStart(3, "0")}`;
+}
+
+/// 点击行：跳转校对区视频/时间轴并聚焦该 clip
+function onRowClick(ev: FusedEvent) {
+  timeline.jumpTo(ev.start);
+  timeline.focusClip(ev.id);
+  if (fusedTrack.value) timeline.focusTrack(fusedTrack.value.id);
+}
+
+/// 就地编辑文本（即时生效）
+function updateText(ev: FusedEvent, text: string) {
+  projectStore.updateEventText(ev.id, text);
+}
+
+/// 就地编辑角色
+function updateCharacter(ev: FusedEvent, character: string) {
+  const found = projectStore.findEvent(ev.id);
+  if (found && found.event.type === "fused") {
+    projectStore.recordSnapshot();
+    found.event.character = character.trim() || undefined;
   }
 }
 
-async function runLlm() {
-  llmResult.value = "";
-  try {
-    llmResult.value = await projectStore.runLlm(llmPrompt.value);
-  } catch (e) {
-    message.error(String(e));
+function removeClip(ev: FusedEvent) {
+  projectStore.removeEvent(ev.id);
+  if (timeline.focusedClipId === ev.id) timeline.focusClip(null);
+}
+
+/// 分割当前 clip：在播放头位置切开（与校对区 S 键语义一致）
+function splitClip(ev: FusedEvent) {
+  const rightId = projectStore.splitEvent(ev.id, timeline.currentTime);
+  if (rightId) {
+    timeline.focusClip(rightId);
+    timeline.focusTrack(fusedTrack.value?.id ?? null);
+  } else {
+    message.info("播放头不在该字幕区间内，无法分割");
   }
+}
+
+/// 合并当前 clip 与同轨下一事件（与校对区 M 键语义一致）
+function mergeNext(ev: FusedEvent) {
+  const merged = projectStore.mergeAdjacent(ev.id);
+  if (merged) {
+    timeline.focusClip(merged);
+  } else {
+    message.info("已到最后一条，或下一条不在同一轨道");
+  }
+}
+
+// ── 导出最终字幕（复用后端 export_track_subtitle）─────────
+const EXPORT_FORMATS = [
+  { label: "SRT（通用字幕）", value: "srt" },
+  { label: "ASS（带样式）", value: "ass" },
+];
+
+async function onExport(format: string) {
+  const track = fusedTrack.value;
+  if (!track) return;
+  try {
+    const path = await save({
+      defaultPath: `final-subtitle.${format}`,
+      filters: [{ name: `${format.toUpperCase()} 字幕`, extensions: [format] }],
+    });
+    if (!path) return;
+    const count = await invoke<number>("export_track_subtitle", {
+      track,
+      format,
+      destPath: path,
+    });
+    message.success(`已导出 ${count} 条字幕 → ${path}`);
+  } catch (e) {
+    message.error(`导出失败: ${e}`);
+  }
+}
+
+function goFuse() {
+  const path = router.currentRoute.value.params.path as string | undefined;
+  router.push({ name: "fuse", params: { path } });
 }
 </script>
 
 <template>
   <div class="workbench">
-    <!-- 编辑页：撤销/重做 + LLM 测试台 -->
+    <!-- 工具条：撤销/重做 + 导出最终字幕 -->
     <div class="toolbar">
       <button
         class="history-btn"
@@ -96,65 +167,85 @@ async function runLlm() {
         </svg>
       </button>
 
-      <NButton size="small" type="primary" @click="openLlmPanel">
-        LLM 测试台
-      </NButton>
+      <div class="toolbar-spacer" />
+
+      <NPopselect
+        :options="EXPORT_FORMATS"
+        trigger="click"
+        placement="bottom-end"
+        :disabled="!fusedTrack || clips.length === 0"
+        @update:value="onExport"
+      >
+        <NButton type="primary" size="small" secondary :disabled="!fusedTrack || clips.length === 0">
+          导出最终字幕
+        </NButton>
+      </NPopselect>
     </div>
 
-    <!-- 工作区说明 -->
-    <div class="workbench-body">
-      <div class="empty-icon">🧰</div>
+    <!-- 无 fused 轨：引导去融合页 -->
+    <div v-if="!fusedTrack" class="workbench-body">
+      <div class="empty-icon">🎬</div>
       <h2>{{ projectStore.currentProject?.name ?? "加载中..." }}</h2>
       <p class="empty-desc">
-        在左侧对应页面运行 OCR / ASR / AI 融合任务，结果实时出现在右侧校对区的时间轴上，本页可撤销/重做并微调轨道。
+        尚无最终字幕。请先在「AI 融合」页运行融合，生成最终字幕轨后，再回到本页逐条校对与导出。
       </p>
+      <NButton type="primary" size="small" @click="goFuse">前往 AI 融合</NButton>
     </div>
 
-    <!-- LLM 测试台弹窗 -->
-    <NModal v-model:show="showLlmPanel" title="LLM 测试台" :mask-closable="false">
-      <NCard title="LLM 测试台" style="width: 560px">
-        <NSpace vertical size="large">
-          <NAlert
-            v-if="llmRuntimeStatus && !llmRuntimeStatus.ready"
-            type="warning"
-            :show-icon="true"
-          >
-            {{ llmRuntimeStatus.message }}
-          </NAlert>
+    <!-- 有 fused 轨但无事件 -->
+    <div v-else-if="clips.length === 0" class="workbench-body">
+      <div class="empty-icon">📝</div>
+      <p class="empty-desc">最终字幕轨已创建，但还没有内容——请前往「AI 融合」页运行融合。</p>
+      <NButton type="primary" size="small" @click="goFuse">前往 AI 融合</NButton>
+    </div>
 
-          <NInput
-            v-model:value="llmPrompt"
-            type="textarea"
-            :rows="5"
-            placeholder="输入 prompt，例如：2+2=?"
-          />
+    <!-- 最终字幕列表：逐条校对 -->
+    <div v-else class="editor-body">
+      <NAlert type="info" :show-icon="true" class="editor-hint">
+        点击行可跳转视频对应时间；文本/角色就地编辑即时生效；行内按钮分割 / 合并 / 删除。
+      </NAlert>
 
-          <div class="llm-run-row">
-            <template v-if="projectStore.llmRunning">
-              <NProgress
-                type="line"
-                class="llm-progress"
-                :percentage="Math.round(projectStore.llmProgress * 100)"
-                :show-indicator="false"
-              />
-              <NText depth="3">{{ projectStore.llmMessage }}</NText>
-            </template>
-            <NButton
-              size="small"
-              type="primary"
-              :disabled="projectStore.llmRunning"
-              @click="runLlm"
-            >
-              {{ projectStore.llmRunning ? "推理中..." : "运行" }}
+      <div class="subtitle-list">
+        <div
+          v-for="(ev, i) in clips"
+          :key="ev.id"
+          class="subtitle-row"
+          :class="{ active: timeline.focusedClipId === ev.id }"
+          @click="onRowClick(ev)"
+        >
+          <span class="row-index">{{ i + 1 }}</span>
+          <span class="row-time">{{ fmtTime(ev.start) }} → {{ fmtTime(ev.end) }}</span>
+          <div class="row-fields" @click.stop>
+            <NInput
+              :value="ev.character ?? ''"
+              size="tiny"
+              placeholder="角色"
+              class="row-character"
+              @update:value="updateCharacter(ev, $event)"
+            />
+            <NInput
+              :value="ev.text"
+              type="textarea"
+              :autosize="{ minRows: 1, maxRows: 6 }"
+              class="row-text"
+              placeholder="字幕文本"
+              @update:value="updateText(ev, $event)"
+            />
+          </div>
+          <div class="row-actions" @click.stop>
+            <NButton size="tiny" quaternary title="在播放头处分割" @click="splitClip(ev)">
+              分割
+            </NButton>
+            <NButton size="tiny" quaternary title="与下一条合并" @click="mergeNext(ev)">
+              合并
+            </NButton>
+            <NButton size="tiny" quaternary type="error" title="删除本条" @click="removeClip(ev)">
+              删除
             </NButton>
           </div>
-
-          <NCard v-if="llmResult" title="结果" size="small">
-            <pre class="llm-result">{{ llmResult }}</pre>
-          </NCard>
-        </NSpace>
-      </NCard>
-    </NModal>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -174,6 +265,10 @@ async function runLlm() {
   gap: 12px;
   padding: 16px 24px 8px;
   flex-wrap: wrap;
+}
+
+.toolbar-spacer {
+  flex: 1;
 }
 
 .workbench-body {
@@ -224,24 +319,82 @@ async function runLlm() {
   cursor: default;
 }
 
-.llm-run-row {
+.editor-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 24px 20px;
+  overflow: auto;
+}
+
+.editor-hint {
+  flex-shrink: 0;
+}
+
+.subtitle-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.subtitle-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+
+.subtitle-row:hover {
+  border-color: var(--color-accent);
+}
+
+.subtitle-row.active {
+  border-color: var(--color-accent);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+.row-index {
+  flex-shrink: 0;
+  width: 22px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  line-height: 28px;
+  text-align: center;
+}
+
+.row-time {
+  flex-shrink: 0;
+  min-width: 118px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+  line-height: 28px;
+}
+
+.row-fields {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.row-character {
+  max-width: 180px;
+}
+
+.row-actions {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 12px;
-}
-
-.llm-progress {
-  flex: 1;
-  min-width: 200px;
-}
-
-.llm-result {
-  white-space: pre-wrap;
-  word-break: break-all;
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--color-text-primary);
+  gap: 2px;
 }
 </style>
