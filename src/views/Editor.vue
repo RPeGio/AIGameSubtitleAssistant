@@ -214,7 +214,10 @@ function goFuse() {
           @click="onRowClick(ev)"
         >
           <span class="row-index">{{ i + 1 }}</span>
-          <span class="row-time">{{ fmtTime(ev.start) }} → {{ fmtTime(ev.end) }}</span>
+          <div class="row-time">
+            <span class="time-start">{{ fmtTime(ev.start) }}</span>
+            <span class="time-end">{{ fmtTime(ev.end) }}</span>
+          </div>
           <div class="row-fields" @click.stop>
             <NInput
               :value="ev.character ?? ''"
@@ -372,11 +375,23 @@ function goFuse() {
 
 .row-time {
   flex-shrink: 0;
-  min-width: 118px;
+  min-width: 64px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
   font-size: 11px;
-  color: var(--color-text-secondary);
   font-variant-numeric: tabular-nums;
-  line-height: 28px;
+  line-height: 1.25;
+  padding-top: 4px;
+}
+
+.time-start {
+  color: var(--color-text-secondary);
+}
+
+.time-end {
+  color: var(--color-text-primary);
 }
 
 .row-fields {
@@ -394,7 +409,8 @@ function goFuse() {
 .row-actions {
   flex-shrink: 0;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 2px;
 }
 </style>
