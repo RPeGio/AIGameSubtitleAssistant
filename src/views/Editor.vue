@@ -53,13 +53,33 @@ function updateText(ev: FusedEvent, text: string) {
   projectStore.updateEventText(ev.id, text);
 }
 
-/// 就地编辑角色
+/// 就地编辑角色（change 触发：失焦/回车提交，避免逐键压撤销快照）
 function updateCharacter(ev: FusedEvent, character: string) {
   const found = projectStore.findEvent(ev.id);
   if (found && found.event.type === "fused") {
     projectStore.recordSnapshot();
     found.event.character = character.trim() || undefined;
   }
+}
+
+/// 撤销/重做后聚焦可能悬空（clip/轨道已被快照恢复移除），清理之
+function cleanupFocus() {
+  if (timeline.focusedClipId && !projectStore.findEvent(timeline.focusedClipId)) {
+    timeline.focusClip(null);
+  }
+  if (timeline.focusedTrackId && !projectStore.findTrack(timeline.focusedTrackId)) {
+    timeline.focusTrack(null);
+  }
+}
+
+function onUndo() {
+  projectStore.undo();
+  cleanupFocus();
+}
+
+function onRedo() {
+  projectStore.redo();
+  cleanupFocus();
 }
 
 function removeClip(ev: FusedEvent) {
@@ -129,7 +149,7 @@ function goFuse() {
         :disabled="!projectStore.canUndo"
         title="撤销（Ctrl+Z）"
         aria-label="撤销"
-        @click="projectStore.undo()"
+        @click="onUndo()"
       >
         <svg
           xmlns="http://www.w3.org/2000/svg"
@@ -150,7 +170,7 @@ function goFuse() {
         :disabled="!projectStore.canRedo"
         title="重做（Ctrl+Shift+Z / Ctrl+Y）"
         aria-label="重做"
-        @click="projectStore.redo()"
+        @click="onRedo()"
       >
         <svg
           xmlns="http://www.w3.org/2000/svg"
@@ -224,7 +244,7 @@ function goFuse() {
               size="tiny"
               placeholder="角色"
               class="row-character"
-              @update:value="updateCharacter(ev, $event)"
+              @change="updateCharacter(ev, $event)"
             />
             <NInput
               :value="ev.text"

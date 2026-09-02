@@ -547,8 +547,13 @@ export const useProjectStore = defineStore("project", () => {
   /// 运行 OCR 流水线：收集所有 ocr_region 轨道的 clip → run_ocr → 写入 ocr_text 轨道
   /// `videoKey`：默认 "clip"（切片，编辑页 OCR）；"source" 用剧情录屏（语料页 OCR，meta 取 sourceVideoMeta）
   async function runOcr(params: OcrRunParams, videoKey: "clip" | "source" = "clip") {
+    if (ocrRunning.value) return;
+    // meta 缺失也要给调用方可展示的错误，不能静默返回
+    if (!currentProject.value) throw new Error("请先打开项目");
     const meta = videoKey === "source" ? sourceVideoMeta.value : currentVideoMeta.value;
-    if (ocrRunning.value || !currentProject.value || !meta) return;
+    if (!meta) {
+      throw new Error(videoKey === "source" ? "请先导入剧情录屏" : "请先导入切片视频");
+    }
 
     // 语料页只取挂在剧情录屏上的 OCR 选区控制轨；编辑页沿用全部选区
     const regionClips = currentProject.value.tracks

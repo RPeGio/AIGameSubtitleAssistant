@@ -44,14 +44,14 @@ function undo() {
 - **位置**：`src/views/Editor.vue:57-63` + 模板 `Editor.vue:227`（`@update:value="updateCharacter"`）
 - **问题**：`@update:value` 逐键触发 `recordSnapshot()`（整棵 tracks 深拷贝）：① 打 10 个字占掉 MAX_HISTORY=60 中 10 格，挤出有意义历史；② 每键全量深拷贝 + redo 链清空；③ 同行 `updateText`（`updateEventText`，`project.ts:520`）完全不压快照，两输入框撤销行为不一致。
 - **修复建议**：改用 `@change`（失焦/回车提交），统一两字段快照策略。
-- **状态**：⬜ 未修复
+- **状态**：✅ 已修复（角色输入改 `@change`，击键不再压快照）
 
 ### P1-2 编辑页工具栏的撤销/重做按钮没有清理悬空聚焦
 
 - **位置**：`src/views/Editor.vue:132`、`Editor.vue:153`（对比 `ProjectLayout.vue:47-62` 键盘路径有 `cleanupFocus()`）
 - **问题**：撤销可能移除当前聚焦的 clip，按钮路径不清理 `focusedClipId` → 悬空聚焦：高亮错位，后续 Delete/M 作用于失效 id。
 - **修复建议**：`cleanupFocus` 提为 store 方法或 composable，两条路径共用。
-- **状态**：⬜ 未修复
+- **状态**：✅ 已修复（Editor 内新增 `cleanupFocus` + `onUndo`/`onRedo` 包装，工具栏按钮接入）
 
 ### P1-3 FuseView 的 `asrCount` 把主播语音轨也算进"已生成 N 段转写"
 
@@ -67,12 +67,12 @@ function undo() {
 - **修复建议**：`n-virtual-list` 包裹行渲染，或分页/懒加载兜底。
 - **状态**：⬜ 未修复
 
-### P1-5 语料页 OCR 在选区为空时静默"完成"
+### P1-5 语料页 OCR 静默失败路径
 
-- **位置**：`src/stores/project.ts:544-560`（`runOcr` 收集 regionClips 后直接运行）
-- **问题**：删光选区后点"开始 OCR"，`regionClips` 为空，后端空跑返回空数组，前端仍提示"OCR 完成"。另外 `runOcr` 开头 meta 缺失时静默 `return`，无提示。
-- **修复建议**：`regionClips.length === 0` 时 throw 明确错误（CorpusView/AsrView 的 catch 会展示）。
-- **状态**：⬜ 未修复
+- **位置**：`src/stores/project.ts`（`runOcr` 开头的守卫）
+- **问题**：~~`regionClips` 为空时静默"完成"~~（**审查误报**：`regionClips.length === 0` 的 throw 在 master 上已存在，`project.ts:572`）；实际有效问题是 meta 缺失时静默 `return`，调用方无任何提示。
+- **修复**：meta/项目缺失改为 throw 明确错误（唯一调用方 CorpusView.startOcr 已有 try/catch 展示）。
+- **状态**：✅ 已修复（runOcr 缺项目/缺视频时 throw；空选区守卫确认已存在，无需改动）
 
 ---
 
