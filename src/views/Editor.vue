@@ -1,238 +1,80 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed } from "vue";
+import { useRouter } from "vue-router";
+import { invoke } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 import { useProjectStore } from "../stores/project";
 import { useTimelineStore } from "../stores/timeline";
-import type { OcrRunParams, AsrRunParams, AsrEngineStatus, LlmRuntimeStatus } from "../types";
-import AppSidebar from "../components/AppSidebar.vue";
-import VideoPlayer from "../components/VideoPlayer.vue";
-import Timeline from "../components/timeline/Timeline.vue";
-import TrackOverview from "../components/TrackOverview.vue";
-import { useManualSave } from "../composables/useManualSave";
+import type { FusedEvent } from "../types";
 import {
-  NButton,
-  NTag,
-  NSpace,
   NAlert,
-  NCard,
-  NModal,
+  NButton,
   NInput,
-  NInputNumber,
-  NProgress,
-  NRadio,
-  NRadioGroup,
-  NSelect,
-  NText,
+  NPopselect,
+  NVirtualList,
   useMessage,
 } from "naive-ui";
 
 const projectStore = useProjectStore();
 const timeline = useTimelineStore();
-const { manualSave } = useManualSave();
+const router = useRouter();
 const message = useMessage();
 
-// ── OCR 控制 ────────────────────────────────────────────
-const showOcrConfig = ref(false);
-const ocrParams = ref<OcrRunParams>({
-  frame_interval: 0.5,
-  dhash_threshold: 3,
-  batch_size: 16,
-  merge_similarity: 0.3,
-});
-
-async function startOcr() {
-  showOcrConfig.value = false;
-  try {
-    await projectStore.runOcr(ocrParams.value);
-    message.success("OCR 完成");
-  } catch (e) {
-    message.error(String(e));
-  }
-}
-
-// ── ASR 控制 ────────────────────────────────────────────
-const showAsrConfig = ref(false);
-const asrParams = ref<AsrRunParams>({
-  engine: "funasr",
-  max_speakers: null,
-  language: null,
-});
-/// 两引擎运行环境（打开面板时探测，禁用不可用引擎）
-const asrEngines = ref<AsrEngineStatus[]>([]);
-
-const asrLanguageOptions = [
-  { label: "中文", value: "zh" },
-  { label: "English", value: "en" },
-  { label: "日本語", value: "ja" },
-];
-
-function engineStatus(engine: string): AsrEngineStatus | undefined {
-  return asrEngines.value.find((e) => e.engine === engine);
-}
-
-/// 探测失败（asrEngines 为空）时直通：不阻塞用户，运行失败由错误提示兜底
-function probeFailed(): boolean {
-  return asrEngines.value.length === 0;
-}
-
-function engineReady(engine: string): boolean {
-  if (probeFailed()) return true;
-  return engineStatus(engine)?.ready ?? false;
-}
-
-function engineDetail(engine: string): string {
-  const s = engineStatus(engine);
-  if (!s) return probeFailed() ? "状态未知（探测失败，可直接尝试）" : "正在探测…";
-  return s.ready ? "就绪" : s.message || "未配置";
-}
-
-async function openAsrConfig() {
-  try {
-    asrEngines.value = await projectStore.getAsrEngines();
-  } catch {
-    asrEngines.value = [];
-  }
-  showAsrConfig.value = true;
-}
-
-async function startAsr() {
-  showAsrConfig.value = false;
-  try {
-    await projectStore.runAsr(asrParams.value);
-    message.success("ASR 完成");
-  } catch (e) {
-    // 用户主动取消是预期行为，用中性提示而非错误
-    if (String(e).includes("已取消")) {
-      message.info("ASR 已取消");
-    } else {
-      message.error(String(e));
-    }
-  }
-}
-
-function cancelAsr() {
-  projectStore.cancelAsr();
-}
-
-// ── LLM 控制 ────────────────────────────────────────────
-const showLlmPanel = ref(false);
-const llmPrompt = ref("");
-const llmResult = ref("");
-const llmRuntimeStatus = ref<LlmRuntimeStatus | null>(null);
-
-/// 打开面板：重置上次结果并探测运行时状态
-async function openLlmPanel() {
-  showLlmPanel.value = true;
-  llmResult.value = "";
-  try {
-    llmRuntimeStatus.value = await projectStore.checkLlmRuntime();
-  } catch {
-    // 探测失败也要给用户可见的反馈，不能静默
-    llmRuntimeStatus.value = {
-      provider: "",
-      ready: false,
-      message: "无法探测 LLM 运行环境状态",
-    };
-  }
-}
-
-async function runLlm() {
-  llmResult.value = "";
-  try {
-    llmResult.value = await projectStore.runLlm(llmPrompt.value);
-  } catch (e) {
-    message.error(String(e));
-  }
-}
-
-// ── AI 融合控制 ─────────────────────────────────────────
-async function startFuse() {
-  try {
-    const result = await projectStore.runFuse();
-    const failed = result.stats.failed_batches;
-    const suffix = failed > 0 ? `，${failed} 批解析失败已保留原文本` : "";
-    message.success(
-      `AI 融合完成：匹配 ${result.stats.matched}/${result.stats.total} 段${suffix}`
-    );
-  } catch (e) {
-    message.error(String(e));
-  }
-}
-
-watch(
-  () => timeline.duration,
-  (d) => {
-    if (d > 0) {
-      projectStore.ensureDefaultTrack(d);
-      // 默认聚焦 ocr 选区轨道，让遮罩立即可见
-      const ocrTrack = projectStore.currentProject?.tracks.find(
-        (t) => t.type === "ocr_region"
-      );
-      if (ocrTrack && !timeline.focusedTrackId) {
-        timeline.focusTrack(ocrTrack.id);
-      }
-    }
-  }
+/// 最终字幕轨（fused）：编辑页只做融合产物，避免与校对区时间轴职责重叠
+const fusedTrack = computed(() =>
+  projectStore.currentProject?.tracks.find((t) => t.type === "fused")
 );
 
-// 快捷键：Ctrl+S 立即保存；S 分割；Delete 删除；M 合并；
-// Ctrl+Z 撤销；Ctrl+Shift+Z / Ctrl+Y 重做
-function onGlobalKeydown(e: KeyboardEvent) {
-  const t = e.target as HTMLElement;
-  if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
+/// 按时间排序的最终字幕事件
+const clips = computed<FusedEvent[]>(() => {
+  const track = fusedTrack.value;
+  if (!track) return [];
+  return [...track.events]
+    .filter((e): e is FusedEvent => e.type === "fused")
+    .sort((a, b) => a.start - b.start);
+});
 
-  // 撤销/重做（含聚焦悬空清理）
-  if (e.code === "KeyZ" && e.ctrlKey) {
-    e.preventDefault();
-    if (e.shiftKey) {
-      projectStore.redo();
-    } else {
-      projectStore.undo();
-    }
-    cleanupFocus();
-    return;
-  }
-  if (e.code === "KeyY" && e.ctrlKey) {
-    e.preventDefault();
-    projectStore.redo();
-    cleanupFocus();
-    return;
-  }
+function fmtTime(s: number): string {
+  const totalMs = Math.round(s * 1000);
+  const ms = totalMs % 1000;
+  const sec = Math.floor(totalMs / 1000) % 60;
+  const min = Math.floor(totalMs / 60000);
+  return `${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}.${String(ms).padStart(3, "0")}`;
+}
 
-  if (e.code === "KeyS" && e.ctrlKey) {
-    e.preventDefault(); // 挡住浏览器默认保存对话框
-    manualSave();
-    return;
-  }
+/// 点击行：跳转校对区视频/时间轴并聚焦该 clip
+function onRowClick(ev: FusedEvent) {
+  timeline.jumpTo(ev.start);
+  timeline.focusClip(ev.id);
+  if (fusedTrack.value) timeline.focusTrack(fusedTrack.value.id);
+}
 
-  // Delete：删除聚焦 clip（输入框内由上面的 guard 排除）
-  if (e.key === "Delete") {
-    const id = timeline.focusedClipId;
-    if (!id) return;
-    projectStore.removeEvent(id);
-    timeline.focusClip(null);
-    return;
-  }
-
-  // M：聚焦 clip 与同轨下一个事件合并（输入框内由 guard 排除）
-  if (e.code === "KeyM" && !e.ctrlKey && !e.metaKey && !e.altKey) {
-    const id = timeline.focusedClipId;
-    if (id) projectStore.mergeAdjacent(id);
-    return;
-  }
-
-  if (e.code === "KeyS" && !e.metaKey && !e.altKey) {
-    const id = timeline.focusedClipId;
-    if (!id) return;
-    const rightId = projectStore.splitEvent(id, timeline.currentTime);
-    if (rightId) {
-      timeline.focusClip(rightId);
-      const found = projectStore.findEvent(rightId);
-      if (found) timeline.focusTrack(found.track.id);
-    }
+/// 文本/角色就地编辑共用：一次聚焦→失焦会话内首次修改压一次快照，
+/// 整段编辑合并为一条撤销记录（不逐键刷历史）
+let snapshottedInSession = false;
+function snapshotOncePerSession() {
+  if (!snapshottedInSession) {
+    projectStore.recordSnapshot();
+    snapshottedInSession = true;
   }
 }
 
-// 撤销/重做后聚焦可能悬空（clip/轨道已被快照恢复移除），清理之
+/// 就地编辑文本（即时生效）
+function updateText(ev: FusedEvent, text: string) {
+  snapshotOncePerSession();
+  projectStore.updateEventText(ev.id, text);
+}
+
+/// 就地编辑角色（即时生效）
+function updateCharacter(ev: FusedEvent, character: string) {
+  const found = projectStore.findEvent(ev.id);
+  if (found && found.event.type === "fused") {
+    snapshotOncePerSession();
+    found.event.character = character.trim() || undefined;
+  }
+}
+
+/// 撤销/重做后聚焦可能悬空（clip/轨道已被快照恢复移除），清理之
 function cleanupFocus() {
   if (timeline.focusedClipId && !projectStore.findEvent(timeline.focusedClipId)) {
     timeline.focusClip(null);
@@ -242,467 +84,258 @@ function cleanupFocus() {
   }
 }
 
-onMounted(() => window.addEventListener("keydown", onGlobalKeydown));
-onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
+function onUndo() {
+  projectStore.undo();
+  cleanupFocus();
+}
 
-const meta = computed(() => projectStore.currentVideoMeta);
-const hasVideo = computed(() => meta.value !== null);
+function onRedo() {
+  projectStore.redo();
+  cleanupFocus();
+}
 
-const displayPath = computed(() => {
-  if (!meta.value) return "";
-  const parts = meta.value.path.replace(/\\/g, "/").split("/");
-  return parts[parts.length - 1] ?? meta.value.path;
-});
+function removeClip(ev: FusedEvent) {
+  projectStore.removeEvent(ev.id);
+  if (timeline.focusedClipId === ev.id) timeline.focusClip(null);
+}
 
-const durationFormatted = computed(() => {
-  if (!meta.value) return "";
-  const s = Math.round(meta.value.duration);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
-  return `${m}:${String(sec).padStart(2, "0")}`;
-});
+/// 分割当前 clip：在播放头位置切开（与校对区 S 键语义一致）
+function splitClip(ev: FusedEvent) {
+  const rightId = projectStore.splitEvent(ev.id, timeline.currentTime);
+  if (rightId) {
+    timeline.focusClip(rightId);
+    timeline.focusTrack(fusedTrack.value?.id ?? null);
+  } else {
+    message.info("播放头不在该字幕区间内，无法分割");
+  }
+}
 
-const resolutionLabel = computed(() => {
-  if (!meta.value) return "";
-  const { width } = meta.value;
-  if (width >= 3840) return "4K";
-  if (width >= 2560) return "1440p";
-  if (width >= 1920) return "1080p";
-  if (width >= 1280) return "720p";
-  return "";
-});
+/// 合并当前 clip 与同轨下一事件（与校对区 M 键语义一致）
+function mergeNext(ev: FusedEvent) {
+  const merged = projectStore.mergeAdjacent(ev.id);
+  if (merged) {
+    timeline.focusClip(merged);
+  } else {
+    message.info("已到最后一条，或下一条不在同一轨道");
+  }
+}
+
+// ── 导出最终字幕（复用后端 export_track_subtitle）─────────
+const EXPORT_FORMATS = [
+  { label: "SRT（通用字幕）", value: "srt" },
+  { label: "ASS（带样式）", value: "ass" },
+];
+
+async function onExport(format: string) {
+  const track = fusedTrack.value;
+  if (!track) return;
+  try {
+    const path = await save({
+      defaultPath: `final-subtitle.${format}`,
+      filters: [{ name: `${format.toUpperCase()} 字幕`, extensions: [format] }],
+    });
+    if (!path) return;
+    const count = await invoke<number>("export_track_subtitle", {
+      track,
+      format,
+      destPath: path,
+    });
+    message.success(`已导出 ${count} 条字幕 → ${path}`);
+  } catch (e) {
+    message.error(`导出失败: ${e}`);
+  }
+}
+
+function goFuse() {
+  const path = router.currentRoute.value.params.path as string | undefined;
+  router.push({ name: "fuse", params: { path } });
+}
 </script>
 
 <template>
-  <div class="editor-layout">
-    <AppSidebar />
-    <main class="editor-main">
-      <!-- video imported -->
-      <div v-if="hasVideo" class="editor-content">
-        <div class="top-pane">
-          <div class="preview-row">
-            <div class="player-area">
-              <VideoPlayer :src="meta!.path" />
-            </div>
-
-            <div class="overview-area">
-              <TrackOverview />
-            </div>
-          </div>
-
-          <div class="info-bar">
-            <NSpace wrap size="small">
-              <NTag>{{ displayPath }}</NTag>
-              <NTag>{{ meta?.width }}×{{ meta?.height }}</NTag>
-              <NTag v-if="resolutionLabel">{{ resolutionLabel }}</NTag>
-              <NTag>{{ durationFormatted }}</NTag>
-              <NTag>{{ meta?.fps.toFixed(1) }}fps</NTag>
-              <NTag>{{ meta?.codec }}</NTag>
-            </NSpace>
-
-            <NButton size="small" type="primary" @click="projectStore.importVideo()">
-              更换视频
-            </NButton>
-          </div>
-        </div>
-
-        <!-- OCR 工具栏 -->
-        <div class="ocr-toolbar">
-          <button
-            class="history-btn"
-            :disabled="!projectStore.canUndo"
-            title="撤销（Ctrl+Z）"
-            aria-label="撤销"
-            @click="projectStore.undo(); cleanupFocus()"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0 .57-8.38" />
-            </svg>
-          </button>
-          <button
-            class="history-btn"
-            :disabled="!projectStore.canRedo"
-            title="重做（Ctrl+Shift+Z / Ctrl+Y）"
-            aria-label="重做"
-            @click="projectStore.redo(); cleanupFocus()"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38" />
-            </svg>
-          </button>
-          <NButton
-            size="small"
-            type="primary"
-            :disabled="projectStore.ocrRunning"
-            @click="showOcrConfig = true"
-          >
-            运行 OCR
-          </NButton>
-          <template v-if="projectStore.ocrRunning">
-            <NProgress
-              type="line"
-              class="ocr-progress"
-              :percentage="Math.round(projectStore.ocrProgress * 100)"
-              :show-indicator="false"
-            />
-            <span class="ocr-msg">{{ projectStore.ocrMessage }}</span>
-          </template>
-
-          <NButton
-            size="small"
-            type="primary"
-            :disabled="projectStore.asrRunning"
-            @click="openAsrConfig"
-          >
-            运行 ASR
-          </NButton>
-          <template v-if="projectStore.asrRunning">
-            <NProgress
-              type="line"
-              class="ocr-progress"
-              :percentage="Math.round(projectStore.asrProgress * 100)"
-              :show-indicator="false"
-            />
-            <span class="ocr-msg">{{ projectStore.asrMessage }}</span>
-            <NButton size="tiny" quaternary type="error" @click="cancelAsr">
-              取消
-            </NButton>
-          </template>
-
-          <NButton size="small" type="primary" @click="openLlmPanel">
-            LLM
-          </NButton>
-
-          <NButton
-            size="small"
-            type="primary"
-            :disabled="projectStore.fuseRunning"
-            @click="startFuse"
-          >
-            AI 融合
-          </NButton>
-          <template v-if="projectStore.fuseRunning">
-            <NProgress
-              type="line"
-              class="ocr-progress"
-              :percentage="Math.round(projectStore.llmProgress * 100)"
-              :show-indicator="false"
-            />
-            <span class="ocr-msg">{{ projectStore.llmMessage }}</span>
-          </template>
-        </div>
-
-        <div class="timeline-pane">
-          <Timeline />
-        </div>
-      </div>
-
-      <!-- empty state -->
-      <div v-else class="editor-empty">
-        <div class="empty-icon">📹</div>
-        <h2>{{ projectStore.currentProject?.name ?? "加载中..." }}</h2>
-        <p class="empty-desc">导入游戏录屏以开始字幕生产</p>
-
-        <NButton
-          size="large"
-          type="primary"
-          @click="projectStore.importVideo()"
-          class="import-btn"
+  <div class="workbench">
+    <!-- 工具条：撤销/重做 + 导出最终字幕 -->
+    <div class="toolbar">
+      <button
+        class="history-btn"
+        :disabled="!projectStore.canUndo"
+        title="撤销（Ctrl+Z）"
+        aria-label="撤销"
+        @click="onUndo()"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
         >
-          导入视频
+          <path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0 .57-8.38" />
+        </svg>
+      </button>
+      <button
+        class="history-btn"
+        :disabled="!projectStore.canRedo"
+        title="重做（Ctrl+Shift+Z / Ctrl+Y）"
+        aria-label="重做"
+        @click="onRedo()"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38" />
+        </svg>
+      </button>
+
+      <div class="toolbar-spacer" />
+
+      <NPopselect
+        :options="EXPORT_FORMATS"
+        trigger="click"
+        placement="bottom-end"
+        :disabled="!fusedTrack || clips.length === 0"
+        @update:value="onExport"
+      >
+        <NButton type="primary" size="small" secondary :disabled="!fusedTrack || clips.length === 0">
+          导出最终字幕
         </NButton>
+      </NPopselect>
+    </div>
 
-        <NAlert
-          v-if="projectStore.videoImportError"
-          type="error"
-          class="error-alert"
-          closable
-          @close="projectStore.videoImportError = null"
-        >
-          {{ projectStore.videoImportError }}
-        </NAlert>
+    <!-- 无 fused 轨：引导去融合页 -->
+    <div v-if="!fusedTrack" class="workbench-body">
+      <div class="empty-icon">🎬</div>
+      <h2>{{ projectStore.currentProject?.name ?? "加载中..." }}</h2>
+      <p class="empty-desc">
+        尚无最终字幕。请先在「AI 融合」页运行融合，生成最终字幕轨后，再回到本页逐条校对与导出。
+      </p>
+      <NButton type="primary" size="small" @click="goFuse">前往 AI 融合</NButton>
+    </div>
 
-        <p class="empty-hint">支持 mp4 / mkv / webm / avi / mov / flv</p>
-      </div>
+    <!-- 有 fused 轨但无事件 -->
+    <div v-else-if="clips.length === 0" class="workbench-body">
+      <div class="empty-icon">📝</div>
+      <p class="empty-desc">最终字幕轨已创建，但还没有内容——请前往「AI 融合」页运行融合。</p>
+      <NButton type="primary" size="small" @click="goFuse">前往 AI 融合</NButton>
+    </div>
 
-      <!-- OCR 参数弹窗 -->
-      <NModal v-model:show="showOcrConfig" :mask-closable="false">
-        <NCard title="OCR 参数设置" style="width: 440px">
-          <NSpace vertical size="large">
-            <div class="cfg-field">
-              <NText depth="2">帧间隔（秒）</NText>
-              <NInputNumber
-                v-model:value="ocrParams.frame_interval"
-                :min="0.1"
-                :step="0.5"
-                style="width: 100%"
-              />
-            </div>
-            <div class="cfg-field">
-              <NText depth="2">变化检测阈值</NText>
-              <NInputNumber
-                v-model:value="ocrParams.dhash_threshold"
-                :min="0"
-                :max="64"
-                :precision="0"
-                :step="1"
-                style="width: 100%"
-              />
-            </div>
-            <div class="cfg-field">
-              <NText depth="2">批大小</NText>
-              <NInputNumber
-                v-model:value="ocrParams.batch_size"
-                :min="1"
-                :max="128"
-                :precision="0"
-                :step="1"
-                style="width: 100%"
-              />
-            </div>
-            <div class="cfg-field">
-              <NText depth="2">合并相似度（0~1，越大越易合并）</NText>
-              <NInputNumber
-                v-model:value="ocrParams.merge_similarity"
-                :min="0"
-                :max="1"
-                :step="0.05"
-                style="width: 100%"
-              />
-            </div>
-            <NText depth="3" style="font-size: 12px">
-              提示：若发现有漏识别，可降低帧间隔后重新运行。
-            </NText>
-            <NSpace justify="end">
-              <NButton size="small" @click="showOcrConfig = false">取消</NButton>
-              <NButton size="small" type="primary" @click="startOcr">开始</NButton>
-            </NSpace>
-          </NSpace>
-        </NCard>
-      </NModal>
+    <!-- 最终字幕列表：逐条校对 -->
+    <div v-else class="editor-body">
+      <NAlert type="info" :show-icon="true" class="editor-hint">
+        点击行可跳转视频对应时间；文本/角色就地编辑即时生效；行内按钮分割 / 合并 / 删除。
+      </NAlert>
 
-      <!-- ASR 参数弹窗 -->
-      <NModal v-model:show="showAsrConfig" :mask-closable="false">
-        <NCard title="ASR 参数设置" style="width: 480px">
-          <NSpace vertical size="large">
-            <div class="cfg-field">
-              <NText depth="2">引擎（必选）</NText>
-              <NRadioGroup v-model:value="asrParams.engine">
-                <NSpace vertical>
-                  <NRadio value="funasr" :disabled="!engineReady('funasr')">
-                    <div class="engine-option">
-                      <div>FunASR + diarize（推荐，本地 GPU 快）</div>
-                      <NText depth="3" style="font-size: 12px">
-                        {{ engineDetail("funasr") }}
-                      </NText>
-                    </div>
-                  </NRadio>
-                  <NRadio value="moss" :disabled="!engineReady('moss')">
-                    <div class="engine-option">
-                      <div>MOSS-Transcribe-Diarize（慢但更准）</div>
-                      <NText depth="3" style="font-size: 12px">
-                        {{ engineDetail("moss") }}
-                      </NText>
-                    </div>
-                  </NRadio>
-                </NSpace>
-              </NRadioGroup>
+      <n-virtual-list
+        class="subtitle-list"
+        :items="clips"
+        :item-size="72"
+        item-resizable
+        key-field="id"
+      >
+        <template #default="{ item: ev, index: i }">
+          <div
+            class="subtitle-row"
+            :class="{ active: timeline.focusedClipId === ev.id }"
+            @click="onRowClick(ev)"
+          >
+            <span class="row-index">{{ i + 1 }}</span>
+            <div class="row-time">
+              <span class="time-start">{{ fmtTime(ev.start) }}</span>
+              <span class="time-end">{{ fmtTime(ev.end) }}</span>
             </div>
-            <div class="cfg-field">
-              <NText depth="2">最大说话人数量（选填，默认自动估计）</NText>
-              <NInputNumber
-                v-model:value="asrParams.max_speakers"
-                :min="1"
-                :precision="0"
-                :step="1"
-                placeholder="自动估计"
-                :disabled="asrParams.engine === 'moss'"
-                style="width: 100%"
+            <div class="row-fields" @click.stop>
+              <NInput
+                :value="ev.character ?? ''"
+                size="tiny"
+                placeholder="角色"
+                class="row-character"
+                @focus="snapshottedInSession = false"
+                @update:value="updateCharacter(ev, $event)"
               />
-              <NText v-if="asrParams.engine === 'moss'" depth="3" style="font-size: 12px">
-                MOSS 自动估计说话人，不支持手动限制
-              </NText>
-            </div>
-            <div class="cfg-field">
-              <NText depth="2">识别语言（选填，默认自动检测）</NText>
-              <NSelect
-                v-model:value="asrParams.language"
-                :options="asrLanguageOptions"
-                clearable
-                placeholder="自动检测"
-                :disabled="asrParams.engine === 'moss'"
-                style="width: 100%"
+              <NInput
+                :value="ev.text"
+                type="textarea"
+                :autosize="{ minRows: 1, maxRows: 6 }"
+                class="row-text"
+                placeholder="字幕文本"
+                @focus="snapshottedInSession = false"
+                @update:value="updateText(ev, $event)"
               />
-              <NText v-if="asrParams.engine === 'moss'" depth="3" style="font-size: 12px">
-                MOSS 自动识别多语言，无需指定
-              </NText>
             </div>
-            <NText depth="3" style="font-size: 12px">
-              提示：识别语言不准确时可在面板指定语言后重新运行。
-            </NText>
-            <NSpace justify="end">
-              <NButton size="small" @click="showAsrConfig = false">取消</NButton>
-              <NButton
-                size="small"
-                type="primary"
-                :disabled="!engineReady(asrParams.engine)"
-                @click="startAsr"
-              >
-                开始
+            <div class="row-actions" @click.stop>
+              <NButton size="tiny" quaternary title="在播放头处分割" @click="splitClip(ev)">
+                分割
               </NButton>
-            </NSpace>
-          </NSpace>
-        </NCard>
-      </NModal>
-
-      <NModal v-model:show="showLlmPanel" title="LLM 测试台" :mask-closable="false">
-        <NCard title="LLM 测试台" style="width: 560px">
-          <NSpace vertical size="large">
-            <NAlert
-              v-if="llmRuntimeStatus && !llmRuntimeStatus.ready"
-              type="warning"
-              :show-icon="true"
-            >
-              {{ llmRuntimeStatus.message }}
-            </NAlert>
-
-            <NInput
-              v-model:value="llmPrompt"
-              type="textarea"
-              :rows="5"
-              placeholder="输入 prompt，例如：2+2=?"
-            />
-
-            <div class="llm-run-row">
-              <template v-if="projectStore.llmRunning">
-                <NProgress
-                  type="line"
-                  class="llm-progress"
-                  :percentage="Math.round(projectStore.llmProgress * 100)"
-                  :show-indicator="false"
-                />
-                <NText depth="3">{{ projectStore.llmMessage }}</NText>
-              </template>
-              <NButton
-                size="small"
-                type="primary"
-                :disabled="projectStore.llmRunning"
-                @click="runLlm"
-              >
-                {{ projectStore.llmRunning ? "推理中..." : "运行" }}
+              <NButton size="tiny" quaternary title="与下一条合并" @click="mergeNext(ev)">
+                合并
+              </NButton>
+              <NButton size="tiny" quaternary type="error" title="删除本条" @click="removeClip(ev)">
+                删除
               </NButton>
             </div>
-
-            <NCard v-if="llmResult" title="结果" size="small">
-              <pre class="llm-result">{{ llmResult }}</pre>
-            </NCard>
-          </NSpace>
-        </NCard>
-      </NModal>
-    </main>
+          </div>
+        </template>
+      </n-virtual-list>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.editor-layout {
-  display: flex;
-  height: 100vh;
-  overflow: hidden;
-}
-
-.editor-main {
+.workbench {
   flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--color-bg-primary);
-}
-
-.editor-content {
-  width: 100%;
-  height: 100%;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
-.top-pane {
-  flex: 1 1 65%;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 16px 24px 8px;
-}
-
-.preview-row {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  gap: 8px;
-}
-
-.player-area {
-  flex: 1 1 60%;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.overview-area {
-  flex: 1 1 40%;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.info-bar {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 10px 12px;
-  background: var(--color-bg-secondary);
-  border-radius: 8px;
-}
-
-.timeline-pane {
-  flex: 0 0 35%;
-  min-height: 0;
-  overflow: hidden;
-  padding: 0 12px 12px;
-}
-
-.ocr-toolbar {
+.toolbar {
   flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 0 24px 8px;
+  padding: 16px 24px 8px;
+  flex-wrap: wrap;
+}
+
+.toolbar-spacer {
+  flex: 1;
+}
+
+.workbench-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--color-text-secondary);
+  max-width: 460px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.empty-icon {
+  font-size: 64px;
+  margin-bottom: 16px;
+}
+
+.empty-desc {
+  margin: 8px 0 24px;
+  font-size: 14px;
+  line-height: 1.7;
 }
 
 /* 撤销/重做：透明底色，可用时亮色图标，不可用时浅灰 */
@@ -729,80 +362,97 @@ const resolutionLabel = computed(() => {
   cursor: default;
 }
 
-.ocr-progress {
+.editor-body {
   flex: 1;
-  max-width: 320px;
-}
-
-.ocr-msg {
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.llm-run-row {
+  min-height: 0;
   display: flex;
-  align-items: center;
-  justify-content: flex-end;
+  flex-direction: column;
   gap: 12px;
+  padding: 8px 24px 20px;
+  /* 滚动交给虚拟列表（.subtitle-list）自身，避免双重滚动条 */
+  overflow: hidden;
 }
 
-.llm-progress {
+.editor-hint {
+  flex-shrink: 0;
+}
+
+/* 虚拟列表：需确定高度的滚动容器，flex:1 让它在 editor-body 内撑满剩余高度 */
+.subtitle-list {
   flex: 1;
-  min-width: 200px;
+  min-height: 0;
 }
 
-.llm-result {
-  white-space: pre-wrap;
-  word-break: break-all;
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.6;
+.subtitle-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  /* 虚拟列表用 borderBoxSize 测量行高：margin 不计入，行间距改由 padding 实现 */
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+
+.subtitle-row:hover {
+  border-color: var(--color-accent);
+}
+
+.subtitle-row.active {
+  border-color: var(--color-accent);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+.row-index {
+  flex-shrink: 0;
+  width: 22px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  line-height: 28px;
+  text-align: center;
+}
+
+.row-time {
+  flex-shrink: 0;
+  min-width: 64px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+  padding-top: 4px;
+}
+
+.time-start {
+  color: var(--color-text-secondary);
+}
+
+.time-end {
   color: var(--color-text-primary);
 }
 
-.cfg-field {
+.row-fields {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
-.engine-option {
+.row-character {
+  max-width: 180px;
+}
+
+.row-actions {
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
+  align-items: stretch;
   gap: 2px;
-}
-
-.editor-empty {
-  text-align: center;
-  color: var(--color-text-secondary);
-  max-width: 400px;
-}
-
-.empty-icon {
-  font-size: 64px;
-  margin-bottom: 16px;
-}
-
-.empty-desc {
-  margin: 8px 0 24px;
-  font-size: 14px;
-}
-
-.import-btn {
-  margin-bottom: 16px;
-}
-
-.error-alert {
-  margin-top: 16px;
-  text-align: left;
-}
-
-.empty-hint {
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  opacity: 0.6;
 }
 </style>

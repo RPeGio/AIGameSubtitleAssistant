@@ -121,6 +121,18 @@ pub struct Track {
     /// 缺省视为 "game"：游戏内容轨是常态，主播语音轨由用户显式标记
     #[serde(default = "default_track_role")]
     pub track_role: String,
+    /// 轨道角色："control" 控制轨（页面工作状态，如 OCR 选区）| "output" 产物轨（字幕数据）。
+    /// 缺省视为 "output"：既有轨道都是产物轨，控制轨由页面显式创建
+    #[serde(default = "default_track_scope")]
+    pub scope: String,
+    /// 控制轨归属页面（仅 scope=control 使用）：
+    /// "corpus" | "asr" | "fuse" | "editor"。缺省空串
+    #[serde(default)]
+    pub page: String,
+    /// 轨道绑定的视频源："source" 剧情录屏（文本源）| "clip" 切片（时间轴基准）。
+    /// 缺省视为 "clip"：时间轴产物默认挂在切片视频上
+    #[serde(default = "default_track_video")]
+    pub video: String,
     /// 是否在预览窗口中显示该轨道字幕（纯显示偏好，随项目保存）
     #[serde(default = "default_true")]
     pub preview_visible: bool,
@@ -133,6 +145,14 @@ fn default_track_role() -> String {
     "game".into()
 }
 
+fn default_track_scope() -> String {
+    "output".into()
+}
+
+fn default_track_video() -> String {
+    "clip".into()
+}
+
 fn default_true() -> bool {
     true
 }
@@ -142,14 +162,31 @@ fn default_true() -> bool {
 pub struct Project {
     /// 项目文件夹的绝对路径
     pub path: String,
-    /// 视频文件路径（相对于项目文件夹或绝对路径）
+    /// 切片视频文件路径（相对于项目文件夹或绝对路径）——时间轴基准
     pub video: String,
+    /// 剧情录屏视频路径（文本源，OCR 语料用）；缺省空串
+    #[serde(default)]
+    pub source_video: String,
     /// 项目名称
     pub name: String,
+    /// 可靠文本语料集合（独立于轨道，供 LLM 融合消费）；缺省空
+    #[serde(default)]
+    pub corpus: Vec<CorpusItem>,
     /// 所有轨道
     pub tracks: Vec<Track>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// 语料条目 —— 一条可靠的游戏内文本（来源可多样，无时间轴语义）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorpusItem {
+    pub id: String,
+    /// 文本内容
+    pub text: String,
+    /// 来源："paste" 手动粘贴 | "image_ocr" 截图 OCR | "ocr_track" 从 OCR 轨提取
+    pub source: String,
+    pub created_at: String,
 }
 
 /// 最近项目列表中的条目
@@ -232,7 +269,9 @@ pub fn create_project(app: AppHandle, name: String, path: String) -> Result<Proj
     let project = Project {
         path: project_path.to_string_lossy().to_string(),
         video: String::new(),
+        source_video: String::new(),
         name,
+        corpus: Vec::new(),
         tracks: Vec::new(),
         created_at: now.clone(),
         updated_at: now,
@@ -382,6 +421,9 @@ mod tests {
             name: "主播语音".into(),
             track_type: "asr".into(),
             track_role: "streamer".into(),
+            scope: "output".into(),
+            page: String::new(),
+            video: "clip".into(),
             preview_visible: true,
             events: vec![],
         }
@@ -461,5 +503,70 @@ mod tests {
         });
         let json = serde_json::to_string(&ev).unwrap();
         assert!(!json.contains("character"));
+    }
+
+    #[test]
+    fn test_track_legacy_json_defaults_scope_page_video() {
+        // 旧 project.json 无 scope/page/video → 默认 output / 空 / clip（既有轨道视为产物轨，挂切片）
+        let json = r#"{"id":"t1","name":"游戏角色","type":"asr","events":[]}"#;
+        let track: Track = serde_json::from_str(json).unwrap();
+        assert_eq!(track.scope, "output");
+        assert_eq!(track.page, "");
+        assert_eq!(track.video, "clip");
+    }
+
+    #[test]
+    fn test_track_scope_page_video_roundtrip() {
+        let mut track = sample_track();
+        track.scope = "control".into();
+        track.page = "corpus".into();
+        track.video = "source".into();
+        let json = serde_json::to_string(&track).unwrap();
+        let back: Track = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.scope, "control");
+        assert_eq!(back.page, "corpus");
+        assert_eq!(back.video, "source");
+    }
+
+    #[test]
+    fn test_project_legacy_json_defaults_source_video_corpus() {
+        // 旧 project.json 无 source_video/corpus → 默认空串 / 空语料
+        let json = r#"{"path":"C:/proj","video":"clip.mp4","name":"示例","tracks":[],"created_at":"1","updated_at":"2"}"#;
+        let project: Project = serde_json::from_str(json).unwrap();
+        assert_eq!(project.source_video, "");
+        assert!(project.corpus.is_empty());
+        assert_eq!(project.video, "clip.mp4");
+    }
+
+    #[test]
+    fn test_project_source_video_corpus_roundtrip() {
+        let mut project = Project {
+            path: "C:/proj".into(),
+            video: "clip.mp4".into(),
+            source_video: "source.mp4".into(),
+            name: "示例".into(),
+            corpus: vec![CorpusItem {
+                id: "c1".into(),
+                text: "旅行者，你来了".into(),
+                source: "paste".into(),
+                created_at: "1".into(),
+            }],
+            tracks: vec![],
+            created_at: "1".into(),
+            updated_at: "2".into(),
+        };
+        project.corpus.push(CorpusItem {
+            id: "c2".into(),
+            text: "前方有敌人".into(),
+            source: "ocr_track".into(),
+            created_at: "3".into(),
+        });
+        let json = serde_json::to_string(&project).unwrap();
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.source_video, "source.mp4");
+        assert_eq!(back.corpus.len(), 2);
+        assert_eq!(back.corpus[0].text, "旅行者，你来了");
+        assert_eq!(back.corpus[0].source, "paste");
+        assert_eq!(back.corpus[1].source, "ocr_track");
     }
 }

@@ -51,7 +51,12 @@ async function onExport(format: string) {
   }
 }
 
-const focusedTrack = computed(() => projectStore.findTrack(timeline.focusedTrackId));
+// 总览只呈现产物轨（scope=output）：控制轨在各工作流页面独立呈现，不进入校对区总览
+const focusedTrack = computed(() => {
+  const track = projectStore.findTrack(timeline.focusedTrackId);
+  if (!track || track.scope === "control") return null;
+  return track;
+});
 
 const isRegionTrack = computed(() => focusedTrack.value?.type === "ocr_region");
 const isTextTrack = computed(() => {

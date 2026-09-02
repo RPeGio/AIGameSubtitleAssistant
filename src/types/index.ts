@@ -47,15 +47,36 @@ export interface Track {
   /// 轨道内容属性（仅 asr 轨道使用）："streamer" 主播语音 | "game" 游戏内容
   /// 旧项目缺省视为 "game"
   track_role: string;
+  /// 轨道角色："control" 控制轨（页面工作状态，如 OCR 选区）| "output" 产物轨（字幕数据）
+  /// 旧项目缺省视为 "output"
+  scope: string;
+  /// 控制轨归属页面（仅 scope=control 使用）："corpus" | "asr" | "fuse" | "editor"
+  page: string;
+  /// 轨道绑定的视频源："source" 剧情录屏（文本源）| "clip" 切片（时间轴基准）
+  /// 旧项目缺省视为 "clip"
+  video: string;
   /// 是否在预览窗口中显示该轨道字幕（纯显示偏好，随项目保存）
   preview_visible: boolean;
   events: TimelineEvent[];
 }
 
+export interface CorpusItem {
+  id: string;
+  text: string;
+  /// 来源："paste" 手动粘贴 | "image_ocr" 截图 OCR | "ocr_track" 从 OCR 轨提取
+  source: string;
+  created_at: string;
+}
+
 export interface Project {
   path: string;
+  /// 切片视频路径 —— 时间轴基准
   video: string;
+  /// 剧情录屏视频路径（文本源，OCR 语料用）
+  source_video: string;
   name: string;
+  /// 可靠文本语料集合（独立于轨道，供 LLM 融合消费）
+  corpus: CorpusItem[];
   tracks: Track[];
   created_at: string;
   updated_at: string;
