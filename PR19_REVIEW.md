@@ -44,7 +44,7 @@ function undo() {
 - **位置**：`src/views/Editor.vue:57-63` + 模板 `Editor.vue:227`（`@update:value="updateCharacter"`）
 - **问题**：`@update:value` 逐键触发 `recordSnapshot()`（整棵 tracks 深拷贝）：① 打 10 个字占掉 MAX_HISTORY=60 中 10 格，挤出有意义历史；② 每键全量深拷贝 + redo 链清空；③ 同行 `updateText`（`updateEventText`，`project.ts:520`）完全不压快照，两输入框撤销行为不一致。
 - **修复建议**：改用 `@change`（失焦/回车提交），统一两字段快照策略。
-- **状态**：✅ 已修复（角色输入改 `@change`，击键不再压快照）
+- **状态**：✅ 已修复（最终方案：NInput 是受控组件，`@change` 会导致打字回退无法输入——改为保留 `@update:value` 即时生效，`@focus` 重置会话标记，聚焦会话内首次修改压一次快照，整段编辑合并为一条撤销记录；文本/角色两字段粒度一致）
 
 ### P1-2 编辑页工具栏的撤销/重做按钮没有清理悬空聚焦
 

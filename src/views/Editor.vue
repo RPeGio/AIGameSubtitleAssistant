@@ -48,16 +48,27 @@ function onRowClick(ev: FusedEvent) {
   if (fusedTrack.value) timeline.focusTrack(fusedTrack.value.id);
 }
 
+/// 文本/角色就地编辑共用：一次聚焦→失焦会话内首次修改压一次快照，
+/// 整段编辑合并为一条撤销记录（不逐键刷历史）
+let snapshottedInSession = false;
+function snapshotOncePerSession() {
+  if (!snapshottedInSession) {
+    projectStore.recordSnapshot();
+    snapshottedInSession = true;
+  }
+}
+
 /// 就地编辑文本（即时生效）
 function updateText(ev: FusedEvent, text: string) {
+  snapshotOncePerSession();
   projectStore.updateEventText(ev.id, text);
 }
 
-/// 就地编辑角色（change 触发：失焦/回车提交，避免逐键压撤销快照）
+/// 就地编辑角色（即时生效）
 function updateCharacter(ev: FusedEvent, character: string) {
   const found = projectStore.findEvent(ev.id);
   if (found && found.event.type === "fused") {
-    projectStore.recordSnapshot();
+    snapshotOncePerSession();
     found.event.character = character.trim() || undefined;
   }
 }
@@ -244,7 +255,8 @@ function goFuse() {
               size="tiny"
               placeholder="角色"
               class="row-character"
-              @change="updateCharacter(ev, $event)"
+              @focus="snapshottedInSession = false"
+              @update:value="updateCharacter(ev, $event)"
             />
             <NInput
               :value="ev.text"
@@ -252,6 +264,7 @@ function goFuse() {
               :autosize="{ minRows: 1, maxRows: 6 }"
               class="row-text"
               placeholder="字幕文本"
+              @focus="snapshottedInSession = false"
               @update:value="updateText(ev, $event)"
             />
           </div>
