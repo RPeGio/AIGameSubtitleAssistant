@@ -29,7 +29,8 @@ onMounted(async () => {
   }
 });
 
-// ── 全局快捷键：Ctrl+S 保存；S 分割；Delete 删除；M 合并；Ctrl+Z 撤销；Ctrl+Shift+Z / Ctrl+Y 重做
+// ── 全局快捷键：仅 Ctrl+S 保存；Ctrl+Z 撤销；Ctrl+Shift+Z / Ctrl+Y 重做 ──
+// S 分割 / Delete 删除 / M 合并 已下沉到各 Timeline 实例（处理自己的 store）
 function cleanupFocus() {
   if (timeline.focusedClipId && !projectStore.findEvent(timeline.focusedClipId)) {
     timeline.focusClip(null);
@@ -67,25 +68,8 @@ function onGlobalKeydown(e: KeyboardEvent) {
     return;
   }
 
-  // Delete：删除聚焦 clip 已下沉到 Timeline 组件内（每个实例处理自己的 store，
-  // 覆盖校对区全局时间轴与语料页独立时间轴），这里不再重复处理
-  // M：聚焦 clip 与同轨下一个事件合并（输入框内由 guard 排除）
-  if (e.code === "KeyM" && !e.ctrlKey && !e.metaKey && !e.altKey) {
-    const id = timeline.focusedClipId;
-    if (id) projectStore.mergeAdjacent(id);
-    return;
-  }
-
-  if (e.code === "KeyS" && !e.metaKey && !e.altKey) {
-    const id = timeline.focusedClipId;
-    if (!id) return;
-    const rightId = projectStore.splitEvent(id, timeline.currentTime);
-    if (rightId) {
-      timeline.focusClip(rightId);
-      const found = projectStore.findEvent(rightId);
-      if (found) timeline.focusTrack(found.track.id);
-    }
-  }
+  // Delete/S/M 已下沉到各 Timeline 实例处理自己的 store（校对区全局 + 语料页独立），
+  // 这里不重复处理，避免双重触发作用于错误的时间轴。
 }
 
 onMounted(() => window.addEventListener("keydown", onGlobalKeydown));

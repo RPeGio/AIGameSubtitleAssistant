@@ -361,17 +361,43 @@ function onWheelRoot(e: WheelEvent) {
   timeline.pan(e.deltaY + e.deltaX);
 }
 
-// ── Delete：删除聚焦 clip ──
+// ── Delete/S/M：删除/分割/合并聚焦 clip ──
 // 每个 Timeline 实例处理自己的 store（校对区用全局 store；语料页迷你时间轴
-// 用注入的独立 store），输入框内不响应。
+// 用注入的独立 store），输入框内不响应。这样聚焦迷你时间轴 clip 后，
+// 快捷键作用于该时间轴而非全局校对区时间轴，与 Delete 行为一致。
 function onKeydown(e: KeyboardEvent) {
   const t = e.target as HTMLElement;
   if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
-  if (e.key !== "Delete") return;
   const id = timeline.focusedClipId;
-  if (!id) return;
-  projectStore.removeEvent(id);
-  timeline.focusClip(null);
+
+  if (e.key === "Delete") {
+    if (!id) return;
+    const foundTrack = projectStore.findEvent(id);
+    projectStore.removeEvent(id);
+    timeline.focusClip(null);
+    if (foundTrack) timeline.focusTrack(foundTrack.track.id);
+    return;
+  }
+
+  // 分割：在播放头处切开聚焦 clip
+  if (e.code === "KeyS" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (!id) return;
+    const rightId = projectStore.splitEvent(id, timeline.currentTime);
+    if (rightId) {
+      timeline.focusClip(rightId);
+      const right = projectStore.findEvent(rightId);
+      if (right) timeline.focusTrack(right.track.id);
+    }
+    return;
+  }
+
+  // 合并：聚焦 clip 与同轨下一个事件
+  if (e.code === "KeyM" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (!id) return;
+    const merged = projectStore.mergeAdjacent(id);
+    if (merged) timeline.focusClip(merged);
+    return;
+  }
 }
 
 onMounted(() => {
@@ -660,7 +686,8 @@ onUnmounted(() => {
   z-index: 30;
   min-width: 220px;
   max-width: 220px;
-  border-right: 1px solid var(--color-border);  background: var(--color-bg-secondary);
+  border-right: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
   display: flex;
   flex-direction: column;
   justify-content: center;
