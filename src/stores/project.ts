@@ -416,7 +416,7 @@ export const useProjectStore = defineStore("project", () => {
   }
 
   /// 语料页：确保剧情录屏（视频 A）的 OCR 选区控制轨存在。
-  /// 默认一个覆盖整段的选区（RegionOverlay 任意播放头都能命中，可直接拖拽调整）。
+  /// 默认一个覆盖整段的选区（任意播放头都能命中，可直接拖拽调整）。
   /// 守卫按 (type=ocr_region) + (video=source 或 page=corpus 或轨道名) 匹配：
   /// 兼容 video 字段缺失的旧数据，避免更换视频时重复创建。
   function ensureCorpusRegionTrack(duration: number) {

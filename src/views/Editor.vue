@@ -120,10 +120,12 @@ function mergeNext(ev: FusedEvent) {
   }
 }
 
-// ── 导出最终字幕（复用后端 export_track_subtitle）─────────
+// ── 导出最终字幕（复用后端 export_track_subtitle，支持 srt/ass/lrc/txt）─────────
 const EXPORT_FORMATS = [
   { label: "SRT（通用字幕）", value: "srt" },
   { label: "ASS（带样式）", value: "ass" },
+  { label: "LRC（歌词）", value: "lrc" },
+  { label: "TXT（纯文本）", value: "txt" },
 ];
 
 async function onExport(format: string) {

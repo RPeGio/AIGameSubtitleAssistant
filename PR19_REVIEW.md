@@ -82,31 +82,31 @@ function undo() {
 
 - **位置**：`src/components/timeline/Timeline.vue:663`
 - **问题**：`border-right` 与 `background` 被合并到一行（本次改动引入的编辑事故）。
-- **状态**：⬜ 未修复
+- **状态**：✅ 已修复（拆分还原行为）
 
 ### P2-2 已删除组件的残留注释
 
 - **位置**：`src/stores/project.ts:409`、`src/stores/timeline.ts:100`
 - **问题**：`RegionOverlay.vue` 已删除，两处注释仍引用它。
-- **状态**：⬜ 未修复
+- **状态**：✅ 已修复
 
 ### P2-3 播放进度可能超 100%
 
 - **位置**：`src/components/SourceVideoPreview.vue`（`progressPct` computed）
 - **问题**：`time` 略超 `duration` 时 range input 的 value 超界。加 `Math.min(100, ...)`。
-- **状态**：⬜ 未修复
+- **状态**：✅ 已修复
 
 ### P2-4 导出格式未对齐后端能力
 
 - **位置**：`src/views/Editor.vue:92-95`
 - **问题**：后端 `export_track_subtitle` 支持 srt/ass/lrc/txt，编辑页只暴露 srt/ass。若是有意收窄可忽略。
-- **状态**：⬜ 未修复
+- **状态**：✅ 已修复（补全 lrc/txt 两个选项）
 
 ### P2-5 双时间轴的快捷键行为不对称（记录备忘）
 
 - **位置**：`src/layouts/ProjectLayout.vue`（M/S 快捷键）vs `src/components/timeline/Timeline.vue`（Delete）
-- **问题**：M/S 始终作用于全局 store（校对区时间轴），Delete 由各 Timeline 实例处理自己的 store。语料页聚焦迷你时间轴 clip 后按 S/M 不作用于迷你时间轴。当前 ReviewPane 常驻所有页面、行为可解释；未来若扩展迷你时间轴编辑功能，建议把 S/M 也下沉到 Timeline 组件（与 Delete 同模式）。
-- **状态**：⬜ 未修复
+- **问题**：M/S 始终作用于全局 store（校对区时间轴），Delete 由各 Timeline 实例处理自己的 store。语料页聚焦迷你时间轴 clip 后按 S/M 不作用于迷你时间轴。
+- **状态**：✅ 已修复（S/M 下沉到各 Timeline 实例处理自己的 store，与 Delete 同模式；ProjectLayout 仅保留 Ctrl+S/Ctrl+Z/Y）
 
 ---
 

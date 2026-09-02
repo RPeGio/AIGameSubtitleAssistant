@@ -54,7 +54,7 @@ const regionEvent = computed(() => {
 });
 
 const progressPct = computed(() =>
-  props.duration > 0 ? (props.time / props.duration) * 100 : 0
+  props.duration > 0 ? Math.min(100, (props.time / props.duration) * 100) : 0
 );
 
 const timeDisplay = computed(() => {

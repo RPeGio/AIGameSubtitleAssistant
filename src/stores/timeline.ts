@@ -97,7 +97,7 @@ export const useTimelineStore = defineStore("timeline", () => {
     focusedClipId.value = id;
   }
 
-  /// 聚焦某条轨道（决定 RegionOverlay 遮罩是否显示）
+  /// 聚焦某条轨道（决定选区遮罩是否显示）
   function focusTrack(id: string | null) {
     focusedTrackId.value = id;
   }
