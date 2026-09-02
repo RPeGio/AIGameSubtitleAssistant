@@ -179,12 +179,18 @@ export const useProjectStore = defineStore("project", () => {
   // ── 撤销/重做：快照式操作记录 ─────────────────────────
   // 每次操作前把当前 tracks 深拷贝入 undo 栈（一个操作 = 一个撤销步骤）；
   // 高频写入（拖动改时/区域拖动/文字编辑）在操作开始点记录，写入中不重复记录
-  const undoStack = ref<Track[][]>([]);
-  const redoStack = ref<Track[][]>([]);
+  /// 快照结构：tracks 与 corpus 一起入栈——语料的增删也走撤销栈
+  type UndoSnapshot = { tracks: Track[]; corpus: CorpusItem[] };
+  const undoStack = ref<UndoSnapshot[]>([]);
+  const redoStack = ref<UndoSnapshot[]>([]);
   const MAX_HISTORY = 60;
 
-  function snapshot(): Track[] {
-    return JSON.parse(JSON.stringify(currentProject.value?.tracks ?? [])) as Track[];
+  function snapshot(): UndoSnapshot {
+    const p = currentProject.value;
+    return {
+      tracks: JSON.parse(JSON.stringify(p?.tracks ?? [])) as Track[],
+      corpus: JSON.parse(JSON.stringify(p?.corpus ?? [])) as CorpusItem[],
+    };
   }
 
   /// 操作执行前调用：当前状态入 undo 栈，新操作打断重做链
@@ -198,13 +204,17 @@ export const useProjectStore = defineStore("project", () => {
   function undo() {
     if (!currentProject.value || undoStack.value.length === 0) return;
     redoStack.value.push(snapshot());
-    currentProject.value.tracks = undoStack.value.pop()!;
+    const snap = undoStack.value.pop()!;
+    currentProject.value.tracks = snap.tracks;
+    currentProject.value.corpus = snap.corpus;
   }
 
   function redo() {
     if (!currentProject.value || redoStack.value.length === 0) return;
     undoStack.value.push(snapshot());
-    currentProject.value.tracks = redoStack.value.pop()!;
+    const snap = redoStack.value.pop()!;
+    currentProject.value.tracks = snap.tracks;
+    currentProject.value.corpus = snap.corpus;
   }
 
   function clearHistory() {
