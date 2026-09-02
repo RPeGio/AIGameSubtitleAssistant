@@ -58,14 +58,14 @@ function undo() {
 - **位置**：`src/views/FuseView.vue:24-29`、`FuseView.vue:104`
 - **问题**：`timelineReady` 只认 `track_role === "game"` 的 ASR 轨，但 `asrCount` 统计所有 asr 轨。只有主播轨时显示"已生成 N 段转写"却"未就绪"，文案矛盾。
 - **修复建议**：`asrCount` 过滤 `track_role === "game"`。
-- **状态**：⬜ 未修复
+- **状态**：✅ 已修复（asrCount 与 timelineReady 同口径，只统计游戏内容轨；文案同步改为"游戏内容转写"）
 
 ### P1-4 最终字幕列表无虚拟化，长视频会卡
 
 - **位置**：`src/views/Editor.vue:208-245`（`v-for="(ev, i) in clips"`）
 - **问题**：2 小时录播的融合结果可达上千行，每行 2 个 `NInput` + 3 个 `NButton`，全量渲染 DOM 数万节点，滚动与输入卡顿。
 - **修复建议**：`n-virtual-list` 包裹行渲染，或分页/懒加载兜底。
-- **状态**：⬜ 未修复
+- **状态**：✅ 已修复（改用 `n-virtual-list` `item-resizable` 虚拟列表，`key-field="id"`；行高用 borderBoxSize 测量，故行间距由 margin 改 padding；`.editor-body` 改 `overflow:hidden` 避免双重滚动条）
 
 ### P1-5 语料页 OCR 静默失败路径
 

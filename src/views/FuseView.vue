@@ -21,10 +21,11 @@ const corpusCount = computed(() => projectStore.currentProject?.corpus.length ??
 
 /// 时间轴就绪卡片 → 点击跳转转写页
 const timelineReady = computed(() => projectStore.timelineReady);
+/// 与 timelineReady 同口径：只统计游戏内容轨（主播轨不参与融合）
 const asrCount = computed(() => {
   const tracks = projectStore.currentProject?.tracks ?? [];
   return tracks
-    .filter((t) => t.type === "asr")
+    .filter((t) => t.type === "asr" && t.track_role === "game")
     .reduce((n, t) => n + t.events.length, 0);
 });
 
@@ -101,8 +102,8 @@ async function startFuse() {
         <NText depth="3" class="card-desc">
           {{
             timelineReady
-              ? `已生成 ${asrCount} 段转写`
-              : "尚无 ASR 转写段（点击前往转写页）"
+              ? `已生成 ${asrCount} 段游戏内容转写`
+              : "尚无游戏内容的 ASR 转写段（点击前往转写页）"
           }}
         </NText>
       </NCard>

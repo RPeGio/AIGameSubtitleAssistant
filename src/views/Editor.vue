@@ -11,6 +11,7 @@ import {
   NButton,
   NInput,
   NPopselect,
+  NVirtualList,
   useMessage,
 } from "naive-ui";
 
@@ -236,51 +237,57 @@ function goFuse() {
         点击行可跳转视频对应时间；文本/角色就地编辑即时生效；行内按钮分割 / 合并 / 删除。
       </NAlert>
 
-      <div class="subtitle-list">
-        <div
-          v-for="(ev, i) in clips"
-          :key="ev.id"
-          class="subtitle-row"
-          :class="{ active: timeline.focusedClipId === ev.id }"
-          @click="onRowClick(ev)"
-        >
-          <span class="row-index">{{ i + 1 }}</span>
-          <div class="row-time">
-            <span class="time-start">{{ fmtTime(ev.start) }}</span>
-            <span class="time-end">{{ fmtTime(ev.end) }}</span>
+      <n-virtual-list
+        class="subtitle-list"
+        :items="clips"
+        :item-size="72"
+        item-resizable
+        key-field="id"
+      >
+        <template #default="{ item: ev, index: i }">
+          <div
+            class="subtitle-row"
+            :class="{ active: timeline.focusedClipId === ev.id }"
+            @click="onRowClick(ev)"
+          >
+            <span class="row-index">{{ i + 1 }}</span>
+            <div class="row-time">
+              <span class="time-start">{{ fmtTime(ev.start) }}</span>
+              <span class="time-end">{{ fmtTime(ev.end) }}</span>
+            </div>
+            <div class="row-fields" @click.stop>
+              <NInput
+                :value="ev.character ?? ''"
+                size="tiny"
+                placeholder="角色"
+                class="row-character"
+                @focus="snapshottedInSession = false"
+                @update:value="updateCharacter(ev, $event)"
+              />
+              <NInput
+                :value="ev.text"
+                type="textarea"
+                :autosize="{ minRows: 1, maxRows: 6 }"
+                class="row-text"
+                placeholder="字幕文本"
+                @focus="snapshottedInSession = false"
+                @update:value="updateText(ev, $event)"
+              />
+            </div>
+            <div class="row-actions" @click.stop>
+              <NButton size="tiny" quaternary title="在播放头处分割" @click="splitClip(ev)">
+                分割
+              </NButton>
+              <NButton size="tiny" quaternary title="与下一条合并" @click="mergeNext(ev)">
+                合并
+              </NButton>
+              <NButton size="tiny" quaternary type="error" title="删除本条" @click="removeClip(ev)">
+                删除
+              </NButton>
+            </div>
           </div>
-          <div class="row-fields" @click.stop>
-            <NInput
-              :value="ev.character ?? ''"
-              size="tiny"
-              placeholder="角色"
-              class="row-character"
-              @focus="snapshottedInSession = false"
-              @update:value="updateCharacter(ev, $event)"
-            />
-            <NInput
-              :value="ev.text"
-              type="textarea"
-              :autosize="{ minRows: 1, maxRows: 6 }"
-              class="row-text"
-              placeholder="字幕文本"
-              @focus="snapshottedInSession = false"
-              @update:value="updateText(ev, $event)"
-            />
-          </div>
-          <div class="row-actions" @click.stop>
-            <NButton size="tiny" quaternary title="在播放头处分割" @click="splitClip(ev)">
-              分割
-            </NButton>
-            <NButton size="tiny" quaternary title="与下一条合并" @click="mergeNext(ev)">
-              合并
-            </NButton>
-            <NButton size="tiny" quaternary type="error" title="删除本条" @click="removeClip(ev)">
-              删除
-            </NButton>
-          </div>
-        </div>
-      </div>
+        </template>
+      </n-virtual-list>
     </div>
   </div>
 </template>
@@ -362,17 +369,18 @@ function goFuse() {
   flex-direction: column;
   gap: 12px;
   padding: 8px 24px 20px;
-  overflow: auto;
+  /* 滚动交给虚拟列表（.subtitle-list）自身，避免双重滚动条 */
+  overflow: hidden;
 }
 
 .editor-hint {
   flex-shrink: 0;
 }
 
+/* 虚拟列表：需确定高度的滚动容器，flex:1 让它在 editor-body 内撑满剩余高度 */
 .subtitle-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  flex: 1;
+  min-height: 0;
 }
 
 .subtitle-row {
@@ -380,6 +388,7 @@ function goFuse() {
   align-items: flex-start;
   gap: 10px;
   padding: 8px 10px;
+  /* 虚拟列表用 borderBoxSize 测量行高：margin 不计入，行间距改由 padding 实现 */
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border);
   border-radius: 8px;
