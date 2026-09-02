@@ -3,7 +3,6 @@ import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useTimelineStore } from "../stores/timeline";
 import { useProjectStore } from "../stores/project";
-import RegionOverlay from "./RegionOverlay.vue";
 import SubtitleOverlay from "./SubtitleOverlay.vue";
 
 const props = defineProps<{ src: string }>();
@@ -130,8 +129,6 @@ onUnmounted(() => window.removeEventListener("keydown", handleKeydown));
         @pause="onPause"
         @error="onError"
       />
-
-      <RegionOverlay />
 
       <SubtitleOverlay />
 

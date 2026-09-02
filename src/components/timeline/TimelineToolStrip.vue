@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { useTimelineStore } from "../../stores/timeline";
+import { inject } from "vue";
+import { useTimelineStore, TIMELINE_STORE_KEY } from "../../stores/timeline";
 
-const timeline = useTimelineStore();
+const timeline = inject(TIMELINE_STORE_KEY, null) ?? useTimelineStore();
 </script>
 
 <template>

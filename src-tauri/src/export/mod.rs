@@ -212,6 +212,9 @@ mod tests {
             name: "角色字幕".into(),
             track_type: "fused".into(),
             track_role: "game".into(),
+            scope: "output".into(),
+            page: String::new(),
+            video: "clip".into(),
             preview_visible: true,
             events: vec![
                 // 应被过滤：无文本
