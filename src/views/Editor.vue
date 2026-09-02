@@ -269,7 +269,7 @@ function goFuse() {
               <NInput
                 :value="ev.text"
                 type="textarea"
-                :autosize="{ minRows: 1, maxRows: 6 }"
+                :autosize="{ minRows: 1, maxRows: 4 }"
                 class="row-text"
                 placeholder="字幕文本"
                 @focus="snapshottedInSession = false"
