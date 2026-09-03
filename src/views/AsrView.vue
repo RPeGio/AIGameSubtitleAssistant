@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useProjectStore } from "../stores/project";
-import type { AsrRunParams, AsrEngineStatus } from "../types";
+import SourceVideoPreview from "../components/SourceVideoPreview.vue";
+import SourceTimeline from "../components/SourceTimeline.vue";
+import type { AsrRunParams, AsrEngineStatus, OcrRunParams } from "../types";
 import {
   NButton,
   NCollapse,
@@ -98,8 +100,39 @@ function setTrackRole(trackId: string, role: string) {
   projectStore.updateTrackRole(trackId, role);
 }
 
-// ── 占位标签 ──────────────────────────────────────────
-const PLACEHOLDER_KEY = "visual";
+// ── ② 内嵌字幕 OCR（画面获取时间轴）───────────────────
+/// 针对没有配音的游戏任务：OCR 切片视频画面里的游戏内嵌字幕，
+/// 产出带时间轴的 embed_ocr 轨（嵌字轴），作为"游戏内容"源供融合。
+const ocrParams = ref<OcrRunParams>({
+  frame_interval: 0.5,
+  dhash_threshold: 3,
+  batch_size: 16,
+  merge_similarity: 0.3,
+});
+
+const hasClipVideo = computed(() => projectStore.currentVideoMeta !== null);
+
+/// 共享播放状态：视频预览 ↔ 迷你时间轴同步
+const clipTime = ref(0);
+const clipDuration = ref(0);
+
+/// 切片视频时长就绪后确保嵌字选区控制轨存在（page=asr，与编辑页选区并存）
+watch(
+  () => projectStore.currentVideoMeta?.duration ?? 0,
+  (d) => {
+    if (d > 0) projectStore.ensureAsrRegionTrack(d);
+  },
+  { immediate: true }
+);
+
+async function startEmbedOcr() {
+  try {
+    await projectStore.runOcr(ocrParams.value, "clip", { regionPage: "asr" });
+    message.success("嵌字 OCR 完成，文本已写入内嵌字幕轨道");
+  } catch (e) {
+    message.error(String(e));
+  }
+}
 </script>
 
 <template>
@@ -233,10 +266,110 @@ const PLACEHOLDER_KEY = "visual";
         </div>
       </NCollapseItem>
 
-      <!-- ② 检测画面变化获取时间轴 -->
-      <NCollapseItem :name="PLACEHOLDER_KEY" title="检测画面变化获取时间轴">
+      <!-- ② 检测画面变化获取时间轴（内嵌字幕 OCR） -->
+      <NCollapseItem name="visual" title="检测画面变化获取时间轴（内嵌字幕 OCR）">
         <div class="source-body">
-          <div class="placeholder">功能开发中，敬请期待</div>
+          <NText depth="3" style="font-size: 12px">
+            针对没有配音的游戏任务：框选切片视频画面中的游戏字幕区域，OCR 识别
+            内嵌字幕，产出带时间轴的嵌字轨道（内嵌字幕 OCR），供 AI 融合作为游戏内容
+          </NText>
+
+          <template v-if="!hasClipVideo">
+            <NButton type="primary" @click="projectStore.importVideo()">
+              导入切片视频
+            </NButton>
+            <NText depth="3" style="font-size: 12px">
+              支持 mp4 / mkv / webm / avi / mov / flv
+            </NText>
+          </template>
+
+          <template v-else>
+            <!-- 视频选区预览（独立于全局时间轴，播放时间与下方迷你时间轴同步） -->
+            <div class="preview-box">
+              <SourceVideoPreview
+                video-key="clip"
+                v-model:time="clipTime"
+                v-model:duration="clipDuration"
+              />
+            </div>
+
+            <!-- 迷你时间轴：按时间段管理多条选区 -->
+            <SourceTimeline
+              video-key="clip"
+              v-model:time="clipTime"
+              :duration="clipDuration"
+              class="mini-timeline"
+            />
+            <NText depth="3" style="font-size: 12px">
+              在预览中拖拽选框框定字幕区域；双击迷你时间轴空白添加不同时间段的选区，
+              拖动 clip 调整起止、点击跳转。OCR 按播放头所在时间段对应的选区识别。
+            </NText>
+
+            <!-- OCR 参数（内联，点击立即执行） -->
+            <div class="params">
+              <div class="cfg-field">
+                <NText depth="2">帧间隔（秒）</NText>
+                <NInputNumber
+                  v-model:value="ocrParams.frame_interval"
+                  :min="0.1"
+                  :step="0.5"
+                  style="width: 100%"
+                />
+              </div>
+              <div class="cfg-field">
+                <NText depth="2">变化检测阈值</NText>
+                <NInputNumber
+                  v-model:value="ocrParams.dhash_threshold"
+                  :min="0"
+                  :max="64"
+                  :precision="0"
+                  :step="1"
+                  style="width: 100%"
+                />
+              </div>
+              <div class="cfg-field">
+                <NText depth="2">批大小</NText>
+                <NInputNumber
+                  v-model:value="ocrParams.batch_size"
+                  :min="1"
+                  :max="128"
+                  :precision="0"
+                  :step="1"
+                  style="width: 100%"
+                />
+              </div>
+              <div class="cfg-field">
+                <NText depth="2">合并相似度（0~1，越大越易合并）</NText>
+                <NInputNumber
+                  v-model:value="ocrParams.merge_similarity"
+                  :min="0"
+                  :max="1"
+                  :step="0.05"
+                  style="width: 100%"
+                />
+              </div>
+            </div>
+
+            <!-- 仅"开始识别"按钮 -->
+            <div class="run-row">
+              <NButton
+                type="primary"
+                :disabled="projectStore.ocrRunning"
+                @click="startEmbedOcr"
+              >
+                {{ projectStore.ocrRunning ? "OCR 运行中..." : "开始识别内嵌字幕" }}
+              </NButton>
+              <template v-if="projectStore.ocrRunning">
+                <NProgress
+                  type="line"
+                  class="progress"
+                  :percentage="Math.round(projectStore.ocrProgress * 100)"
+                  :show-indicator="false"
+                />
+                <span class="ocr-msg">{{ projectStore.ocrMessage }}</span>
+              </template>
+            </div>
+          </template>
         </div>
       </NCollapseItem>
     </NCollapse>
@@ -282,6 +415,17 @@ const PLACEHOLDER_KEY = "visual";
   padding: 12px;
   background: var(--color-bg-secondary);
   border-radius: 8px;
+}
+
+.preview-box {
+  height: 300px;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.mini-timeline {
+  flex-shrink: 0;
 }
 
 .cfg-field {
@@ -350,15 +494,6 @@ const PLACEHOLDER_KEY = "visual";
 
 .ocr-msg {
   font-size: 12px;
-  color: var(--color-text-secondary);
-}
-
-.placeholder {
-  padding: 32px;
-  border: 1px dashed var(--color-border);
-  border-radius: 8px;
-  text-align: center;
-  font-size: 13px;
   color: var(--color-text-secondary);
 }
 </style>

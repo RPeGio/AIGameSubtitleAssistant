@@ -6,13 +6,14 @@ import type { TimelineEvent } from "../types";
 export const CLIP_COLORS: Record<string, string> = {
   ocr_region: "#00b894",
   ocr_text: "#fdcb6e",
+  embed_ocr: "#e17055",
   asr: "#0984e3",
   fused: "#00cec9",
   manual: "#a29bfe",
 };
 
 /// 参与字幕预览/文字编辑的轨道类型（眼睛开关与预览渲染共用，防两处漂移）
-export const TEXT_TRACK_TYPES = ["ocr_text", "asr", "fused", "manual"];
+export const TEXT_TRACK_TYPES = ["ocr_text", "embed_ocr", "asr", "fused", "manual"];
 
 /// 统一吸附阈值（像素）：clip 边缘与吸附点距离小于该值即对齐
 export const SNAP_THRESHOLD_PX = 8;

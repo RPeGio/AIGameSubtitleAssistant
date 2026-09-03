@@ -19,6 +19,10 @@ pub enum TimelineEvent {
     /// OCR 识别到的游戏内对话文本
     #[serde(rename = "ocr_text")]
     OcrText(OcrTextEvent),
+    /// 切片视频内嵌字幕 OCR —— 主播画面中游戏字幕的识别文本（嵌字轴，供融合）。
+    /// 结构同 OcrText，字段复用 OcrTextEvent
+    #[serde(rename = "embed_ocr")]
+    EmbedOcr(OcrTextEvent),
     /// OCR 区域选框 —— 标记视频中字幕出现的矩形区域
     #[serde(rename = "ocr_region")]
     OcrRegion(OcrRegionEvent),
@@ -503,6 +507,29 @@ mod tests {
         });
         let json = serde_json::to_string(&ev).unwrap();
         assert!(!json.contains("character"));
+    }
+
+    #[test]
+    fn test_embed_ocr_event_roundtrip() {
+        // embed_ocr（切片内嵌字幕 OCR）：tagged union 往返 + 字段完整保留
+        let ev = TimelineEvent::EmbedOcr(OcrTextEvent {
+            id: "e1".into(),
+            start: 1.5,
+            end: 4.2,
+            text: "旅行者，你来了".into(),
+            confidence: 0.92,
+        });
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains("\"type\":\"embed_ocr\""));
+        let back: TimelineEvent = serde_json::from_str(&json).unwrap();
+        match back {
+            TimelineEvent::EmbedOcr(e) => {
+                assert_eq!(e.id, "e1");
+                assert_eq!(e.text, "旅行者，你来了");
+                assert!((e.confidence - 0.92).abs() < 1e-9);
+            }
+            _ => panic!("类型标签分发错误"),
+        }
     }
 
     #[test]

@@ -357,6 +357,7 @@ function clipText(): string {
     case "ocr_region":
       return `(${e.x1.toFixed(2)}, ${e.y1.toFixed(2)}) → (${e.x2.toFixed(2)}, ${e.y2.toFixed(2)})`;
     case "ocr_text":
+    case "embed_ocr":
     case "asr":
     case "fused":
     case "manual":

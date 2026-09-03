@@ -43,6 +43,18 @@ function ocrTextToEvent(seg: OcrSegment): TimelineEvent {
   };
 }
 
+/// 嵌字 OCR 段 → embed_ocr 事件（结构同 ocr_text，tag 区分语义）
+function embedOcrToEvent(seg: OcrSegment): TimelineEvent {
+  return {
+    id: generateId(),
+    type: "embed_ocr",
+    start: seg.start,
+    end: seg.end,
+    text: seg.text,
+    confidence: seg.confidence,
+  };
+}
+
 function asrSegmentToEvent(seg: AsrSegment): TimelineEvent {
   return {
     id: generateId(),
@@ -453,6 +465,37 @@ export const useProjectStore = defineStore("project", () => {
     });
   }
 
+  /// 转写页（AsrView）：确保切片视频（clip）上"内嵌字幕 OCR"的选区控制轨存在。
+  /// 默认一个覆盖整段的选区；与编辑页选区轨（page=editor）并存不混，runOcr 按 page 隔离收集。
+  function ensureAsrRegionTrack(duration: number) {
+    if (!currentProject.value || duration <= 0) return;
+    const tracks = currentProject.value.tracks;
+    if (tracks.some((t) => t.type === "ocr_region" && t.page === "asr")) return;
+    tracks.push({
+      id: generateId(),
+      name: "嵌字选区（内嵌字幕）",
+      type: "ocr_region",
+      track_role: "game",
+      scope: "control",
+      page: "asr",
+      video: "clip",
+      preview_visible: true,
+      events: [
+        {
+          id: generateId(),
+          start: 0,
+          end: duration,
+          type: "ocr_region",
+          // 默认矩形：宽 60%，高 20%，水平居中，保持在画面偏低位置
+          x1: 0.2,
+          y1: 0.7,
+          x2: 0.8,
+          y2: 0.9,
+        },
+      ],
+    });
+  }
+
   /// 根据事件 id 跨所有轨道查找 { track, event }
   function findEvent(id: string | null): { track: Track; event: TimelineEvent } | null {
     if (!currentProject.value || !id) return null;
@@ -544,9 +587,15 @@ export const useProjectStore = defineStore("project", () => {
     found.track.events = [...found.track.events].sort((a, b) => a.start - b.start);
   }
 
-  /// 运行 OCR 流水线：收集所有 ocr_region 轨道的 clip → run_ocr → 写入 ocr_text 轨道
-  /// `videoKey`：默认 "clip"（切片，编辑页 OCR）；"source" 用剧情录屏（语料页 OCR，meta 取 sourceVideoMeta）
-  async function runOcr(params: OcrRunParams, videoKey: "clip" | "source" = "clip") {
+  /// 运行 OCR 流水线：收集指定 OCR 选区控制轨的 clip → run_ocr → 写入产物轨。
+  /// `videoKey`：默认 "clip"（切片）；"source" 用剧情录屏（语料页，meta 取 sourceVideoMeta）。
+  /// `regionPage` 隔离选区控制轨：语料页（corpus）/ 编辑页（editor）/ 转写页嵌字（asr）。
+  /// 缺省 clip 模式排除 page=asr 的嵌字选区（编辑页 OCR 不串扰嵌字选区）。
+  async function runOcr(
+    params: OcrRunParams,
+    videoKey: "clip" | "source" = "clip",
+    opts: { regionPage?: "corpus" | "editor" | "asr" } = {}
+  ) {
     if (ocrRunning.value) return;
     // meta 缺失也要给调用方可展示的错误，不能静默返回
     if (!currentProject.value) throw new Error("请先打开项目");
@@ -555,13 +604,15 @@ export const useProjectStore = defineStore("project", () => {
       throw new Error(videoKey === "source" ? "请先导入剧情录屏" : "请先导入切片视频");
     }
 
-    // 语料页只取挂在剧情录屏上的 OCR 选区控制轨；编辑页沿用全部选区
+    // 选区收集：source 模式取剧情录屏选区轨；clip 模式按 regionPage 过滤
+    const regionPage = opts.regionPage;
     const regionClips = currentProject.value.tracks
-      .filter(
-        (t) =>
-          t.type === "ocr_region" &&
-          (videoKey === "source" ? t.video === "source" : t.video !== "source")
-      )
+      .filter((t) => {
+        if (t.type !== "ocr_region") return false;
+        if (videoKey === "source") return t.video === "source";
+        if (regionPage) return t.video !== "source" && t.page === regionPage;
+        return t.video !== "source" && t.page !== "asr";
+      })
       .flatMap((t) => t.events)
       .filter((e): e is Extract<typeof e, { type: "ocr_region" }> => e.type === "ocr_region")
       .map((e) => ({
@@ -592,6 +643,9 @@ export const useProjectStore = defineStore("project", () => {
       if (videoKey === "source") {
         // 语料页：产物提取进 corpus（去时间轴，作为可靠文本语料）
         writeOcrToCorpus(segments);
+      } else if (regionPage === "asr") {
+        // 转写页嵌字：产物写 embed_ocr 轨（clip 内嵌字轴，供融合作为游戏内容段）
+        writeEmbedOcrSegments(segments);
       } else {
         writeOcrSegments(segments);
       }
@@ -641,6 +695,36 @@ export const useProjectStore = defineStore("project", () => {
     const track = ensureOcrTextTrack();
     recordSnapshot();
     track.events = segments.map(ocrTextToEvent).sort((a, b) => a.start - b.start);
+  }
+
+  /// 复用或新建 embed_ocr 轨道（切片视频内嵌字幕 OCR，嵌字轴；clip 时间轴基准）
+  function ensureEmbedOcrTrack(): Track {
+    let track = currentProject.value?.tracks.find(
+      (t) => t.type === "embed_ocr" && t.video === "clip"
+    );
+    if (!track && currentProject.value) {
+      track = {
+        id: generateId(),
+        name: "内嵌字幕 OCR",
+        type: "embed_ocr",
+        track_role: "game",
+        scope: "output",
+        page: "",
+        video: "clip",
+        preview_visible: true,
+        events: [],
+      };
+      currentProject.value.tracks.push(track);
+    }
+    if (!track) throw new Error("当前无项目");
+    return track;
+  }
+
+  /// 清空并填充 embed_ocr 轨道的事件（重跑不叠加）
+  function writeEmbedOcrSegments(segments: OcrSegment[]) {
+    const track = ensureEmbedOcrTrack();
+    recordSnapshot();
+    track.events = segments.map(embedOcrToEvent).sort((a, b) => a.start - b.start);
   }
 
   // ── 文本语料（corpus）─────────────────────────────────
@@ -1129,6 +1213,9 @@ export const useProjectStore = defineStore("project", () => {
     importSourceVideo,
     ensureDefaultTrack,
     ensureCorpusRegionTrack,
+    ensureAsrRegionTrack,
+    ensureEmbedOcrTrack,
+    writeEmbedOcrSegments,
     findEvent,
     findTrack,
     removeEvent,
