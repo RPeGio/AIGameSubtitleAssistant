@@ -4,6 +4,7 @@ import { useProjectStore } from "../stores/project";
 import SourceVideoPreview from "../components/SourceVideoPreview.vue";
 import SourceTimeline from "../components/SourceTimeline.vue";
 import type { OcrRunParams } from "../types";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   NButton,
   NCollapse,
@@ -44,6 +45,30 @@ async function startOcr() {
   }
 }
 
+// ── "从文本截图中截取" ────────────────────────────────
+const selectedImages = ref<string[]>([]);
+
+async function pickImages() {
+  const selected = await open({
+    multiple: true,
+    title: "选择剧情文本截图",
+    filters: [
+      { name: "图片文件", extensions: ["png", "jpg", "jpeg", "webp", "bmp"] },
+    ],
+  });
+  if (!selected) return;
+  selectedImages.value = Array.isArray(selected) ? selected : [selected];
+}
+
+async function startImageOcr() {
+  try {
+    await projectStore.runCorpusImageOcr(selectedImages.value);
+    message.success("OCR 完成，文本已提取到语料");
+  } catch (e) {
+    message.error(String(e));
+  }
+}
+
 // ── 语料列表 ──────────────────────────────────────────
 const corpus = computed(() => projectStore.currentProject?.corpus ?? []);
 
@@ -52,7 +77,7 @@ function removeItem(id: string) {
 }
 
 // ── 占位标签 ──────────────────────────────────────────
-const PLACEHOLDER_KEYS = ["screenshot", "manual"];
+const PLACEHOLDER_KEYS = ["manual"];
 </script>
 
 <template>
@@ -162,11 +187,42 @@ const PLACEHOLDER_KEYS = ["screenshot", "manual"];
       </NCollapseItem>
 
       <!-- ② 从文本截图中截取 -->
+      <NCollapseItem name="screenshot" title="从文本截图中截取">
+        <div class="source-body">
+          <div class="pick-row">
+            <NButton @click="pickImages">选择截图</NButton>
+            <NText v-if="selectedImages.length > 0" depth="3" style="font-size: 12px">
+              已选 {{ selectedImages.length }} 张
+            </NText>
+          </div>
+
+          <div class="run-row">
+            <NButton
+              type="primary"
+              :disabled="selectedImages.length === 0 || projectStore.ocrRunning"
+              @click="startImageOcr"
+            >
+              {{ projectStore.ocrRunning ? "OCR 运行中..." : "开始 OCR" }}
+            </NButton>
+            <template v-if="projectStore.ocrRunning">
+              <NProgress
+                type="line"
+                class="progress"
+                :percentage="Math.round(projectStore.ocrProgress * 100)"
+                :show-indicator="false"
+              />
+              <span class="ocr-msg">{{ projectStore.ocrMessage }}</span>
+            </template>
+          </div>
+        </div>
+      </NCollapseItem>
+
+      <!-- ③ 手动提供文本 -->
       <NCollapseItem
         v-for="key in PLACEHOLDER_KEYS"
         :key="key"
         :name="key"
-        :title="key === 'screenshot' ? '从文本截图中截取' : '手动提供文本'"
+        title="手动提供文本"
       >
         <div class="source-body">
           <div class="placeholder">功能开发中，敬请期待</div>
@@ -252,6 +308,12 @@ const PLACEHOLDER_KEYS = ["screenshot", "manual"];
 }
 
 .run-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.pick-row {
   display: flex;
   align-items: center;
   gap: 12px;

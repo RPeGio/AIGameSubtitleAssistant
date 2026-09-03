@@ -73,6 +73,7 @@ pub fn run() {
             ai_runtime::asr_cancel,
             // ocr 模块
             ocr::run_ocr,
+            ocr::run_ocr_images,
             // asr 模块
             asr::run_asr,
             // llm 模块

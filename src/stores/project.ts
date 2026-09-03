@@ -607,6 +607,32 @@ export const useProjectStore = defineStore("project", () => {
     }
   }
 
+  /// 截图 OCR 语料：用户选择的剧情文本截图 → run_ocr_images → 文本行入 corpus
+  async function runCorpusImageOcr(imagePaths: string[]) {
+    if (ocrRunning.value) return;
+    if (!currentProject.value) throw new Error("请先打开项目");
+    if (imagePaths.length === 0) throw new Error("请先选择截图");
+
+    ocrRunning.value = true;
+    ocrProgress.value = 0;
+    ocrMessage.value = "准备中...";
+    try {
+      const lines = await invoke<string[]>("run_ocr_images", {
+        imagePaths,
+        batchSize: 8,
+      });
+      pushCorpusTexts(lines, "image_ocr");
+      ocrProgress.value = 1;
+      ocrMessage.value = "完成";
+    } catch (e) {
+      ocrProgress.value = 0;
+      ocrMessage.value = "OCR 失败";
+      throw new Error(normalizeOcrError(e));
+    } finally {
+      ocrRunning.value = false;
+    }
+  }
+
   /// 把 IPC/后端错误映射为用户可读的信息，未识别时才回退原文
   function normalizeOcrError(e: unknown): string {
     const msg = String(e);
@@ -645,23 +671,30 @@ export const useProjectStore = defineStore("project", () => {
 
   // ── 文本语料（corpus）─────────────────────────────────
 
-  /// 把 OCR 段文本提取进 corpus（去时间轴，去重），供融合页消费
-  function writeOcrToCorpus(segments: OcrSegment[]) {
-    if (!currentProject.value) return;
+  /// 批量把文本加入 corpus：与现有语料及批内做精确去重，一次撤销快照。
+  /// 返回实际新增条数
+  function pushCorpusTexts(texts: string[], source: CorpusItem["source"]): number {
     const project = currentProject.value;
+    if (!project) return 0;
     const existing = new Set(project.corpus.map((c) => c.text));
     const now = new Date().toISOString();
     const added: CorpusItem[] = [];
-    for (const seg of segments) {
-      const text = seg.text.trim();
+    for (const raw of texts) {
+      const text = raw.trim();
       if (!text || existing.has(text)) continue;
       existing.add(text);
-      added.push({ id: generateId(), text, source: "ocr_track", created_at: now });
+      added.push({ id: generateId(), text, source, created_at: now });
     }
     if (added.length > 0) {
       recordSnapshot();
       project.corpus.push(...added);
     }
+    return added.length;
+  }
+
+  /// 把 OCR 段文本提取进 corpus（去时间轴，去重），供融合页消费
+  function writeOcrToCorpus(segments: OcrSegment[]) {
+    pushCorpusTexts(segments.map((s) => s.text), "ocr_track");
   }
 
   /// 手动添加一条语料（粘贴文本）
@@ -1160,6 +1193,7 @@ export const useProjectStore = defineStore("project", () => {
     ocrProgress,
     ocrMessage,
     runOcr,
+    runCorpusImageOcr,
     writeOcrToCorpus,
     addCorpusItem,
     removeCorpusItem,
