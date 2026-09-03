@@ -7,17 +7,23 @@ import { NButton } from "naive-ui";
 
 const projectStore = useProjectStore();
 
-/// 语料页剧情录屏独立预览：
+/// 视频源独立预览（语料页剧情录屏 / 转写页切片共用）：
 /// - 完全独立于全局时间轴（不写 timeline store、不注册全局空格监听）
-/// - 播放时间通过 v-model 与语料页迷你时间轴共享（视频播放 ↔ 时间轴播放头同步）
+/// - 播放时间通过 v-model 与所在页迷你时间轴共享（视频播放 ↔ 时间轴播放头同步）
 /// - 选区：按当前播放头所在 clip 显示（时间轴可分段添加多条选区），可拖拽调整
+/// - videoKey 决定绑定的视频源（meta/选区控制轨）；缺省 "source" 保持语料页行为
 
-const props = defineProps<{
-  /// 当前播放时间（v-model:time，父层持有共享）
-  time: number;
-  /// 视频总时长（v-model:duration）
-  duration: number;
-}>();
+const props = withDefaults(
+  defineProps<{
+    /// 当前播放时间（v-model:time，父层持有共享）
+    time: number;
+    /// 视频总时长（v-model:duration）
+    duration: number;
+    /// 绑定视频源："source" 剧情录屏（默认，语料页）| "clip" 切片（转写页嵌字 OCR）
+    videoKey?: "source" | "clip";
+  }>(),
+  { videoKey: "source" }
+);
 
 const emit = defineEmits<{
   "update:time": [t: number];
@@ -31,19 +37,26 @@ const loadError = ref<string | null>(null);
 
 const { containerRef, contentRect } = useVideoContentRect();
 
-const src = computed(() => projectStore.sourceVideoMeta?.path ?? "");
+/// 对应视频源的文件路径：clip 用切片视频（项目主视频），source 用剧情录屏
+const src = computed(() => {
+  const meta =
+    props.videoKey === "clip"
+      ? projectStore.currentVideoMeta
+      : projectStore.sourceVideoMeta;
+  return meta?.path ?? "";
+});
 const assetUrl = computed(() => (src.value ? convertFileSrc(src.value) : ""));
 
-/// source 控制轨（可能存在多条选区事件）
-const sourceTrack = computed(() =>
+/// 该视频源绑定的 OCR 选区控制轨（可能存在多条选区事件）
+const regionTrack = computed(() =>
   projectStore.currentProject?.tracks.find(
-    (t) => t.type === "ocr_region" && t.video === "source"
+    (t) => t.type === "ocr_region" && t.video === props.videoKey
   )
 );
 
 /// 当前播放头所在的选区事件；播放头不在任何 clip 内时取最后一个
 const regionEvent = computed(() => {
-  const track = sourceTrack.value;
+  const track = regionTrack.value;
   if (!track) return null;
   const t = props.time;
   const regions = track.events.filter(
@@ -252,8 +265,21 @@ onUnmounted(() => {
 <template>
   <div class="source-preview">
     <div class="preview-header">
-      <NButton size="small" type="primary" @click="projectStore.importSourceVideo()">
+      <NButton
+        v-if="props.videoKey === 'source'"
+        size="small"
+        type="primary"
+        @click="projectStore.importSourceVideo()"
+      >
         更换剧情录屏
+      </NButton>
+      <NButton
+        v-else
+        size="small"
+        type="primary"
+        @click="projectStore.importVideo()"
+      >
+        更换切片视频
       </NButton>
     </div>
 
