@@ -363,37 +363,12 @@ export const useProjectStore = defineStore("project", () => {
     }
   }
 
+  /// 确保校对区基础产物轨存在（无 ocr_text 轨时补一个 mock 供校对总览展示）。
+  /// 不再创建 page=editor 的 OCR 选区控制轨：OCR 生产已迁至语料页（source）
+  /// 与转写页嵌字（clip，page="asr"，见 ensureAsrRegionTrack），避免重复建轨。
   function ensureDefaultTrack(duration: number) {
     if (!currentProject.value) return;
     const tracks = currentProject.value.tracks;
-
-    // OCR 选区轨道：控制轨（页面工作状态），绑定切片视频，归 editor 页。
-    // 精确匹配 video!=="source"：避免语料页的 source 控制轨（同为 ocr_region）被误判为已存在
-    if (!tracks.some((t) => t.type === "ocr_region" && t.video !== "source")) {
-      tracks.push({
-        id: generateId(),
-        name: "OCR 选区",
-        type: "ocr_region",
-        track_role: "game",
-        scope: "control",
-        page: "editor",
-        video: "clip",
-        preview_visible: true,
-        events: [
-          {
-            id: generateId(),
-            start: 0,
-            end: duration,
-            type: "ocr_region",
-            // 默认矩形：宽 60%，高 20%，水平居中，保持在画面偏低位置
-            x1: 0.2,
-            y1: 0.7,
-            x2: 0.8,
-            y2: 0.9,
-          },
-        ],
-      });
-    }
 
     if (!tracks.some((t) => t.type === "ocr_text")) {
       tracks.push({
