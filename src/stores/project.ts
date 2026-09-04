@@ -55,6 +55,40 @@ function embedOcrToEvent(seg: OcrSegment): TimelineEvent {
   };
 }
 
+/// 嵌字段与任一 ASR 段时间重叠 ≥ 该比例（对嵌字段自身时长）时，视为
+/// 语音的冗余文本副本丢弃（游戏角色说话时画面内嵌字幕只是语音的文字版）
+const EMBED_OVERLAP_DROP = 0.5;
+
+/// 收集融合的"游戏内容时间轴段"：game-ASR 段整段 + 无配音处嵌字段填空隙。
+/// 策略（混用场景：任务大多有配音，但主播会找无配音 NPC 对话）：
+/// - ASR 段（track_role=game）全部保留（有配音处占住时间轴）
+/// - 嵌字 OCR 段（track_role=game）与任一 ASR 段重叠 ≥ EMBED_OVERLAP_DROP 则丢弃；
+///   其余（未配音处没有对应语音段）保留，天然嵌入无 ASR 的时间空隙
+/// 合并后按 start 升序、全局编号，转 FuseAsrInput（契约不变）。
+function collectGameContentSegments(tracks: Track[]): FuseAsrInput[] {
+  const overlapRatio = (embed: TimelineEvent, asr: TimelineEvent) => {
+    const s = Math.max(embed.start, asr.start);
+    const e = Math.min(embed.end, asr.end);
+    if (e <= s) return 0;
+    return (e - s) / (embed.end - embed.start);
+  };
+
+  const asr = tracks
+    .filter((t) => t.type === "asr" && t.track_role === "game" && t.events.length > 0)
+    .flatMap((t) => t.events)
+    .filter((e): e is Extract<TimelineEvent, { type: "asr" }> => e.type === "asr");
+
+  const embeds = tracks
+    .filter((t) => t.type === "embed_ocr" && t.track_role === "game" && t.events.length > 0)
+    .flatMap((t) => t.events)
+    .filter((e): e is Extract<TimelineEvent, { type: "embed_ocr" }> => e.type === "embed_ocr")
+    .filter((be) => !asr.some((ae) => overlapRatio(be, ae) >= EMBED_OVERLAP_DROP));
+
+  return [...asr, ...embeds]
+    .sort((a, b) => a.start - b.start)
+    .map((e, i) => ({ index: i + 1, start: e.start, end: e.end, text: e.text }));
+}
+
 function asrSegmentToEvent(seg: AsrSegment): TimelineEvent {
   return {
     id: generateId(),
@@ -747,12 +781,15 @@ export const useProjectStore = defineStore("project", () => {
     () => (currentProject.value?.corpus.length ?? 0) > 0
   );
 
-  /// 时间轴就绪：存在已标记为游戏内容（track_role=game）且非空的 ASR 轨。
-  /// 融合只消费游戏内语音（嵌字轴），主播语音轨（streamer）不参与，
-  /// 因此仅有主播轨时视为未就绪。
+  /// 游戏内容时间轴就绪：存在已标记为游戏内容（track_role=game）且非空的
+  /// ASR 轨或嵌字 OCR 轨（embed_ocr）。融合消费"游戏内容段"（语音 ASR 为主、
+  /// 无配音处由内嵌字幕 OCR 补缺），主播语音轨（streamer）不参与。
   const timelineReady = computed(() =>
     (currentProject.value?.tracks ?? []).some(
-      (t) => t.type === "asr" && t.track_role === "game" && t.events.length > 0
+      (t) =>
+        (t.type === "asr" || t.type === "embed_ocr") &&
+        t.track_role === "game" &&
+        t.events.length > 0
     )
   );
 
@@ -849,32 +886,17 @@ export const useProjectStore = defineStore("project", () => {
     if (fuseRunning.value || !currentProject.value) throw new Error("当前无法执行 AI 融合");
     if (!currentVideoMeta.value) throw new Error("请先导入视频");
 
-    // 可靠文本：优先用 corpus 语料；无语料时回退 ocr_text 轨（旧数据流兼容）
+    // 可靠文本：只来自 corpus 语料（剧情录屏 OCR / 截图 / 手动）。
+    // 不再回退 ocr_text 轨：其曾携带 mock/编辑页历史数据，混作可靠文本会造成错误替换
     const project = currentProject.value;
-    let ocrTexts: string[];
-    if (project.corpus.length > 0) {
-      ocrTexts = project.corpus.map((c) => c.text);
-    } else {
-      const ocrTrack = project.tracks.find((t) => t.type === "ocr_text");
-      ocrTexts = (ocrTrack?.events ?? [])
-        .filter((e): e is Extract<TimelineEvent, { type: "ocr_text" }> => e.type === "ocr_text")
-        .map((e) => e.text);
+    if (project.corpus.length === 0) {
+      throw new Error("请先在语料页收集可靠文本语料（从剧情录屏 OCR 或手动提供）");
     }
+    const ocrTexts = project.corpus.map((c) => c.text);
 
-    // 转写文本：只取已标记为游戏内容（track_role=game）的 ASR 轨。
-    // 主播语音轨（streamer）不参与融合（嵌字轴只替换游戏内语音），
-    // 与 timelineReady 的就绪判定保持一致。
-    const asrSegments: FuseAsrInput[] = project.tracks
-      .filter((t) => t.type === "asr" && t.track_role === "game")
-      .flatMap((t) => t.events)
-      .filter((e): e is Extract<TimelineEvent, { type: "asr" }> => e.type === "asr")
-      .sort((a, b) => a.start - b.start)
-      .map((e, i) => ({
-        index: i + 1,
-        start: e.start,
-        end: e.end,
-        text: e.text,
-      }));
+    // 转写文本：游戏内容时间轴段（game-ASR 整段 + 无配音处嵌字段填空隙，
+    // 时间重叠消解见 collectGameContentSegments），与 timelineReady 就绪口径一致。
+    const asrSegments = collectGameContentSegments(project.tracks);
 
     fuseRunning.value = true;
     llmProgress.value = 0;
