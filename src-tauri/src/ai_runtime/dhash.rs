@@ -93,27 +93,31 @@ pub struct WindowRefine {
     pub sub_changes: Vec<usize>,
 }
 
-/// 在窗口密帧哈希序列上定位帧级变化边界（阶段 1：帧级打轴精度）。
+/// 返回窗口内"内容突变帧"下标序列（相对基准 A 累计判定），按时间升序。
 ///
-/// 判定**相对基准 A**（上一段代表哈希）而非相邻帧 —— 渐变累计超过阈值即命中，
-/// 不会出现"相邻帧差异过小而永远检测不到"的情况。
-/// `sub_changes` 记录主边界后又发生明显变化的下标（窗口内多突变/短字幕，供阶段 2 召回）。
-pub fn refine_window_hashes(hashes: &[u64], base_hash: u64, threshold: u32) -> WindowRefine {
-    let mut main_boundary = None;
-    let mut sub_changes = Vec::new();
-    // 当前段代表：窗口起点应为 A（与 base 相似），主边界后切换为新内容
+/// 首个为 main 边界，后续为 sub（窗口内多突变/短字幕）。空 = 窗口内无变化。
+/// 判定**相对当前代表**而非相邻帧，渐变累计超过阈值即命中。
+pub fn boundary_indices(hashes: &[u64], base_hash: u64, threshold: u32) -> Vec<usize> {
+    let mut boundaries = Vec::new();
     let mut current = base_hash;
-
     for (i, &h) in hashes.iter().enumerate() {
         if hamming_distance(current, h) > threshold {
-            if main_boundary.is_none() {
-                main_boundary = Some(i);
-            } else {
-                sub_changes.push(i);
-            }
+            boundaries.push(i);
             current = h;
         }
     }
+    boundaries
+}
+
+/// 在窗口密帧哈希序列上定位帧级变化边界（阶段 1：帧级打轴精度）。
+///
+/// `sub_changes` 记录主边界后又发生明显变化的下标（多突变/短字幕，阶段 2 召回）。
+/// 变化帧全序列可通过 [`boundary_indices`] 获取（阶段 2 用于区分"真正的下一段
+/// 边界"与"中间的短字幕"，并规避 A→短字幕→C 时误用 main 的边界 bug）。
+pub fn refine_window_hashes(hashes: &[u64], base_hash: u64, threshold: u32) -> WindowRefine {
+    let mut boundaries = boundary_indices(hashes, base_hash, threshold).into_iter();
+    let main_boundary = boundaries.next();
+    let sub_changes = boundaries.collect();
     WindowRefine {
         main_boundary,
         sub_changes,
@@ -264,5 +268,28 @@ mod tests {
         let r = refine_window_hashes(&hashes, 0u64, 3);
         assert_eq!(r.main_boundary, Some(4)); // hamming(0,15)=4 > 3，首超阈值帧
         assert!(r.sub_changes.is_empty());
+    }
+
+    // ── boundary_indices（阶段 2：变化帧全序列）──
+
+    #[test]
+    fn test_boundary_indices_simple_switch() {
+        // A,A,B,B：单一变化 → 序列只有一个边界
+        let hashes = vec![0u64, 0, 0xFFFF, 0xFFFF];
+        assert_eq!(boundary_indices(&hashes, 0u64, 5), vec![2]);
+    }
+
+    #[test]
+    fn test_boundary_indices_short_subtitle() {
+        // A,B'(短字幕),C：两次变化 → main=B'首帧、sub=C 首帧
+        let hashes = vec![0u64, 0, 0x0F0F, 0x0F0F, 0xFFFF, 0xFFFF];
+        // 0 与 0x0F0F 距离大(>5) → main=2；0x0F0F 与 0xFFFF 距离大 → sub=4
+        assert_eq!(boundary_indices(&hashes, 0u64, 5), vec![2, 4]);
+    }
+
+    #[test]
+    fn test_boundary_indices_empty() {
+        let hashes = vec![0u64, 1, 2, 3];
+        assert!(boundary_indices(&hashes, 0u64, 5).is_empty());
     }
 }

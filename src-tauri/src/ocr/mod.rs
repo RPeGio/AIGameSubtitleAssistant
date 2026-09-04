@@ -327,6 +327,28 @@ fn clamp_segment_times(mut segments: Vec<OcrSegment>) -> Vec<OcrSegment> {
     segments
 }
 
+/// 相邻段文本相似（相等/前缀/编辑距离 ≤ 阈值）→ 合并为一段（取更长文本、时间取并集）。
+///
+/// 用于阶段 2 短字幕召回后：dHash 判为变化但 OCR 文本与相邻段相同的"伪短字幕"
+/// （字幕视觉抖动/OCR 抖动）会与相邻段相似，在此合并，避免同一句被拆成碎片。
+fn merge_similar_adjacent(segments: Vec<OcrSegment>, threshold: f64) -> Vec<OcrSegment> {
+    let mut out: Vec<OcrSegment> = Vec::with_capacity(segments.len());
+    for seg in segments {
+        if let Some(last) = out.last_mut() {
+            if similar_text(&last.text, &seg.text, threshold) {
+                last.end = last.end.max(seg.end);
+                if seg.text.chars().count() > last.text.chars().count() {
+                    last.text = seg.text;
+                    last.confidence = seg.confidence;
+                }
+                continue;
+            }
+        }
+        out.push(seg);
+    }
+    out
+}
+
 // ─── 编排命令 ─────────────────────────────────────────────
 
 /// 前端传入的 ocr_region 选区（归一化坐标 + 时间段）
@@ -509,9 +531,11 @@ where
             );
         }
 
-        // ── 窗口精化：帧级主边界（阶段 1）────────────────────
-        // 对每个"切换窗口"（changed 网格帧与其前一网格帧之间）以源帧率抽密帧，
-        // 逐帧 dHash 相对基准 A 定位精确切换帧，修正 changed 帧时间 → 打轴到帧级。
+        // ── 窗口精化：帧级主边界（阶段 1）+ 短字幕召回（阶段 2）────
+        // 对每个"切换窗口"以源帧率抽密帧，逐帧 dHash 相对基准 A：
+        // - 真正的下一段边界 = 最后一个变化帧（而非首个 main，规避 A→短字幕→C 误判）
+        // - 窗口内恰好两次变化时，中间区间为短字幕：≥2 帧则 OCR 中间帧召回为独立段
+        let mut short_segments: Vec<OcrSegment> = Vec::new();
         let changes = if src_fps > 0.0 {
             let dense_interval = 1.0 / src_fps;
             emit(
@@ -548,13 +572,14 @@ where
                                         crate::ai_runtime::dhash::dhash_file(&f.path).ok()
                                     })
                                     .collect();
-                                let refine = crate::ai_runtime::dhash::refine_window_hashes(
+                                let boundaries = crate::ai_runtime::dhash::boundary_indices(
                                     &hashes,
                                     base,
                                     dhash_threshold,
                                 );
-                                if let Some(b) = refine.main_boundary {
-                                    let new_time = lo + b as f64 * dense_interval;
+                                // 下一段（f_k）的真实边界 = 最后一个变化帧
+                                if let Some(&last) = boundaries.last() {
+                                    let new_time = lo + last as f64 * dense_interval;
                                     if new_time < hi {
                                         if dev_debug {
                                             eprintln!(
@@ -564,6 +589,34 @@ where
                                             );
                                         }
                                         fc.frame.time = new_time;
+                                    }
+                                    // 阶段 2：恰好两次变化 → [main, sub[0]) 为短字幕候选
+                                    if boundaries.len() == 2 {
+                                        let (m, s) = (boundaries[0], boundaries[1]);
+                                        if s > m + 1 {
+                                            // 区间中点帧做 OCR（避开切换过渡帧）
+                                            let mid = m + (s - m) / 2;
+                                            if let Some(frame) = dense_frames.get(mid) {
+                                                let path = frame.path.to_string_lossy().to_string();
+                                                if let Ok(res) = manager
+                                                    .with_provider(|p| p.recognize_batch(&[path]))
+                                                {
+                                                    if let Some(r) = res.into_iter().next() {
+                                                        let text = r.text.trim().to_string();
+                                                        if !text.is_empty() {
+                                                            short_segments.push(OcrSegment {
+                                                                start: lo
+                                                                    + m as f64 * dense_interval,
+                                                                end: lo
+                                                                    + s as f64 * dense_interval,
+                                                                confidence: r.confidence,
+                                                                text,
+                                                            });
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -614,10 +667,19 @@ where
             }
         }
 
-        let segments = merge_frames(texts, frame_interval, clip.end, merge_similarity);
-        // 第二遍：孤立短段（渐进中间态/残缺帧）并入相邻完整段
+        let mut segments = merge_frames(texts, frame_interval, clip.end, merge_similarity);
+        // 阶段 2：并入窗口内召回的短字幕段，按时间排序
+        segments.append(&mut short_segments);
+        segments.sort_by(|a, b| {
+            a.start
+                .partial_cmp(&b.start)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        // 第二遍：孤立短段（渐进中间态/残缺帧，含误召回的抖动短字幕）并入相邻完整段
         let segments = merge_fragments(segments, frame_interval);
-        // 第三遍：精化可能让 start 提前 → clamp 相邻段时间，保证单调不重叠
+        // 第三遍：相邻文本相似合并（消除阶段 2 召回的同句碎片/伪短字幕）
+        let segments = merge_similar_adjacent(segments, merge_similarity);
+        // 第四遍：精化可能让 start 提前 → clamp 相邻段时间，保证单调不重叠
         let segments = clamp_segment_times(segments);
         if dev_debug {
             eprintln!("[ocr] clip {}/{}：合并 {} 条事件", i + 1, clip_count, segments.len());
@@ -1007,5 +1069,30 @@ mod tests {
         let out = clamp_segment_times(segs);
         assert!((out[0].end - 3.0).abs() < 1e-9);
         assert!((out[1].end - 9.0).abs() < 1e-9);
+    }
+
+    // ── 相邻相似合并（阶段 2 去伪短字幕）──
+
+    #[test]
+    fn test_merge_similar_adjacent_merges_same_text() {
+        // 完全相同文本的相邻段 → 合并为一段（时间取并集）
+        let segs = vec![
+            OcrSegment { start: 1.0, end: 3.0, text: "卡侬\n…那是我本职工作的一部分。".into(), confidence: 0.9 },
+            OcrSegment { start: 3.0, end: 3.2, text: "卡侬\n…那是我本职工作的一部分。".into(), confidence: 0.9 },
+        ];
+        let out = merge_similar_adjacent(segs, 0.3);
+        assert_eq!(out.len(), 1);
+        assert!((out[0].end - 3.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_merge_similar_adjacent_keeps_distinct() {
+        // 文本差异大的相邻段 → 不合并
+        let segs = vec![
+            OcrSegment { start: 1.0, end: 3.0, text: "卡侬".into(), confidence: 0.9 },
+            OcrSegment { start: 3.0, end: 5.0, text: "获得".into(), confidence: 0.9 },
+        ];
+        let out = merge_similar_adjacent(segs, 0.3);
+        assert_eq!(out.len(), 2);
     }
 }
