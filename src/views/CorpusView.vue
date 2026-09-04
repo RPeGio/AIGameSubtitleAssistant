@@ -5,10 +5,12 @@ import SourceVideoPreview from "../components/SourceVideoPreview.vue";
 import SourceTimeline from "../components/SourceTimeline.vue";
 import type { OcrRunParams } from "../types";
 import { open } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
 import {
   NButton,
   NCollapse,
   NCollapseItem,
+  NInput,
   NInputNumber,
   NProgress,
   NText,
@@ -69,15 +71,63 @@ async function startImageOcr() {
   }
 }
 
+// ── "手动提供文本" ────────────────────────────────────
+const manualText = ref("");
+
+/// 实时解析预览：拆行 → trim → 丢空行（\r 随 trim 去除，兼容 Windows 换行）
+const parsedLines = computed(() =>
+  manualText.value
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+);
+
+/// 与 pushCorpusTexts 相同的去重规则预计数：新增条数 / 跳过重复条数
+const previewStats = computed(() => {
+  const existing = new Set(
+    (projectStore.currentProject?.corpus ?? []).map((c) => c.text)
+  );
+  let fresh = 0;
+  let dup = 0;
+  for (const line of parsedLines.value) {
+    if (existing.has(line)) {
+      dup++;
+    } else {
+      existing.add(line);
+      fresh++;
+    }
+  }
+  return { fresh, dup };
+});
+
+async function importTxt() {
+  const selected = await open({
+    multiple: false,
+    title: "选择文本文件",
+    filters: [{ name: "文本文件", extensions: ["txt"] }],
+  });
+  if (!selected) return;
+  try {
+    manualText.value = await invoke<string>("read_text_file", {
+      path: selected,
+    });
+  } catch (e) {
+    message.error(String(e));
+  }
+}
+
+function addManualCorpus() {
+  const added = projectStore.pushCorpusTexts(parsedLines.value, "paste");
+  message.success(`已添加 ${added} 条语料`);
+  manualText.value = "";
+}
+
 // ── 语料列表 ──────────────────────────────────────────
 const corpus = computed(() => projectStore.currentProject?.corpus ?? []);
 
 function removeItem(id: string) {
   projectStore.removeCorpusItem(id);
 }
-
-// ── 占位标签 ──────────────────────────────────────────
-const PLACEHOLDER_KEYS = ["manual"];
 </script>
 
 <template>
@@ -218,14 +268,40 @@ const PLACEHOLDER_KEYS = ["manual"];
       </NCollapseItem>
 
       <!-- ③ 手动提供文本 -->
-      <NCollapseItem
-        v-for="key in PLACEHOLDER_KEYS"
-        :key="key"
-        :name="key"
-        title="手动提供文本"
-      >
+      <NCollapseItem name="manual" title="手动提供文本">
         <div class="source-body">
-          <div class="placeholder">功能开发中，敬请期待</div>
+          <NInput
+            v-model:value="manualText"
+            type="textarea"
+            :rows="6"
+            placeholder="粘贴游戏文本，每行一条；空行自动忽略，重复行自动跳过"
+          />
+
+          <div class="pick-row">
+            <NButton @click="importTxt">导入 .txt</NButton>
+            <NText depth="3" style="font-size: 12px">仅支持 UTF-8 编码的 txt</NText>
+          </div>
+
+          <template v-if="parsedLines.length > 0">
+            <NText depth="3" style="font-size: 12px">
+              将新增 {{ previewStats.fresh }} 条<template v-if="previewStats.dup > 0">，跳过重复 {{ previewStats.dup }} 条</template>
+            </NText>
+            <div class="preview-list">
+              <div v-for="(line, i) in parsedLines" :key="i" class="preview-item">
+                {{ line }}
+              </div>
+            </div>
+          </template>
+
+          <div class="run-row">
+            <NButton
+              type="primary"
+              :disabled="previewStats.fresh === 0"
+              @click="addManualCorpus"
+            >
+              添加到语料
+            </NButton>
+          </div>
         </div>
       </NCollapseItem>
     </NCollapse>
@@ -329,13 +405,21 @@ const PLACEHOLDER_KEYS = ["manual"];
   color: var(--color-text-secondary);
 }
 
-.placeholder {
-  padding: 32px;
-  border: 1px dashed var(--color-border);
+.preview-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 150px;
+  overflow: auto;
+  padding: 8px 12px;
+  background: var(--color-bg-secondary);
   border-radius: 8px;
-  text-align: center;
-  font-size: 13px;
-  color: var(--color-text-secondary);
+}
+
+.preview-item {
+  font-size: 12px;
+  color: var(--color-text-primary);
+  word-break: break-all;
 }
 
 .corpus-title {

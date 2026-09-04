@@ -1196,6 +1196,7 @@ export const useProjectStore = defineStore("project", () => {
     runCorpusImageOcr,
     writeOcrToCorpus,
     addCorpusItem,
+    pushCorpusTexts,
     removeCorpusItem,
     corpusReady,
     timelineReady,

@@ -62,6 +62,7 @@ pub fn run() {
             project::open_project,
             project::save_project,
             project::set_project_video,
+            project::read_text_file,
             project::list_recent_projects,
             // video 模块
             video::get_video_metadata,
