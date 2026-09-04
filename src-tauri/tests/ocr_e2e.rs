@@ -60,6 +60,7 @@ fn test_t3_end_to_end() {
         meta.height,
         &clips,
         &params,
+        meta.fps,
         |_, _, _, _| {},
     )
     .expect("OCR 流水线失败");

@@ -314,6 +314,19 @@ pub fn merge_fragments(segments: Vec<OcrSegment>, interval: f64) -> Vec<OcrSegme
     out
 }
 
+/// 修正相邻段时间重叠：段 `end` 不得超过下一段 `start`。
+///
+/// 阶段 1 的窗口精化会把 changed 帧 `start` 提前到帧级边界，而 `end` 仍按
+/// 网格 `last + interval` 计算，可能产生交叉/重叠 → 统一 clamp 保证时间单调。
+fn clamp_segment_times(mut segments: Vec<OcrSegment>) -> Vec<OcrSegment> {
+    for i in 1..segments.len() {
+        if segments[i - 1].end > segments[i].start {
+            segments[i - 1].end = segments[i].start;
+        }
+    }
+    segments
+}
+
 // ─── 编排命令 ─────────────────────────────────────────────
 
 /// 前端传入的 ocr_region 选区（归一化坐标 + 时间段）
@@ -375,10 +388,12 @@ pub fn fmt_time(s: f64) -> String {
     format!("{:02}:{:02}.{:03}", min, sec, ms)
 }
 
-/// 串起完整 OCR 流水线（抽帧 → 变化检测 → OCR → 合并）。
+/// 串起完整 OCR 流水线（抽帧 → 变化检测 → 窗口精化 → OCR → 合并）。
 ///
 /// 抽取为独立函数便于集成测试直接调用（不依赖 Tauri 命令栈）。
+/// `src_fps`：源视频帧率，>0 时启用切换窗口的帧级主边界精化（阶段 1）。
 /// `on_progress(clip_index, clip_count, progress, message)` 每次阶段推进调用一次。
+#[allow(clippy::too_many_arguments)] // 参数为流水线依赖的显式事实，不聚合为结构体以保持可测性
 pub fn run_ocr_pipeline<F>(
     manager: &OcrManager,
     video_path: &str,
@@ -386,6 +401,7 @@ pub fn run_ocr_pipeline<F>(
     video_h: u32,
     region_clips: &[OcrRegionInput],
     params: &OcrRunParams,
+    src_fps: f64,
     mut on_progress: F,
 ) -> Result<Vec<OcrSegment>, String>
 where
@@ -493,6 +509,75 @@ where
             );
         }
 
+        // ── 窗口精化：帧级主边界（阶段 1）────────────────────
+        // 对每个"切换窗口"（changed 网格帧与其前一网格帧之间）以源帧率抽密帧，
+        // 逐帧 dHash 相对基准 A 定位精确切换帧，修正 changed 帧时间 → 打轴到帧级。
+        let changes = if src_fps > 0.0 {
+            let dense_interval = 1.0 / src_fps;
+            emit(
+                i,
+                (i as f64 + 0.55) / clip_count as f64,
+                format!("精化边界 {}/{}", i + 1, clip_count),
+            );
+            let mut refined: Vec<crate::ai_runtime::dhash::FrameChange> =
+                Vec::with_capacity(changes.len());
+            for idx in 0..changes.len() {
+                let mut fc = changes[idx].clone();
+                if fc.is_changed && idx > 0 {
+                    if let Some(base) = fc.base_hash {
+                        let lo = changes[idx - 1].frame.time;
+                        let hi = fc.frame.time;
+                        if hi > lo {
+                            let dense_dir = clip_dir.join(format!("dense_{}", idx));
+                            if let Ok(dense_frames) = crate::video::extract_frames(
+                                video_path,
+                                lo,
+                                hi,
+                                clip.x1,
+                                clip.y1,
+                                clip.x2,
+                                clip.y2,
+                                video_w,
+                                video_h,
+                                dense_interval,
+                                &dense_dir,
+                            ) {
+                                let hashes: Vec<u64> = dense_frames
+                                    .iter()
+                                    .filter_map(|f| {
+                                        crate::ai_runtime::dhash::dhash_file(&f.path).ok()
+                                    })
+                                    .collect();
+                                let refine = crate::ai_runtime::dhash::refine_window_hashes(
+                                    &hashes,
+                                    base,
+                                    dhash_threshold,
+                                );
+                                if let Some(b) = refine.main_boundary {
+                                    let new_time = lo + b as f64 * dense_interval;
+                                    if new_time < hi {
+                                        if dev_debug {
+                                            eprintln!(
+                                                "[ocr]   精化边界 [{} → {}]",
+                                                fmt_time(fc.frame.time),
+                                                fmt_time(new_time)
+                                            );
+                                        }
+                                        fc.frame.time = new_time;
+                                    }
+                                }
+                            }
+                            // 窗口抽帧失败不阻断主流程，保持网格时间
+                        }
+                    }
+                }
+                refined.push(fc);
+            }
+            refined
+        } else {
+            changes
+        };
+
         emit(
             i,
             (i as f64 + 0.6) / clip_count as f64,
@@ -532,6 +617,8 @@ where
         let segments = merge_frames(texts, frame_interval, clip.end, merge_similarity);
         // 第二遍：孤立短段（渐进中间态/残缺帧）并入相邻完整段
         let segments = merge_fragments(segments, frame_interval);
+        // 第三遍：精化可能让 start 提前 → clamp 相邻段时间，保证单调不重叠
+        let segments = clamp_segment_times(segments);
         if dev_debug {
             eprintln!("[ocr] clip {}/{}：合并 {} 条事件", i + 1, clip_count, segments.len());
             for seg in &segments {
@@ -566,6 +653,10 @@ pub async fn run_ocr(
 
     tauri::async_runtime::spawn_blocking(move || {
         let manager = app_handle.state::<OcrManager>();
+        // 窗口精化需要源帧率：内部探测一次（毫秒级），不新增前端参数
+        let src_fps = crate::video::get_video_metadata(video_path.clone())
+            .map(|m| m.fps)
+            .unwrap_or(0.0);
         run_ocr_pipeline(
             &manager,
             &video_path,
@@ -573,6 +664,7 @@ pub async fn run_ocr(
             video_h,
             &region_clips,
             &params,
+            src_fps,
             |clip_index, clip_count, progress, message| {
                 let _ = app_handle.emit(
                     OCR_PROGRESS_EVENT,
@@ -638,6 +730,7 @@ mod tests {
                 time,
             },
             is_changed: changed,
+            base_hash: None,
         }
     }
 
@@ -887,5 +980,32 @@ mod tests {
         ];
         let out = merge_fragments(segs, 0.5);
         assert_eq!(out.len(), 2);
+    }
+
+    // ── 相邻段时间 clamp（精化后防重叠）──
+
+    #[test]
+    fn test_clamp_segment_times_no_overlap() {
+        // 前段 end 与后段 start 交叉 → clamp 到后段 start
+        let segs = vec![
+            OcrSegment { start: 1.0, end: 5.0, text: "A".into(), confidence: 0.9 },
+            OcrSegment { start: 3.0, end: 8.0, text: "B".into(), confidence: 0.9 },
+        ];
+        let out = clamp_segment_times(segs);
+        assert_eq!(out.len(), 2);
+        assert!((out[0].end - 3.0).abs() < 1e-9);
+        assert!((out[1].start - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_clamp_segment_times_keeps_gap() {
+        // 本就无重叠 → 时间不变
+        let segs = vec![
+            OcrSegment { start: 1.0, end: 3.0, text: "A".into(), confidence: 0.9 },
+            OcrSegment { start: 5.0, end: 9.0, text: "B".into(), confidence: 0.9 },
+        ];
+        let out = clamp_segment_times(segs);
+        assert!((out[0].end - 3.0).abs() < 1e-9);
+        assert!((out[1].end - 9.0).abs() < 1e-9);
     }
 }

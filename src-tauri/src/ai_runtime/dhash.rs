@@ -45,6 +45,8 @@ pub struct FrameChange {
     pub frame: crate::video::ExtractedFrame,
     /// true → 相对最近一次已 OCR 的帧有明显变化，需要 OCR
     pub is_changed: bool,
+    /// changed 帧"与之不同的上一段代表哈希"（窗口精化的基准 A；非 changed 帧为 None）
+    pub base_hash: Option<u64>,
 }
 
 /// 对帧序列做变化检测。
@@ -60,9 +62,15 @@ pub fn detect_changes(
 
     for frame in frames {
         let hash = dhash_file(&frame.path)?;
-        let is_changed = match last_ocr_hash {
-            None => true,
-            Some(prev) => hamming_distance(prev, hash) > threshold,
+        let (is_changed, base_hash) = match last_ocr_hash {
+            None => (true, None),
+            Some(prev) => {
+                if hamming_distance(prev, hash) > threshold {
+                    (true, Some(prev))
+                } else {
+                    (false, None)
+                }
+            }
         };
         if is_changed {
             last_ocr_hash = Some(hash);
@@ -70,9 +78,46 @@ pub fn detect_changes(
         result.push(FrameChange {
             frame: frame.clone(),
             is_changed,
+            base_hash,
         });
     }
     Ok(result)
+}
+
+/// 窗口精化的结果
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowRefine {
+    /// 第一个与基准 A 距离 > 阈值（内容已明显变化）的窗口帧下标
+    pub main_boundary: Option<usize>,
+    /// main_boundary 之后内容又相对当前代表发生变化的帧下标（多突变/短字幕，阶段 2 用）
+    pub sub_changes: Vec<usize>,
+}
+
+/// 在窗口密帧哈希序列上定位帧级变化边界（阶段 1：帧级打轴精度）。
+///
+/// 判定**相对基准 A**（上一段代表哈希）而非相邻帧 —— 渐变累计超过阈值即命中，
+/// 不会出现"相邻帧差异过小而永远检测不到"的情况。
+/// `sub_changes` 记录主边界后又发生明显变化的下标（窗口内多突变/短字幕，供阶段 2 召回）。
+pub fn refine_window_hashes(hashes: &[u64], base_hash: u64, threshold: u32) -> WindowRefine {
+    let mut main_boundary = None;
+    let mut sub_changes = Vec::new();
+    // 当前段代表：窗口起点应为 A（与 base 相似），主边界后切换为新内容
+    let mut current = base_hash;
+
+    for (i, &h) in hashes.iter().enumerate() {
+        if hamming_distance(current, h) > threshold {
+            if main_boundary.is_none() {
+                main_boundary = Some(i);
+            } else {
+                sub_changes.push(i);
+            }
+            current = h;
+        }
+    }
+    WindowRefine {
+        main_boundary,
+        sub_changes,
+    }
 }
 
 // ─── 单元测试 ─────────────────────────────────────────────
@@ -181,5 +226,43 @@ mod tests {
         assert!(changes[0].is_changed);
         assert!(changes[1].is_changed);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ── 窗口精化（refine_window_hashes）──
+
+    #[test]
+    fn test_refine_window_main_boundary() {
+        // 窗口内 A,A,B,B：突变 → 主边界在第一个 B
+        let hashes = vec![0u64, 0, 0xFFFF, 0xFFFF];
+        let r = refine_window_hashes(&hashes, 0u64, 5);
+        assert_eq!(r.main_boundary, Some(2));
+        assert!(r.sub_changes.is_empty());
+    }
+
+    #[test]
+    fn test_refine_window_no_change() {
+        // 窗口内全部与基准 A 相似 → 无边界
+        let hashes = vec![0u64, 1, 2, 3];
+        let r = refine_window_hashes(&hashes, 0u64, 5);
+        assert_eq!(r.main_boundary, None);
+        assert!(r.sub_changes.is_empty());
+    }
+
+    #[test]
+    fn test_refine_window_sub_change() {
+        // A,B,A：主边界后内容又变回 A（短字幕出现又消失）
+        let hashes = vec![0u64, 0xFFFF, 0xFFFF, 0x0001];
+        let r = refine_window_hashes(&hashes, 0u64, 5);
+        assert_eq!(r.main_boundary, Some(1));
+        assert_eq!(r.sub_changes, vec![3]);
+    }
+
+    #[test]
+    fn test_refine_window_gradual_cumulative() {
+        // 渐变累计：逐帧微小偏离 A（1,2,3,4...位），超过阈值（3）后才命中
+        let hashes = vec![0u64, 1, 3, 7, 15, 31];
+        let r = refine_window_hashes(&hashes, 0u64, 3);
+        assert_eq!(r.main_boundary, Some(4)); // hamming(0,15)=4 > 3，首超阈值帧
+        assert!(r.sub_changes.is_empty());
     }
 }
