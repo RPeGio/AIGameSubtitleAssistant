@@ -61,7 +61,13 @@ const focusedTrack = computed(() => {
 const isRegionTrack = computed(() => focusedTrack.value?.type === "ocr_region");
 const isTextTrack = computed(() => {
   const type = focusedTrack.value?.type;
-  return type === "ocr_text" || type === "asr" || type === "fused" || type === "manual";
+  return (
+    type === "ocr_text" ||
+    type === "embed_ocr" ||
+    type === "asr" ||
+    type === "fused" ||
+    type === "manual"
+  );
 });
 
 // 按开始时间升序排列的 clip（序号按此编排）
