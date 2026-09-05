@@ -38,12 +38,12 @@ fn test_t3_end_to_end() {
         get_video_metadata(video.to_string_lossy().into_owned()).expect("读取视频元数据失败");
     assert_eq!(meta.width, 1920);
 
-    // 来自 t3 项目 project.json 的 4 段选区
+    // 来自 t3 项目 project.json 语料区 OCR 选区轨（用户调整后的选区，已去除其它画面噪声）
     let clips = vec![
-        OcrRegionInput { start: 0.0, end: 36.373, x1: 0.2, y1: 0.7, x2: 0.8, y2: 0.9 },
-        OcrRegionInput { start: 36.373, end: 40.798, x1: 0.285, y1: 0.397, x2: 0.716, y2: 0.567 },
-        OcrRegionInput { start: 40.798, end: 153.263, x1: 0.131, y1: 0.782, x2: 0.877, y2: 0.942 },
-        OcrRegionInput { start: 153.263, end: 369.983, x1: 0.353, y1: 0.404, x2: 0.662, y2: 0.548 },
+        OcrRegionInput { start: 36.373, end: 40.798, x1: 0.200, y1: 0.700, x2: 0.800, y2: 0.900 },
+        OcrRegionInput { start: 43.330, end: 150.298, x1: 0.152, y1: 0.745, x2: 0.853, y2: 0.994 },
+        OcrRegionInput { start: 153.263, end: 157.763, x1: 0.200, y1: 0.383, x2: 0.800, y2: 0.583 },
+        OcrRegionInput { start: 178.277, end: 201.978, x1: 0.270, y1: 0.000, x2: 0.742, y2: 0.971 },
     ];
     let params = OcrRunParams {
         frame_interval: 1.0,

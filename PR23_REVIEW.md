@@ -90,7 +90,7 @@ P1-1（性能，长视频实际瓶颈，需谨慎重试并实测）→ P1-2（dH
 
 ### 重构
 - 把内联的精化循环提取为 `pub fn refine_window_changes(...)`（`src-tauri/src/ocr/mod.rs`），行为保持，便于集成测试/基准直接调用。
-- 新增 `src-tauri/tests/bench_refinement.rs`（`#[ignore]` 基准，运行 `cargo test --release --test bench_refinement -- --ignored --nocapture`），隔离测量精化耗时。
+- 新增 `src-tauri/tests/ocr_bench_refinement.rs`（`#[ignore]` 基准，运行 `cargo test --release --test ocr_bench_refinement -- --ignored --nocapture`），隔离测量精化耗时。
 
 ### P1-1 性能优化
 - **方案**：整段一次性抽密帧（每 clip 一次 FFmpeg 调用）替代逐 changed 帧抽帧，再按时间切片到各窗口；加 `MAX_WHOLE_FRAMES=30000` 帧数上限守卫，超限退回逐窗口抽帧（避免长视频密帧文件爆炸）。

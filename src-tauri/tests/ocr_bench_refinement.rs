@@ -1,5 +1,5 @@
 //! 基准：测量窗口精化（refine_window_changes）耗时，隔离于整体 OCR 流水线。
-//! 运行：cargo test --release --test bench_refinement -- --ignored --nocapture
+//! 运行：cargo test --release --test ocr_bench_refinement -- --ignored --nocapture
 
 use ai_game_subtitle_assistant_lib::ai_runtime::config::RuntimeConfig;
 use ai_game_subtitle_assistant_lib::ai_runtime::dhash::detect_changes;
