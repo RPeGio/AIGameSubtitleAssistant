@@ -13,7 +13,7 @@
 use crate::ai_runtime::dhash::FrameChange;
 use crate::ai_runtime::{OcrError, OcrManager, OcrResult};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
@@ -349,6 +349,164 @@ fn merge_similar_adjacent(segments: Vec<OcrSegment>, threshold: f64) -> Vec<OcrS
     out
 }
 
+/// 对每个 changed 帧做窗口精化：以源帧率抽密帧，逐帧 dHash 相对基准 A，
+/// 计算帧级主边界（阶段 1）+ 召回窗口内短字幕（阶段 2）。
+///
+/// 返回 `(精化后的 changes, 召回的短字幕段)`。
+/// 单独成函数便于集成测试/基准直接调用，不依赖 Tauri 命令栈。
+///
+/// 性能策略：整段一次性抽密帧（一次 FFmpeg 调用，避免每个变化帧各 spawn 一次，
+/// 实测逐窗口抽帧是主要开销），再按时间切片到各窗口；整段密帧数超过阈值时
+/// 退回逐窗口抽帧（避免长视频密帧文件爆炸）。
+#[allow(clippy::too_many_arguments)]
+pub fn refine_window_changes(
+    changes: &[crate::ai_runtime::dhash::FrameChange],
+    video_path: &str,
+    clip: &OcrRegionInput,
+    video_w: u32,
+    video_h: u32,
+    src_fps: f64,
+    dhash_threshold: u32,
+    clip_dir: &Path,
+    manager: &crate::ai_runtime::OcrManager,
+    dev_debug: bool,
+) -> (Vec<crate::ai_runtime::dhash::FrameChange>, Vec<OcrSegment>) {
+    let dense_interval = 1.0 / src_fps;
+    let mut short_segments: Vec<OcrSegment> = Vec::new();
+    let mut refined: Vec<crate::ai_runtime::dhash::FrameChange> =
+        Vec::with_capacity(changes.len());
+
+    // 整段密帧数估算：超过阈值则退回逐窗口抽帧，避免长视频密帧文件爆炸
+    let whole_count = ((clip.end - clip.start) / dense_interval).ceil() as usize;
+    const MAX_WHOLE_FRAMES: usize = 30_000;
+    let mut use_whole = whole_count <= MAX_WHOLE_FRAMES;
+
+    // 整段一次性抽密帧（一次 FFmpeg 调用）；失败则置 use_whole=false 退回逐窗口
+    let whole_frames: Vec<crate::video::ExtractedFrame> = if use_whole {
+        let dense_dir = clip_dir.join("dense_whole");
+        match crate::video::extract_frames(
+            video_path,
+            clip.start,
+            clip.end,
+            clip.x1,
+            clip.y1,
+            clip.x2,
+            clip.y2,
+            video_w,
+            video_h,
+            dense_interval,
+            &dense_dir,
+        ) {
+            Ok(frames) => frames,
+            Err(_) => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+    use_whole = use_whole && !whole_frames.is_empty();
+
+    for idx in 0..changes.len() {
+        let mut fc = changes[idx].clone();
+        if fc.is_changed && idx > 0 {
+            if let Some(base) = fc.base_hash {
+                let lo = changes[idx - 1].frame.time;
+                let hi = fc.frame.time;
+                if hi > lo {
+                    // 窗口内密帧及其哈希，按 (time, hash, path) 对齐：任一帧 dHash 失败
+                    // 只丢弃该帧，不破坏后续下标（修复 P1-2 索引错位）。
+                    let window: Vec<(f64, u64, String)> = if use_whole {
+                        whole_frames
+                            .iter()
+                            .filter(|f| f.time >= lo && f.time < hi)
+                            .filter_map(|f| {
+                                crate::ai_runtime::dhash::dhash_file(&f.path)
+                                    .ok()
+                                    .map(|h| (f.time, h, f.path.to_string_lossy().to_string()))
+                            })
+                            .collect()
+                    } else {
+                        let dense_dir = clip_dir.join(format!("dense_{}", idx));
+                        let Ok(dense_frames) = crate::video::extract_frames(
+                            video_path,
+                            lo,
+                            hi,
+                            clip.x1,
+                            clip.y1,
+                            clip.x2,
+                            clip.y2,
+                            video_w,
+                            video_h,
+                            dense_interval,
+                            &dense_dir,
+                        ) else {
+                            // 窗口抽帧失败不阻断主流程，保持网格时间
+                            refined.push(fc);
+                            continue;
+                        };
+                        dense_frames
+                            .iter()
+                            .filter_map(|f| {
+                                crate::ai_runtime::dhash::dhash_file(&f.path)
+                                    .ok()
+                                    .map(|h| (f.time, h, f.path.to_string_lossy().to_string()))
+                            })
+                            .collect()
+                    };
+                    let hashes: Vec<u64> = window.iter().map(|(_, h, _)| *h).collect();
+                    let boundaries =
+                        crate::ai_runtime::dhash::boundary_indices(&hashes, base, dhash_threshold);
+                    // 下一段（f_k）的真实边界 = 最后一个变化帧
+                    if let Some(&last) = boundaries.last() {
+                        // 用窗口内实际帧时间（而非 lo + last*interval），整段切片时
+                        // 窗口首帧未必恰在 lo，更精确也避免假设
+                        let new_time = window[last].0;
+                        if new_time < hi {
+                            if dev_debug {
+                                eprintln!(
+                                    "[ocr]   精化边界 [{} → {}]",
+                                    fmt_time(fc.frame.time),
+                                    fmt_time(new_time)
+                                );
+                            }
+                            fc.frame.time = new_time;
+                        }
+                        // 阶段 2：恰好两次变化 → [main, sub[0]) 为短字幕候选
+                        if boundaries.len() == 2 {
+                            let (m, s) = (boundaries[0], boundaries[1]);
+                            if s > m + 1 {
+                                // 区间中点帧做 OCR（避开切换过渡帧）
+                                let mid = m + (s - m) / 2;
+                                if let Some((_, _, path)) = window.get(mid) {
+                                    let path = path.clone();
+                                    if let Ok(res) = manager
+                                        .with_provider(|p| p.recognize_batch(&[path]))
+                                    {
+                                        if let Some(r) = res.into_iter().next() {
+                                            let text = r.text.trim().to_string();
+                                            if !text.is_empty() {
+                                                short_segments.push(OcrSegment {
+                                                    start: lo
+                                                        + m as f64 * dense_interval,
+                                                    end: lo
+                                                        + s as f64 * dense_interval,
+                                                    confidence: r.confidence,
+                                                    text,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        refined.push(fc);
+    }
+    (refined, short_segments)
+}
+
 // ─── 编排命令 ─────────────────────────────────────────────
 
 /// 前端传入的 ocr_region 选区（归一化坐标 + 时间段）
@@ -535,101 +693,28 @@ where
         // 对每个"切换窗口"以源帧率抽密帧，逐帧 dHash 相对基准 A：
         // - 真正的下一段边界 = 最后一个变化帧（而非首个 main，规避 A→短字幕→C 误判）
         // - 窗口内恰好两次变化时，中间区间为短字幕：≥2 帧则 OCR 中间帧召回为独立段
-        let mut short_segments: Vec<OcrSegment> = Vec::new();
-        let changes = if src_fps > 0.0 {
-            let dense_interval = 1.0 / src_fps;
+        let (changes, mut short_segments) = if src_fps > 0.0 {
             emit(
                 i,
                 (i as f64 + 0.55) / clip_count as f64,
                 format!("精化边界 {}/{}", i + 1, clip_count),
             );
-            let mut refined: Vec<crate::ai_runtime::dhash::FrameChange> =
-                Vec::with_capacity(changes.len());
-            for idx in 0..changes.len() {
-                let mut fc = changes[idx].clone();
-                if fc.is_changed && idx > 0 {
-                    if let Some(base) = fc.base_hash {
-                        let lo = changes[idx - 1].frame.time;
-                        let hi = fc.frame.time;
-                        if hi > lo {
-                            let dense_dir = clip_dir.join(format!("dense_{}", idx));
-                            if let Ok(dense_frames) = crate::video::extract_frames(
-                                video_path,
-                                lo,
-                                hi,
-                                clip.x1,
-                                clip.y1,
-                                clip.x2,
-                                clip.y2,
-                                video_w,
-                                video_h,
-                                dense_interval,
-                                &dense_dir,
-                            ) {
-                                let hashes: Vec<u64> = dense_frames
-                                    .iter()
-                                    .filter_map(|f| {
-                                        crate::ai_runtime::dhash::dhash_file(&f.path).ok()
-                                    })
-                                    .collect();
-                                let boundaries = crate::ai_runtime::dhash::boundary_indices(
-                                    &hashes,
-                                    base,
-                                    dhash_threshold,
-                                );
-                                // 下一段（f_k）的真实边界 = 最后一个变化帧
-                                if let Some(&last) = boundaries.last() {
-                                    let new_time = lo + last as f64 * dense_interval;
-                                    if new_time < hi {
-                                        if dev_debug {
-                                            eprintln!(
-                                                "[ocr]   精化边界 [{} → {}]",
-                                                fmt_time(fc.frame.time),
-                                                fmt_time(new_time)
-                                            );
-                                        }
-                                        fc.frame.time = new_time;
-                                    }
-                                    // 阶段 2：恰好两次变化 → [main, sub[0]) 为短字幕候选
-                                    if boundaries.len() == 2 {
-                                        let (m, s) = (boundaries[0], boundaries[1]);
-                                        if s > m + 1 {
-                                            // 区间中点帧做 OCR（避开切换过渡帧）
-                                            let mid = m + (s - m) / 2;
-                                            if let Some(frame) = dense_frames.get(mid) {
-                                                let path = frame.path.to_string_lossy().to_string();
-                                                if let Ok(res) = manager
-                                                    .with_provider(|p| p.recognize_batch(&[path]))
-                                                {
-                                                    if let Some(r) = res.into_iter().next() {
-                                                        let text = r.text.trim().to_string();
-                                                        if !text.is_empty() {
-                                                            short_segments.push(OcrSegment {
-                                                                start: lo
-                                                                    + m as f64 * dense_interval,
-                                                                end: lo
-                                                                    + s as f64 * dense_interval,
-                                                                confidence: r.confidence,
-                                                                text,
-                                                            });
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            // 窗口抽帧失败不阻断主流程，保持网格时间
-                        }
-                    }
-                }
-                refined.push(fc);
-            }
-            refined
+            refine_window_changes(
+                &changes,
+                video_path,
+                clip,
+                video_w,
+                video_h,
+                src_fps,
+                dhash_threshold,
+                &clip_dir,
+                manager,
+                dev_debug,
+            )
         } else {
-            changes
+            (changes, Vec::new())
         };
+
 
         emit(
             i,
