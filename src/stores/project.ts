@@ -586,6 +586,7 @@ export const useProjectStore = defineStore("project", () => {
         videoPath: meta.path,
         videoW: meta.width,
         videoH: meta.height,
+        srcFps: meta.fps,
         regionClips,
         params,
       });
