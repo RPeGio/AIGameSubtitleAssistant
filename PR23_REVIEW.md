@@ -38,31 +38,31 @@
 
 - **位置**：`src-tauri/src/ocr/mod.rs:150-152`
 - **问题**：`a.starts_with(b) || b.starts_with(a)` 较激进，两条本应独立的连续字幕若一条是另一条前缀（如"派蒙" 与 "派蒙：旅行者你来了"），会被 `merge_similar_adjacent` 合并。对同句碎片合理，但可能吞掉真实两行。建议前缀匹配加长度/置信度约束。
-- **状态**：⬜ 未修复
+- **状态**：✅ 已修复（仅当较短文本 ≥ 较长文本 1/3 时判定前缀，既保留"旅行者，你来了"→"旅行者，你来了。前方似乎有东西在等待。"（37%）这类渐进文本，又拒绝"派蒙"（22%）这类过短前缀；`test_merge_similar_prefix_extends` 通过）
 
 ### P2-2 `merge_similar_adjacent` 取"更长文本"但未校验置信度
 
 - **位置**：`src-tauri/src/ocr/mod.rs:334-354`
 - **问题**：合并时只按字数选更长，可能用更长但置信度更低的乱码文本覆盖干净短的文本。建议文本更长且置信度不低于原段时才替换，或复用 `vote_text` 多数投票。
-- **状态**：⬜ 未修复
+- **状态**：✅ 已修复（仅当更长且置信度不低于原段时才替换文本）
 
 ### P2-3 `run_ocr` 内部重复探测视频元数据取 fps
 
-- **位置**：`src-tauri/src/ocr/mod.rs:719`
+- **位置**：`src-tauri/src/ocr/mod.rs`（`run_ocr` 命令）
 - **问题**：`run_ocr` 在 `spawn_blocking` 里又调一次 `get_video_metadata(video_path)` 取 fps。前端已传 `video_w/video_h`（同样来自元数据），可顺带把 fps 作为参数传入，省一次 ffprobe 调用。
-- **状态**：⬜ 未修复
+- **状态**：✅ 已修复（`run_ocr` 命令新增 `src_fps` 参数，前端 `runOcr` 传 `srcFps: meta.fps`；vue-tsc 通过）
 
 ### P2-4 逐帧 `clone` 全部 grid 帧
 
-- **位置**：`src-tauri/src/ocr/mod.rs:549`（`let mut fc = changes[idx].clone();`）
+- **位置**：`src-tauri/src/ocr/mod.rs`（`refine_window_changes`）
 - **问题**：循环里对每个 grid 帧 `clone()`（含 `frame.path` 的 String），即使非 changed 且不修改。只有 changed 帧才需 mutable 副本。
-- **状态**：⬜ 未修复
+- **状态**：⬜ 已回退（尝试改为按值传入 + 原地修改，但**破坏窗口计算**：`lo = changes[idx-1].frame.time` 本应取原始网格时间，按值模式下 `changes[idx-1]` 已被上一轮改为精化后的更早时间，导致后续窗口偏移、边界检测/短字幕召回改变（实测 clip2 短字幕 4→7、耗时 5.95→9.5s）。clone 成本本就可忽略（约 205 帧），故回退为 clone 方式）
 
 ### P2-5 `boundaries.len() == 2` 硬编码恰好两次变化
 
-- **位置**：`src-tauri/src/ocr/mod.rs:594`
+- **位置**：`src-tauri/src/ocr/mod.rs`（`refine_window_changes`）
 - **问题**：窗口内 3 次以上变化（连续多条短字幕）时只取前两个边界召回一段，其余忽略。注释已标注为阶段2 已知限制，后续可遍历边界对全部召回。
-- **状态**：⬜ 未修复
+- **状态**：⬜ 已回退（尝试改为 `boundaries.windows(2)` 遍历全部边界对召回，但**严重回归**：每个召回都触发一次慢速 OCR IPC，实测事件数 32→63（翻倍）、e2e 耗时 39.6s→117.6s（3 倍）。故保持保守的 `len==2`，多突变/多短字幕召回留给后续更精确判定）
 
 ### P2-6 `.gitignore` 的 `.zcode` 与 OCR 功能无关
 

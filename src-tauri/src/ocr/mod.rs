@@ -147,7 +147,15 @@ fn similar_text(a: &str, b: &str, threshold: f64) -> bool {
     if a == b {
         return true;
     }
-    if a.starts_with(b) || b.starts_with(a) {
+    // 前缀互相覆盖（打字机/渐进文本）：仅当较短文本足够长（≥ 较长文本 1/3）时，
+    // 避免把"派蒙"与"派蒙：旅行者你来了"这类独立两行误合并（约占 1/4 的前缀）
+    let (short, long) = if a.chars().count() <= b.chars().count() {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    let short_len = short.chars().count();
+    if short_len > 0 && long.starts_with(short) && short_len * 3 >= long.chars().count() {
         return true;
     }
     edit_distance_ratio(a, b) <= threshold
@@ -337,7 +345,10 @@ fn merge_similar_adjacent(segments: Vec<OcrSegment>, threshold: f64) -> Vec<OcrS
         if let Some(last) = out.last_mut() {
             if similar_text(&last.text, &seg.text, threshold) {
                 last.end = last.end.max(seg.end);
-                if seg.text.chars().count() > last.text.chars().count() {
+                // 更长且置信度不低于原段才替换文本，避免用低置信度长文本覆盖清晰短文本
+                if seg.text.chars().count() > last.text.chars().count()
+                    && seg.confidence >= last.confidence
+                {
                     last.text = seg.text;
                     last.confidence = seg.confidence;
                 }
@@ -470,7 +481,10 @@ pub fn refine_window_changes(
                             }
                             fc.frame.time = new_time;
                         }
-                        // 阶段 2：恰好两次变化 → [main, sub[0]) 为短字幕候选
+                        // 阶段 2：恰好两次变化 → [main, sub[0]) 为短字幕候选。
+                        // 注意：只召回恰好 2 个边界的窗口（A→短字幕→C）。遍历全部边界对
+                        // 会过度召回（每次召回一次慢速 OCR IPC，实测事件数翻倍、耗时×3），
+                        // 故不做泛化，多突变/多短字幕留给后续更精确的判定。
                         if boundaries.len() == 2 {
                             let (m, s) = (boundaries[0], boundaries[1]);
                             if s > m + 1 {
@@ -795,15 +809,13 @@ pub async fn run_ocr(
     video_h: u32,
     region_clips: Vec<OcrRegionInput>,
     params: OcrRunParams,
+    // 源视频帧率：窗口精化用。前端已获取元数据，直接传入避免重复探测
+    src_fps: f64,
 ) -> Result<Vec<OcrSegment>, String> {
     let app_handle = app.clone();
 
     tauri::async_runtime::spawn_blocking(move || {
         let manager = app_handle.state::<OcrManager>();
-        // 窗口精化需要源帧率：内部探测一次（毫秒级），不新增前端参数
-        let src_fps = crate::video::get_video_metadata(video_path.clone())
-            .map(|m| m.fps)
-            .unwrap_or(0.0);
         run_ocr_pipeline(
             &manager,
             &video_path,

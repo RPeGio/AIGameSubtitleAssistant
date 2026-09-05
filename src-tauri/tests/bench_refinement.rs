@@ -181,10 +181,8 @@ fn bench_refinement() {
         .unwrap();
         let whole_extract = t0.elapsed();
         let t1 = Instant::now();
-        let mut wh = 0usize;
         for f in &whole {
             let _ = ai_game_subtitle_assistant_lib::ai_runtime::dhash::dhash_file(&f.path);
-            wh += 1;
         }
         let whole_dhash = t1.elapsed();
         println!(
