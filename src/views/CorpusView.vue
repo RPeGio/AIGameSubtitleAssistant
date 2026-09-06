@@ -14,6 +14,7 @@ import {
   NInputNumber,
   NProgress,
   NText,
+  NVirtualList,
   useMessage,
 } from "naive-ui";
 
@@ -75,11 +76,18 @@ async function startImageOcr() {
 const manualText = ref("");
 
 /// 实时解析预览：拆行 → trim → 丢空行（\r 随 trim 去除，兼容 Windows 换行）
+/// 实时解析预览：拆行 → trim → 丢空行（\r 随 trim 去除，兼容 Windows 换行）。
+/// 转成对象数组以便虚拟列表用稳定 key（key-field="id"，id 用序号——预览只读，无编辑重排）
 const parsedLines = computed(() =>
   manualText.value
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => l.length > 0)
+);
+
+/// 预览行对象：供 n-virtual-list 使用（:items + key-field）
+const previewItems = computed(() =>
+  parsedLines.value.map((text, i) => ({ id: i, text }))
 );
 
 /// 与 pushCorpusTexts 相同的去重规则预计数：新增条数 / 跳过重复条数
@@ -286,11 +294,17 @@ function removeItem(id: string) {
             <NText depth="3" style="font-size: 12px">
               将新增 {{ previewStats.fresh }} 条<template v-if="previewStats.dup > 0">，跳过重复 {{ previewStats.dup }} 条</template>
             </NText>
-            <div class="preview-list">
-              <div v-for="(line, i) in parsedLines" :key="i" class="preview-item">
-                {{ line }}
-              </div>
-            </div>
+            <n-virtual-list
+              class="preview-list"
+              :items="previewItems"
+              :item-size="28"
+              item-resizable
+              key-field="id"
+            >
+              <template #default="{ item }">
+                <div class="preview-item">{{ item.text }}</div>
+              </template>
+            </n-virtual-list>
           </template>
 
           <div class="run-row">
@@ -406,10 +420,8 @@ function removeItem(id: string) {
 }
 
 .preview-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-height: 150px;
+  /* 虚拟列表：需确定高度的滚动容器，固定高度内虚拟渲染预览行 */
+  height: 150px;
   overflow: auto;
   padding: 8px 12px;
   background: var(--color-bg-secondary);
@@ -420,6 +432,9 @@ function removeItem(id: string) {
   font-size: 12px;
   color: var(--color-text-primary);
   word-break: break-all;
+  /* 行间距用 padding：虚拟列表用 borderBoxSize 测量行高，margin 不计入会破坏定位 */
+  padding: 4px 0;
+  box-sizing: border-box;
 }
 
 .corpus-title {
