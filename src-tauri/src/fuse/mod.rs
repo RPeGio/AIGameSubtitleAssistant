@@ -64,14 +64,14 @@ pub struct FuseResult {
 fn build_prompt(ocr_texts: &[String], batch: &[FuseAsrInput]) -> String {
     let mut p = String::new();
     p.push_str(
-        "你是游戏字幕融合助手。下面是可靠的剧情字幕文本（OCR）和游戏内容时间轴文本（ASR，来源可为游戏语音转写或画面内嵌字幕 OCR，语言可能与字幕不同）。\n\
-         请把每条 ASR 文本与语义相同的 OCR 字幕文本对应（跨语言对应）：\n\
+        "你是游戏字幕融合助手。下面是可靠的剧情字幕文本（OCR）和游戏内容时间轴文本（GC，来源可为游戏语音转写或画面内嵌字幕 OCR，语言可能与字幕不同）。\n\
+         请把每条游戏内容文本（GC）与语义相同的 OCR 字幕文本对应（跨语言对应）：\n\
          - 找到对应字幕：ocr_index 填该 OCR 字幕的编号，character 从该字幕开头的角色名前缀提取（如 OCR 文本“派蒙：旅行者你来了”→ character 为“派蒙”）；\n\
          - 找不到对应：ocr_index 填 0，character 留空。\n\
          若 OCR 中同一句对话同时存在被截断版和完整版，选择完整版对应的编号。\n\
-         严格只输出 JSON，严禁输出任何其他内容，格式：{\"segments\":[{\"index\":ASR编号,\"ocr_index\":OCR编号或0,\"character\":\"角色名或空\"}]}\n\
-         index 和 ocr_index 都是纯数字（如 17），不要写成 \"ASR[17]\"。\n\
-         示例（OCR[1] 是“派蒙：旅行者你来了”，ASR[3] 是“トラベラー来たな”，两处对应）：\n\
+         严格只输出 JSON，严禁输出任何其他内容，格式：{\"segments\":[{\"index\":GC编号,\"ocr_index\":OCR编号或0,\"character\":\"角色名或空\"}]}\n\
+         index 和 ocr_index 都是纯数字（如 17），不要写成 \"GC[17]\"。\n\
+         示例（OCR[1] 是“派蒙：旅行者你来了”，GC[3] 是“トラベラー来たな”，两处对应）：\n\
          {\"segments\":[{\"index\":3,\"ocr_index\":1,\"character\":\"派蒙\"}]}\n\n",
     );
     p.push_str("== 字幕文本（OCR）==\n");
@@ -79,15 +79,15 @@ fn build_prompt(ocr_texts: &[String], batch: &[FuseAsrInput]) -> String {
         let t = t.replace('\n', " ");
         p.push_str(&format!("OCR[{}] {}\n", i + 1, t));
     }
-    p.push_str("\n== 游戏内容时间轴文本（ASR）==\n");
+    p.push_str("\n== 游戏内容时间轴文本（GC）==\n");
     for s in batch {
         let t = s.text.replace('\n', " ");
-        p.push_str(&format!("ASR[{}] {}\n", s.index, t));
+        p.push_str(&format!("GC[{}] {}\n", s.index, t));
     }
     p
 }
 
-/// LLM 输出的单段（index = ASR 输入编号；ocr_index = 对应的 OCR 编号，0/缺省=无对应）
+/// LLM 输出的单段（index = GC 输入编号；ocr_index = 对应的 OCR 编号，0/缺省=无对应）
 #[derive(Debug, Deserialize)]
 struct RawFusedSegment {
     #[serde(deserialize_with = "deser_index")]
@@ -98,7 +98,7 @@ struct RawFusedSegment {
     character: Option<String>,
 }
 
-/// index 字段宽容反序列化：3B 模型实测会把编号原样回显成 "ASR[17]"
+/// index 字段宽容反序列化：3B 模型实测会把编号原样回显成 "GC[17]"
 /// （带前缀的字符串），纯 usize 解析会整批失败降级。兼容数字/字符串。
 fn deser_index<'de, D>(deserializer: D) -> Result<usize, D::Error>
 where
@@ -108,7 +108,7 @@ where
     impl<'de> serde::de::Visitor<'de> for IndexVisitor {
         type Value = usize;
         fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            write!(f, "数字或含数字的字符串（如 17、\"ASR[17]\"）")
+            write!(f, "数字或含数字的字符串（如 17、\"GC[17]\"）")
         }
         fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<usize, E> {
             usize::try_from(v).map_err(|_| E::custom("index 过大"))
@@ -334,8 +334,10 @@ mod tests {
         let p = build_prompt(&ocr, &batch);
         assert!(p.contains("OCR[1] 派蒙：旅行者你来了"));
         assert!(p.contains("OCR[2] 前方有敌人"));
-        assert!(p.contains("ASR[1] 语音1"));
-        assert!(p.contains("ASR[2] 语音2"));
+        assert!(p.contains("GC[1] 语音1"));
+        assert!(p.contains("GC[2] 语音2"));
+        // 标签统一为 GC（来源可含 embed_ocr，不再用 "ASR" 误导）
+        assert!(!p.contains("ASR[1]"));
     }
 
     #[test]

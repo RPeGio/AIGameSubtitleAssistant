@@ -55,34 +55,41 @@ function embedOcrToEvent(seg: OcrSegment): TimelineEvent {
   };
 }
 
-/// 嵌字段与任一 ASR 段时间重叠 ≥ 该比例（对嵌字段自身时长）时，视为
-/// 语音的冗余文本副本丢弃（游戏角色说话时画面内嵌字幕只是语音的文字版）
+/// 嵌字段与 ASR 段并集的重叠比例（对嵌字段自身时长）：≥ EMBED_OVERLAP_DROP 视为
+/// 语音的冗余文本副本丢弃（游戏角色说话时画面内嵌字幕只是语音的文字版）。
+/// 按 ASR 段**并集**而非单条判定：避免 embed 被多条 ASR 各覆盖一小段、
+/// 合计已冗余时仍因单条都 <50% 而保留，产生重复段。
 const EMBED_OVERLAP_DROP = 0.5;
 
 /// 收集融合的"游戏内容时间轴段"：game-ASR 段整段 + 无配音处嵌字段填空隙。
 /// 策略（混用场景：任务大多有配音，但主播会找无配音 NPC 对话）：
 /// - ASR 段（track_role=game）全部保留（有配音处占住时间轴）
-/// - 嵌字 OCR 段（track_role=game）与任一 ASR 段重叠 ≥ EMBED_OVERLAP_DROP 则丢弃；
+/// - 嵌字 OCR 段（track_role=game）与 ASR 段并集重叠 ≥ EMBED_OVERLAP_DROP 则丢弃；
 ///   其余（未配音处没有对应语音段）保留，天然嵌入无 ASR 的时间空隙
 /// 合并后按 start 升序、全局编号，转 FuseAsrInput（契约不变）。
 function collectGameContentSegments(tracks: Track[]): FuseAsrInput[] {
-  const overlapRatio = (embed: TimelineEvent, asr: TimelineEvent) => {
-    const s = Math.max(embed.start, asr.start);
-    const e = Math.min(embed.end, asr.end);
-    if (e <= s) return 0;
-    return (e - s) / (embed.end - embed.start);
-  };
-
   const asr = tracks
     .filter((t) => t.type === "asr" && t.track_role === "game" && t.events.length > 0)
     .flatMap((t) => t.events)
     .filter((e): e is Extract<TimelineEvent, { type: "asr" }> => e.type === "asr");
 
+  // embed 与 ASR 段并集的重叠时长占比（对 embed 自身时长）；embed 零长度时返回 0
+  const overlapRatioWithAsrUnion = (embed: TimelineEvent) => {
+    if (embed.end <= embed.start) return 0;
+    let covered = 0;
+    for (const ae of asr) {
+      const s = Math.max(embed.start, ae.start);
+      const e = Math.min(embed.end, ae.end);
+      if (e > s) covered += e - s;
+    }
+    return covered / (embed.end - embed.start);
+  };
+
   const embeds = tracks
     .filter((t) => t.type === "embed_ocr" && t.track_role === "game" && t.events.length > 0)
     .flatMap((t) => t.events)
     .filter((e): e is Extract<TimelineEvent, { type: "embed_ocr" }> => e.type === "embed_ocr")
-    .filter((be) => !asr.some((ae) => overlapRatio(be, ae) >= EMBED_OVERLAP_DROP));
+    .filter((be) => overlapRatioWithAsrUnion(be) < EMBED_OVERLAP_DROP);
 
   return [...asr, ...embeds]
     .sort((a, b) => a.start - b.start)
@@ -440,29 +447,29 @@ export const useProjectStore = defineStore("project", () => {
   /// 默认一个覆盖整段的选区（任意播放头都能命中，可直接拖拽调整）。
   /// 守卫按 (type=ocr_region) + (video=source 或 page=corpus 或轨道名) 匹配：
   /// 兼容 video 字段缺失的旧数据，避免更换视频时重复创建。
-  function ensureCorpusRegionTrack(duration: number) {
+  /// 创建一条 OCR 选区控制轨（scope=control），默认一个覆盖整段的矩形选区。
+  /// 供语料页（source/corpus）与转写页嵌字（clip/asr）复用，避免重复默认配置。
+  function pushRegionControlTrack(opts: {
+    name: string;
+    page: "corpus" | "asr" | "editor";
+    video: "source" | "clip";
+    duration: number;
+  }) {
     if (!currentProject.value) return;
-    const tracks = currentProject.value.tracks;
-    const exists = tracks.some(
-      (t) =>
-        t.type === "ocr_region" &&
-        (t.video === "source" || t.page === "corpus" || t.name === "OCR 选区（剧情录屏）")
-    );
-    if (exists) return;
-    tracks.push({
+    currentProject.value.tracks.push({
       id: generateId(),
-      name: "OCR 选区（剧情录屏）",
+      name: opts.name,
       type: "ocr_region",
       track_role: "game",
       scope: "control",
-      page: "corpus",
-      video: "source",
+      page: opts.page,
+      video: opts.video,
       preview_visible: true,
       events: [
         {
           id: generateId(),
           start: 0,
-          end: duration,
+          end: opts.duration,
           type: "ocr_region",
           // 默认矩形：宽 60%，高 20%，水平居中，保持在画面偏低位置
           x1: 0.2,
@@ -474,35 +481,29 @@ export const useProjectStore = defineStore("project", () => {
     });
   }
 
+  /// 语料页：确保剧情录屏（视频 A）的 OCR 选区控制轨存在。
+  /// 默认一个覆盖整段的选区（任意播放头都能命中，可直接拖拽调整）。
+  /// 守卫按 (type=ocr_region) + (video=source 或 page=corpus 或轨道名) 匹配：
+  /// 兼容 video 字段缺失的旧数据，避免更换视频时重复创建。
+  function ensureCorpusRegionTrack(duration: number) {
+    if (!currentProject.value) return;
+    const tracks = currentProject.value.tracks;
+    const exists = tracks.some(
+      (t) =>
+        t.type === "ocr_region" &&
+        (t.video === "source" || t.page === "corpus" || t.name === "OCR 选区（剧情录屏）")
+    );
+    if (exists) return;
+    pushRegionControlTrack({ name: "OCR 选区（剧情录屏）", page: "corpus", video: "source", duration });
+  }
+
   /// 转写页（AsrView）：确保切片视频（clip）上"内嵌字幕 OCR"的选区控制轨存在。
-  /// 默认一个覆盖整段的选区；与编辑页选区轨（page=editor）并存不混，runOcr 按 page 隔离收集。
+  /// 默认一个覆盖整段的选区；与语料页选区轨（page=corpus）并存不混，runOcr 按 page 隔离收集。
   function ensureAsrRegionTrack(duration: number) {
     if (!currentProject.value || duration <= 0) return;
     const tracks = currentProject.value.tracks;
     if (tracks.some((t) => t.type === "ocr_region" && t.page === "asr")) return;
-    tracks.push({
-      id: generateId(),
-      name: "嵌字选区（内嵌字幕）",
-      type: "ocr_region",
-      track_role: "game",
-      scope: "control",
-      page: "asr",
-      video: "clip",
-      preview_visible: true,
-      events: [
-        {
-          id: generateId(),
-          start: 0,
-          end: duration,
-          type: "ocr_region",
-          // 默认矩形：宽 60%，高 20%，水平居中，保持在画面偏低位置
-          x1: 0.2,
-          y1: 0.7,
-          x2: 0.8,
-          y2: 0.9,
-        },
-      ],
-    });
+    pushRegionControlTrack({ name: "嵌字选区（内嵌字幕）", page: "asr", video: "clip", duration });
   }
 
   /// 根据事件 id 跨所有轨道查找 { track, event }
@@ -598,8 +599,9 @@ export const useProjectStore = defineStore("project", () => {
 
   /// 运行 OCR 流水线：收集指定 OCR 选区控制轨的 clip → run_ocr → 写入产物轨。
   /// `videoKey`：默认 "clip"（切片）；"source" 用剧情录屏（语料页，meta 取 sourceVideoMeta）。
-  /// `regionPage` 隔离选区控制轨：语料页（corpus）/ 编辑页（editor）/ 转写页嵌字（asr）。
-  /// 缺省 clip 模式排除 page=asr 的嵌字选区（编辑页 OCR 不串扰嵌字选区）。
+  /// `regionPage` 隔离选区控制轨：语料页（corpus）/ 转写页嵌字（asr）。
+  /// clip 模式必须指定 regionPage：编辑页 OCR 已在 PR #19 后移除（Editor 不跑 OCR），
+  /// 不存在"默认收集 editor 选区"的路径，显式报错避免静默收集空集。
   async function runOcr(
     params: OcrRunParams,
     videoKey: "clip" | "source" = "clip",
@@ -613,14 +615,18 @@ export const useProjectStore = defineStore("project", () => {
       throw new Error(videoKey === "source" ? "请先导入剧情录屏" : "请先导入切片视频");
     }
 
-    // 选区收集：source 模式取剧情录屏选区轨；clip 模式按 regionPage 过滤
+    // clip 模式必须显式指定 regionPage：不再有"默认收集 editor 选区"的路径
     const regionPage = opts.regionPage;
+    if (videoKey === "clip" && !regionPage) {
+      throw new Error("clip 模式需指定 regionPage（如 'asr'）");
+    }
+
+    // 选区收集：source 模式取剧情录屏选区轨；clip 模式按 regionPage 过滤
     const regionClips = currentProject.value.tracks
       .filter((t) => {
         if (t.type !== "ocr_region") return false;
         if (videoKey === "source") return t.video === "source";
-        if (regionPage) return t.video !== "source" && t.page === regionPage;
-        return t.video !== "source" && t.page !== "asr";
+        return t.video !== "source" && t.page === regionPage;
       })
       .flatMap((t) => t.events)
       .filter((e): e is Extract<typeof e, { type: "ocr_region" }> => e.type === "ocr_region")
@@ -887,10 +893,15 @@ export const useProjectStore = defineStore("project", () => {
     if (!currentVideoMeta.value) throw new Error("请先导入视频");
 
     // 可靠文本：只来自 corpus 语料（剧情录屏 OCR / 截图 / 手动）。
-    // 不再回退 ocr_text 轨：其曾携带 mock/编辑页历史数据，混作可靠文本会造成错误替换
+    // 不回退 ocr_text 轨：它只可能是 mock 占位文本，或旧编辑页对"切片视频"的
+    // OCR 结果——那是"待替换的转写文本"，不是"可靠剧情文本"（可靠文本必须来自
+    // source 视频的语料，见 plan 6.1 ①步）。混作可靠文本会导致错误替换。
     const project = currentProject.value;
     if (project.corpus.length === 0) {
-      throw new Error("请先在语料页收集可靠文本语料（从剧情录屏 OCR 或手动提供）");
+      throw new Error(
+        "可靠文本语料为空：请先在语料页从剧情录屏 OCR 或手动提供文本。" +
+          "（注意：OCR 文本轨 / 内嵌字幕轨是待替换的转写文本，不能作为可靠文本语料）"
+      );
     }
     const ocrTexts = project.corpus.map((c) => c.text);
 
