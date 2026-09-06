@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
 use tauri::Manager; // 提供 app.path() 等方法
+#[cfg(test)]
 use uuid::Uuid;
 
 // ─── 数据模型 ─────────────────────────────────────────────
@@ -386,8 +387,14 @@ pub fn read_text_file(path: String) -> Result<String, String> {
         return Err("文件超过 10 MB，请确认选择的是文本文件".into());
     }
     let bytes = fs::read(&path).map_err(|e| format!("无法读取文件: {}", e))?;
-    String::from_utf8(bytes)
-        .map_err(|_| "仅支持 UTF-8 编码的 txt 文件，请先转存为 UTF-8".to_string())
+    let mut text = String::from_utf8(bytes)
+        .map_err(|_| "仅支持 UTF-8 编码的 txt 文件，请先转存为 UTF-8".to_string())?;
+    // Windows Notepad 存的 txt 常带 UTF-8 BOM（\u{FEFF}）；在此显式剥离，
+    // 避免残留到语料首行（不依赖前端 trim() 的隐式兜底）
+    if text.starts_with('\u{FEFF}') {
+        text.remove(0);
+    }
+    Ok(text)
 }
 
 // ─── 内部辅助 ─────────────────────────────────────────────

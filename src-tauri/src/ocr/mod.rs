@@ -660,7 +660,8 @@ pub async fn run_ocr_images(
             let _ = app_handle.emit(
                 OCR_PROGRESS_EVENT,
                 OcrProgress {
-                    clip_index: i,
+                    // 与 run_ocr 的 clip_index（1 基）及消息文本 {i+1} 保持一致
+                    clip_index: i + 1,
                     clip_count: total_batches,
                     progress: (i + 1) as f64 / total_batches as f64,
                     message: format!("识别截图 {}/{}", i + 1, total_batches),

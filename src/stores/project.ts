@@ -626,6 +626,9 @@ export const useProjectStore = defineStore("project", () => {
     try {
       const lines = await invoke<string[]>("run_ocr_images", {
         imagePaths,
+        // 批大小固定 8：截图 OCR 面向少量剧情文本图（通常 <20 张），
+        // 后端 recognize_batch 逐批处理并回报进度；此处无需像视频 OCR 那样
+        // 暴露用户可调参数（batch_size），8 已能平衡批吞吐与单批耗时。
         batchSize: 8,
       });
       pushCorpusTexts(lines, "image_ocr");

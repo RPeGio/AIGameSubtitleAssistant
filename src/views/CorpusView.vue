@@ -85,9 +85,11 @@ const parsedLines = computed(() =>
     .filter((l) => l.length > 0)
 );
 
-/// 预览行对象：供 n-virtual-list 使用（:items + key-field）
+/// 预览行对象：供 n-virtual-list 使用（:items + key-field）。
+/// id 用「行内容+序号」组合保证唯一：预览允许显示重复行（pushCorpusTexts 才去重），
+/// 纯序号在中间插入行时会因 index 平移导致 key 错位，组合键能稳定匹配同一行。
 const previewItems = computed(() =>
-  parsedLines.value.map((text, i) => ({ id: i, text }))
+  parsedLines.value.map((text, i) => ({ id: `${i}-${text}`, text }))
 );
 
 /// 与 pushCorpusTexts 相同的去重规则预计数：新增条数 / 跳过重复条数
