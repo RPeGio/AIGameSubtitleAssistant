@@ -220,9 +220,9 @@ function removeItem(id: string) {
                 :disabled="projectStore.ocrRunning"
                 @click="startOcr"
               >
-                {{ projectStore.ocrRunning ? "OCR 运行中..." : "开始 OCR" }}
+                {{ projectStore.ocrRunning && projectStore.ocrSource === "video" ? "OCR 运行中..." : "开始 OCR" }}
               </NButton>
-              <template v-if="projectStore.ocrRunning">
+              <template v-if="projectStore.ocrRunning && projectStore.ocrSource === 'video'">
                 <NProgress
                   type="line"
                   class="progress"
@@ -252,9 +252,9 @@ function removeItem(id: string) {
               :disabled="selectedImages.length === 0 || projectStore.ocrRunning"
               @click="startImageOcr"
             >
-              {{ projectStore.ocrRunning ? "OCR 运行中..." : "开始 OCR" }}
+              {{ projectStore.ocrRunning && projectStore.ocrSource === "image" ? "OCR 运行中..." : "开始 OCR" }}
             </NButton>
-            <template v-if="projectStore.ocrRunning">
+            <template v-if="projectStore.ocrRunning && projectStore.ocrSource === 'image'">
               <NProgress
                 type="line"
                 class="progress"

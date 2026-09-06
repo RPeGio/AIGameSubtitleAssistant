@@ -80,6 +80,10 @@ export const useProjectStore = defineStore("project", () => {
   const ocrRunning = ref(false);
   const ocrProgress = ref(0);
   const ocrMessage = ref("");
+  /// 当前 OCR 来源："video" 录屏/切片抽帧 | "image" 截图直识。
+  /// 两者共用同一后端 OcrManager（不可并发），故共用 ocrRunning 互斥；
+  /// 此标志仅用于区分进度显示归属，避免同页两个来源区块串显进度。
+  const ocrSource = ref<"video" | "image" | null>(null);
 
   // 监听进度事件；注册清理函数，store 被 dispose（HMR/重复实例）时退订，避免叠加泄漏
   const unlistenPromise = listen<OcrProgress>(OCR_PROGRESS_EVENT, (event) => {
@@ -579,6 +583,7 @@ export const useProjectStore = defineStore("project", () => {
     }
 
     ocrRunning.value = true;
+    ocrSource.value = "video";
     ocrProgress.value = 0;
     ocrMessage.value = "准备中...";
     try {
@@ -604,6 +609,7 @@ export const useProjectStore = defineStore("project", () => {
       throw new Error(normalizeOcrError(e));
     } finally {
       ocrRunning.value = false;
+      ocrSource.value = null;
     }
   }
 
@@ -614,6 +620,7 @@ export const useProjectStore = defineStore("project", () => {
     if (imagePaths.length === 0) throw new Error("请先选择截图");
 
     ocrRunning.value = true;
+    ocrSource.value = "image";
     ocrProgress.value = 0;
     ocrMessage.value = "准备中...";
     try {
@@ -630,6 +637,7 @@ export const useProjectStore = defineStore("project", () => {
       throw new Error(normalizeOcrError(e));
     } finally {
       ocrRunning.value = false;
+      ocrSource.value = null;
     }
   }
 
@@ -1190,6 +1198,7 @@ export const useProjectStore = defineStore("project", () => {
     refreshRecentProjects,
     saveNow,
     ocrRunning,
+    ocrSource,
     ocrProgress,
     ocrMessage,
     runOcr,
