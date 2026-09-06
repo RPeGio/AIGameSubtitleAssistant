@@ -10,6 +10,14 @@ export interface OcrTextEvent extends TimelineEventBase {
   confidence: number;
 }
 
+/// 切片视频内嵌字幕 OCR 事件 —— 主播画面中游戏字幕的识别文本（嵌字轴，供融合）。
+/// 结构同 ocr_text，但语义不同：这是"待替换的转写文本"，不是"可靠剧情文本"
+export interface EmbedOcrEvent extends TimelineEventBase {
+  type: "embed_ocr";
+  text: string;
+  confidence: number;
+}
+
 export interface OcrRegionEvent extends TimelineEventBase {
   type: "ocr_region";
   x1: number;
@@ -38,7 +46,13 @@ export interface ManualEvent extends TimelineEventBase {
   character?: string;
 }
 
-export type TimelineEvent = OcrTextEvent | OcrRegionEvent | AsrEvent | FusedEvent | ManualEvent;
+export type TimelineEvent =
+  | OcrTextEvent
+  | EmbedOcrEvent
+  | OcrRegionEvent
+  | AsrEvent
+  | FusedEvent
+  | ManualEvent;
 
 export interface Track {
   id: string;
