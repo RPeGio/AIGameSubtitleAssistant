@@ -841,6 +841,90 @@ pub async fn run_ocr(
     .map_err(|e| format!("OCR 任务内部错误: {}", e))?
 }
 
+/// 把 OCR 结果拆成语料文本行：每张图的整图文本按换行拆分，
+/// trim 后丢弃空行并批内去重（精确匹配）。
+/// 行级清洗（白名单/低置信度/重复行）已由 Python worker 完成，这里只做拆分归一。
+pub fn lines_from_results(results: &[OcrResult]) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for result in results {
+        for line in result.text.split('\n') {
+            let line = line.trim();
+            if line.is_empty() || !seen.insert(line.to_string()) {
+                continue;
+            }
+            lines.push(line.to_string());
+        }
+    }
+    lines
+}
+
+/// Tauri 命令：直接识别用户选择的剧情文本截图（语料来源，不经过视频抽帧流水线）。
+///
+/// 用户图片先复制进临时目录（uuid 文件名）再交给 worker——PaddleOCR 底层
+/// cv2 读图在 Windows 上对非 ASCII 路径不可靠，不能直接传用户原始路径。
+#[tauri::command]
+pub async fn run_ocr_images(
+    app: AppHandle,
+    image_paths: Vec<String>,
+    batch_size: usize,
+) -> Result<Vec<String>, String> {
+    if image_paths.is_empty() {
+        return Err("未选择图片".into());
+    }
+    let app_handle = app.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let manager = app_handle.state::<OcrManager>();
+        let ready = manager.with_provider(|p| p.is_ready());
+        if !ready {
+            return Err("OCR 运行环境未就绪".into());
+        }
+
+        // 复制进 ASCII 安全的临时目录，规避 cv2 非 ASCII 路径问题
+        let temp_dir = std::env::temp_dir().join(format!("gsa_ocr_img_{}", Uuid::new_v4()));
+        let _guard = TempDirGuard {
+            path: temp_dir.clone(),
+            keep: false,
+        };
+        std::fs::create_dir_all(&temp_dir).map_err(|e| format!("无法创建临时目录: {}", e))?;
+
+        let mut local_paths = Vec::with_capacity(image_paths.len());
+        for (i, src) in image_paths.iter().enumerate() {
+            let ext = std::path::Path::new(src)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("png");
+            let dest = temp_dir.join(format!("img_{}.{}", i, ext));
+            std::fs::copy(src, &dest).map_err(|e| format!("读取图片失败（{}）: {}", src, e))?;
+            local_paths.push(dest.to_string_lossy().to_string());
+        }
+
+        let bs = batch_size.max(1);
+        let total_batches = local_paths.len().div_ceil(bs);
+        let mut results = Vec::new();
+        for (i, chunk) in local_paths.chunks(bs).enumerate() {
+            let batch = manager
+                .with_provider(|p| p.recognize_batch(chunk))
+                .map_err(|e| format!("OCR 失败: {}", e))?;
+            results.extend(batch);
+            let _ = app_handle.emit(
+                OCR_PROGRESS_EVENT,
+                OcrProgress {
+                    // 与 run_ocr 的 clip_index（1 基）及消息文本 {i+1} 保持一致
+                    clip_index: i + 1,
+                    clip_count: total_batches,
+                    progress: (i + 1) as f64 / total_batches as f64,
+                    message: format!("识别截图 {}/{}", i + 1, total_batches),
+                },
+            );
+        }
+        Ok(lines_from_results(&results))
+    })
+    .await
+    .map_err(|e| format!("OCR 任务内部错误: {}", e))?
+}
+
 // ─── 单元测试 ─────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1191,5 +1275,31 @@ mod tests {
         ];
         let out = merge_similar_adjacent(segs, 0.3);
         assert_eq!(out.len(), 2);
+    }
+
+    // ── lines_from_results ──
+
+    #[test]
+    fn test_lines_from_results_split_and_dedup() {
+        // 拆行、trim、丢空行；批内及跨图去重（精确匹配）
+        let results = vec![
+            OcrResult {
+                text: "旅行者，你来了\n\n  派蒙：  \n旅行者，你来了".into(),
+                confidence: 0.9,
+            },
+            OcrResult {
+                text: "  第二张的行  \n旅行者，你来了".into(),
+                confidence: 0.8,
+            },
+        ];
+        let lines = lines_from_results(&results);
+        assert_eq!(lines, vec!["旅行者，你来了", "派蒙：", "第二张的行"]);
+    }
+
+    #[test]
+    fn test_lines_from_results_empty() {
+        assert!(lines_from_results(&[]).is_empty());
+        let blank = vec![OcrResult { text: "  \n\n".into(), confidence: 0.5 }];
+        assert!(lines_from_results(&blank).is_empty());
     }
 }

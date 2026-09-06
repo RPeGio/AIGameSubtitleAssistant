@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
 use tauri::Manager; // 提供 app.path() 等方法
+#[cfg(test)]
+use uuid::Uuid;
 
 // ─── 数据模型 ─────────────────────────────────────────────
 
@@ -377,6 +379,28 @@ pub fn set_project_video(project_path: String, video_path: String) -> Result<Pro
     Ok(project)
 }
 
+// ─── 文本文件读取（语料导入用）────────────────────────────
+
+/// 读取用户选择的 txt 文本文件（语料页"手动提供文本"导入）。
+/// 仅接受 UTF-8：GBK 等编码直接报错让用户转存，不做编码探测。
+#[tauri::command]
+pub fn read_text_file(path: String) -> Result<String, String> {
+    const MAX_SIZE: u64 = 10 * 1024 * 1024;
+    let meta = fs::metadata(&path).map_err(|e| format!("无法读取文件: {}", e))?;
+    if meta.len() > MAX_SIZE {
+        return Err("文件超过 10 MB，请确认选择的是文本文件".into());
+    }
+    let bytes = fs::read(&path).map_err(|e| format!("无法读取文件: {}", e))?;
+    let mut text = String::from_utf8(bytes)
+        .map_err(|_| "仅支持 UTF-8 编码的 txt 文件，请先转存为 UTF-8".to_string())?;
+    // Windows Notepad 存的 txt 常带 UTF-8 BOM（\u{FEFF}）；在此显式剥离，
+    // 避免残留到语料首行（不依赖前端 trim() 的隐式兜底）
+    if text.starts_with('\u{FEFF}') {
+        text.remove(0);
+    }
+    Ok(text)
+}
+
 // ─── 内部辅助 ─────────────────────────────────────────────
 
 /// 将项目添加到最近项目列表的最前面
@@ -595,5 +619,31 @@ mod tests {
         assert_eq!(back.corpus[0].text, "旅行者，你来了");
         assert_eq!(back.corpus[0].source, "paste");
         assert_eq!(back.corpus[1].source, "ocr_track");
+    }
+
+    // ── read_text_file ──
+
+    /// 在系统临时目录造一个唯一文件，返回路径；测试结束自动清理由调用方
+    /// 通过返回的路径做 remove_file（简单场景直接在测试内处理）
+    fn temp_file(name: &str, contents: &[u8]) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("{}_{}", Uuid::new_v4(), name));
+        fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn test_read_text_file_utf8_roundtrip() {
+        let path = temp_file("corpus.txt", "旅行者，你来了\n派蒙：\n".as_bytes());
+        let text = read_text_file(path.to_string_lossy().to_string()).unwrap();
+        assert_eq!(text, "旅行者，你来了\n派蒙：\n");
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_read_text_file_rejects_non_utf8() {
+        let path = temp_file("gbk.bin", &[0xC4, 0xE3, 0xBA, 0xC3, 0xFF]);
+        let err = read_text_file(path.to_string_lossy().to_string()).unwrap_err();
+        assert!(err.contains("UTF-8"), "报错应提示 UTF-8 编码问题，实际: {}", err);
+        fs::remove_file(&path).ok();
     }
 }

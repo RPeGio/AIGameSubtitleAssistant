@@ -133,6 +133,10 @@ export const useProjectStore = defineStore("project", () => {
   const ocrRunning = ref(false);
   const ocrProgress = ref(0);
   const ocrMessage = ref("");
+  /// 当前 OCR 来源："video" 录屏/切片抽帧 | "image" 截图直识。
+  /// 两者共用同一后端 OcrManager（不可并发），故共用 ocrRunning 互斥；
+  /// 此标志仅用于区分进度显示归属，避免同页两个来源区块串显进度。
+  const ocrSource = ref<"video" | "image" | null>(null);
 
   // 监听进度事件；注册清理函数，store 被 dispose（HMR/重复实例）时退订，避免叠加泄漏
   const unlistenPromise = listen<OcrProgress>(OCR_PROGRESS_EVENT, (event) => {
@@ -645,6 +649,7 @@ export const useProjectStore = defineStore("project", () => {
     }
 
     ocrRunning.value = true;
+    ocrSource.value = "video";
     ocrProgress.value = 0;
     ocrMessage.value = "准备中...";
     try {
@@ -674,6 +679,38 @@ export const useProjectStore = defineStore("project", () => {
       throw new Error(normalizeOcrError(e));
     } finally {
       ocrRunning.value = false;
+      ocrSource.value = null;
+    }
+  }
+
+  /// 截图 OCR 语料：用户选择的剧情文本截图 → run_ocr_images → 文本行入 corpus
+  async function runCorpusImageOcr(imagePaths: string[]) {
+    if (ocrRunning.value) return;
+    if (!currentProject.value) throw new Error("请先打开项目");
+    if (imagePaths.length === 0) throw new Error("请先选择截图");
+
+    ocrRunning.value = true;
+    ocrSource.value = "image";
+    ocrProgress.value = 0;
+    ocrMessage.value = "准备中...";
+    try {
+      const lines = await invoke<string[]>("run_ocr_images", {
+        imagePaths,
+        // 批大小固定 8：截图 OCR 面向少量剧情文本图（通常 <20 张），
+        // 后端 recognize_batch 逐批处理并回报进度；此处无需像视频 OCR 那样
+        // 暴露用户可调参数（batch_size），8 已能平衡批吞吐与单批耗时。
+        batchSize: 8,
+      });
+      pushCorpusTexts(lines, "image_ocr");
+      ocrProgress.value = 1;
+      ocrMessage.value = "完成";
+    } catch (e) {
+      ocrProgress.value = 0;
+      ocrMessage.value = "OCR 失败";
+      throw new Error(normalizeOcrError(e));
+    } finally {
+      ocrRunning.value = false;
+      ocrSource.value = null;
     }
   }
 
@@ -745,23 +782,30 @@ export const useProjectStore = defineStore("project", () => {
 
   // ── 文本语料（corpus）─────────────────────────────────
 
-  /// 把 OCR 段文本提取进 corpus（去时间轴，去重），供融合页消费
-  function writeOcrToCorpus(segments: OcrSegment[]) {
-    if (!currentProject.value) return;
+  /// 批量把文本加入 corpus：与现有语料及批内做精确去重，一次撤销快照。
+  /// 返回实际新增条数
+  function pushCorpusTexts(texts: string[], source: CorpusItem["source"]): number {
     const project = currentProject.value;
+    if (!project) return 0;
     const existing = new Set(project.corpus.map((c) => c.text));
     const now = new Date().toISOString();
     const added: CorpusItem[] = [];
-    for (const seg of segments) {
-      const text = seg.text.trim();
+    for (const raw of texts) {
+      const text = raw.trim();
       if (!text || existing.has(text)) continue;
       existing.add(text);
-      added.push({ id: generateId(), text, source: "ocr_track", created_at: now });
+      added.push({ id: generateId(), text, source, created_at: now });
     }
     if (added.length > 0) {
       recordSnapshot();
       project.corpus.push(...added);
     }
+    return added.length;
+  }
+
+  /// 把 OCR 段文本提取进 corpus（去时间轴，去重），供融合页消费
+  function writeOcrToCorpus(segments: OcrSegment[]) {
+    pushCorpusTexts(segments.map((s) => s.text), "ocr_track");
   }
 
   /// 手动添加一条语料（粘贴文本）
@@ -1253,11 +1297,14 @@ export const useProjectStore = defineStore("project", () => {
     refreshRecentProjects,
     saveNow,
     ocrRunning,
+    ocrSource,
     ocrProgress,
     ocrMessage,
     runOcr,
+    runCorpusImageOcr,
     writeOcrToCorpus,
     addCorpusItem,
+    pushCorpusTexts,
     removeCorpusItem,
     corpusReady,
     timelineReady,

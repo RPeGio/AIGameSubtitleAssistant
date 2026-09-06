@@ -4,13 +4,17 @@ import { useProjectStore } from "../stores/project";
 import SourceVideoPreview from "../components/SourceVideoPreview.vue";
 import SourceTimeline from "../components/SourceTimeline.vue";
 import type { OcrRunParams } from "../types";
+import { open } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
 import {
   NButton,
   NCollapse,
   NCollapseItem,
+  NInput,
   NInputNumber,
   NProgress,
   NText,
+  NVirtualList,
   useMessage,
 } from "naive-ui";
 
@@ -44,15 +48,96 @@ async function startOcr() {
   }
 }
 
+// ── "从文本截图中截取" ────────────────────────────────
+const selectedImages = ref<string[]>([]);
+
+async function pickImages() {
+  const selected = await open({
+    multiple: true,
+    title: "选择剧情文本截图",
+    filters: [
+      { name: "图片文件", extensions: ["png", "jpg", "jpeg", "webp", "bmp"] },
+    ],
+  });
+  if (!selected) return;
+  selectedImages.value = Array.isArray(selected) ? selected : [selected];
+}
+
+async function startImageOcr() {
+  try {
+    await projectStore.runCorpusImageOcr(selectedImages.value);
+    message.success("OCR 完成，文本已提取到语料");
+  } catch (e) {
+    message.error(String(e));
+  }
+}
+
+// ── "手动提供文本" ────────────────────────────────────
+const manualText = ref("");
+
+/// 实时解析预览：拆行 → trim → 丢空行（\r 随 trim 去除，兼容 Windows 换行）
+/// 实时解析预览：拆行 → trim → 丢空行（\r 随 trim 去除，兼容 Windows 换行）。
+/// 转成对象数组以便虚拟列表用稳定 key（key-field="id"，id 用序号——预览只读，无编辑重排）
+const parsedLines = computed(() =>
+  manualText.value
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+);
+
+/// 预览行对象：供 n-virtual-list 使用（:items + key-field）。
+/// id 用「行内容+序号」组合保证唯一：预览允许显示重复行（pushCorpusTexts 才去重），
+/// 纯序号在中间插入行时会因 index 平移导致 key 错位，组合键能稳定匹配同一行。
+const previewItems = computed(() =>
+  parsedLines.value.map((text, i) => ({ id: `${i}-${text}`, text }))
+);
+
+/// 与 pushCorpusTexts 相同的去重规则预计数：新增条数 / 跳过重复条数
+const previewStats = computed(() => {
+  const existing = new Set(
+    (projectStore.currentProject?.corpus ?? []).map((c) => c.text)
+  );
+  let fresh = 0;
+  let dup = 0;
+  for (const line of parsedLines.value) {
+    if (existing.has(line)) {
+      dup++;
+    } else {
+      existing.add(line);
+      fresh++;
+    }
+  }
+  return { fresh, dup };
+});
+
+async function importTxt() {
+  const selected = await open({
+    multiple: false,
+    title: "选择文本文件",
+    filters: [{ name: "文本文件", extensions: ["txt"] }],
+  });
+  if (!selected) return;
+  try {
+    manualText.value = await invoke<string>("read_text_file", {
+      path: selected,
+    });
+  } catch (e) {
+    message.error(String(e));
+  }
+}
+
+function addManualCorpus() {
+  const added = projectStore.pushCorpusTexts(parsedLines.value, "paste");
+  message.success(`已添加 ${added} 条语料`);
+  manualText.value = "";
+}
+
 // ── 语料列表 ──────────────────────────────────────────
 const corpus = computed(() => projectStore.currentProject?.corpus ?? []);
 
 function removeItem(id: string) {
   projectStore.removeCorpusItem(id);
 }
-
-// ── 占位标签 ──────────────────────────────────────────
-const PLACEHOLDER_KEYS = ["screenshot", "manual"];
 </script>
 
 <template>
@@ -145,9 +230,9 @@ const PLACEHOLDER_KEYS = ["screenshot", "manual"];
                 :disabled="projectStore.ocrRunning"
                 @click="startOcr"
               >
-                {{ projectStore.ocrRunning ? "OCR 运行中..." : "开始 OCR" }}
+                {{ projectStore.ocrRunning && projectStore.ocrSource === "video" ? "OCR 运行中..." : "开始 OCR" }}
               </NButton>
-              <template v-if="projectStore.ocrRunning">
+              <template v-if="projectStore.ocrRunning && projectStore.ocrSource === 'video'">
                 <NProgress
                   type="line"
                   class="progress"
@@ -162,14 +247,77 @@ const PLACEHOLDER_KEYS = ["screenshot", "manual"];
       </NCollapseItem>
 
       <!-- ② 从文本截图中截取 -->
-      <NCollapseItem
-        v-for="key in PLACEHOLDER_KEYS"
-        :key="key"
-        :name="key"
-        :title="key === 'screenshot' ? '从文本截图中截取' : '手动提供文本'"
-      >
+      <NCollapseItem name="screenshot" title="从文本截图中截取">
         <div class="source-body">
-          <div class="placeholder">功能开发中，敬请期待</div>
+          <div class="pick-row">
+            <NButton @click="pickImages">选择截图</NButton>
+            <NText v-if="selectedImages.length > 0" depth="3" style="font-size: 12px">
+              已选 {{ selectedImages.length }} 张
+            </NText>
+          </div>
+
+          <div class="run-row">
+            <NButton
+              type="primary"
+              :disabled="selectedImages.length === 0 || projectStore.ocrRunning"
+              @click="startImageOcr"
+            >
+              {{ projectStore.ocrRunning && projectStore.ocrSource === "image" ? "OCR 运行中..." : "开始 OCR" }}
+            </NButton>
+            <template v-if="projectStore.ocrRunning && projectStore.ocrSource === 'image'">
+              <NProgress
+                type="line"
+                class="progress"
+                :percentage="Math.round(projectStore.ocrProgress * 100)"
+                :show-indicator="false"
+              />
+              <span class="ocr-msg">{{ projectStore.ocrMessage }}</span>
+            </template>
+          </div>
+        </div>
+      </NCollapseItem>
+
+      <!-- ③ 手动提供文本 -->
+      <NCollapseItem name="manual" title="手动提供文本">
+        <div class="source-body">
+          <NInput
+            v-model:value="manualText"
+            type="textarea"
+            :rows="6"
+            placeholder="粘贴游戏文本，每行一条；空行自动忽略，重复行自动跳过"
+          />
+
+          <div class="pick-row">
+            <NButton @click="importTxt">导入 .txt</NButton>
+            <NText depth="3" style="font-size: 12px">仅支持 UTF-8 编码的 txt</NText>
+          </div>
+
+          <template v-if="parsedLines.length > 0">
+            <NText depth="3" style="font-size: 12px">
+              将新增 {{ previewStats.fresh }} 条<template v-if="previewStats.dup > 0">，跳过重复 {{ previewStats.dup }} 条</template>
+            </NText>
+            <n-virtual-list
+              class="preview-list"
+              :items="previewItems"
+              :item-size="28"
+              item-resizable
+              key-field="id"
+            >
+              <template #default="{ item }">
+                <div class="preview-item">{{ item.text }}</div>
+              </template>
+            </n-virtual-list>
+          </template>
+
+          <div class="run-row">
+            <NButton
+              type="primary"
+              :disabled="previewStats.fresh === 0"
+              @click="addManualCorpus"
+            >
+              添加到语料
+            </NButton>
+          </div>
         </div>
       </NCollapseItem>
     </NCollapse>
@@ -257,6 +405,12 @@ const PLACEHOLDER_KEYS = ["screenshot", "manual"];
   gap: 12px;
 }
 
+.pick-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 .progress {
   flex: 1;
   max-width: 320px;
@@ -267,13 +421,22 @@ const PLACEHOLDER_KEYS = ["screenshot", "manual"];
   color: var(--color-text-secondary);
 }
 
-.placeholder {
-  padding: 32px;
-  border: 1px dashed var(--color-border);
+.preview-list {
+  /* 虚拟列表：需确定高度的滚动容器，固定高度内虚拟渲染预览行 */
+  height: 150px;
+  overflow: auto;
+  padding: 8px 12px;
+  background: var(--color-bg-secondary);
   border-radius: 8px;
-  text-align: center;
-  font-size: 13px;
-  color: var(--color-text-secondary);
+}
+
+.preview-item {
+  font-size: 12px;
+  color: var(--color-text-primary);
+  word-break: break-all;
+  /* 行间距用 padding：虚拟列表用 borderBoxSize 测量行高，margin 不计入会破坏定位 */
+  padding: 4px 0;
+  box-sizing: border-box;
 }
 
 .corpus-title {
