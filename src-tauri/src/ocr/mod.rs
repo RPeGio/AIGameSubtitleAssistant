@@ -13,7 +13,7 @@
 use crate::ai_runtime::dhash::FrameChange;
 use crate::ai_runtime::{OcrError, OcrManager, OcrResult};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
@@ -147,7 +147,15 @@ fn similar_text(a: &str, b: &str, threshold: f64) -> bool {
     if a == b {
         return true;
     }
-    if a.starts_with(b) || b.starts_with(a) {
+    // 前缀互相覆盖（打字机/渐进文本）：仅当较短文本足够长（≥ 较长文本 1/3）时，
+    // 避免把"派蒙"与"派蒙：旅行者你来了"这类独立两行误合并（约占 1/4 的前缀）
+    let (short, long) = if a.chars().count() <= b.chars().count() {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    let short_len = short.chars().count();
+    if short_len > 0 && long.starts_with(short) && short_len * 3 >= long.chars().count() {
         return true;
     }
     edit_distance_ratio(a, b) <= threshold
@@ -314,6 +322,205 @@ pub fn merge_fragments(segments: Vec<OcrSegment>, interval: f64) -> Vec<OcrSegme
     out
 }
 
+/// 修正相邻段时间重叠：段 `end` 不得超过下一段 `start`。
+///
+/// 阶段 1 的窗口精化会把 changed 帧 `start` 提前到帧级边界，而 `end` 仍按
+/// 网格 `last + interval` 计算，可能产生交叉/重叠 → 统一 clamp 保证时间单调。
+fn clamp_segment_times(mut segments: Vec<OcrSegment>) -> Vec<OcrSegment> {
+    for i in 1..segments.len() {
+        if segments[i - 1].end > segments[i].start {
+            segments[i - 1].end = segments[i].start;
+        }
+    }
+    segments
+}
+
+/// 相邻段文本相似（相等/前缀/编辑距离 ≤ 阈值）→ 合并为一段（取更长文本、时间取并集）。
+///
+/// 用于阶段 2 短字幕召回后：dHash 判为变化但 OCR 文本与相邻段相同的"伪短字幕"
+/// （字幕视觉抖动/OCR 抖动）会与相邻段相似，在此合并，避免同一句被拆成碎片。
+fn merge_similar_adjacent(segments: Vec<OcrSegment>, threshold: f64) -> Vec<OcrSegment> {
+    let mut out: Vec<OcrSegment> = Vec::with_capacity(segments.len());
+    for seg in segments {
+        if let Some(last) = out.last_mut() {
+            if similar_text(&last.text, &seg.text, threshold) {
+                last.end = last.end.max(seg.end);
+                // 更长且置信度不低于原段才替换文本，避免用低置信度长文本覆盖清晰短文本
+                if seg.text.chars().count() > last.text.chars().count()
+                    && seg.confidence >= last.confidence
+                {
+                    last.text = seg.text;
+                    last.confidence = seg.confidence;
+                }
+                continue;
+            }
+        }
+        out.push(seg);
+    }
+    out
+}
+
+/// 对每个 changed 帧做窗口精化：以源帧率抽密帧，逐帧 dHash 相对基准 A，
+/// 计算帧级主边界（阶段 1）+ 召回窗口内短字幕（阶段 2）。
+///
+/// 返回 `(精化后的 changes, 召回的短字幕段)`。
+/// 单独成函数便于集成测试/基准直接调用，不依赖 Tauri 命令栈。
+///
+/// 性能策略：整段一次性抽密帧（一次 FFmpeg 调用，避免每个变化帧各 spawn 一次，
+/// 实测逐窗口抽帧是主要开销），再按时间切片到各窗口；整段密帧数超过阈值时
+/// 退回逐窗口抽帧（避免长视频密帧文件爆炸）。
+#[allow(clippy::too_many_arguments)]
+pub fn refine_window_changes(
+    changes: &[crate::ai_runtime::dhash::FrameChange],
+    video_path: &str,
+    clip: &OcrRegionInput,
+    video_w: u32,
+    video_h: u32,
+    src_fps: f64,
+    dhash_threshold: u32,
+    clip_dir: &Path,
+    manager: &crate::ai_runtime::OcrManager,
+    dev_debug: bool,
+) -> (Vec<crate::ai_runtime::dhash::FrameChange>, Vec<OcrSegment>) {
+    let dense_interval = 1.0 / src_fps;
+    let mut short_segments: Vec<OcrSegment> = Vec::new();
+    let mut refined: Vec<crate::ai_runtime::dhash::FrameChange> =
+        Vec::with_capacity(changes.len());
+
+    // 整段密帧数估算：超过阈值则退回逐窗口抽帧，避免长视频密帧文件爆炸
+    let whole_count = ((clip.end - clip.start) / dense_interval).ceil() as usize;
+    const MAX_WHOLE_FRAMES: usize = 30_000;
+    let mut use_whole = whole_count <= MAX_WHOLE_FRAMES;
+
+    // 整段一次性抽密帧（一次 FFmpeg 调用）；失败则置 use_whole=false 退回逐窗口
+    let whole_frames: Vec<crate::video::ExtractedFrame> = if use_whole {
+        let dense_dir = clip_dir.join("dense_whole");
+        match crate::video::extract_frames(
+            video_path,
+            clip.start,
+            clip.end,
+            clip.x1,
+            clip.y1,
+            clip.x2,
+            clip.y2,
+            video_w,
+            video_h,
+            dense_interval,
+            &dense_dir,
+        ) {
+            Ok(frames) => frames,
+            Err(_) => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+    use_whole = use_whole && !whole_frames.is_empty();
+
+    for idx in 0..changes.len() {
+        let mut fc = changes[idx].clone();
+        if fc.is_changed && idx > 0 {
+            if let Some(base) = fc.base_hash {
+                let lo = changes[idx - 1].frame.time;
+                let hi = fc.frame.time;
+                if hi > lo {
+                    // 窗口内密帧及其哈希，按 (time, hash, path) 对齐：任一帧 dHash 失败
+                    // 只丢弃该帧，不破坏后续下标（修复 P1-2 索引错位）。
+                    let window: Vec<(f64, u64, String)> = if use_whole {
+                        whole_frames
+                            .iter()
+                            .filter(|f| f.time >= lo && f.time < hi)
+                            .filter_map(|f| {
+                                crate::ai_runtime::dhash::dhash_file(&f.path)
+                                    .ok()
+                                    .map(|h| (f.time, h, f.path.to_string_lossy().to_string()))
+                            })
+                            .collect()
+                    } else {
+                        let dense_dir = clip_dir.join(format!("dense_{}", idx));
+                        let Ok(dense_frames) = crate::video::extract_frames(
+                            video_path,
+                            lo,
+                            hi,
+                            clip.x1,
+                            clip.y1,
+                            clip.x2,
+                            clip.y2,
+                            video_w,
+                            video_h,
+                            dense_interval,
+                            &dense_dir,
+                        ) else {
+                            // 窗口抽帧失败不阻断主流程，保持网格时间
+                            refined.push(fc);
+                            continue;
+                        };
+                        dense_frames
+                            .iter()
+                            .filter_map(|f| {
+                                crate::ai_runtime::dhash::dhash_file(&f.path)
+                                    .ok()
+                                    .map(|h| (f.time, h, f.path.to_string_lossy().to_string()))
+                            })
+                            .collect()
+                    };
+                    let hashes: Vec<u64> = window.iter().map(|(_, h, _)| *h).collect();
+                    let boundaries =
+                        crate::ai_runtime::dhash::boundary_indices(&hashes, base, dhash_threshold);
+                    // 下一段（f_k）的真实边界 = 最后一个变化帧
+                    if let Some(&last) = boundaries.last() {
+                        // 用窗口内实际帧时间（而非 lo + last*interval），整段切片时
+                        // 窗口首帧未必恰在 lo，更精确也避免假设
+                        let new_time = window[last].0;
+                        if new_time < hi {
+                            if dev_debug {
+                                eprintln!(
+                                    "[ocr]   精化边界 [{} → {}]",
+                                    fmt_time(fc.frame.time),
+                                    fmt_time(new_time)
+                                );
+                            }
+                            fc.frame.time = new_time;
+                        }
+                        // 阶段 2：恰好两次变化 → [main, sub[0]) 为短字幕候选。
+                        // 注意：只召回恰好 2 个边界的窗口（A→短字幕→C）。遍历全部边界对
+                        // 会过度召回（每次召回一次慢速 OCR IPC，实测事件数翻倍、耗时×3），
+                        // 故不做泛化，多突变/多短字幕留给后续更精确的判定。
+                        if boundaries.len() == 2 {
+                            let (m, s) = (boundaries[0], boundaries[1]);
+                            if s > m + 1 {
+                                // 区间中点帧做 OCR（避开切换过渡帧）
+                                let mid = m + (s - m) / 2;
+                                if let Some((_, _, path)) = window.get(mid) {
+                                    let path = path.clone();
+                                    if let Ok(res) = manager
+                                        .with_provider(|p| p.recognize_batch(&[path]))
+                                    {
+                                        if let Some(r) = res.into_iter().next() {
+                                            let text = r.text.trim().to_string();
+                                            if !text.is_empty() {
+                                                short_segments.push(OcrSegment {
+                                                    start: lo
+                                                        + m as f64 * dense_interval,
+                                                    end: lo
+                                                        + s as f64 * dense_interval,
+                                                    confidence: r.confidence,
+                                                    text,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        refined.push(fc);
+    }
+    (refined, short_segments)
+}
+
 // ─── 编排命令 ─────────────────────────────────────────────
 
 /// 前端传入的 ocr_region 选区（归一化坐标 + 时间段）
@@ -375,10 +582,12 @@ pub fn fmt_time(s: f64) -> String {
     format!("{:02}:{:02}.{:03}", min, sec, ms)
 }
 
-/// 串起完整 OCR 流水线（抽帧 → 变化检测 → OCR → 合并）。
+/// 串起完整 OCR 流水线（抽帧 → 变化检测 → 窗口精化 → OCR → 合并）。
 ///
 /// 抽取为独立函数便于集成测试直接调用（不依赖 Tauri 命令栈）。
+/// `src_fps`：源视频帧率，>0 时启用切换窗口的帧级主边界精化（阶段 1）。
 /// `on_progress(clip_index, clip_count, progress, message)` 每次阶段推进调用一次。
+#[allow(clippy::too_many_arguments)] // 参数为流水线依赖的显式事实，不聚合为结构体以保持可测性
 pub fn run_ocr_pipeline<F>(
     manager: &OcrManager,
     video_path: &str,
@@ -386,6 +595,7 @@ pub fn run_ocr_pipeline<F>(
     video_h: u32,
     region_clips: &[OcrRegionInput],
     params: &OcrRunParams,
+    src_fps: f64,
     mut on_progress: F,
 ) -> Result<Vec<OcrSegment>, String>
 where
@@ -493,6 +703,33 @@ where
             );
         }
 
+        // ── 窗口精化：帧级主边界（阶段 1）+ 短字幕召回（阶段 2）────
+        // 对每个"切换窗口"以源帧率抽密帧，逐帧 dHash 相对基准 A：
+        // - 真正的下一段边界 = 最后一个变化帧（而非首个 main，规避 A→短字幕→C 误判）
+        // - 窗口内恰好两次变化时，中间区间为短字幕：≥2 帧则 OCR 中间帧召回为独立段
+        let (changes, mut short_segments) = if src_fps > 0.0 {
+            emit(
+                i,
+                (i as f64 + 0.55) / clip_count as f64,
+                format!("精化边界 {}/{}", i + 1, clip_count),
+            );
+            refine_window_changes(
+                &changes,
+                video_path,
+                clip,
+                video_w,
+                video_h,
+                src_fps,
+                dhash_threshold,
+                &clip_dir,
+                manager,
+                dev_debug,
+            )
+        } else {
+            (changes, Vec::new())
+        };
+
+
         emit(
             i,
             (i as f64 + 0.6) / clip_count as f64,
@@ -529,9 +766,20 @@ where
             }
         }
 
-        let segments = merge_frames(texts, frame_interval, clip.end, merge_similarity);
-        // 第二遍：孤立短段（渐进中间态/残缺帧）并入相邻完整段
+        let mut segments = merge_frames(texts, frame_interval, clip.end, merge_similarity);
+        // 阶段 2：并入窗口内召回的短字幕段，按时间排序
+        segments.append(&mut short_segments);
+        segments.sort_by(|a, b| {
+            a.start
+                .partial_cmp(&b.start)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        // 第二遍：孤立短段（渐进中间态/残缺帧，含误召回的抖动短字幕）并入相邻完整段
         let segments = merge_fragments(segments, frame_interval);
+        // 第三遍：相邻文本相似合并（消除阶段 2 召回的同句碎片/伪短字幕）
+        let segments = merge_similar_adjacent(segments, merge_similarity);
+        // 第四遍：精化可能让 start 提前 → clamp 相邻段时间，保证单调不重叠
+        let segments = clamp_segment_times(segments);
         if dev_debug {
             eprintln!("[ocr] clip {}/{}：合并 {} 条事件", i + 1, clip_count, segments.len());
             for seg in &segments {
@@ -561,6 +809,8 @@ pub async fn run_ocr(
     video_h: u32,
     region_clips: Vec<OcrRegionInput>,
     params: OcrRunParams,
+    // 源视频帧率：窗口精化用。前端已获取元数据，直接传入避免重复探测
+    src_fps: f64,
 ) -> Result<Vec<OcrSegment>, String> {
     let app_handle = app.clone();
 
@@ -573,6 +823,7 @@ pub async fn run_ocr(
             video_h,
             &region_clips,
             &params,
+            src_fps,
             |clip_index, clip_count, progress, message| {
                 let _ = app_handle.emit(
                     OCR_PROGRESS_EVENT,
@@ -722,6 +973,7 @@ mod tests {
                 time,
             },
             is_changed: changed,
+            base_hash: None,
         }
     }
 
@@ -970,6 +1222,58 @@ mod tests {
             OcrSegment { start: 2.0, end: 9.0, text: "我们出发吧。".into(), confidence: 0.9 },
         ];
         let out = merge_fragments(segs, 0.5);
+        assert_eq!(out.len(), 2);
+    }
+
+    // ── 相邻段时间 clamp（精化后防重叠）──
+
+    #[test]
+    fn test_clamp_segment_times_no_overlap() {
+        // 前段 end 与后段 start 交叉 → clamp 到后段 start
+        let segs = vec![
+            OcrSegment { start: 1.0, end: 5.0, text: "A".into(), confidence: 0.9 },
+            OcrSegment { start: 3.0, end: 8.0, text: "B".into(), confidence: 0.9 },
+        ];
+        let out = clamp_segment_times(segs);
+        assert_eq!(out.len(), 2);
+        assert!((out[0].end - 3.0).abs() < 1e-9);
+        assert!((out[1].start - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_clamp_segment_times_keeps_gap() {
+        // 本就无重叠 → 时间不变
+        let segs = vec![
+            OcrSegment { start: 1.0, end: 3.0, text: "A".into(), confidence: 0.9 },
+            OcrSegment { start: 5.0, end: 9.0, text: "B".into(), confidence: 0.9 },
+        ];
+        let out = clamp_segment_times(segs);
+        assert!((out[0].end - 3.0).abs() < 1e-9);
+        assert!((out[1].end - 9.0).abs() < 1e-9);
+    }
+
+    // ── 相邻相似合并（阶段 2 去伪短字幕）──
+
+    #[test]
+    fn test_merge_similar_adjacent_merges_same_text() {
+        // 完全相同文本的相邻段 → 合并为一段（时间取并集）
+        let segs = vec![
+            OcrSegment { start: 1.0, end: 3.0, text: "卡侬\n…那是我本职工作的一部分。".into(), confidence: 0.9 },
+            OcrSegment { start: 3.0, end: 3.2, text: "卡侬\n…那是我本职工作的一部分。".into(), confidence: 0.9 },
+        ];
+        let out = merge_similar_adjacent(segs, 0.3);
+        assert_eq!(out.len(), 1);
+        assert!((out[0].end - 3.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_merge_similar_adjacent_keeps_distinct() {
+        // 文本差异大的相邻段 → 不合并
+        let segs = vec![
+            OcrSegment { start: 1.0, end: 3.0, text: "卡侬".into(), confidence: 0.9 },
+            OcrSegment { start: 3.0, end: 5.0, text: "获得".into(), confidence: 0.9 },
+        ];
+        let out = merge_similar_adjacent(segs, 0.3);
         assert_eq!(out.len(), 2);
     }
 
