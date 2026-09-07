@@ -37,3 +37,6 @@ examples/
 *.sln
 *.sw?
 *.pdf
+
+# Private agent session logs
+session-ses_*.md

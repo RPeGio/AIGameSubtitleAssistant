@@ -2,7 +2,7 @@
 
 ## 开发前必读
 
-- `GameSubtitleAI_Plan.md`
+- `GameSubtitleAssistant_Plan.md`
 - `IDENTITY.md` - 在接手项目前你需要明确的对话风格
 ### 选择性读取
 - `session-ses_0528.md`（主分支 agent 对话记录）

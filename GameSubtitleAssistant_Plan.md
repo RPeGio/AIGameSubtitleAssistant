@@ -1,10 +1,10 @@
-# GameSubtitleAI 项目开发计划
+# GameSubtitleAssistant 项目开发计划
 
 ## 1. 项目概述
 
 ### 项目名称（暂定）
 
-**GameSubtitleAI**
+**GameSubtitleAssistant**
 
 ### 项目定位
 
@@ -301,7 +301,7 @@ trait TextProcessor {
 
 不直接打包模型。结构：
 ```
-GameSubtitleAI
+GameSubtitleAssistant
 ├── app
 ├── runtime
 └── models
