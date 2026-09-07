@@ -51,6 +51,7 @@ fn extract_lines(track: &Track) -> Vec<SubtitleLine> {
 fn event_times(ev: &TimelineEvent) -> (f64, f64) {
     match ev {
         TimelineEvent::OcrText(e) => (e.start, e.end),
+        TimelineEvent::EmbedOcr(e) => (e.start, e.end),
         TimelineEvent::OcrRegion(e) => (e.start, e.end),
         TimelineEvent::Asr(e) => (e.start, e.end),
         TimelineEvent::Fused(e) => (e.start, e.end),
@@ -62,6 +63,7 @@ fn event_times(ev: &TimelineEvent) -> (f64, f64) {
 fn event_text(ev: &TimelineEvent) -> &str {
     match ev {
         TimelineEvent::OcrText(e) => &e.text,
+        TimelineEvent::EmbedOcr(e) => &e.text,
         TimelineEvent::OcrRegion(_) => "",
         TimelineEvent::Asr(e) => &e.text,
         TimelineEvent::Fused(e) => &e.text,

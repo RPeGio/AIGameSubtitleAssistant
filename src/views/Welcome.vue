@@ -58,7 +58,7 @@ onMounted(() => {
     <div class="welcome-content">
       <div class="logo-area">
         <div class="logo-icon">GSA</div>
-        <h1 class="title">GameSubtitleAI</h1>
+        <h1 class="title">GameSubtitleAssistant</h1>
         <p class="subtitle">AI 游戏剧情字幕生产工作站</p>
       </div>
 

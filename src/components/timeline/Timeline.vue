@@ -400,6 +400,29 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
+// ── 初始默认缩放：视口覆盖约 30% 视频时长 ──
+// 校对区全局时间轴与语料页迷你时间轴共用本组件；默认 100px/s 对长视频
+// 视口只显示开头几秒，故在 duration + viewportWidth 首次就绪时自动缩放到
+// 覆盖 30% 时长（下限=整段可见的 pps，上限=800，与手动 zoom 一致）。
+// 仅设置一次，之后尊重用户手动缩放；视频时长归零（换项目/重载）时复位，
+// 让下一次视频加载重新做 30% 覆盖。
+let initialZoomDone = false;
+watch(
+  [() => timeline.duration, () => timeline.viewportWidth],
+  ([dur, vw]) => {
+    if (dur <= 0) {
+      initialZoomDone = false;
+      return;
+    }
+    if (initialZoomDone || vw <= 0) return;
+    initialZoomDone = true;
+    const pps30 = vw / (dur * 0.3);
+    const ppsFitAll = vw / dur;
+    timeline.pixelsPerSecond = Math.min(800, Math.max(ppsFitAll, pps30));
+  },
+  { immediate: true }
+);
+
 onMounted(() => {
   if (viewportRef.value) {
     const update = () => {

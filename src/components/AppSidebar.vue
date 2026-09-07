@@ -35,7 +35,7 @@ function handleBack() {
   <aside class="sidebar">
     <div class="sidebar-header">
       <span class="sidebar-logo">GSA</span>
-      <span class="sidebar-title">GameSubtitleAI</span>
+      <span class="sidebar-title">GameSubtitleAssistant</span>
     </div>
 
     <div class="sidebar-nav">
