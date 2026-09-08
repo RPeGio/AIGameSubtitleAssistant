@@ -137,6 +137,63 @@ pub fn ocr_pass(
     Ok(texts)
 }
 
+/// 把变化标志与 mjpeg 流实际帧装配成 ocr_pass 的输入（changes 与 jpegs 严格对齐）。
+///
+/// 背景：网格帧数按 ceil(时长/间隔) 估算，而 ffmpeg fps 滤镜实际输出按 round 舍入，
+/// 实测 dur=5s、interval=0.7s 时估算 8 帧、实际输出 7 帧。多出的"幻影"网格帧
+/// （号 ≥ total）在 extract_frames_bytes 中无实际帧匹配、被静默丢弃。
+///
+/// 装配规则：
+/// - 实际帧（0..total）直接装配；`kept_jpegs` 必须与其中变化帧一一对应（显式校验，
+///   违反即报错而非静默错位）
+/// - 幻影网格帧若判为变化，说明片段尾部确有字幕切换：经 `recover_frame` 按网格时间
+///   补抽单帧；补抽失败则放弃该帧（changes/jpegs 同步跳过，对齐不变）
+fn assemble_grid_frames(
+    flags: &[(bool, Option<u64>)],
+    kept_jpegs: Vec<Vec<u8>>,
+    total: usize,
+    start: f64,
+    interval: f64,
+    mut recover_frame: impl FnMut(f64) -> Option<Vec<u8>>,
+) -> Result<(Vec<FrameChange>, Vec<Vec<u8>>), OcrError> {
+    // 对齐校验：kept 即全部 <total 的变化帧字节（extract_frames_bytes 按 keep 升序保留）
+    let changed_below = (0..total.min(flags.len())).filter(|&k| flags[k].0).count();
+    if kept_jpegs.len() != changed_below {
+        return Err(OcrError::Worker(format!(
+            "网格帧装配错位：{} 个变化帧，{} 张 JPEG",
+            changed_below,
+            kept_jpegs.len()
+        )));
+    }
+    let mut changes: Vec<FrameChange> = (0..total)
+        .map(|k| {
+            let (is_changed, base_hash) = flags.get(k).copied().unwrap_or((false, None));
+            FrameChange {
+                time: start + (k as f64) * interval,
+                is_changed,
+                base_hash,
+            }
+        })
+        .collect();
+    let mut jpegs = kept_jpegs;
+    // 幻影网格帧回收：补抽的帧号大于所有实际帧，追加在末尾保持升序对齐
+    for (k, &(is_changed, base_hash)) in flags.iter().enumerate().skip(total) {
+        if !is_changed {
+            continue;
+        }
+        let time = start + (k as f64) * interval;
+        if let Some(jpeg) = recover_frame(time) {
+            changes.push(FrameChange {
+                time,
+                is_changed: true,
+                base_hash,
+            });
+            jpegs.push(jpeg);
+        }
+    }
+    Ok((changes, jpegs))
+}
+
 /// 计算两个字符串的归一化编辑距离比例（0=相同，1=完全不同）
 fn edit_distance_ratio(a: &str, b: &str) -> f64 {
     let ac: Vec<char> = a.chars().collect();
@@ -724,17 +781,28 @@ where
             );
         }
 
-        let changes: Vec<FrameChange> = (0..grid.total)
-            .map(|k| {
-                let (is_changed, base_hash) = flags.get(k).copied().unwrap_or((false, None));
-                FrameChange {
-                    time: clip.start + (k as f64) * frame_interval,
-                    is_changed,
-                    base_hash,
-                }
-            })
-            .collect();
-        let jpegs: Vec<Vec<u8>> = grid.kept.iter().map(|f| f.jpeg.clone()).collect();
+        // 装配 changes/jpegs：以 mjpeg 流实际帧数为准，幻影变化帧按网格时间补抽单帧
+        let (changes, jpegs) = assemble_grid_frames(
+            &flags,
+            grid.kept.iter().map(|f| f.jpeg.clone()).collect(),
+            grid.total,
+            clip.start,
+            frame_interval,
+            |time| {
+                crate::video::extract_single_frame_bytes(
+                    video_path,
+                    time,
+                    clip.x1,
+                    clip.y1,
+                    clip.x2,
+                    clip.y2,
+                    video_w,
+                    video_h,
+                )
+                .ok()
+            },
+        )
+        .map_err(|e| format!("网格帧装配失败（clip {}）: {}", i, e))?;
 
         // ── 窗口精化：帧级主边界（阶段 1）+ 短字幕召回（阶段 2）────
         // 窗口 = 扫描序列的时间切片（零抽帧零落盘）：
@@ -1095,6 +1163,139 @@ mod tests {
         let changes = vec![frame(0.0, true), frame(1.0, true), frame(2.0, true)];
         let jpegs = vec![b"J".to_vec()];
         assert!(ocr_pass(&changes, &jpegs, |images| provider.recognize_batch(images), 1, |_, _| {}).is_err());
+    }
+
+    // ── assemble_grid_frames（幻影网格帧回收）──
+
+    /// 8 个网格标志：k=0/3/7 为变化帧。模拟 ceil 估算 8 帧、mjpeg 流实际 7 帧。
+    fn phantom_flags() -> Vec<(bool, Option<u64>)> {
+        let mut flags = vec![(false, None); 8];
+        flags[0] = (true, None);
+        flags[3] = (true, Some(0xA));
+        flags[7] = (true, Some(0xB));
+        flags
+    }
+
+    #[test]
+    fn test_assemble_grid_phantom_changed_recovered() {
+        let flags = phantom_flags();
+        // 实际 7 帧，kept 只含 <7 的变化帧字节（k=0、k=3）
+        let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let recorded = calls.clone();
+        let mut recover = move |t: f64| {
+            recorded.borrow_mut().push(t);
+            Some(b"J7".to_vec())
+        };
+        let (changes, jpegs) =
+            assemble_grid_frames(&flags, vec![b"J0".to_vec(), b"J3".to_vec()], 7, 10.0, 0.7, &mut recover)
+                .unwrap();
+        // 7 个实际帧 + 1 个回收的幻影帧
+        assert_eq!(changes.len(), 8);
+        assert_eq!(jpegs.len(), 3);
+        // changes/jpegs 与变化帧按序对齐：k=0、k=3（实际）、k=7（幻影）
+        let changed: Vec<usize> = changes
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.is_changed)
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(changed, vec![0, 3, 7]);
+        assert_eq!(changes[7].time, 10.0 + 7.0 * 0.7);
+        assert_eq!(changes[7].base_hash, Some(0xB));
+        assert_eq!(jpegs[2], b"J7".to_vec());
+        // 幻影帧按网格时间补抽，且只补抽一次
+        assert_eq!(calls.borrow().clone(), vec![10.0 + 7.0 * 0.7]);
+    }
+
+    #[test]
+    fn test_assemble_grid_phantom_unchanged_skipped() {
+        let mut flags = phantom_flags();
+        flags[7] = (false, None); // 幻影帧未变化 → 无需补抽
+        let (changes, jpegs) = assemble_grid_frames(
+            &flags,
+            vec![b"J0".to_vec(), b"J3".to_vec()],
+            7,
+            0.0,
+            0.7,
+            |_| panic!("未变化帧不应触发补抽"),
+        )
+        .unwrap();
+        assert_eq!(changes.len(), 7);
+        assert_eq!(jpegs.len(), 2);
+    }
+
+    #[test]
+    fn test_assemble_grid_recovery_failure_keeps_alignment() {
+        let flags = phantom_flags();
+        // 补抽失败 → 幻影帧的 change 与 jpeg 同步跳过，对齐不被破坏
+        let (changes, jpegs) = assemble_grid_frames(
+            &flags,
+            vec![b"J0".to_vec(), b"J3".to_vec()],
+            7,
+            0.0,
+            0.7,
+            |_| None,
+        )
+        .unwrap();
+        assert_eq!(changes.len(), 7);
+        let changed: Vec<usize> = changes
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.is_changed)
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(changed, vec![0, 3]);
+        assert_eq!(jpegs.len(), 2);
+    }
+
+    #[test]
+    fn test_assemble_grid_total_matches_no_recovery() {
+        let flags = phantom_flags();
+        // 估算与实际一致（total=8）→ 无幻影帧，不触发补抽
+        let (changes, jpegs) = assemble_grid_frames(
+            &flags,
+            vec![b"J0".to_vec(), b"J3".to_vec(), b"J7".to_vec()],
+            8,
+            0.0,
+            0.7,
+            |_| panic!("total 覆盖全部网格帧时不应触发补抽"),
+        )
+        .unwrap();
+        assert_eq!(changes.len(), 8);
+        assert_eq!(jpegs.len(), 3);
+    }
+
+    #[test]
+    fn test_assemble_grid_mismatch_errors() {
+        let flags = phantom_flags();
+        // kept 数量与变化帧不符 → 显式报错而非静默错位
+        assert!(assemble_grid_frames(&flags, vec![b"J0".to_vec()], 7, 0.0, 0.7, |_| None).is_err());
+    }
+
+    #[test]
+    fn test_assemble_grid_output_feeds_ocr_pass() {
+        // 装配结果（含回收的幻影帧）满足 ocr_pass 契约：数量对齐、文本按序回填
+        let flags = phantom_flags();
+        let (changes, jpegs) = assemble_grid_frames(
+            &flags,
+            vec![b"J0".to_vec(), b"J3".to_vec()],
+            7,
+            0.0,
+            0.7,
+            |_| Some(b"J7".to_vec()),
+        )
+        .unwrap();
+        let provider = mock(vec![
+            OcrResult { text: "A".into(), confidence: 0.9 },
+            OcrResult { text: "B".into(), confidence: 0.8 },
+            OcrResult { text: "C".into(), confidence: 0.7 },
+        ]);
+        let texts = ocr_pass(&changes, &jpegs, |images| provider.recognize_batch(images), 16, |_, _| {})
+            .unwrap();
+        assert_eq!(texts.len(), 8);
+        assert_eq!(texts[0].text.as_ref(), "A");
+        assert_eq!(texts[3].text.as_ref(), "B");
+        assert_eq!(texts[7].text.as_ref(), "C"); // 幻影帧文本正常回填
     }
 
     // ── merge_frames ──
