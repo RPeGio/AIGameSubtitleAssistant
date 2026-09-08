@@ -3,12 +3,13 @@
 //   ocr_pass    —— 只 OCR 变化帧，未变化帧顺延文本，产出每帧的 FrameText
 //   merge_frames —— 连续相同文本合并成 OcrSegment（事件）
 // 编排命令：
-//   run_ocr     —— 串联 抽帧→变化检测→OCR→合并，后台线程跑并上报进度
+//   run_ocr     —— 串联 扫描→抽帧→窗口精化→OCR→合并，后台线程跑并上报进度
 //
 // 依赖：
-//   2.3 extract_frames  →  Vec<ExtractedFrame>
-//   2.4 detect_changes  →  Vec<FrameChange>
-//   2.2 OcrProvider     →  批量识别
+//   video::scan_frame_hashes → Vec<(time, dhash)>（零落盘变化检测，网格+精化共用）
+//   2.3 extract_frames       → Vec<ExtractedFrame>（仅 OCR 输入帧落盘）
+//   2.4 change_flags         → Vec<(is_changed, base_hash)>
+//   2.2 OcrProvider          → 批量识别
 
 use crate::ai_runtime::dhash::FrameChange;
 use crate::ai_runtime::{OcrError, OcrManager, OcrResult};
@@ -360,25 +361,26 @@ fn merge_similar_adjacent(segments: Vec<OcrSegment>, threshold: f64) -> Vec<OcrS
     out
 }
 
-/// 对每个 changed 帧做窗口精化：以源帧率抽密帧，逐帧 dHash 相对基准 A，
-/// 计算帧级主边界（阶段 1）+ 召回窗口内短字幕（阶段 2）。
+/// 对每个 changed 帧做窗口精化：从零落盘扫描序列中切出窗口密帧哈希，
+/// 逐帧相对基准 A 判定，计算帧级主边界（阶段 1）+ 召回窗口内短字幕（阶段 2）。
 ///
 /// 返回 `(精化后的 changes, 召回的短字幕段)`。
 /// 单独成函数便于集成测试/基准直接调用，不依赖 Tauri 命令栈。
 ///
-/// 性能策略：整段一次性抽密帧（一次 FFmpeg 调用，避免每个变化帧各 spawn 一次，
-/// 实测逐窗口抽帧是主要开销），再按时间切片到各窗口；整段密帧数超过阈值时
-/// 退回逐窗口抽帧（避免长视频密帧文件爆炸）。
+/// 性能策略：哈希全部来自扫描阶段的内存序列（`scan_frame_hashes`），
+/// 本函数零抽帧零落盘；仅阶段 2 召回时按需抽取一张中间帧 JPEG
+/// （OCR worker 消费文件路径，每窗口至多一次）。
 #[allow(clippy::too_many_arguments)]
 pub fn refine_window_changes(
     changes: &[crate::ai_runtime::dhash::FrameChange],
+    scan_stream: &[(f64, u64)],
     video_path: &str,
     clip: &OcrRegionInput,
     video_w: u32,
     video_h: u32,
     src_fps: f64,
     dhash_threshold: u32,
-    clip_dir: &Path,
+    recall_dir: &Path,
     manager: &crate::ai_runtime::OcrManager,
     dev_debug: bool,
 ) -> (Vec<crate::ai_runtime::dhash::FrameChange>, Vec<OcrSegment>) {
@@ -387,35 +389,6 @@ pub fn refine_window_changes(
     let mut refined: Vec<crate::ai_runtime::dhash::FrameChange> =
         Vec::with_capacity(changes.len());
 
-    // 整段密帧数估算：超过阈值则退回逐窗口抽帧，避免长视频密帧文件爆炸
-    let whole_count = ((clip.end - clip.start) / dense_interval).ceil() as usize;
-    const MAX_WHOLE_FRAMES: usize = 30_000;
-    let mut use_whole = whole_count <= MAX_WHOLE_FRAMES;
-
-    // 整段一次性抽密帧（一次 FFmpeg 调用）；失败则置 use_whole=false 退回逐窗口
-    let whole_frames: Vec<crate::video::ExtractedFrame> = if use_whole {
-        let dense_dir = clip_dir.join("dense_whole");
-        match crate::video::extract_frames(
-            video_path,
-            clip.start,
-            clip.end,
-            clip.x1,
-            clip.y1,
-            clip.x2,
-            clip.y2,
-            video_w,
-            video_h,
-            dense_interval,
-            &dense_dir,
-        ) {
-            Ok(frames) => frames,
-            Err(_) => Vec::new(),
-        }
-    } else {
-        Vec::new()
-    };
-    use_whole = use_whole && !whole_frames.is_empty();
-
     for idx in 0..changes.len() {
         let mut fc = changes[idx].clone();
         if fc.is_changed && idx > 0 {
@@ -423,53 +396,20 @@ pub fn refine_window_changes(
                 let lo = changes[idx - 1].frame.time;
                 let hi = fc.frame.time;
                 if hi > lo {
-                    // 窗口内密帧及其哈希，按 (time, hash, path) 对齐：任一帧 dHash 失败
-                    // 只丢弃该帧，不破坏后续下标（修复 P1-2 索引错位）。
-                    let window: Vec<(f64, u64, String)> = if use_whole {
-                        whole_frames
-                            .iter()
-                            .filter(|f| f.time >= lo && f.time < hi)
-                            .filter_map(|f| {
-                                crate::ai_runtime::dhash::dhash_file(&f.path)
-                                    .ok()
-                                    .map(|h| (f.time, h, f.path.to_string_lossy().to_string()))
-                            })
-                            .collect()
-                    } else {
-                        let dense_dir = clip_dir.join(format!("dense_{}", idx));
-                        let Ok(dense_frames) = crate::video::extract_frames(
-                            video_path,
-                            lo,
-                            hi,
-                            clip.x1,
-                            clip.y1,
-                            clip.x2,
-                            clip.y2,
-                            video_w,
-                            video_h,
-                            dense_interval,
-                            &dense_dir,
-                        ) else {
-                            // 窗口抽帧失败不阻断主流程，保持网格时间
-                            refined.push(fc);
-                            continue;
-                        };
-                        dense_frames
-                            .iter()
-                            .filter_map(|f| {
-                                crate::ai_runtime::dhash::dhash_file(&f.path)
-                                    .ok()
-                                    .map(|h| (f.time, h, f.path.to_string_lossy().to_string()))
-                            })
-                            .collect()
-                    };
-                    let hashes: Vec<u64> = window.iter().map(|(_, h, _)| *h).collect();
+                    // 窗口 = 扫描序列的时间切片（与旧"整段密帧落盘后切片"同一帧集合，
+                    // 哈希同源：网格哈希也取自该序列，交叉比较基准一致）
+                    let window: Vec<(f64, u64)> = scan_stream
+                        .iter()
+                        .filter(|(t, _)| *t >= lo && *t < hi)
+                        .copied()
+                        .collect();
+                    let hashes: Vec<u64> = window.iter().map(|(_, h)| *h).collect();
                     let boundaries =
                         crate::ai_runtime::dhash::boundary_indices(&hashes, base, dhash_threshold);
                     // 下一段（f_k）的真实边界 = 最后一个变化帧
                     if let Some(&last) = boundaries.last() {
-                        // 用窗口内实际帧时间（而非 lo + last*interval），整段切片时
-                        // 窗口首帧未必恰在 lo，更精确也避免假设
+                        // 用窗口内实际帧时间（而非 lo + last*interval），窗口首帧
+                        // 未必恰在 lo，更精确也避免假设
                         let new_time = window[last].0;
                         if new_time < hi {
                             if dev_debug {
@@ -490,22 +430,37 @@ pub fn refine_window_changes(
                             if s > m + 1 {
                                 // 区间中点帧做 OCR（避开切换过渡帧）
                                 let mid = m + (s - m) / 2;
-                                if let Some((_, _, path)) = window.get(mid) {
-                                    let path = path.clone();
-                                    if let Ok(res) = manager
-                                        .with_provider(|p| p.recognize_batch(&[path]))
-                                    {
-                                        if let Some(r) = res.into_iter().next() {
-                                            let text = r.text.trim().to_string();
-                                            if !text.is_empty() {
-                                                short_segments.push(OcrSegment {
-                                                    start: lo
-                                                        + m as f64 * dense_interval,
-                                                    end: lo
-                                                        + s as f64 * dense_interval,
-                                                    confidence: r.confidence,
-                                                    text,
-                                                });
+                                if let Some(&(mid_time, _)) = window.get(mid) {
+                                    // 召回帧按需单帧抽取；抽取失败不阻断主流程
+                                    let recall_path =
+                                        recall_dir.join(format!("recall_{idx}.jpg"));
+                                    if let Ok(path) = crate::video::extract_single_frame(
+                                        video_path,
+                                        mid_time,
+                                        clip.x1,
+                                        clip.y1,
+                                        clip.x2,
+                                        clip.y2,
+                                        video_w,
+                                        video_h,
+                                        &recall_path,
+                                    ) {
+                                        if let Ok(res) = manager.with_provider(|p| {
+                                            p.recognize_batch(&[path.to_string_lossy()
+                                                .to_string()])
+                                        }) {
+                                            if let Some(r) = res.into_iter().next() {
+                                                let text = r.text.trim().to_string();
+                                                if !text.is_empty() {
+                                                    short_segments.push(OcrSegment {
+                                                        start: lo
+                                                            + m as f64 * dense_interval,
+                                                        end: lo
+                                                            + s as f64 * dense_interval,
+                                                        confidence: r.confidence,
+                                                        text,
+                                                    });
+                                                }
                                             }
                                         }
                                     }
@@ -654,9 +609,37 @@ where
         let clip_dir = base_dir.join(format!("clip_{}", i));
         std::fs::create_dir_all(&clip_dir).map_err(|e| format!("无法创建 clip 目录: {}", e))?;
 
+        // ── 零落盘扫描：一次得到全 clip 的 dHash 序列 ──
+        // 网格变化检测与窗口精化共用同一序列（哈希同源，交叉比较基准才一致）。
+        // 扫描密度取源帧率（精化需要帧级时间）；源帧率未知时退化为网格密度。
+        let scan_interval = if src_fps > 0.0 {
+            (1.0 / src_fps).min(frame_interval)
+        } else {
+            frame_interval
+        };
         emit(
             i,
             i as f64 / clip_count as f64,
+            format!("扫描变化 {}/{}", i + 1, clip_count),
+        );
+        let scan_stream = crate::video::scan_frame_hashes(
+            video_path,
+            clip.start,
+            clip.end,
+            clip.x1,
+            clip.y1,
+            clip.x2,
+            clip.y2,
+            video_w,
+            video_h,
+            scan_interval,
+        )
+        .map_err(|e| format!("扫描失败（clip {}）: {}", i, e))?;
+
+        // ── 网格抽帧（OCR 输入；未变化帧的 JPEG 在检测后立即删除）──
+        emit(
+            i,
+            (i as f64 + 0.4) / clip_count as f64,
             format!("提取帧 {}/{}", i + 1, clip_count),
         );
 
@@ -676,22 +659,35 @@ where
         .map_err(|e| format!("抽帧失败（clip {}）: {}", i, e))?;
         if dev_debug {
             eprintln!(
-                "[ocr] clip {}/{}：抽取 {} 帧（间隔 {}s）",
+                "[ocr] clip {}/{}：扫描 {} 帧，抽取 {} 帧（网格间隔 {}s）",
                 i + 1,
                 clip_count,
+                scan_stream.len(),
                 frames.len(),
                 frame_interval
             );
         }
 
-        emit(
-            i,
-            (i as f64 + 0.5) / clip_count as f64,
-            format!("变化检测 {}/{}", i + 1, clip_count),
-        );
+        // 网格帧哈希 = 扫描序列中时间最近帧（网格与密帧哈希同源，精化交叉比较才一致）
+        let last_scan = scan_stream.len().saturating_sub(1);
+        let grid_hashes: Vec<u64> = frames
+            .iter()
+            .map(|f| {
+                let k = (((f.time - clip.start) / scan_interval).round() as usize).min(last_scan);
+                scan_stream[k].1
+            })
+            .collect();
+        let flags = crate::ai_runtime::dhash::change_flags(&grid_hashes, dhash_threshold);
+        let changes: Vec<FrameChange> = frames
+            .iter()
+            .zip(flags)
+            .map(|(frame, (is_changed, base_hash))| FrameChange {
+                frame: frame.clone(),
+                is_changed,
+                base_hash,
+            })
+            .collect();
 
-        let changes = crate::ai_runtime::dhash::detect_changes(&frames, dhash_threshold)
-            .map_err(|e| format!("变化检测失败（clip {}）: {}", i, e))?;
         let changed_count = changes.iter().filter(|c| c.is_changed).count();
         if dev_debug {
             eprintln!(
@@ -703,10 +699,19 @@ where
             );
         }
 
+        // 未变化帧的 JPEG 后续不再被任何环节读取 → 立即删除（dev_debug 保留供人工检查）
+        if !dev_debug {
+            for (frame, fc) in frames.iter().zip(changes.iter()) {
+                if !fc.is_changed {
+                    let _ = std::fs::remove_file(&frame.path);
+                }
+            }
+        }
+
         // ── 窗口精化：帧级主边界（阶段 1）+ 短字幕召回（阶段 2）────
-        // 对每个"切换窗口"以源帧率抽密帧，逐帧 dHash 相对基准 A：
+        // 窗口 = 扫描序列的时间切片（零抽帧零落盘）：
         // - 真正的下一段边界 = 最后一个变化帧（而非首个 main，规避 A→短字幕→C 误判）
-        // - 窗口内恰好两次变化时，中间区间为短字幕：≥2 帧则 OCR 中间帧召回为独立段
+        // - 窗口内恰好两次变化时，中间区间为短字幕：≥2 帧则按需抽中间帧召回为独立段
         let (changes, mut short_segments) = if src_fps > 0.0 {
             emit(
                 i,
@@ -715,6 +720,7 @@ where
             );
             refine_window_changes(
                 &changes,
+                &scan_stream,
                 video_path,
                 clip,
                 video_w,
@@ -792,6 +798,12 @@ where
             }
         }
         all_segments.extend(segments);
+
+        // ── 每 clip 增量清理：本 clip 的帧已全部消费完，及时释放磁盘 ──
+        // dev_debug 保留整个目录供人工检查；运行级 TempDirGuard 兜底失败路径
+        if !dev_debug {
+            let _ = std::fs::remove_dir_all(&clip_dir);
+        }
     }
 
     Ok(all_segments)

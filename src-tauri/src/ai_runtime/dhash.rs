@@ -3,22 +3,18 @@
 // 相邻（与最近一次已 OCR 的帧）汉明距离 ≤ 阈值 → 判定"未变化"，跳过 OCR。
 //
 // dHash：灰度 → 缩放到 9x8 → 每像素与右侧像素比较（左>右记1）→ 64 bit。
+// 灰度 + 缩放由 ffmpeg 滤镜链（format=gray,scale=9:8）在管道内完成，
+// Rust 只消费定长字节——哈希用途的帧全程不落盘（video::scan_frame_hashes）。
 
-use crate::ai_runtime::OcrError;
-use image::DynamicImage;
-use std::path::Path;
-
-/// 计算一张已解码图像的 dHash（64 bit）
-pub fn dhash_image(img: &DynamicImage) -> u64 {
-    // 灰度 + 缩放到 9x8（标准 dHash 尺寸）
-    let small = img.grayscale().resize_exact(9, 8, image::imageops::FilterType::Triangle);
-    let gray = small.to_luma8();
+/// 从 rawvideo 管道输出的 9×8 灰度帧字节（72 字节，行优先）直接计算 dHash。
+pub fn dhash_gray9x8(bytes: &[u8]) -> u64 {
+    debug_assert_eq!(bytes.len(), 9 * 8, "rawvideo 灰度帧应为 9×8=72 字节");
     let mut hash: u64 = 0;
     let mut bit = 0u8;
     for y in 0..8 {
         for x in 0..8 {
-            let left = gray.get_pixel(x, y).0[0];
-            let right = gray.get_pixel(x + 1, y).0[0];
+            let left = bytes[y * 9 + x];
+            let right = bytes[y * 9 + x + 1];
             if left > right {
                 hash |= 1u64 << bit;
             }
@@ -26,12 +22,6 @@ pub fn dhash_image(img: &DynamicImage) -> u64 {
         }
     }
     hash
-}
-
-/// 读取图像文件并计算 dHash
-pub fn dhash_file(path: &Path) -> Result<u64, OcrError> {
-    let img = image::open(path).map_err(|e| OcrError::Io(std::io::Error::other(e.to_string())))?;
-    Ok(dhash_image(&img))
 }
 
 /// 两个 64 bit 哈希的汉明距离（相异位数）
@@ -49,19 +39,17 @@ pub struct FrameChange {
     pub base_hash: Option<u64>,
 }
 
-/// 对帧序列做变化检测。
+/// 对哈希序列做变化检测（纯内存版）。
 ///
-/// 第一帧恒为 changed；后续帧与"最近一次 changed 的帧"比较，
+/// 语义：第一帧恒为 changed；后续帧与"最近一次 changed 的帧"比较，
 /// 汉明距离 ≤ 阈值视为未变化（可跳过 OCR）。
-pub fn detect_changes(
-    frames: &[crate::video::ExtractedFrame],
-    threshold: u32,
-) -> Result<Vec<FrameChange>, OcrError> {
-    let mut result = Vec::with_capacity(frames.len());
+/// 返回与 `hashes` 等长的 (is_changed, base_hash) 标志序列，
+/// 由调用方与帧列表 zip 组装 `FrameChange`。
+pub fn change_flags(hashes: &[u64], threshold: u32) -> Vec<(bool, Option<u64>)> {
+    let mut result = Vec::with_capacity(hashes.len());
     let mut last_ocr_hash: Option<u64> = None;
 
-    for frame in frames {
-        let hash = dhash_file(&frame.path)?;
+    for &hash in hashes {
         let (is_changed, base_hash) = match last_ocr_hash {
             None => (true, None),
             Some(prev) => {
@@ -75,13 +63,9 @@ pub fn detect_changes(
         if is_changed {
             last_ocr_hash = Some(hash);
         }
-        result.push(FrameChange {
-            frame: frame.clone(),
-            is_changed,
-            base_hash,
-        });
+        result.push((is_changed, base_hash));
     }
-    Ok(result)
+    result
 }
 
 /// 窗口精化的结果
@@ -129,39 +113,42 @@ pub fn refine_window_hashes(hashes: &[u64], base_hash: u64, threshold: u32) -> W
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{Rgb, RgbImage};
-    use std::fs;
 
-    fn temp_dir(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("gsa_{}_{}", name, std::process::id()))
+    #[test]
+    fn test_dhash_gray9x8_flat_is_zero() {
+        // 全部等灰度：left > right 恒假 → 哈希为 0
+        assert_eq!(dhash_gray9x8(&[128; 72]), 0);
     }
 
-    fn solid_rgb(color: [u8; 3], w: u32, h: u32) -> RgbImage {
-        RgbImage::from_pixel(w, h, Rgb(color))
-    }
-
-    /// 左/右各半不同亮度的双色图（产生 dHash 差异）
-    fn two_tone(left: [u8; 3], right: [u8; 3], w: u32, h: u32) -> RgbImage {
-        let mut img = RgbImage::new(w, h);
-        for (x, _, px) in img.enumerate_pixels_mut() {
-            let c = if x < w / 2 { left } else { right };
-            *px = Rgb(c);
+    #[test]
+    fn test_dhash_gray9x8_row_layout() {
+        // 仅第 0 行递减（left > right 恒真）→ 只有前 8 位置位
+        let mut bytes = [128u8; 72];
+        for x in 0..9 {
+            bytes[x] = (200 - x * 10) as u8;
         }
-        img
+        assert_eq!(dhash_gray9x8(&bytes), 0xFF);
+        // 全部行递减 → 64 位全 1
+        for y in 0..8 {
+            for x in 0..9 {
+                bytes[y * 9 + x] = (200 - x * 10) as u8;
+            }
+        }
+        assert_eq!(dhash_gray9x8(&bytes), u64::MAX);
     }
 
     #[test]
-    fn test_dhash_identical_images_equal() {
-        let img = DynamicImage::ImageRgb8(solid_rgb([100, 100, 100], 32, 32));
-        assert_eq!(dhash_image(&img), dhash_image(&img));
-    }
-
-    #[test]
-    fn test_dhash_different_images_differ() {
-        // 左亮右暗 vs 左暗右亮 → 亮度对比方向相反 → dHash 不同
-        let a = DynamicImage::ImageRgb8(two_tone([200, 200, 200], [20, 20, 20], 32, 32));
-        let b = DynamicImage::ImageRgb8(two_tone([20, 20, 20], [200, 200, 200], 32, 32));
-        assert_ne!(dhash_image(&a), dhash_image(&b));
+    fn test_dhash_gray9x8_direction_flips_hash() {
+        // 同一帧内容左右镜像 → 对比方向反转 → 哈希不同
+        let mut a = [128u8; 72];
+        let mut b = [128u8; 72];
+        for y in 0..8 {
+            a[y * 9] = 200;
+            a[y * 9 + 1] = 50;
+            b[y * 9] = 50;
+            b[y * 9 + 1] = 200;
+        }
+        assert_ne!(dhash_gray9x8(&a), dhash_gray9x8(&b));
     }
 
     #[test]
@@ -173,63 +160,33 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_changes_first_always_changed() {
-        let dir = temp_dir("dc_first");
-        fs::create_dir_all(&dir).unwrap();
-        let img = solid_rgb([80, 80, 80], 64, 20);
-        let p = dir.join("f.jpg");
-        img.save(&p).unwrap();
-
-        let frames = vec![crate::video::ExtractedFrame {
-            path: p.clone(),
-            time: 0.0,
-        }];
-        let changes = detect_changes(&frames, 5).unwrap();
-        assert_eq!(changes.len(), 1);
-        assert!(changes[0].is_changed);
-        let _ = fs::remove_dir_all(&dir);
+    fn test_change_flags_first_always_changed() {
+        let flags = change_flags(&[0x1234], 5);
+        assert_eq!(flags.len(), 1);
+        assert!(flags[0].0);
+        assert!(flags[0].1.is_none());
     }
 
     #[test]
-    fn test_detect_changes_identical_second_unchanged() {
-        let dir = temp_dir("dc_same");
-        fs::create_dir_all(&dir).unwrap();
-        let img = solid_rgb([80, 80, 80], 64, 20);
-        let p1 = dir.join("f1.jpg");
-        let p2 = dir.join("f2.jpg");
-        img.save(&p1).unwrap();
-        img.save(&p2).unwrap();
-
-        let frames = vec![
-            crate::video::ExtractedFrame { path: p1, time: 0.0 },
-            crate::video::ExtractedFrame { path: p2, time: 1.0 },
-        ];
-        let changes = detect_changes(&frames, 5).unwrap();
-        assert_eq!(changes.len(), 2);
-        assert!(changes[0].is_changed);
-        assert!(!changes[1].is_changed); // 与第一帧相同 → 未变化
-        let _ = fs::remove_dir_all(&dir);
+    fn test_change_flags_identical_second_unchanged() {
+        // 与第一帧相同 → 未变化
+        let flags = change_flags(&[0x1234, 0x1234], 5);
+        assert_eq!(flags.len(), 2);
+        assert!(flags[0].0);
+        assert!(!flags[1].0);
+        assert!(flags[1].1.is_none());
     }
 
     #[test]
-    fn test_detect_changes_different_second_changed() {
-        let dir = temp_dir("dc_diff");
-        fs::create_dir_all(&dir).unwrap();
-        let dark_l = two_tone([20, 20, 20], [200, 200, 200], 64, 20);
-        let light_l = two_tone([200, 200, 200], [20, 20, 20], 64, 20);
-        let p1 = dir.join("f1.jpg");
-        let p2 = dir.join("f2.jpg");
-        dark_l.save(&p1).unwrap();
-        light_l.save(&p2).unwrap();
-
-        let frames = vec![
-            crate::video::ExtractedFrame { path: p1, time: 0.0 },
-            crate::video::ExtractedFrame { path: p2, time: 1.0 },
-        ];
-        let changes = detect_changes(&frames, 5).unwrap();
-        assert!(changes[0].is_changed);
-        assert!(changes[1].is_changed);
-        let _ = fs::remove_dir_all(&dir);
+    fn test_change_flags_different_second_changed() {
+        // hamming(0, 0x3F) = 6 > 阈值 5 → changed，且 base_hash = 第一帧
+        let flags = change_flags(&[0x0, 0x3F], 5);
+        assert!(flags[0].0);
+        assert!(flags[1].0);
+        assert_eq!(flags[1].1, Some(0x0));
+        // 对照：距离恰等于阈值（5 位）→ 未变化
+        let flags_eq = change_flags(&[0x0, 0x1F], 5);
+        assert!(!flags_eq[1].0);
     }
 
     // ── 窗口精化（refine_window_hashes）──

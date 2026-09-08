@@ -10,6 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -336,6 +337,150 @@ pub fn extract_frames(
         })
         .collect();
     Ok(frames)
+}
+
+// ─── 零落盘扫描（OCR 变化检测用）──────────────────────────
+
+/// 以固定间隔扫描时间段内裁切区域的 dHash，全程不落盘。
+///
+/// ffmpeg 把裁切区域缩放为 9×8 灰度后经 rawvideo 管道输出（每帧恰 72 字节），
+/// Rust 逐帧读取并计算 dHash。替代"密帧 JPEG 落盘 → 逐张读回算哈希"的旧路径：
+/// 哈希用途的帧不再产生任何磁盘写入。
+///
+/// 帧时间推导与 extract_frames 一致：第 k 帧（0 基）时间 = start + k * interval_secs。
+/// 返回按时间升序的 (时间, dHash) 序列。
+#[allow(clippy::too_many_arguments)]
+pub fn scan_frame_hashes(
+    video_path: &str,
+    start: f64,
+    end: f64,
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+    video_w: u32,
+    video_h: u32,
+    interval_secs: f64,
+) -> Result<Vec<(f64, u64)>, String> {
+    if interval_secs <= 0.0 {
+        return Err("扫描帧间隔必须为正数".into());
+    }
+    if end <= start {
+        return Err("时间段无效（end 需大于 start）".into());
+    }
+    let ffmpeg = resolve_ffmpeg().ok_or_else(|| "FFMPEG_NOT_FOUND".to_string())?;
+    let (x, y, w, h) = crop_geometry(x1, y1, x2, y2, video_w, video_h)?;
+
+    let mut child = Command::new(&ffmpeg)
+        .arg("-ss")
+        .arg(start.to_string())
+        .arg("-i")
+        .arg(video_path)
+        .arg("-t")
+        .arg((end - start).to_string())
+        .arg("-vf")
+        // flags=area：面积平均缩放，大幅降采样时比默认 bicubic 抗锯齿，哈希更稳定
+        .arg(format!(
+            "fps={},crop={}:{}:{}:{},format=gray,scale=9:8:flags=area",
+            1.0 / interval_secs,
+            w,
+            h,
+            x,
+            y
+        ))
+        .arg("-f")
+        .arg("rawvideo")
+        .arg("pipe:1")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("无法执行 ffmpeg: {}", e))?;
+
+    // stderr 由独立线程排空：管道缓冲区写满会让 ffmpeg 阻塞，拖死 stdout 读取
+    let mut stderr = child.stderr.take().expect("stderr 已 piped");
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr.read_to_end(&mut buf);
+        buf
+    });
+
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout 已 piped"));
+    const FRAME_BYTES: usize = 9 * 8;
+    let mut buf = [0u8; FRAME_BYTES];
+    let mut out: Vec<(f64, u64)> = Vec::new();
+    loop {
+        match stdout.read_exact(&mut buf) {
+            Ok(()) => {
+                let time = start + (out.len() as f64) * interval_secs;
+                out.push((time, crate::ai_runtime::dhash::dhash_gray9x8(&buf)));
+            }
+            // rawvideo 帧是原子写入：正常结束恰好整帧对齐，UnexpectedEof 即流结束；
+            // 若 ffmpeg 中途被杀，下方退出码校验兜底报错
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => {
+                let _ = child.kill();
+                return Err(format!("ffmpeg 扫描输出读取失败: {}", e));
+            }
+        }
+    }
+
+    let status = child.wait().map_err(|e| format!("ffmpeg 进程等待失败: {}", e))?;
+    let stderr_buf = stderr_thread.join().unwrap_or_default();
+    if !status.success() {
+        return Err(format!(
+            "ffmpeg 扫描失败: {}",
+            String::from_utf8_lossy(&stderr_buf)
+        ));
+    }
+    Ok(out)
+}
+
+/// 抽取指定时间点裁切区域的单帧 JPEG（窗口精化的短字幕召回用）。
+///
+/// OCR worker 消费文件路径，故召回帧仍需落盘——但每窗口至多一张。
+/// 返回写入的文件路径。
+#[allow(clippy::too_many_arguments)]
+pub fn extract_single_frame(
+    video_path: &str,
+    time: f64,
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+    video_w: u32,
+    video_h: u32,
+    out_path: &Path,
+) -> Result<PathBuf, String> {
+    let ffmpeg = resolve_ffmpeg().ok_or_else(|| "FFMPEG_NOT_FOUND".to_string())?;
+    let (x, y, w, h) = crop_geometry(x1, y1, x2, y2, video_w, video_h)?;
+    if let Some(parent) = out_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("无法创建帧目录: {}", e))?;
+    }
+
+    let output = Command::new(&ffmpeg)
+        .arg("-y")
+        .arg("-ss")
+        .arg(time.to_string())
+        .arg("-i")
+        .arg(video_path)
+        .arg("-frames:v")
+        .arg("1")
+        .arg("-vf")
+        .arg(format!("crop={}:{}:{}:{}", w, h, x, y))
+        .arg("-q:v")
+        .arg("2")
+        .arg(out_path)
+        .output()
+        .map_err(|e| format!("无法执行 ffmpeg: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("ffmpeg 单帧抽取失败: {}", stderr));
+    }
+    if !out_path.is_file() {
+        return Err("ffmpeg 退出码为 0 但帧文件未生成".into());
+    }
+    Ok(out_path.to_path_buf())
 }
 
 // ─── 音频提取（ASR 用）────────────────────────────────────
