@@ -49,7 +49,7 @@
       return Err("ffmpeg 单帧抽取输出不是完整 JPEG".into());
   }
   ```
-- **状态**：⬜ 未修复
+- **状态**：✅ 已修复（抽纯函数 `is_complete_jpeg`（SOI 开头且 EOI 结尾）供 `extract_single_frame_bytes` 校验 + 1 个单测；残缺帧在 Rust 侧即报错，不再到 worker 的 cv2.imdecode 才误报"图像解码失败"）
 
 ### P1-2 `dev_debug` 默认值从 true 改为 false 的兼容性
 

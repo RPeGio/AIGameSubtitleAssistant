@@ -268,6 +268,12 @@ pub struct GridFrames {
     pub total: usize,
 }
 
+/// JPEG 完整性：SOI（FFD8）开头且 EOI（FFD9）结尾。
+/// 交给 OCR worker 前校验，避免残缺帧到 cv2.imdecode 才报"解码失败"。
+fn is_complete_jpeg(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0xFF, 0xD8]) && bytes.ends_with(&[0xFF, 0xD9])
+}
+
 /// 从 mjpeg 字节流中取出一个完整 JPEG（FFD8 开头、FFD9 结尾）。
 ///
 /// JPEG 熵编码段中 0xFF 一律后跟填充（0x00）或真实标记，
@@ -449,8 +455,8 @@ pub fn extract_single_frame_bytes(
             String::from_utf8_lossy(&stderr_buf)
         ));
     }
-    if !jpeg.starts_with(&[0xFF, 0xD8]) {
-        return Err("ffmpeg 单帧抽取输出不是 JPEG".into());
+    if !is_complete_jpeg(&jpeg) {
+        return Err("ffmpeg 单帧抽取输出不是完整 JPEG（SOI/EOI 缺失）".into());
     }
     Ok(jpeg)
 }
@@ -667,5 +673,14 @@ mod tests {
         assert!(try_take_jpeg(&mut buf).is_none());
         buf.extend_from_slice(&[0xFF, 0xD9]);
         assert_eq!(try_take_jpeg(&mut buf).unwrap(), vec![0xFF, 0xD8, 0x09, 0xFF, 0xD9]);
+    }
+
+    #[test]
+    fn test_is_complete_jpeg() {
+        assert!(is_complete_jpeg(&[0xFF, 0xD8, 0x01, 0xFF, 0xD9]));
+        // 缺 SOI / 缺 EOI / 空 → 残缺
+        assert!(!is_complete_jpeg(&[0x01, 0x02, 0xFF, 0xD9]));
+        assert!(!is_complete_jpeg(&[0xFF, 0xD8, 0x01, 0x02]));
+        assert!(!is_complete_jpeg(&[]));
     }
 }
