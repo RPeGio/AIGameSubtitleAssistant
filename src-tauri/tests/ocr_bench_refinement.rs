@@ -1,11 +1,13 @@
-//! 基准：测量窗口精化（refine_window_changes）耗时，隔离于整体 OCR 流水线。
+//! 基准：测量 OCR 变化检测（零落盘扫描）+ 内存抽帧 + 窗口精化耗时，隔离于整体流水线。
 //! 运行：cargo test --release --test ocr_bench_refinement -- --ignored --nocapture
 
 use ai_game_subtitle_assistant_lib::ai_runtime::config::RuntimeConfig;
-use ai_game_subtitle_assistant_lib::ai_runtime::dhash::detect_changes;
+use ai_game_subtitle_assistant_lib::ai_runtime::dhash::{change_flags, FrameChange};
 use ai_game_subtitle_assistant_lib::ai_runtime::OcrManager;
 use ai_game_subtitle_assistant_lib::ocr::{refine_window_changes, OcrRegionInput};
-use ai_game_subtitle_assistant_lib::video::{extract_frames, get_video_metadata};
+use ai_game_subtitle_assistant_lib::video::{
+    extract_frames_bytes, get_video_metadata, scan_frame_hashes,
+};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -37,11 +39,15 @@ fn bench_refinement() {
     let frame_interval = 1.0;
     let dhash_threshold = 3u32;
     let src_fps = meta.fps;
+    // 与 run_ocr_pipeline 一致：扫描密度取源帧率，但不超过网格密度
+    let scan_interval = (1.0 / src_fps).min(frame_interval);
 
     let dir = std::env::temp_dir().join(format!("gsa_bench_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
+    let mut total_scan = std::time::Duration::ZERO;
+    let mut total_extract = std::time::Duration::ZERO;
     let mut total_refine = std::time::Duration::ZERO;
     let mut total_frames = 0usize;
     let mut total_changed = 0usize;
@@ -49,7 +55,45 @@ fn bench_refinement() {
     for (i, clip) in clips.iter().enumerate() {
         let clip_dir = dir.join(format!("clip_{}", i));
         std::fs::create_dir_all(&clip_dir).unwrap();
-        let grid = extract_frames(
+
+        // ── 零落盘扫描（变化检测 + 精化共用的哈希序列）──
+        let t0 = Instant::now();
+        let stream = scan_frame_hashes(
+            &video.to_string_lossy(),
+            clip.start,
+            clip.end,
+            clip.x1,
+            clip.y1,
+            clip.x2,
+            clip.y2,
+            meta.width,
+            meta.height,
+            scan_interval,
+        )
+        .unwrap();
+        let scan_dt = t0.elapsed();
+
+        // 网格变化标志（与 run_ocr_pipeline 相同的映射）
+        let last_scan = stream.len().saturating_sub(1);
+        let grid_frame_count = ((clip.end - clip.start) / frame_interval).ceil() as usize;
+        let grid_hashes: Vec<u64> = (0..grid_frame_count)
+            .map(|k| {
+                let idx = ((k as f64 * frame_interval / scan_interval).round() as usize)
+                    .min(last_scan);
+                stream[idx].1
+            })
+            .collect();
+        let flags = change_flags(&grid_hashes, dhash_threshold);
+        let keep: Vec<usize> = flags
+            .iter()
+            .enumerate()
+            .filter(|(_, (c, _))| *c)
+            .map(|(k, _)| k)
+            .collect();
+
+        // ── mjpeg 管道内存抽帧（只为变化帧保留字节，零落盘）──
+        let t1 = Instant::now();
+        let grid = extract_frames_bytes(
             &video.to_string_lossy(),
             clip.start,
             clip.end,
@@ -60,15 +104,27 @@ fn bench_refinement() {
             meta.width,
             meta.height,
             frame_interval,
-            &clip_dir,
+            &keep,
         )
         .unwrap();
-        let changes = detect_changes(&grid, dhash_threshold).unwrap();
-        let changed = changes.iter().filter(|c| c.is_changed).count();
+        let extract_dt = t1.elapsed();
 
-        let t0 = Instant::now();
+        let changed = grid.kept.len();
+        let changes: Vec<FrameChange> = (0..grid.total)
+            .map(|k| {
+                let (is_changed, base_hash) = flags.get(k).copied().unwrap_or((false, None));
+                FrameChange {
+                    time: clip.start + (k as f64) * frame_interval,
+                    is_changed,
+                    base_hash,
+                }
+            })
+            .collect();
+
+        let t2 = Instant::now();
         let (refined, short) = refine_window_changes(
             &changes,
+            &stream,
             &video.to_string_lossy(),
             clip,
             meta.width,
@@ -79,121 +135,31 @@ fn bench_refinement() {
             &manager,
             false,
         );
-        let dt = t0.elapsed();
-        total_refine += dt;
-        total_frames += grid.len();
+        let refine_dt = t2.elapsed();
+
+        total_scan += scan_dt;
+        total_extract += extract_dt;
+        total_refine += refine_dt;
+        total_frames += grid.total;
         total_changed += changed;
 
         println!(
-            "clip {i}: grid={} changed={} refined={} short={} refine={:.3}s",
-            grid.len(),
+            "clip {i}: grid={} changed={} refined={} short={} scan={:.3}s extract={:.3}s refine={:.3}s",
+            grid.total,
             changed,
             refined.len(),
             short.len(),
-            dt.as_secs_f64()
+            scan_dt.as_secs_f64(),
+            extract_dt.as_secs_f64(),
+            refine_dt.as_secs_f64()
         );
     }
 
     let _ = std::fs::remove_dir_all(&dir);
 
-    // ── 成本分解：对 clip 2 测量 extract_frames 与 dHash 各自的耗时 ──
-    {
-        let clip = &clips[2];
-        let clip_dir = dir.join("clip_decomp");
-        std::fs::create_dir_all(&clip_dir).unwrap();
-        let grid = extract_frames(
-            &video.to_string_lossy(),
-            clip.start,
-            clip.end,
-            clip.x1,
-            clip.y1,
-            clip.x2,
-            clip.y2,
-            meta.width,
-            meta.height,
-            frame_interval,
-            &clip_dir,
-        )
-        .unwrap();
-        let changes = detect_changes(&grid, dhash_threshold).unwrap();
-        let dense_interval = 1.0 / src_fps;
-        let mut ext_time = std::time::Duration::ZERO;
-        let mut dhash_time = std::time::Duration::ZERO;
-        let mut n_extract = 0usize;
-        let mut n_dhash = 0usize;
-        for idx in 0..changes.len() {
-            let fc = &changes[idx];
-            if fc.is_changed && idx > 0 {
-                if let Some(base) = fc.base_hash {
-                    let lo = changes[idx - 1].frame.time;
-                    let hi = fc.frame.time;
-                    if hi > lo {
-                        let dense_dir = clip_dir.join(format!("dense_{}", idx));
-                        let t0 = Instant::now();
-                        if let Ok(dense_frames) = extract_frames(
-                            &video.to_string_lossy(),
-                            lo,
-                            hi,
-                            clip.x1,
-                            clip.y1,
-                            clip.x2,
-                            clip.y2,
-                            meta.width,
-                            meta.height,
-                            dense_interval,
-                            &dense_dir,
-                        ) {
-                            ext_time += t0.elapsed();
-                            n_extract += 1;
-                            let t1 = Instant::now();
-                            for f in &dense_frames {
-                                let _ = ai_game_subtitle_assistant_lib::ai_runtime::dhash::dhash_file(&f.path);
-                                n_dhash += 1;
-                            }
-                            dhash_time += t1.elapsed();
-                            let _ = base;
-                        }
-                    }
-                }
-            }
-        }
-        println!("\n===== 成本分解（clip 2）=====");
-        println!("extract_frames: {} 次调用, 共 {:.3}s", n_extract, ext_time.as_secs_f64());
-        println!("dhash_file: {} 次, 共 {:.3}s", n_dhash, dhash_time.as_secs_f64());
-
-        // 整段一次性抽密帧（30fps）耗时对比
-        let whole_dir = dir.join("clip_whole");
-        std::fs::create_dir_all(&whole_dir).unwrap();
-        let t0 = Instant::now();
-        let whole = extract_frames(
-            &video.to_string_lossy(),
-            clip.start,
-            clip.end,
-            clip.x1,
-            clip.y1,
-            clip.x2,
-            clip.y2,
-            meta.width,
-            meta.height,
-            dense_interval,
-            &whole_dir,
-        )
-        .unwrap();
-        let whole_extract = t0.elapsed();
-        let t1 = Instant::now();
-        for f in &whole {
-            let _ = ai_game_subtitle_assistant_lib::ai_runtime::dhash::dhash_file(&f.path);
-        }
-        let whole_dhash = t1.elapsed();
-        println!(
-            "整段抽帧: {} 帧, extract={:.3}s, dhash={:.3}s",
-            whole.len(),
-            whole_extract.as_secs_f64(),
-            whole_dhash.as_secs_f64()
-        );
-    }
-
-    println!("\n===== 精化基准 =====");
+    println!("\n===== 扫描+抽帧+精化基准 =====");
     println!("网格帧总数: {}  变化帧: {}", total_frames, total_changed);
-    println!("精化总耗时: {:.3}s", total_refine.as_secs_f64());
+    println!("扫描总耗时: {:.3}s", total_scan.as_secs_f64());
+    println!("内存抽帧总耗时: {:.3}s（替代旧 JPEG 落盘）", total_extract.as_secs_f64());
+    println!("精化总耗时: {:.3}s（含召回帧抽取+OCR）", total_refine.as_secs_f64());
 }

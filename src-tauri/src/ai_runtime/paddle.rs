@@ -39,6 +39,8 @@ impl Drop for PaddleProvider {
 #[derive(Serialize)]
 struct Request<'a> {
     id: u32,
+    /// 图像列表：每元素为 base64 编码的 JPEG 字节（worker 内存解码为 ndarray，
+    /// 全程不经磁盘，也规避 cv2 读图的非 ASCII 路径问题）
     images: &'a [String],
 }
 
@@ -200,7 +202,8 @@ impl OcrProvider for PaddleProvider {
             .unwrap_or_default()
     }
 
-    fn recognize_batch(&self, image_paths: &[String]) -> Result<Vec<OcrResult>, OcrError> {
+    /// 批量识别一批图像（`images` 元素为 base64 编码的 JPEG 字节）
+    fn recognize_batch(&self, images: &[String]) -> Result<Vec<OcrResult>, OcrError> {
         if !self.is_ready() {
             return Err(OcrError::NotReady);
         }
@@ -209,7 +212,7 @@ impl OcrProvider for PaddleProvider {
             .lock()
             .map_err(|_| OcrError::Worker("worker io 锁被污染".into()))?;
 
-        let req = build_request(1, image_paths);
+        let req = build_request(1, images);
         io.stdin.write_all(req.as_bytes())?;
         io.stdin.write_all(b"\n")?;
         io.stdin.flush()?;
@@ -241,11 +244,12 @@ mod tests {
 
     #[test]
     fn test_build_request_json() {
-        let req = build_request(1, &["a.jpg".into(), "b.jpg".into()]);
+        // images 元素语义 = base64 编码的 JPEG（此处只验证 JSON 结构）
+        let req = build_request(1, &["QQ==".into(), "Qg==".into()]);
         let v: serde_json::Value = serde_json::from_str(&req).unwrap();
         assert_eq!(v["id"], 1);
-        assert_eq!(v["images"][0], "a.jpg");
-        assert_eq!(v["images"][1], "b.jpg");
+        assert_eq!(v["images"][0], "QQ==");
+        assert_eq!(v["images"][1], "Qg==");
     }
 
     #[test]

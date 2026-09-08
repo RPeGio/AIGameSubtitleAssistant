@@ -2,25 +2,32 @@
 """OCR Worker：Rust 侧常驻子进程，通过 JSON lines over stdio 通信。
 
 协议（stdin 每行一个请求，stdout 每行一个响应，UTF-8）：
-    请求: {"id":1,"images":["/path/a.jpg","/path/b.jpg"]}
+    请求: {"id":1,"images":["<base64 JPEG>","<base64 JPEG>"]}
           {"id":2,"cmd":"ping"}
           {"id":3,"cmd":"shutdown"}
     响应: {"id":1,"ok":true,"results":[{"text":"..","confidence":0.98},...]}
           {"id":1,"ok":false,"error":".."}
           {"id":2,"ok":true,"cmd":"pong"}
 
+图像以 base64 编码的 JPEG 字节传输，worker 在内存中解码为 ndarray 后交给
+predict——全程不产生临时文件，也天然规避 cv2 读图的非 ASCII 路径问题。
 模型只在首次需要时加载一次（内存常驻）。Rust 侧注入：
   - PADDLE_PDX_CACHE_HOME：模型缓存目录（runtime/models/paddleocr）
   - GSA_OCR_MODEL：模型档位 "mobile"（默认，快）| "server"（慢，更准）
 批量请求用一次 `ocr.predict(images列表)` 完成（真批处理）。
 """
 
+import base64
 import io
 import json
 import os
 import sys
 
 LANG = "ch"
+
+# base64 → ndarray 解码依赖（均为 paddleocr 的传递依赖，runtime/deps 内自带）
+import cv2
+import numpy as np
 
 # 模型档位 → 检测/识别模型名
 MODEL_MAP = {
@@ -183,8 +190,16 @@ def main():
                 respond(stdout, rid, ok=True, cmd="pong")
             elif "images" in req:
                 images = req["images"]
+                # base64 JPEG → 内存解码为 ndarray（不碰磁盘）
+                inputs = []
+                for item in images:
+                    raw = base64.b64decode(item)
+                    img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+                    if img is None:
+                        raise ValueError("图像解码失败（base64 数据无效）")
+                    inputs.append(img)
                 # 真批处理：一次 predict 列表
-                results = ocr.predict(images) if images else []
+                results = ocr.predict(inputs) if inputs else []
                 out = []
                 if isinstance(results, list):
                     for r in results:
