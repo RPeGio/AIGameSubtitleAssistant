@@ -21,6 +21,7 @@ dependencies = [
 name = "ai_game_subtitle_assistant"
 version = "0.1.0"
 dependencies = [
+ "base64 0.21.7",
  "ffmpeg-sidecar",
  "image",
  "serde",

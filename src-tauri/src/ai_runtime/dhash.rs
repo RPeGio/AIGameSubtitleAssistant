@@ -32,7 +32,8 @@ pub fn hamming_distance(a: u64, b: u64) -> u32 {
 /// 变化检测结果：一帧是否需要 OCR
 #[derive(Debug, Clone)]
 pub struct FrameChange {
-    pub frame: crate::video::ExtractedFrame,
+    /// 帧时间（秒）
+    pub time: f64,
     /// true → 相对最近一次已 OCR 的帧有明显变化，需要 OCR
     pub is_changed: bool,
     /// changed 帧"与之不同的上一段代表哈希"（窗口精化的基准 A；非 changed 帧为 None）

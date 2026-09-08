@@ -251,26 +251,46 @@ fn crop_geometry(
     Ok((x, y, w, h))
 }
 
-/// 提取出的一帧
+/// 内存中的抽取帧（mjpeg 管道产出，不落盘）
 #[derive(Debug, Clone)]
-pub struct ExtractedFrame {
-    pub path: PathBuf,
-    /// 该帧在视频中的时间点（秒）
+pub struct FrameBytes {
+    /// 网格序号（0 基，fps 滤镜输出顺序）
+    pub index: usize,
+    /// 该帧在视频中的时间点（秒）= start + index * interval
     pub time: f64,
+    /// JPEG 编码字节（与旧落盘版同 `-q:v 2` 质量；直接 base64 后作为 OCR IPC 载荷）
+    pub jpeg: Vec<u8>,
 }
 
-/// 用 ffmpeg 在时间段内按固定间隔抽取裁切后的帧
+/// 网格抽帧结果：kept = 命中 keep 的帧（含字节），total = 流中实际帧总数
+pub struct GridFrames {
+    pub kept: Vec<FrameBytes>,
+    pub total: usize,
+}
+
+/// 从 mjpeg 字节流中取出一个完整 JPEG（FFD8 开头、FFD9 结尾）。
 ///
-/// # 参数
-/// - `video_path`: 视频绝对路径
-/// - `start`/`end`: 时间段（秒）
-/// - `x1,y1,x2,y2`: 归一化选区（0~1）
-/// - `video_w`/`video_h`: 视频宽高（来自 ffprobe 元数据）
-/// - `interval_secs`: 帧间隔（秒）
-/// - `out_dir`: 输出目录（帧写入 frame_%05d.jpg）
+/// JPEG 熵编码段中 0xFF 一律后跟填充（0x00）或真实标记，
+/// 因此字节流中的 FFD9 只会是帧结束标记，按标记切分是安全的。
+/// buf 中已完整的帧被取出后仅剩下一个未完成帧（≤ 数十 KB），重复扫描开销可忽略。
+fn try_take_jpeg(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
+    let soi = buf.windows(2).position(|w| w == [0xFF, 0xD8])?;
+    if soi > 0 {
+        buf.drain(..soi);
+    }
+    let eoi = buf.windows(2).position(|w| w == [0xFF, 0xD9])?;
+    Some(buf.drain(..eoi + 2).collect())
+}
+
+/// 用 ffmpeg 在时间段内按固定间隔抽取裁切后的帧，经 mjpeg 管道返回**内存字节**。
 ///
-/// 返回按时间排序的帧列表。
-pub fn extract_frames(
+/// 与旧文件版 `extract_frames` 同参数语义（fps 滤镜 + crop、`-q:v 2`），
+/// 但帧不落盘：`keep` 列出要保留的网格序号（0 基，升序），其余帧读到即丢——
+/// 变化帧集合已由零落盘扫描得知，这里只为 OCR 载荷保留字节。
+///
+/// 返回 kept 帧（升序）与流中实际帧总数。
+#[allow(clippy::too_many_arguments)]
+pub fn extract_frames_bytes(
     video_path: &str,
     start: f64,
     end: f64,
@@ -281,8 +301,8 @@ pub fn extract_frames(
     video_w: u32,
     video_h: u32,
     interval_secs: f64,
-    out_dir: &Path,
-) -> Result<Vec<ExtractedFrame>, String> {
+    keep: &[usize],
+) -> Result<GridFrames, String> {
     if interval_secs <= 0.0 {
         return Err("帧间隔必须为正数".into());
     }
@@ -291,12 +311,8 @@ pub fn extract_frames(
     }
     let ffmpeg = resolve_ffmpeg().ok_or_else(|| "FFMPEG_NOT_FOUND".to_string())?;
     let (x, y, w, h) = crop_geometry(x1, y1, x2, y2, video_w, video_h)?;
-    fs::create_dir_all(out_dir).map_err(|e| format!("无法创建帧目录: {}", e))?;
 
-    let fps = 1.0 / interval_secs;
-    let output_pattern = out_dir.join("frame_%05d.jpg");
-    let output = Command::new(&ffmpeg)
-        .arg("-y")
+    let mut child = Command::new(&ffmpeg)
         .arg("-ss")
         .arg(start.to_string())
         .arg("-i")
@@ -304,39 +320,139 @@ pub fn extract_frames(
         .arg("-t")
         .arg((end - start).to_string())
         .arg("-vf")
-        .arg(format!("fps={},crop={}:{}:{}:{}", fps, w, h, x, y))
+        .arg(format!(
+            "fps={},crop={}:{}:{}:{}",
+            1.0 / interval_secs,
+            w,
+            h,
+            x,
+            y
+        ))
         .arg("-q:v")
         .arg("2")
-        .arg(&output_pattern)
-        .output()
+        .arg("-f")
+        .arg("mjpeg")
+        .arg("pipe:1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|e| format!("无法执行 ffmpeg: {}", e))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("ffmpeg 抽帧失败: {}", stderr));
+    // stderr 由独立线程排空，避免管道缓冲区写满导致 ffmpeg 阻塞
+    let mut stderr = child.stderr.take().expect("stderr 已 piped");
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr.read_to_end(&mut buf);
+        buf
+    });
+
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout 已 piped"));
+    let mut buf: Vec<u8> = Vec::with_capacity(256 * 1024);
+    let mut chunk = [0u8; 64 * 1024];
+    let mut kept: Vec<FrameBytes> = Vec::new();
+    let mut total = 0usize;
+    let mut keep_ptr = 0usize; // keep 升序，随帧序号单调推进
+    let mut done = false;
+    while !done {
+        // 先尝试消化缓冲区里的完整帧
+        while let Some(jpeg) = try_take_jpeg(&mut buf) {
+            let k = total;
+            total += 1;
+            while keep_ptr < keep.len() && keep[keep_ptr] < k {
+                keep_ptr += 1;
+            }
+            if keep_ptr < keep.len() && keep[keep_ptr] == k {
+                kept.push(FrameBytes {
+                    index: k,
+                    time: start + (k as f64) * interval_secs,
+                    jpeg,
+                });
+            }
+        }
+        // 再读入更多字节
+        match stdout.read(&mut chunk) {
+            Ok(0) => done = true,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            Err(e) => {
+                let _ = child.kill();
+                return Err(format!("ffmpeg 抽帧输出读取失败: {}", e));
+            }
+        }
     }
 
-    // 枚举输出帧，按序号排序，逐帧推导时间（frame_00001 → start）
-    let mut indexed: Vec<(usize, PathBuf)> = fs::read_dir(out_dir)
-        .map_err(|e| format!("无法读取帧目录: {}", e))?
-        .filter_map(|entry| entry.ok())
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let index = name.strip_prefix("frame_")?.strip_suffix(".jpg")?;
-            let idx: usize = index.parse().ok()?;
-            Some((idx, entry.path()))
-        })
-        .collect();
-    indexed.sort_by_key(|(idx, _)| *idx);
+    let status = child.wait().map_err(|e| format!("ffmpeg 进程等待失败: {}", e))?;
+    let stderr_buf = stderr_thread.join().unwrap_or_default();
+    if !status.success() {
+        return Err(format!(
+            "ffmpeg 抽帧失败: {}",
+            String::from_utf8_lossy(&stderr_buf)
+        ));
+    }
+    Ok(GridFrames { kept, total })
+}
 
-    let frames = indexed
-        .into_iter()
-        .map(|(idx, path)| ExtractedFrame {
-            path,
-            time: start + (idx as f64 - 1.0) * interval_secs,
-        })
-        .collect();
-    Ok(frames)
+/// 抽取指定时间点裁切区域的单帧 JPEG 字节（窗口精化的短字幕召回用，不落盘）。
+#[allow(clippy::too_many_arguments)]
+pub fn extract_single_frame_bytes(
+    video_path: &str,
+    time: f64,
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+    video_w: u32,
+    video_h: u32,
+) -> Result<Vec<u8>, String> {
+    let ffmpeg = resolve_ffmpeg().ok_or_else(|| "FFMPEG_NOT_FOUND".to_string())?;
+    let (x, y, w, h) = crop_geometry(x1, y1, x2, y2, video_w, video_h)?;
+
+    let mut child = Command::new(&ffmpeg)
+        .arg("-y")
+        .arg("-ss")
+        .arg(time.to_string())
+        .arg("-i")
+        .arg(video_path)
+        .arg("-frames:v")
+        .arg("1")
+        .arg("-vf")
+        .arg(format!("crop={}:{}:{}:{}", w, h, x, y))
+        .arg("-q:v")
+        .arg("2")
+        .arg("-f")
+        .arg("mjpeg")
+        .arg("pipe:1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("无法执行 ffmpeg: {}", e))?;
+
+    let mut stderr = child.stderr.take().expect("stderr 已 piped");
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr.read_to_end(&mut buf);
+        buf
+    });
+
+    let mut stdout = child.stdout.take().expect("stdout 已 piped");
+    let mut jpeg = Vec::new();
+    stdout
+        .read_to_end(&mut jpeg)
+        .map_err(|e| format!("ffmpeg 单帧输出读取失败: {}", e))?;
+
+    let status = child.wait().map_err(|e| format!("ffmpeg 进程等待失败: {}", e))?;
+    let stderr_buf = stderr_thread.join().unwrap_or_default();
+    if !status.success() {
+        return Err(format!(
+            "ffmpeg 单帧抽取失败: {}",
+            String::from_utf8_lossy(&stderr_buf)
+        ));
+    }
+    if !jpeg.starts_with(&[0xFF, 0xD8]) {
+        return Err("ffmpeg 单帧抽取输出不是 JPEG".into());
+    }
+    Ok(jpeg)
 }
 
 // ─── 零落盘扫描（OCR 变化检测用）──────────────────────────
@@ -435,54 +551,6 @@ pub fn scan_frame_hashes(
     Ok(out)
 }
 
-/// 抽取指定时间点裁切区域的单帧 JPEG（窗口精化的短字幕召回用）。
-///
-/// OCR worker 消费文件路径，故召回帧仍需落盘——但每窗口至多一张。
-/// 返回写入的文件路径。
-#[allow(clippy::too_many_arguments)]
-pub fn extract_single_frame(
-    video_path: &str,
-    time: f64,
-    x1: f64,
-    y1: f64,
-    x2: f64,
-    y2: f64,
-    video_w: u32,
-    video_h: u32,
-    out_path: &Path,
-) -> Result<PathBuf, String> {
-    let ffmpeg = resolve_ffmpeg().ok_or_else(|| "FFMPEG_NOT_FOUND".to_string())?;
-    let (x, y, w, h) = crop_geometry(x1, y1, x2, y2, video_w, video_h)?;
-    if let Some(parent) = out_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("无法创建帧目录: {}", e))?;
-    }
-
-    let output = Command::new(&ffmpeg)
-        .arg("-y")
-        .arg("-ss")
-        .arg(time.to_string())
-        .arg("-i")
-        .arg(video_path)
-        .arg("-frames:v")
-        .arg("1")
-        .arg("-vf")
-        .arg(format!("crop={}:{}:{}:{}", w, h, x, y))
-        .arg("-q:v")
-        .arg("2")
-        .arg(out_path)
-        .output()
-        .map_err(|e| format!("无法执行 ffmpeg: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("ffmpeg 单帧抽取失败: {}", stderr));
-    }
-    if !out_path.is_file() {
-        return Err("ffmpeg 退出码为 0 但帧文件未生成".into());
-    }
-    Ok(out_path.to_path_buf())
-}
-
 // ─── 音频提取（ASR 用）────────────────────────────────────
 
 /// 提取视频音轨为 16kHz 单声道 PCM WAV（MOSS 的输入格式）。
@@ -570,10 +638,34 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_frames_rejects_bad_params() {
-        assert!(extract_frames("v.mp4", 0.0, 10.0, 0.1, 0.7, 0.9, 0.9, 1920, 1080, 0.0, Path::new("tmp"))
+    fn test_extract_frames_bytes_rejects_bad_params() {
+        assert!(extract_frames_bytes("v.mp4", 0.0, 10.0, 0.1, 0.7, 0.9, 0.9, 1920, 1080, 0.0, &[])
             .is_err());
-        assert!(extract_frames("v.mp4", 10.0, 5.0, 0.1, 0.7, 0.9, 0.9, 1920, 1080, 1.0, Path::new("tmp"))
+        assert!(extract_frames_bytes("v.mp4", 10.0, 5.0, 0.1, 0.7, 0.9, 0.9, 1920, 1080, 1.0, &[])
             .is_err());
+    }
+
+    #[test]
+    fn test_try_take_jpeg_splits_marker_stream() {
+        // 两个帧拼接的字节流：按 SOI/EOI 标记正确切分
+        let a = vec![0xFF, 0xD8, 0x01, 0x02, 0xFF, 0xD9];
+        let b = vec![0xFF, 0xD8, 0x03, 0xFF, 0xD9];
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&a);
+        buf.extend_from_slice(&b);
+        let first = try_take_jpeg(&mut buf).unwrap();
+        assert_eq!(first, a);
+        let second = try_take_jpeg(&mut buf).unwrap();
+        assert_eq!(second, b);
+        assert!(try_take_jpeg(&mut buf).is_none());
+    }
+
+    #[test]
+    fn test_try_take_jpeg_skips_leading_noise() {
+        // SOI 前有杂散字节 → 跳过；不完整帧 → None 等待更多数据
+        let mut buf = vec![0x00, 0x01, 0xFF, 0xD8, 0x09];
+        assert!(try_take_jpeg(&mut buf).is_none());
+        buf.extend_from_slice(&[0xFF, 0xD9]);
+        assert_eq!(try_take_jpeg(&mut buf).unwrap(), vec![0xFF, 0xD8, 0x09, 0xFF, 0xD9]);
     }
 }

@@ -6,10 +6,10 @@
 //   run_ocr     —— 串联 扫描→抽帧→窗口精化→OCR→合并，后台线程跑并上报进度
 //
 // 依赖：
-//   video::scan_frame_hashes → Vec<(time, dhash)>（零落盘变化检测，网格+精化共用）
-//   2.3 extract_frames       → Vec<ExtractedFrame>（仅 OCR 输入帧落盘）
-//   2.4 change_flags         → Vec<(is_changed, base_hash)>
-//   2.2 OcrProvider          → 批量识别
+//   video::scan_frame_hashes     → Vec<(time, dhash)>（零落盘变化检测，网格+精化共用）
+//   video::extract_frames_bytes  → mjpeg 管道内存帧（仅变化帧保留字节，零落盘）
+//   2.4 change_flags             → Vec<(is_changed, base_hash)>
+//   2.2 OcrProvider              → 批量识别（images 元素 = base64 JPEG，IPC 不经磁盘）
 
 use crate::ai_runtime::dhash::FrameChange;
 use crate::ai_runtime::{OcrError, OcrManager, OcrResult};
@@ -40,44 +40,68 @@ pub struct FrameText {
     pub confidence: f64,
 }
 
+/// JPEG 字节 → base64（OCR IPC 的图像载荷格式）
+fn b64(data: &[u8]) -> String {
+    use base64::engine::general_purpose::STANDARD as B64_ENGINE;
+    use base64::Engine as _;
+    B64_ENGINE.encode(data)
+}
+
 /// 只 OCR 变化帧，未变化帧顺延上一次 OCR 的文本。
 ///
-/// 契约：`changes` 必须按帧时间升序。
+/// 契约：`changes` 必须按帧时间升序；`jpegs` 与 `changes` 中 is_changed 帧
+/// 按出现顺序一一对齐。
 ///
-/// - 变化帧的路径按顺序批量交给 `recognize`（每次调用只处理一批），结果按变化帧顺序回填
+/// - 变化帧的 JPEG 字节 base64 编码后按顺序批量交给 `recognize`（每次调用只处理一批），
+///   worker 在内存中解码为 ndarray，全程不经磁盘
 /// - 传 `recognize` 闭包而非 provider 引用，是为了让调用方把锁的持有范围缩小到单次批量调用
 /// - 文本在入口处 `trim` 归一化（空检测与后续合并语义保持一致）
 /// - 若返回结果数量与请求不符，视为 worker 错误并终止（不让部分失败悄悄污染字幕）
 /// - `on_progress` 每处理一批回调一次：(已处理帧数, 总帧数)
 pub fn ocr_pass(
     changes: &[FrameChange],
+    jpegs: &[Vec<u8>],
     mut recognize: impl FnMut(&[String]) -> Result<Vec<OcrResult>, OcrError>,
     batch_size: usize,
     mut on_progress: impl FnMut(usize, usize),
 ) -> Result<Vec<FrameText>, OcrError> {
     let bs = batch_size.max(1);
     let total = changes.len();
+    let changed_total = changes.iter().filter(|c| c.is_changed).count();
+    if jpegs.len() != changed_total {
+        return Err(OcrError::Worker(format!(
+            "图像数据与变化帧数量不符：{} 变化帧，{} 张 JPEG",
+            changed_total,
+            jpegs.len()
+        )));
+    }
+    let mut jpeg_iter = jpegs.iter();
     let mut texts = Vec::with_capacity(total);
     // 当前顺延的 (text, confidence)；Arc 共享避免未变化帧反复分配
     let mut current: Option<(Arc<str>, f64)> = None;
 
     for batch in changes.chunks(bs) {
-        // 变化帧在此批内的索引 + 路径
+        // 变化帧在此批内的索引
         let changed: Vec<usize> = batch
             .iter()
             .enumerate()
             .filter(|(_, c)| c.is_changed)
             .map(|(i, _)| i)
             .collect();
-        let paths: Vec<String> = changed
+        let images: Vec<String> = changed
             .iter()
-            .map(|&i| batch[i].frame.path.to_string_lossy().to_string())
-            .collect();
+            .map(|_| {
+                let jpeg = jpeg_iter
+                    .next()
+                    .ok_or_else(|| OcrError::Worker("图像数据少于变化帧".into()))?;
+                Ok(b64(jpeg))
+            })
+            .collect::<Result<Vec<String>, OcrError>>()?;
 
-        let results = if paths.is_empty() {
+        let results = if images.is_empty() {
             Vec::new()
         } else {
-            recognize(&paths)?
+            recognize(&images)?
         };
 
         // 数量校验：短结果不能静默吞掉，避免顺延状态被污染
@@ -103,7 +127,7 @@ pub fn ocr_pass(
                 None => (Arc::from(""), 0.0),
             };
             texts.push(FrameText {
-                time: change.frame.time,
+                time: change.time,
                 text,
                 confidence,
             });
@@ -393,8 +417,8 @@ pub fn refine_window_changes(
         let mut fc = changes[idx].clone();
         if fc.is_changed && idx > 0 {
             if let Some(base) = fc.base_hash {
-                let lo = changes[idx - 1].frame.time;
-                let hi = fc.frame.time;
+                let lo = changes[idx - 1].time;
+                let hi = fc.time;
                 if hi > lo {
                     // 窗口 = 扫描序列的时间切片（与旧"整段密帧落盘后切片"同一帧集合，
                     // 哈希同源：网格哈希也取自该序列，交叉比较基准一致）
@@ -415,11 +439,11 @@ pub fn refine_window_changes(
                             if dev_debug {
                                 eprintln!(
                                     "[ocr]   精化边界 [{} → {}]",
-                                    fmt_time(fc.frame.time),
+                                    fmt_time(fc.time),
                                     fmt_time(new_time)
                                 );
                             }
-                            fc.frame.time = new_time;
+                            fc.time = new_time;
                         }
                         // 阶段 2：恰好两次变化 → [main, sub[0]) 为短字幕候选。
                         // 注意：只召回恰好 2 个边界的窗口（A→短字幕→C）。遍历全部边界对
@@ -428,13 +452,11 @@ pub fn refine_window_changes(
                         if boundaries.len() == 2 {
                             let (m, s) = (boundaries[0], boundaries[1]);
                             if s > m + 1 {
-                                // 区间中点帧做 OCR（避开切换过渡帧）
+                                // 区间中点帧做 OCR（避开切换过渡帧）；
+                                // 单帧 mjpeg 管道取内存字节 → base64，不落盘
                                 let mid = m + (s - m) / 2;
                                 if let Some(&(mid_time, _)) = window.get(mid) {
-                                    // 召回帧按需单帧抽取；抽取失败不阻断主流程
-                                    let recall_path =
-                                        recall_dir.join(format!("recall_{idx}.jpg"));
-                                    if let Ok(path) = crate::video::extract_single_frame(
+                                    if let Ok(jpeg) = crate::video::extract_single_frame_bytes(
                                         video_path,
                                         mid_time,
                                         clip.x1,
@@ -443,11 +465,16 @@ pub fn refine_window_changes(
                                         clip.y2,
                                         video_w,
                                         video_h,
-                                        &recall_path,
                                     ) {
+                                        if dev_debug {
+                                            // dev 模式留一份召回帧供人工检查
+                                            let dump = recall_dir
+                                                .join(format!("recall_{idx}.jpg"));
+                                            let _ = std::fs::write(dump, &jpeg);
+                                        }
+                                        let image = b64(&jpeg);
                                         if let Ok(res) = manager.with_provider(|p| {
-                                            p.recognize_batch(&[path.to_string_lossy()
-                                                .to_string()])
+                                            p.recognize_batch(std::slice::from_ref(&image))
                                         }) {
                                             if let Some(r) = res.into_iter().next() {
                                                 let text = r.text.trim().to_string();
@@ -606,6 +633,7 @@ where
 
     let mut all_segments = Vec::new();
     for (i, clip) in region_clips.iter().enumerate() {
+        let clip_started = std::time::Instant::now();
         let clip_dir = base_dir.join(format!("clip_{}", i));
         std::fs::create_dir_all(&clip_dir).map_err(|e| format!("无法创建 clip 目录: {}", e))?;
 
@@ -622,6 +650,7 @@ where
             i as f64 / clip_count as f64,
             format!("扫描变化 {}/{}", i + 1, clip_count),
         );
+        let scan_started = std::time::Instant::now();
         let scan_stream = crate::video::scan_frame_hashes(
             video_path,
             clip.start,
@@ -635,15 +664,36 @@ where
             scan_interval,
         )
         .map_err(|e| format!("扫描失败（clip {}）: {}", i, e))?;
+        let scan_dt = scan_started.elapsed();
 
-        // ── 网格抽帧（OCR 输入；未变化帧的 JPEG 在检测后立即删除）──
+        // ── 网格变化标志：网格帧哈希 = 扫描序列中时间最近帧 ──
+        // （网格与精化窗口的哈希同源，boundary_indices 交叉比较基准才一致）
+        let last_scan = scan_stream.len().saturating_sub(1);
+        let grid_frame_count = ((clip.end - clip.start) / frame_interval).ceil() as usize;
+        let grid_hashes: Vec<u64> = (0..grid_frame_count)
+            .map(|k| {
+                let idx =
+                    ((k as f64 * frame_interval / scan_interval).round() as usize).min(last_scan);
+                scan_stream[idx].1
+            })
+            .collect();
+        let flags = crate::ai_runtime::dhash::change_flags(&grid_hashes, dhash_threshold);
+        // mjpeg 抽帧只为变化帧保留字节；未变化帧在流中读到即丢（零落盘）
+        let keep: Vec<usize> = flags
+            .iter()
+            .enumerate()
+            .filter(|(_, (c, _))| *c)
+            .map(|(k, _)| k)
+            .collect();
+
+        // ── 网格抽帧（mjpeg 管道 → 内存字节，OCR IPC 载荷）──
         emit(
             i,
             (i as f64 + 0.4) / clip_count as f64,
             format!("提取帧 {}/{}", i + 1, clip_count),
         );
-
-        let frames = crate::video::extract_frames(
+        let extract_started = std::time::Instant::now();
+        let grid = crate::video::extract_frames_bytes(
             video_path,
             clip.start,
             clip.end,
@@ -654,64 +704,43 @@ where
             video_w,
             video_h,
             frame_interval,
-            &clip_dir,
+            &keep,
         )
         .map_err(|e| format!("抽帧失败（clip {}）: {}", i, e))?;
+        let extract_dt = extract_started.elapsed();
         if dev_debug {
+            // dev 模式把保留的帧写盘供人工检查（生产模式全程零落盘）
+            for fb in &grid.kept {
+                let dump = clip_dir.join(format!("frame_{:05}.jpg", fb.index + 1));
+                let _ = std::fs::write(dump, &fb.jpeg);
+            }
             eprintln!(
-                "[ocr] clip {}/{}：扫描 {} 帧，抽取 {} 帧（网格间隔 {}s）",
+                "[ocr] clip {}/{}：扫描 {} 帧，网格 {} 帧，变化 {} 帧 → OCR",
                 i + 1,
                 clip_count,
                 scan_stream.len(),
-                frames.len(),
-                frame_interval
+                grid.total,
+                grid.kept.len()
             );
         }
 
-        // 网格帧哈希 = 扫描序列中时间最近帧（网格与密帧哈希同源，精化交叉比较才一致）
-        let last_scan = scan_stream.len().saturating_sub(1);
-        let grid_hashes: Vec<u64> = frames
-            .iter()
-            .map(|f| {
-                let k = (((f.time - clip.start) / scan_interval).round() as usize).min(last_scan);
-                scan_stream[k].1
-            })
-            .collect();
-        let flags = crate::ai_runtime::dhash::change_flags(&grid_hashes, dhash_threshold);
-        let changes: Vec<FrameChange> = frames
-            .iter()
-            .zip(flags)
-            .map(|(frame, (is_changed, base_hash))| FrameChange {
-                frame: frame.clone(),
-                is_changed,
-                base_hash,
-            })
-            .collect();
-
-        let changed_count = changes.iter().filter(|c| c.is_changed).count();
-        if dev_debug {
-            eprintln!(
-                "[ocr] clip {}/{}：变化 {} / {} 帧 → OCR",
-                i + 1,
-                clip_count,
-                changed_count,
-                changes.len()
-            );
-        }
-
-        // 未变化帧的 JPEG 后续不再被任何环节读取 → 立即删除（dev_debug 保留供人工检查）
-        if !dev_debug {
-            for (frame, fc) in frames.iter().zip(changes.iter()) {
-                if !fc.is_changed {
-                    let _ = std::fs::remove_file(&frame.path);
+        let changes: Vec<FrameChange> = (0..grid.total)
+            .map(|k| {
+                let (is_changed, base_hash) = flags.get(k).copied().unwrap_or((false, None));
+                FrameChange {
+                    time: clip.start + (k as f64) * frame_interval,
+                    is_changed,
+                    base_hash,
                 }
-            }
-        }
+            })
+            .collect();
+        let jpegs: Vec<Vec<u8>> = grid.kept.iter().map(|f| f.jpeg.clone()).collect();
 
         // ── 窗口精化：帧级主边界（阶段 1）+ 短字幕召回（阶段 2）────
         // 窗口 = 扫描序列的时间切片（零抽帧零落盘）：
         // - 真正的下一段边界 = 最后一个变化帧（而非首个 main，规避 A→短字幕→C 误判）
         // - 窗口内恰好两次变化时，中间区间为短字幕：≥2 帧则按需抽中间帧召回为独立段
+        let refine_started = std::time::Instant::now();
         let (changes, mut short_segments) = if src_fps > 0.0 {
             emit(
                 i,
@@ -734,6 +763,7 @@ where
         } else {
             (changes, Vec::new())
         };
+        let refine_dt = refine_started.elapsed();
 
 
         emit(
@@ -743,9 +773,19 @@ where
         );
 
         let total_frames = changes.len();
+        let ocr_started = std::time::Instant::now();
+        let mut ipc_time = std::time::Duration::ZERO;
+        let mut ipc_batches = 0usize;
         let texts = ocr_pass(
             &changes,
-            |paths| manager.with_provider(|p| p.recognize_batch(paths)),
+            &jpegs,
+            |images| {
+                let t = std::time::Instant::now();
+                let r = manager.with_provider(|p| p.recognize_batch(images));
+                ipc_time += t.elapsed();
+                ipc_batches += 1;
+                r
+            },
             batch_size,
             |done, total| {
                 let overall = (i as f64 + done as f64 / total.max(1) as f64) / clip_count as f64;
@@ -757,6 +797,21 @@ where
             },
         )
         .map_err(|e| format!("OCR 失败（clip {}）: {}", i, e))?;
+        let ocr_dt = ocr_started.elapsed();
+        if dev_debug {
+            eprintln!(
+                "[ocr] clip {}/{}：耗时 共{:.2}s = 扫描{:.2} + 抽帧{:.2} + 精化{:.2} + OCR{:.2}（IPC {:.2}s，{} 批）",
+                i + 1,
+                clip_count,
+                clip_started.elapsed().as_secs_f64(),
+                scan_dt.as_secs_f64(),
+                extract_dt.as_secs_f64(),
+                refine_dt.as_secs_f64(),
+                ocr_dt.as_secs_f64(),
+                ipc_time.as_secs_f64(),
+                ipc_batches
+            );
+        }
 
         if dev_debug {
             // 打印每个变化帧的 OCR 结果
@@ -873,8 +928,8 @@ pub fn lines_from_results(results: &[OcrResult]) -> Vec<String> {
 
 /// Tauri 命令：直接识别用户选择的剧情文本截图（语料来源，不经过视频抽帧流水线）。
 ///
-/// 用户图片先复制进临时目录（uuid 文件名）再交给 worker——PaddleOCR 底层
-/// cv2 读图在 Windows 上对非 ASCII 路径不可靠，不能直接传用户原始路径。
+/// 直接读取文件字节并 base64 编码交给 worker（worker 内存解码 ndarray）——
+/// 不经临时目录，也根除了 cv2 读图在 Windows 上对非 ASCII 路径不可靠的问题。
 #[tauri::command]
 pub async fn run_ocr_images(
     app: AppHandle,
@@ -893,29 +948,17 @@ pub async fn run_ocr_images(
             return Err("OCR 运行环境未就绪".into());
         }
 
-        // 复制进 ASCII 安全的临时目录，规避 cv2 非 ASCII 路径问题
-        let temp_dir = std::env::temp_dir().join(format!("gsa_ocr_img_{}", Uuid::new_v4()));
-        let _guard = TempDirGuard {
-            path: temp_dir.clone(),
-            keep: false,
-        };
-        std::fs::create_dir_all(&temp_dir).map_err(|e| format!("无法创建临时目录: {}", e))?;
-
-        let mut local_paths = Vec::with_capacity(image_paths.len());
-        for (i, src) in image_paths.iter().enumerate() {
-            let ext = std::path::Path::new(src)
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("png");
-            let dest = temp_dir.join(format!("img_{}.{}", i, ext));
-            std::fs::copy(src, &dest).map_err(|e| format!("读取图片失败（{}）: {}", src, e))?;
-            local_paths.push(dest.to_string_lossy().to_string());
+        let mut images = Vec::with_capacity(image_paths.len());
+        for src in &image_paths {
+            let bytes =
+                std::fs::read(src).map_err(|e| format!("读取图片失败（{}）: {}", src, e))?;
+            images.push(b64(&bytes));
         }
 
         let bs = batch_size.max(1);
-        let total_batches = local_paths.len().div_ceil(bs);
+        let total_batches = images.len().div_ceil(bs);
         let mut results = Vec::new();
-        for (i, chunk) in local_paths.chunks(bs).enumerate() {
+        for (i, chunk) in images.chunks(bs).enumerate() {
             let batch = manager
                 .with_provider(|p| p.recognize_batch(chunk))
                 .map_err(|e| format!("OCR 失败: {}", e))?;
@@ -944,8 +987,6 @@ mod tests {
     use super::*;
     use crate::ai_runtime::dhash::FrameChange;
     use crate::ai_runtime::{OcrProvider, OcrResult, OcrError};
-    use crate::video::ExtractedFrame;
-    use std::path::PathBuf;
 
     /// 按调用顺序消费预置结果的 mock provider。
     /// 结果耗尽后返回"短向量"（比请求少），用于触发数量不匹配的错误路径。
@@ -980,10 +1021,7 @@ mod tests {
 
     fn frame(time: f64, changed: bool) -> FrameChange {
         FrameChange {
-            frame: ExtractedFrame {
-                path: PathBuf::from("dummy.jpg"),
-                time,
-            },
+            time,
             is_changed: changed,
             base_hash: None,
         }
@@ -1006,7 +1044,8 @@ mod tests {
             OcrResult { text: "B".into(), confidence: 0.8 },
         ]);
         let changes = vec![frame(0.0, true), frame(1.0, false), frame(2.0, true), frame(3.0, false)];
-        let texts = ocr_pass(&changes, |paths| provider.recognize_batch(paths), 16, |_, _| {}).unwrap();
+        let jpegs = vec![b"J1".to_vec(), b"J2".to_vec()];
+        let texts = ocr_pass(&changes, &jpegs, |images| provider.recognize_batch(images), 16, |_, _| {}).unwrap();
         assert_eq!(texts.len(), 4);
         assert_eq!(texts[0].text.as_ref(), "A");
         assert_eq!(texts[1].text.as_ref(), "A"); // 顺延
@@ -1019,7 +1058,8 @@ mod tests {
     fn test_ocr_pass_trims_text() {
         let provider = mock(vec![OcrResult { text: "  A  ".into(), confidence: 0.9 }]);
         let changes = vec![frame(0.0, true)];
-        let texts = ocr_pass(&changes, |paths| provider.recognize_batch(paths), 16, |_, _| {}).unwrap();
+        let jpegs = vec![b"J".to_vec()];
+        let texts = ocr_pass(&changes, &jpegs, |images| provider.recognize_batch(images), 16, |_, _| {}).unwrap();
         assert_eq!(texts[0].text.as_ref(), "A"); // 已 trim
     }
 
@@ -1030,7 +1070,8 @@ mod tests {
             OcrResult { text: String::new(), confidence: 0.0 },
         ]);
         let changes = vec![frame(0.0, true), frame(1.0, true), frame(2.0, false)];
-        let texts = ocr_pass(&changes, |paths| provider.recognize_batch(paths), 1, |_, _| {}).unwrap();
+        let jpegs = vec![b"J1".to_vec(), b"J2".to_vec()];
+        let texts = ocr_pass(&changes, &jpegs, |images| provider.recognize_batch(images), 1, |_, _| {}).unwrap();
         assert_eq!(texts[0].text.as_ref(), "A");
         assert_eq!(texts[1].text.as_ref(), ""); // 变化帧识别为空 → 清空
         assert_eq!(texts[2].text.as_ref(), ""); // 顺延空
@@ -1040,17 +1081,20 @@ mod tests {
     fn test_ocr_pass_batch_mixed_changed() {
         let provider = mock(vec![OcrResult { text: "X".into(), confidence: 0.7 }]);
         let changes = vec![frame(0.0, false), frame(1.0, true)];
-        let texts = ocr_pass(&changes, |paths| provider.recognize_batch(paths), 2, |_, _| {}).unwrap();
+        let jpegs = vec![b"J".to_vec()];
+        let texts = ocr_pass(&changes, &jpegs, |images| provider.recognize_batch(images), 2, |_, _| {}).unwrap();
         assert_eq!(texts[0].text.as_ref(), ""); // 首帧未变化且无 previous → 空
         assert_eq!(texts[1].text.as_ref(), "X");
     }
 
     #[test]
     fn test_ocr_pass_result_mismatch_errors() {
-        // 预置结果比变化帧少 → 应返回错误而非静默空文本
+        // 预置结果比变化帧少 → 应返回错误而非静默空文本；
+        // 图像数据与变化帧数量不符 → 在调用 recognize 前即报错
         let provider = mock(vec![OcrResult { text: "A".into(), confidence: 0.9 }]);
         let changes = vec![frame(0.0, true), frame(1.0, true), frame(2.0, true)];
-        assert!(ocr_pass(&changes, |paths| provider.recognize_batch(paths), 1, |_, _| {}).is_err());
+        let jpegs = vec![b"J".to_vec()];
+        assert!(ocr_pass(&changes, &jpegs, |images| provider.recognize_batch(images), 1, |_, _| {}).is_err());
     }
 
     // ── merge_frames ──
