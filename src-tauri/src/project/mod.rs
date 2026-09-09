@@ -605,11 +605,28 @@ fn rename_project_in(old_file: &Path, new_name: &str) -> Result<Project, String>
     Ok(project)
 }
 
-/// 从最近项目列表中移除一个条目（仅列表移除，不删除项目文件本身）
+/// 从最近项目列表中移除一个条目（仅列表移除，不删除项目文件本身）；
+/// `delete_file` 为 true 时连带删除项目文件
 #[tauri::command]
-pub fn remove_recent_project(app: AppHandle, project_path: String) -> Result<(), String> {
+pub fn remove_recent_project(
+    app: AppHandle,
+    project_path: String,
+    delete_file: bool,
+) -> Result<(), String> {
     let recent = remove_recent_entry(list_recent_projects(app.clone()), &project_path);
-    save_recent_projects(&app, &recent)
+    save_recent_projects(&app, &recent)?;
+    if delete_file {
+        delete_project_file(Path::new(&project_path))?;
+    }
+    Ok(())
+}
+
+/// 删除项目文件；文件不存在视为已删除（幂等）
+fn delete_project_file(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    fs::remove_file(path).map_err(|e| format!("删除项目文件失败: {}", e))
 }
 
 // ─── 文本文件读取（语料导入用）────────────────────────────
@@ -1230,5 +1247,19 @@ mod tests {
         // 不在列表中：原样返回
         let untouched = remove_recent_entry(vec![recent_entry("p1")], "missing");
         assert_eq!(untouched.len(), 1);
+    }
+
+    #[test]
+    fn test_delete_project_file_idempotent() {
+        let dir = new_test_dir("delete_file");
+        let a = create_project_in(&dir, "甲").unwrap();
+        let file = PathBuf::from(&a.path);
+
+        delete_project_file(&file).unwrap();
+        assert!(!file.exists(), "项目文件应已删除");
+
+        // 再删一次（文件已不存在）：幂等不报错
+        delete_project_file(&file).unwrap();
+        fs::remove_dir_all(&dir).ok();
     }
 }

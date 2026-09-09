@@ -418,9 +418,9 @@ export const useProjectStore = defineStore("project", () => {
     return entry;
   }
 
-  /// 从最近项目列表移除项目（不删除项目文件本身）
-  async function removeRecentProject(path: string) {
-    await invoke("remove_recent_project", { projectPath: path });
+  /// 从最近项目列表移除项目；deleteFile 为 true 时连带删除项目文件
+  async function removeRecentProject(path: string, deleteFile = false) {
+    await invoke("remove_recent_project", { projectPath: path, deleteFile });
     await refreshRecentProjects();
   }
 

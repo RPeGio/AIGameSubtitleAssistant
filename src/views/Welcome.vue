@@ -4,7 +4,7 @@ import { useRouter } from "vue-router";
 import { useProjectStore } from "../stores/project";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { RecentProject } from "../types";
-import { NButton, NCard, NInput, NModal, NPopconfirm, NSpace, NText, useMessage } from "naive-ui";
+import { NButton, NCard, NCheckbox, NInput, NModal, NPopconfirm, NSpace, NText, useMessage } from "naive-ui";
 
 const router = useRouter();
 const projectStore = useProjectStore();
@@ -144,11 +144,14 @@ function onRowClick(proj: RecentProject) {
 
 async function handleRemoveProject(proj: RecentProject) {
   try {
-    await projectStore.removeRecentProject(proj.path);
+    await projectStore.removeRecentProject(proj.path, deleteWithFile.value);
   } catch (e) {
-    message.error(`移除失败：${e}`);
+    message.error(`删除失败：${e}`);
   }
 }
+
+// 删除确认弹窗里的复选框：勾选后确认会连带删除项目文件；每次打开弹窗重置为不勾选
+const deleteWithFile = ref(false);
 
 onMounted(() => {
   projectStore.refreshRecentProjects();
@@ -205,13 +208,23 @@ onMounted(() => {
             <NButton size="tiny" quaternary @click="startRename(proj)">
               重命名
             </NButton>
-            <NPopconfirm @positive-click="handleRemoveProject(proj)">
+            <NPopconfirm
+              negative-text="取消"
+              positive-text="确认"
+              @update:show="(show) => show && (deleteWithFile = false)"
+              @positive-click="handleRemoveProject(proj)"
+            >
               <template #trigger>
                 <NButton size="tiny" quaternary type="error">
                   删除
                 </NButton>
               </template>
-              从最近项目列表移除「{{ proj.name }}」？项目文件不会被删除
+              <div class="pop-delete">
+                <div>从最近项目中删除此项吗？</div>
+                <NCheckbox v-model:checked="deleteWithFile">
+                  同时删除工程文件
+                </NCheckbox>
+              </div>
             </NPopconfirm>
           </div>
         </div>
@@ -386,6 +399,12 @@ onMounted(() => {
   display: flex;
   gap: 4px;
   flex-shrink: 0;
+}
+
+.pop-delete {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 /* ── 空状态 ── */
