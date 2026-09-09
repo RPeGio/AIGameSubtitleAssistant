@@ -408,6 +408,22 @@ export const useProjectStore = defineStore("project", () => {
     }
   }
 
+  /// 重命名项目（后端重命名 .gsa 文件并同步最近项目列表），返回新条目
+  async function renameProject(oldPath: string, newName: string) {
+    const entry = await invoke<RecentProject>("rename_project", {
+      projectPath: oldPath,
+      newName,
+    });
+    await refreshRecentProjects();
+    return entry;
+  }
+
+  /// 从最近项目列表移除项目；deleteFile 为 true 时连带删除项目文件
+  async function removeRecentProject(path: string, deleteFile = false) {
+    await invoke("remove_recent_project", { projectPath: path, deleteFile });
+    await refreshRecentProjects();
+  }
+
   /// 确保校对区基础产物轨存在（无 ocr_text 轨时补一个 mock 供校对总览展示）。
   /// 不再创建 page=editor 的 OCR 选区控制轨：OCR 生产已迁至语料页（source）
   /// 与转写页嵌字（clip，page="asr"，见 ensureAsrRegionTrack），避免重复建轨。
@@ -1295,6 +1311,8 @@ export const useProjectStore = defineStore("project", () => {
     canUndo,
     canRedo,
     refreshRecentProjects,
+    renameProject,
+    removeRecentProject,
     saveNow,
     ocrRunning,
     ocrSource,

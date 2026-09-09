@@ -64,6 +64,8 @@ pub fn run() {
             project::set_project_video,
             project::read_text_file,
             project::list_recent_projects,
+            project::rename_project,
+            project::remove_recent_project,
             // video 模块
             video::get_video_metadata,
             // ai_runtime 模块
