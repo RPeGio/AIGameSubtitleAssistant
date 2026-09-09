@@ -166,9 +166,10 @@ fn default_true() -> bool {
 /// 项目 —— 顶层容器，保存整个字幕项目的元数据和所有轨道
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
-    /// 项目文件夹的绝对路径
+    /// .gsa 项目文件的绝对路径 —— 项目身份（同一目录可有多个项目文件）。
+    /// open/set_project_video 时以实际操作的文件路径覆写，文件内保存的旧值不具权威性
     pub path: String,
-    /// 切片视频文件路径（相对于项目文件夹或绝对路径）——时间轴基准
+    /// 切片视频文件路径（相对于项目文件所在文件夹或绝对路径）——时间轴基准
     pub video: String,
     /// 剧情录屏视频路径（文本源，OCR 语料用）；缺省空串
     #[serde(default)]
@@ -299,20 +300,25 @@ fn project_file_path(dir: &Path, name: &str) -> PathBuf {
     dir.join(format!("{}.{}", sanitize_project_name(name), PROJECT_EXT))
 }
 
+/// 扩展名是否为 .gsa（不区分大小写）
+fn has_project_ext(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case(PROJECT_EXT))
+        .unwrap_or(false)
+}
+
 /// 在项目目录中查找唯一的项目文件（*.gsa，扩展名不区分大小写）。
-/// 目录不可读、找不到或存在多个时均返回 Err
+/// 目录不可读、找不到或存在多个时均返回 Err。
+/// 仅用于 open_project 的"目录兼容分支"（旧最近项目列表存的是目录路径）；
+/// 项目身份本身 = .gsa 文件路径，同目录允许多个项目共存。
 fn find_project_file(dir: &Path) -> Result<PathBuf, String> {
     let entries =
         fs::read_dir(dir).map_err(|e| format!("无法读取项目目录 {}: {}", dir.display(), e))?;
     let mut found: Vec<PathBuf> = Vec::new();
     for entry in entries {
         let path = entry.map_err(|e| format!("无法读取项目目录: {}", e))?.path();
-        let is_gsa = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case(PROJECT_EXT))
-            .unwrap_or(false);
-        if path.is_file() && is_gsa {
+        if path.is_file() && has_project_ext(&path) {
             found.push(path);
         }
     }
@@ -389,89 +395,107 @@ fn write_project_file(path: &Path, project: &Project) -> Result<(), String> {
 /// 创建一个新的字幕项目
 ///
 /// 在指定的 `path` 目录下创建以项目名命名的 `<项目名>.gsa` 项目文件，
-/// 并将该项目添加到最近项目列表中。
+/// 并将该项目添加到最近项目列表中。同一目录允许共存多个项目，
+/// 仅当同名项目文件已存在时拒绝。
 ///
 /// - `name`: 项目名称（同时决定项目文件名，非法字符会被替换为 '_'）
 /// - `path`: 项目文件夹的绝对路径
 #[tauri::command]
 pub fn create_project(app: AppHandle, name: String, path: String) -> Result<Project, String> {
-    let project_path = PathBuf::from(&path);
+    let project = create_project_in(&PathBuf::from(&path), &name)?;
+    append_recent_project(&app, &project)?;
+    Ok(project)
+}
 
-    // 一个目录只放一个项目：目录中已存在任何项目文件（*.gsa）即拒绝，避免误覆盖
-    if let Ok(existing) = find_project_file(&project_path) {
-        return Err(format!("目标目录已包含项目文件: {}", existing.display()));
-    }
-
+/// create_project 的纯文件系统实现（无 AppHandle，便于测试）。
+/// 返回的 `Project.path` = 新建 .gsa 文件的绝对路径（项目身份 = 文件）
+fn create_project_in(dir: &Path, name: &str) -> Result<Project, String> {
     // 确保目录存在（用户可能提前创建了目录，也可能没有）
-    fs::create_dir_all(&project_path)
-        .map_err(|e| format!("无法创建项目目录: {}", e))?;
+    fs::create_dir_all(dir).map_err(|e| format!("无法创建项目目录: {}", e))?;
+
+    let project_file = project_file_path(dir, name);
+    // 仅同名项目文件冲突即拒绝；目录内其它项目不受影响
+    if project_file.exists() {
+        return Err(format!("同名项目文件已存在: {}", project_file.display()));
+    }
 
     let now = now_iso();
     let project = Project {
-        path: project_path.to_string_lossy().to_string(),
+        path: project_file.to_string_lossy().to_string(),
         video: String::new(),
         source_video: String::new(),
-        name,
+        name: name.to_string(),
         corpus: Vec::new(),
         tracks: Vec::new(),
         created_at: now.clone(),
         updated_at: now,
     };
 
-    let project_file = project_file_path(&project_path, &project.name);
     write_project_file(&project_file, &project)?;
-
-    // 更新最近项目列表
-    append_recent_project(&app, &project)?;
-
     Ok(project)
 }
 
 /// 打开一个已有的项目
 ///
-/// 从指定目录查找唯一的项目文件（*.gsa）并解析。
+/// `path` 支持两种形态：
+/// - `.gsa` 项目文件的绝对路径 → 直接打开（同目录可有多个项目，项目身份 = 文件）
+/// - 目录路径 → 目录内查找唯一的项目文件（兼容旧最近项目列表存的目录）
 ///
-/// - `path`: 项目文件夹的绝对路径
+/// 成功后返回的 `Project.path` 统一为项目文件的绝对路径。
 #[tauri::command]
 pub fn open_project(app: AppHandle, path: String) -> Result<Project, String> {
-    let project_file = find_project_file(&PathBuf::from(&path))?;
+    let project = open_project_at(&path)?;
+    append_recent_project(&app, &project)?;
+    Ok(project)
+}
+
+/// open_project 的纯文件系统实现（无 AppHandle，便于测试）
+fn open_project_at(path: &str) -> Result<Project, String> {
+    let raw = PathBuf::from(path);
+    let project_file = if raw.is_dir() {
+        find_project_file(&raw)?
+    } else if raw.is_file() && has_project_ext(&raw) {
+        raw
+    } else {
+        return Err(format!(
+            "路径不是 .{} 项目文件，也不是包含唯一项目文件的目录: {}",
+            PROJECT_EXT,
+            raw.display()
+        ));
+    };
 
     let text = fs::read_to_string(&project_file)
         .map_err(|e| format!("无法读取项目文件: {}", e))?;
     let mut project = parse_project(&text)?;
 
-    // 确保 path 字段是完整的绝对路径
-    project.path = PathBuf::from(&path).to_string_lossy().to_string();
-
-    // 更新最近项目列表
-    append_recent_project(&app, &project)?;
+    // 确保 path 字段是项目文件的绝对路径（项目身份 = 文件）
+    project.path = project_file.to_string_lossy().to_string();
 
     Ok(project)
 }
 
 /// 保存项目，返回带新 updated_at 的 Project
 ///
-/// 项目文件名由 `project.name` 决定：若目录中的既有项目文件与
-/// sanitize(项目名) 不一致（如项目改名），写入新文件后删除旧文件。
+/// 项目身份 = `project.path` 指向的 .gsa 文件：永远写回该文件。
+/// 项目改名只改 JSON 内的 name 字段，文件名保持创建时的名字
+/// （同一目录可共存多个项目，不做任何跨文件清理）。
 ///
 /// - `project`: 要保存的项目对象
 #[tauri::command]
 pub fn save_project(project: Project) -> Result<Project, String> {
-    let project_path = PathBuf::from(&project.path);
+    let project_file = PathBuf::from(&project.path);
+    if !has_project_ext(&project_file) {
+        return Err(format!(
+            "项目路径不是 .{} 项目文件: {}",
+            PROJECT_EXT,
+            project_file.display()
+        ));
+    }
 
     let mut updated = project;
     updated.updated_at = now_iso();
 
-    let project_file = project_file_path(&project_path, &updated.name);
     write_project_file(&project_file, &updated)?;
-
-    // 改名场景：目录中原有的另一个 .gsa 已被新文件取代，清理掉避免双份。
-    // 项目身份 = 目录，正常情况下目录里不会有第二个 .gsa
-    if let Ok(existing) = find_project_file(&project_path) {
-        if existing != project_file {
-            let _ = fs::remove_file(&existing);
-        }
-    }
 
     Ok(updated)
 }
@@ -497,10 +521,18 @@ pub fn list_recent_projects(app: AppHandle) -> Vec<RecentProject> {
 // ─── 视频路径更新 ─────────────────────────────────────────
 
 /// 设置项目的视频文件路径并保存
+///
+/// `project_path` 为 .gsa 项目文件路径（项目身份 = 文件）
 #[tauri::command]
 pub fn set_project_video(project_path: String, video_path: String) -> Result<Project, String> {
-    let dir = PathBuf::from(&project_path);
-    let project_file = find_project_file(&dir)?;
+    let project_file = PathBuf::from(&project_path);
+    if !has_project_ext(&project_file) {
+        return Err(format!(
+            "项目路径不是 .{} 项目文件: {}",
+            PROJECT_EXT,
+            project_file.display()
+        ));
+    }
 
     let text = fs::read_to_string(&project_file)
         .map_err(|e| format!("无法读取项目文件: {}", e))?;
@@ -510,7 +542,6 @@ pub fn set_project_video(project_path: String, video_path: String) -> Result<Pro
     project.path = project_path;
     project.updated_at = now_iso();
 
-    // 写回同一文件（不做改名同步：文件名一致性由 save_project 处理）
     write_project_file(&project_file, &project)?;
 
     Ok(project)
@@ -913,6 +944,124 @@ mod tests {
             .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("tmp"))
             .collect();
         assert!(leftovers.is_empty(), "不应残留临时文件");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── 多项目共存（项目身份 = .gsa 文件路径）──
+
+    fn empty_project(name: &str) -> Project {
+        Project {
+            path: String::new(),
+            video: String::new(),
+            source_video: String::new(),
+            name: name.into(),
+            corpus: vec![],
+            tracks: vec![],
+            created_at: "1".into(),
+            updated_at: "2".into(),
+        }
+    }
+
+    fn new_test_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("gsa_{}_{}", tag, Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_create_allows_sibling_projects_same_name_rejected() {
+        let dir = new_test_dir("sibling");
+        let a = create_project_in(&dir, "甲").unwrap();
+        assert_eq!(
+            a.path,
+            project_file_path(&dir, "甲").to_string_lossy().to_string()
+        );
+
+        // 同名 → 拒绝；异名 → 允许共存
+        assert!(create_project_in(&dir, "甲").is_err());
+        let b = create_project_in(&dir, "乙").unwrap();
+        assert_ne!(b.path, a.path);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_open_by_file_and_by_dir_legacy() {
+        let dir = new_test_dir("open_modes");
+        let a = create_project_in(&dir, "甲").unwrap();
+        create_project_in(&dir, "乙").unwrap();
+
+        // 按文件路径打开：命中对应项目，path = 文件
+        let opened = open_project_at(&a.path).unwrap();
+        assert_eq!(opened.name, "甲");
+        assert_eq!(opened.path, a.path);
+
+        // 目录内多个 .gsa → 目录形态打开报错（需给具体文件）
+        let err = open_project_at(dir.to_string_lossy().as_ref()).unwrap_err();
+        assert!(err.contains("多个"), "实际: {}", err);
+
+        // 目录兼容分支：目录内唯一 .gsa → 打开成功（旧最近项目列表形态）
+        let dir2 = new_test_dir("open_dir_legacy");
+        let only = create_project_in(&dir2, "独苗").unwrap();
+        let opened = open_project_at(dir2.to_string_lossy().as_ref()).unwrap();
+        assert_eq!(opened.name, "独苗");
+        assert_eq!(opened.path, only.path);
+        fs::remove_dir_all(&dir).ok();
+        fs::remove_dir_all(&dir2).ok();
+    }
+
+    #[test]
+    fn test_save_writes_own_file_only_no_cross_cleanup() {
+        // P1-1 回归：同目录两个项目，保存（含改名）只写自己的文件，不动他者
+        let dir = new_test_dir("save_isolation");
+        let a = create_project_in(&dir, "甲").unwrap();
+        create_project_in(&dir, "乙").unwrap();
+
+        let mut renamed = open_project_at(&a.path).unwrap();
+        renamed.name = "丙".into(); // 改名：只改 JSON 内字段，文件名不变
+        let saved = save_project(renamed).unwrap();
+
+        // 仍写回原文件（path 未变），乙项目文件原样保留
+        assert_eq!(saved.path, a.path);
+        let reopened = open_project_at(&saved.path).unwrap();
+        assert_eq!(reopened.name, "丙");
+        let sibling = open_project_at(
+            &project_file_path(&dir, "乙").to_string_lossy().to_string()
+        )
+        .unwrap();
+        assert_eq!(sibling.name, "乙");
+        // 目录中仍恰好两个 .gsa，无新增无残留
+        let count = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| has_project_ext(&e.path()))
+            .count();
+        assert_eq!(count, 2);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_save_and_set_video_reject_non_gsa_path() {
+        let dir = new_test_dir("reject_non_gsa");
+        // 旧语义（目录路径）混入 → 明确报错，而不是把项目写到错误目标
+        let mut p = empty_project("甲");
+        p.path = dir.to_string_lossy().to_string();
+        assert!(save_project(p).is_err());
+
+        let err =
+            set_project_video(dir.to_string_lossy().to_string(), "v.mp4".into()).unwrap_err();
+        assert!(err.contains(".gsa"), "实际: {}", err);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_set_project_video_by_file() {
+        let dir = new_test_dir("set_video");
+        let a = create_project_in(&dir, "甲").unwrap();
+        let updated = set_project_video(a.path.clone(), "clip.mp4".into()).unwrap();
+        assert_eq!(updated.video, "clip.mp4");
+        assert_eq!(updated.path, a.path);
+        let reopened = open_project_at(&a.path).unwrap();
+        assert_eq!(reopened.video, "clip.mp4");
         fs::remove_dir_all(&dir).ok();
     }
 }

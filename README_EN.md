@@ -85,7 +85,7 @@ pnpm tauri build   # produce installers (note: runtime-resource bundling is not 
 
 ## Usage
 
-1. **Create a project**: "Create New Project" on the welcome page; pick an empty folder (project data lives in `<project-name>.gsa` inside it).
+1. **Create a project**: "Create New Project" on the welcome page; pick a save folder (project data lives in `<project-name>.gsa` inside it; multiple projects may share one folder).
 2. **Import videos**: import the quest recording (source) on the corpus page; import the clip video (clip) on the transcribe page.
 3. **① Corpus**: frame the subtitle region and time range, run OCR to collect reliable text — or OCR subtitle screenshots / paste plain text.
 4. **② Transcribe**: run ASR on the clip video (engine / speaker cap / language), then tag tracks containing game speech as "game speech". For games without voice acting, additionally frame the hardsub region to build an embedded-subtitle track.

@@ -105,7 +105,7 @@ runtime/
 
 ```
 Project
-├── path                     # absolute path of the project folder (contains <project-name>.gsa)
+├── path                     # absolute path of the .gsa project file (identity = file; multiple projects may share a folder)
 ├── video                    # clip video — the global timeline reference
 ├── source_video             # story recording — text source for corpus OCR
 ├── corpus: Vec<CorpusItem>  # reliable text corpus (independent of tracks; consumed by fusion)
@@ -131,7 +131,7 @@ Project
 
 `src/types/index.ts` mirrors the Rust structures in TypeScript; new fields must be added on both sides.
 
-The project is stored as a single `<project-name>.gsa` file in the project folder: the first line is the magic header `GSA-PROJECT v1`, followed by the JSON body (the structure above — fields unchanged). The file name derives from `sanitize(project-name)` (Windows-illegal characters replaced); writes are atomic (temp file + rename); opening scans the folder for the single `*.gsa` file.
+The project is stored as a single `<project-name>.gsa` file in the project folder: the first line is the magic header `GSA-PROJECT v1`, followed by the JSON body (the structure above — fields unchanged). The file name derives from `sanitize(project-name)` (Windows-illegal characters replaced); writes are atomic (temp file + rename). **Project identity = the .gsa file path**: multiple projects may coexist in one folder; opening accepts either a `.gsa` file path directly or a folder path (which must contain exactly one `*.gsa` — keeps older recent-project entries working); saving always writes back the file `path` points to, and renaming a project only changes the JSON field, not the file name.
 
 ## Frontend structure
 

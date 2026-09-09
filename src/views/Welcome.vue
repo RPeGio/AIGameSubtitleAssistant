@@ -3,10 +3,11 @@ import { ref, computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { useProjectStore } from "../stores/project";
 import { open } from "@tauri-apps/plugin-dialog";
-import { NButton, NCard, NInput, NModal, NSpace, NText } from "naive-ui";
+import { NButton, NCard, NInput, NModal, NSpace, NText, useMessage } from "naive-ui";
 
 const router = useRouter();
 const projectStore = useProjectStore();
+const message = useMessage();
 
 const showCreateModal = ref(false);
 const newProjectName = ref("");
@@ -40,8 +41,24 @@ function resetForm() {
 }
 
 async function handleOpenProject(path: string) {
-  await projectStore.openProject(path);
+  try {
+    await projectStore.openProject(path);
+  } catch (e) {
+    message.error(`打开项目失败：${e}`);
+    return;
+  }
   router.push(`/project/${encodeURIComponent(path)}/editor`);
+}
+
+/// 打开已有项目：选择 .gsa 项目文件（项目身份 = 文件，同目录可有多个项目）
+async function handleOpenProjectDialog() {
+  const selected = await open({
+    multiple: false,
+    title: "打开 GSA 项目",
+    filters: [{ name: "GSA 项目", extensions: ["gsa"] }],
+  });
+  if (!selected) return;
+  await handleOpenProject(selected);
 }
 
 function isValidPath(input: string) {
@@ -70,7 +87,7 @@ onMounted(() => {
         <NButton size="large" type="primary" @click="showCreateModal = true">
           创建新项目
         </NButton>
-        <NButton size="large" @click="handleSelectFolder">
+        <NButton size="large" @click="handleOpenProjectDialog">
           打开已有项目
         </NButton>
       </div>

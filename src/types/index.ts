@@ -83,6 +83,7 @@ export interface CorpusItem {
 }
 
 export interface Project {
+  /// .gsa 项目文件的绝对路径（项目身份 = 文件，同一目录可有多个项目）
   path: string;
   /// 切片视频路径 —— 时间轴基准
   video: string;
