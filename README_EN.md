@@ -24,7 +24,7 @@ Video input ──► OCR + ASR + speaker diarization + auto timing
 - **AI fusion**: a local LLM (llama.cpp + Qwen2.5-3B) performs **cross-language semantic alignment** between the reliable corpus and the game-speech transcript — the model only outputs the correspondence; text is copied verbatim by code, so a small model cannot "paraphrase" it. Character names are extracted from corpus prefixes.
 - **Timeline editing**: multi-track timeline (split / merge / drag / snap / segment swap), video preview sync, undo & redo, per-event proofreading list.
 - **Export**: single-track export to SRT / ASS / LRC / TXT.
-- **Engineering**: project data (`project.json`) autosaves with a 1-second debounce plus Ctrl+S manual save; recent-projects list.
+- **Engineering**: project data (`<project-name>.gsa` — a magic header + JSON) autosaves with a 1-second debounce plus Ctrl+S manual save; recent-projects list.
 
 ## Workflow
 
@@ -85,7 +85,7 @@ pnpm tauri build   # produce installers (note: runtime-resource bundling is not 
 
 ## Usage
 
-1. **Create a project**: "Create New Project" on the welcome page; pick an empty folder (project data lives in `project.json` inside it).
+1. **Create a project**: "Create New Project" on the welcome page; pick an empty folder (project data lives in `<project-name>.gsa` inside it).
 2. **Import videos**: import the quest recording (source) on the corpus page; import the clip video (clip) on the transcribe page.
 3. **① Corpus**: frame the subtitle region and time range, run OCR to collect reliable text — or OCR subtitle screenshots / paste plain text.
 4. **② Transcribe**: run ASR on the clip video (engine / speaker cap / language), then tag tracks containing game speech as "game speech". For games without voice acting, additionally frame the hardsub region to build an embedded-subtitle track.

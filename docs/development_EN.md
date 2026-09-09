@@ -29,7 +29,7 @@ Constraint: **fully offline**. The Rust side has no HTTP client and makes no net
 │  video ── ffmpeg/ffprobe (external, PATH lookup)            │
 │  ocr / asr / llm / fuse ── pipelines + progress events      │
 │  ai_runtime ── provider traits + managers + runtime config  │
-│  project / export ── project.json persistence / subtitles   │
+│  project / export ── <project-name>.gsa persistence / subs  │
 └──────────────┬──────────────────────────────────────────────┘
                │ subprocesses + stdio (no ports, no HTTP)
 ┌──────────────▼──────────────────────────────────────────────┐
@@ -57,7 +57,7 @@ Constraint: **fully offline**. The Rust side has no HTTP client and makes no net
 | `src-tauri/src/asr/mod.rs` | `run_asr`: audio extraction (RAII temp dir) → engine by params → `AsrSegment` list; re-entry guard + cancel (`asr_cancel`) |
 | `src-tauri/src/llm/mod.rs` | `run_llm`: single-prompt inference (frontend test bench); `llm-progress` events |
 | `src-tauri/src/fuse/mod.rs` | `run_fuse`: cross-language LLM fusion (see [Fusion pipeline](#fusion-pipeline-fusemodrs)) |
-| `src-tauri/src/project/mod.rs` | Project / Track / TimelineEvent model, `project.json` I/O, recent projects |
+| `src-tauri/src/project/mod.rs` | Project / Track / TimelineEvent model, `<project-name>.gsa` I/O (magic header `GSA-PROJECT v1` + JSON body, atomic write), recent projects |
 | `src-tauri/src/export/mod.rs` | `export_track_subtitle`: single-track SRT / ASS / LRC / TXT (SRT/LRC/TXT written with a UTF-8 BOM so players don't misread them as GBK; ASS has a fixed style with `\` / `{}` escaped) |
 
 `subtitle/` and `timeline/` are empty shell modules: subtitle writing lives in `export`, the timeline in the frontend store.
@@ -105,7 +105,7 @@ runtime/
 
 ```
 Project
-├── path                     # absolute path of the project folder (contains project.json)
+├── path                     # absolute path of the project folder (contains <project-name>.gsa)
 ├── video                    # clip video — the global timeline reference
 ├── source_video             # story recording — text source for corpus OCR
 ├── corpus: Vec<CorpusItem>  # reliable text corpus (independent of tracks; consumed by fusion)
@@ -130,6 +130,8 @@ Project
 | `manual` | Manual event |
 
 `src/types/index.ts` mirrors the Rust structures in TypeScript; new fields must be added on both sides.
+
+The project is stored as a single `<project-name>.gsa` file in the project folder: the first line is the magic header `GSA-PROJECT v1`, followed by the JSON body (the structure above — fields unchanged). The file name derives from `sanitize(project-name)` (Windows-illegal characters replaced); writes are atomic (temp file + rename); opening scans the folder for the single `*.gsa` file.
 
 ## Frontend structure
 
