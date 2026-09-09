@@ -194,7 +194,7 @@ interface SubtitleEvent {
 
 ## Project 结构
 
-保存为 `project.json`，格式：
+保存为 `<项目名>.gsa` 项目文件：首行为魔数头 `GSA-PROJECT v1`，其后为 JSON（内部结构如下）：
 
 ```json
 {

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
 use tauri::Manager; // 提供 app.path() 等方法
@@ -205,8 +205,15 @@ pub struct RecentProject {
 
 // ─── 常量和文件名 ─────────────────────────────────────────
 
-/// 项目元数据文件名
-const PROJECT_FILE: &str = "project.json";
+/// 项目文件魔数头：文件首行为 `GSA-PROJECT v1`，其后是 JSON 主体。
+/// 自定义扩展名 + 魔数头让项目文件不会被误认成普通 JSON 配置文件
+const PROJECT_MAGIC: &str = "GSA-PROJECT";
+/// 项目文件格式版本（解析时拒绝更高版本，提示升级应用）
+const PROJECT_FORMAT_VERSION: u32 = 1;
+/// 项目文件扩展名（不带点）
+const PROJECT_EXT: &str = "gsa";
+/// 项目文件名主体长度上限（字符数），防止超长文件名触发 Windows 路径问题
+const MAX_NAME_CHARS: usize = 100;
 /// 最近项目列表文件名（存储在 app data 目录下）
 const RECENT_PROJECTS_FILE: &str = "recent_projects.json";
 
@@ -245,26 +252,154 @@ fn get_app_data_file(app: &AppHandle, filename: &str) -> PathBuf {
     data_dir.join(filename)
 }
 
+// ─── 项目文件格式（.gsa：魔数头 + JSON 主体）──────────────
+// 外部形态：<项目名>.gsa，内部 JSON 结构与字段完全不变。
+// 首行携带魔数与格式版本，便于识别文件类型并支持未来格式演进。
+
+/// 将项目名清理为合法的 Windows 文件名主体（不含扩展名）：
+/// 非法字符 `\ / : * ? " < > |` 与控制符替换为 '_'；去首尾空白与结尾的点；
+/// Windows 保留设备名（CON/NUL/COM1…）追加 '_'；按字符数截断；清空后回退 "project"
+fn sanitize_project_name(name: &str) -> String {
+    let replaced: String = name
+        .chars()
+        .map(|c| {
+            if matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control()
+            {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let mut s = replaced.trim().trim_end_matches('.').to_string();
+
+    // 保留设备名检查针对“基础名”（首个点之前），CON.txt 同样是保留名
+    let upper = s.to_ascii_uppercase();
+    let stem = upper.split('.').next().unwrap_or("");
+    const RESERVED: [&str; 22] = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+        "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    if RESERVED.contains(&stem) {
+        s.push('_');
+    }
+
+    if s.chars().count() > MAX_NAME_CHARS {
+        s = s.chars().take(MAX_NAME_CHARS).collect();
+        s = s.trim_end().trim_end_matches('.').to_string();
+    }
+    if s.is_empty() {
+        s = "project".to_string();
+    }
+    s
+}
+
+/// 项目文件完整路径：项目目录 + sanitize(项目名) + ".gsa"
+fn project_file_path(dir: &Path, name: &str) -> PathBuf {
+    dir.join(format!("{}.{}", sanitize_project_name(name), PROJECT_EXT))
+}
+
+/// 在项目目录中查找唯一的项目文件（*.gsa，扩展名不区分大小写）。
+/// 目录不可读、找不到或存在多个时均返回 Err
+fn find_project_file(dir: &Path) -> Result<PathBuf, String> {
+    let entries =
+        fs::read_dir(dir).map_err(|e| format!("无法读取项目目录 {}: {}", dir.display(), e))?;
+    let mut found: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(|e| format!("无法读取项目目录: {}", e))?.path();
+        let is_gsa = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case(PROJECT_EXT))
+            .unwrap_or(false);
+        if path.is_file() && is_gsa {
+            found.push(path);
+        }
+    }
+    match found.len() {
+        0 => Err(format!(
+            "目录中未找到项目文件（*.{}）: {}",
+            PROJECT_EXT,
+            dir.display()
+        )),
+        1 => Ok(found.remove(0)),
+        _ => Err(format!(
+            "目录中存在多个项目文件，无法确定要打开的项目: {}",
+            found
+                .iter()
+                .map(|p| {
+                    p.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+                .join("、")
+        )),
+    }
+}
+
+/// 序列化为项目文件全文：`GSA-PROJECT v1` 头一行 + JSON 主体
+fn serialize_project(project: &Project) -> Result<String, String> {
+    let json = serde_json::to_string_pretty(project)
+        .map_err(|e| format!("项目序列化失败: {}", e))?;
+    Ok(format!(
+        "{} v{}\n{}\n",
+        PROJECT_MAGIC, PROJECT_FORMAT_VERSION, json
+    ))
+}
+
+/// 解析项目文件全文（容忍 UTF-8 BOM 与 CRLF）；JSON 主体结构不变
+fn parse_project(text: &str) -> Result<Project, String> {
+    let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
+    let (header, body) = text
+        .split_once('\n')
+        .ok_or_else(|| "不是有效的 GSA 项目文件（缺少文件头）".to_string())?;
+    let version = header
+        .trim_end_matches('\r')
+        .trim()
+        .strip_prefix(PROJECT_MAGIC)
+        .and_then(|rest| rest.trim().strip_prefix('v'))
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .ok_or_else(|| "不是有效的 GSA 项目文件（文件头格式错误）".to_string())?;
+    if version > PROJECT_FORMAT_VERSION {
+        return Err(format!(
+            "项目文件版本过新（v{}），请升级应用后再打开",
+            version
+        ));
+    }
+    serde_json::from_str(body).map_err(|e| format!("项目文件解析失败: {}", e))
+}
+
+/// 原子写项目文件：先写同目录临时文件，成功后 rename 覆盖目标。
+/// 自动保存高频触发，直接覆盖写一旦被崩溃/断电打断会留下半截文件
+fn write_project_file(path: &Path, project: &Project) -> Result<(), String> {
+    let content = serialize_project(project)?;
+    let tmp = path.with_extension(format!("{}.tmp", PROJECT_EXT));
+    fs::write(&tmp, &content).map_err(|e| format!("无法写入项目文件: {}", e))?;
+    fs::rename(&tmp, path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("无法写入项目文件: {}", e)
+    })?;
+    Ok(())
+}
+
 // ─── 命令实现 ─────────────────────────────────────────────
 
 /// 创建一个新的字幕项目
 ///
-/// 在指定的 `path` 目录下创建 `project.json` 文件，
+/// 在指定的 `path` 目录下创建以项目名命名的 `<项目名>.gsa` 项目文件，
 /// 并将该项目添加到最近项目列表中。
 ///
-/// - `name`: 项目名称
+/// - `name`: 项目名称（同时决定项目文件名，非法字符会被替换为 '_'）
 /// - `path`: 项目文件夹的绝对路径
 #[tauri::command]
 pub fn create_project(app: AppHandle, name: String, path: String) -> Result<Project, String> {
     let project_path = PathBuf::from(&path);
 
-    // 检查目标目录是否已存在 project.json，避免误覆盖已有项目
-    let project_file = project_path.join(PROJECT_FILE);
-    if project_file.exists() {
-        return Err(format!(
-            "目标目录已包含项目文件: {}",
-            project_file.display()
-        ));
+    // 一个目录只放一个项目：目录中已存在任何项目文件（*.gsa）即拒绝，避免误覆盖
+    if let Ok(existing) = find_project_file(&project_path) {
+        return Err(format!("目标目录已包含项目文件: {}", existing.display()));
     }
 
     // 确保目录存在（用户可能提前创建了目录，也可能没有）
@@ -283,11 +418,8 @@ pub fn create_project(app: AppHandle, name: String, path: String) -> Result<Proj
         updated_at: now,
     };
 
-    // 序列化为 JSON 并写入文件
-    let json = serde_json::to_string_pretty(&project)
-        .map_err(|e| format!("项目序列化失败: {}", e))?;
-    fs::write(&project_file, &json)
-        .map_err(|e| format!("无法写入项目文件: {}", e))?;
+    let project_file = project_file_path(&project_path, &project.name);
+    write_project_file(&project_file, &project)?;
 
     // 更新最近项目列表
     append_recent_project(&app, &project)?;
@@ -297,17 +429,16 @@ pub fn create_project(app: AppHandle, name: String, path: String) -> Result<Proj
 
 /// 打开一个已有的项目
 ///
-/// 从指定目录读取 `project.json` 并反序列化。
+/// 从指定目录查找唯一的项目文件（*.gsa）并解析。
 ///
 /// - `path`: 项目文件夹的绝对路径
 #[tauri::command]
 pub fn open_project(app: AppHandle, path: String) -> Result<Project, String> {
-    let project_file = PathBuf::from(&path).join(PROJECT_FILE);
+    let project_file = find_project_file(&PathBuf::from(&path))?;
 
-    let json = fs::read_to_string(&project_file)
+    let text = fs::read_to_string(&project_file)
         .map_err(|e| format!("无法读取项目文件: {}", e))?;
-    let mut project: Project = serde_json::from_str(&json)
-        .map_err(|e| format!("项目文件解析失败: {}", e))?;
+    let mut project = parse_project(&text)?;
 
     // 确保 path 字段是完整的绝对路径
     project.path = PathBuf::from(&path).to_string_lossy().to_string();
@@ -318,21 +449,29 @@ pub fn open_project(app: AppHandle, path: String) -> Result<Project, String> {
     Ok(project)
 }
 
-/// 保存项目（写入 project.json），返回带新 updated_at 的 Project
+/// 保存项目，返回带新 updated_at 的 Project
+///
+/// 项目文件名由 `project.name` 决定：若目录中的既有项目文件与
+/// sanitize(项目名) 不一致（如项目改名），写入新文件后删除旧文件。
 ///
 /// - `project`: 要保存的项目对象
 #[tauri::command]
 pub fn save_project(project: Project) -> Result<Project, String> {
     let project_path = PathBuf::from(&project.path);
-    let project_file = project_path.join(PROJECT_FILE);
 
     let mut updated = project;
     updated.updated_at = now_iso();
 
-    let json = serde_json::to_string_pretty(&updated)
-        .map_err(|e| format!("项目序列化失败: {}", e))?;
-    fs::write(&project_file, &json)
-        .map_err(|e| format!("无法写入项目文件: {}", e))?;
+    let project_file = project_file_path(&project_path, &updated.name);
+    write_project_file(&project_file, &updated)?;
+
+    // 改名场景：目录中原有的另一个 .gsa 已被新文件取代，清理掉避免双份。
+    // 项目身份 = 目录，正常情况下目录里不会有第二个 .gsa
+    if let Ok(existing) = find_project_file(&project_path) {
+        if existing != project_file {
+            let _ = fs::remove_file(&existing);
+        }
+    }
 
     Ok(updated)
 }
@@ -360,21 +499,19 @@ pub fn list_recent_projects(app: AppHandle) -> Vec<RecentProject> {
 /// 设置项目的视频文件路径并保存
 #[tauri::command]
 pub fn set_project_video(project_path: String, video_path: String) -> Result<Project, String> {
-    let project_file = PathBuf::from(&project_path).join(PROJECT_FILE);
+    let dir = PathBuf::from(&project_path);
+    let project_file = find_project_file(&dir)?;
 
-    let json = fs::read_to_string(&project_file)
+    let text = fs::read_to_string(&project_file)
         .map_err(|e| format!("无法读取项目文件: {}", e))?;
-    let mut project: Project = serde_json::from_str(&json)
-        .map_err(|e| format!("项目文件解析失败: {}", e))?;
+    let mut project = parse_project(&text)?;
 
     project.video = video_path;
     project.path = project_path;
     project.updated_at = now_iso();
 
-    let new_json = serde_json::to_string_pretty(&project)
-        .map_err(|e| format!("项目序列化失败: {}", e))?;
-    fs::write(&project_file, &new_json)
-        .map_err(|e| format!("无法写入项目文件: {}", e))?;
+    // 写回同一文件（不做改名同步：文件名一致性由 save_project 处理）
+    write_project_file(&project_file, &project)?;
 
     Ok(project)
 }
@@ -466,7 +603,7 @@ mod tests {
 
     #[test]
     fn test_track_legacy_json_defaults_to_game() {
-        // 旧 project.json 无 track_role 字段 → 反序列化默认 "game"
+        // 文件缺 track_role 字段（旧数据）→ 反序列化默认 "game"
         let json = r#"{"id":"t1","name":"游戏角色","type":"asr","events":[]}"#;
         let track: Track = serde_json::from_str(json).unwrap();
         assert_eq!(track.track_role, "game");
@@ -482,7 +619,7 @@ mod tests {
 
     #[test]
     fn test_track_legacy_json_preview_visible_defaults_true() {
-        // 旧 project.json 无 preview_visible → 默认 true（预览不遗漏旧轨道）
+        // 文件缺 preview_visible（旧数据）→ 默认 true（预览不遗漏旧轨道）
         let json = r#"{"id":"t1","name":"游戏角色","type":"asr","events":[]}"#;
         let track: Track = serde_json::from_str(json).unwrap();
         assert!(track.preview_visible);
@@ -558,7 +695,7 @@ mod tests {
 
     #[test]
     fn test_track_legacy_json_defaults_scope_page_video() {
-        // 旧 project.json 无 scope/page/video → 默认 output / 空 / clip（既有轨道视为产物轨，挂切片）
+        // 文件缺 scope/page/video（旧数据）→ 默认 output / 空 / clip（既有轨道视为产物轨，挂切片）
         let json = r#"{"id":"t1","name":"游戏角色","type":"asr","events":[]}"#;
         let track: Track = serde_json::from_str(json).unwrap();
         assert_eq!(track.scope, "output");
@@ -581,7 +718,7 @@ mod tests {
 
     #[test]
     fn test_project_legacy_json_defaults_source_video_corpus() {
-        // 旧 project.json 无 source_video/corpus → 默认空串 / 空语料
+        // 文件缺 source_video/corpus（旧数据）→ 默认空串 / 空语料
         let json = r#"{"path":"C:/proj","video":"clip.mp4","name":"示例","tracks":[],"created_at":"1","updated_at":"2"}"#;
         let project: Project = serde_json::from_str(json).unwrap();
         assert_eq!(project.source_video, "");
@@ -645,5 +782,137 @@ mod tests {
         let err = read_text_file(path.to_string_lossy().to_string()).unwrap_err();
         assert!(err.contains("UTF-8"), "报错应提示 UTF-8 编码问题，实际: {}", err);
         fs::remove_file(&path).ok();
+    }
+
+    // ── 项目文件格式（.gsa）──
+
+    fn sample_project() -> Project {
+        Project {
+            path: "C:/proj".into(),
+            video: "clip.mp4".into(),
+            source_video: "source.mp4".into(),
+            name: "示例项目".into(),
+            corpus: vec![CorpusItem {
+                id: "c1".into(),
+                text: "旅行者，你来了".into(),
+                source: "paste".into(),
+                created_at: "1".into(),
+            }],
+            tracks: vec![sample_track()],
+            created_at: "1".into(),
+            updated_at: "2".into(),
+        }
+    }
+
+    #[test]
+    fn test_sanitize_replaces_illegal_chars() {
+        assert_eq!(
+            sanitize_project_name(r#"a/b\c:d*e?f"g<h>i|j"#),
+            "a_b_c_d_e_f_g_h_i_j"
+        );
+        // 控制字符同样替换
+        assert_eq!(sanitize_project_name("a\u{0007}b"), "a_b");
+    }
+
+    #[test]
+    fn test_sanitize_trims_dots_and_fallback() {
+        assert_eq!(sanitize_project_name("  我的项目...  "), "我的项目");
+        // 清理后为空（如只剩点/空白）才回退 "project"；"___" 是合法文件名不回退
+        assert_eq!(sanitize_project_name("..."), "project");
+        assert_eq!(sanitize_project_name("   "), "project");
+        assert_eq!(sanitize_project_name(""), "project");
+        assert_eq!(sanitize_project_name("///"), "___");
+        // Windows 保留设备名（含带扩展名形态）追加 '_'
+        assert_eq!(sanitize_project_name("CON"), "CON_");
+        assert_eq!(sanitize_project_name("nul.txt"), "nul.txt_");
+    }
+
+    #[test]
+    fn test_sanitize_truncates_long_name() {
+        let long = "字".repeat(150);
+        let sanitized = sanitize_project_name(&long);
+        assert_eq!(sanitized.chars().count(), MAX_NAME_CHARS);
+    }
+
+    #[test]
+    fn test_project_file_path_uses_sanitized_name() {
+        let dir = PathBuf::from("C:/proj");
+        assert_eq!(
+            project_file_path(&dir, "我的项目:第一话"),
+            dir.join("我的项目_第一话.gsa")
+        );
+    }
+
+    #[test]
+    fn test_project_file_roundtrip_with_header() {
+        let project = sample_project();
+        let text = serialize_project(&project).unwrap();
+        assert!(text.starts_with("GSA-PROJECT v1\n"), "应含魔数头，实际: {}", &text[..text.len().min(40)]);
+        let back = parse_project(&text).unwrap();
+        assert_eq!(back.name, "示例项目");
+        assert_eq!(back.video, "clip.mp4");
+        assert_eq!(back.tracks.len(), 1);
+        assert_eq!(back.corpus[0].text, "旅行者，你来了");
+    }
+
+    #[test]
+    fn test_parse_rejects_plain_json_without_header() {
+        // 纯 JSON（如旧 project.json 或普通配置文件）不再被接受
+        let legacy = r#"{"path":"C:/proj","video":"clip.mp4","name":"示例","tracks":[],"created_at":"1","updated_at":"2"}"#;
+        let err = parse_project(legacy).unwrap_err();
+        assert!(err.contains("GSA 项目文件"), "实际: {}", err);
+    }
+
+    #[test]
+    fn test_parse_rejects_newer_version() {
+        let err = parse_project("GSA-PROJECT v2\n{}\n").unwrap_err();
+        assert!(err.contains("版本过新"), "实际: {}", err);
+    }
+
+    #[test]
+    fn test_parse_tolerates_bom_and_crlf() {
+        let project = sample_project();
+        let text = serialize_project(&project).unwrap();
+        let crlf = format!("\u{FEFF}{}", text.replace('\n', "\r\n"));
+        let back = parse_project(&crlf).unwrap();
+        assert_eq!(back.name, "示例项目");
+    }
+
+    #[test]
+    fn test_find_project_file_zero_one_many() {
+        let dir = std::env::temp_dir().join(format!("gsa_test_{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+
+        // 0 个：未找到
+        assert!(find_project_file(&dir).is_err());
+
+        // 1 个：命中（扩展名不区分大小写）
+        fs::write(dir.join("a.gsa"), "x").unwrap();
+        assert_eq!(find_project_file(&dir).unwrap(), dir.join("a.gsa"));
+        fs::write(dir.join("b.GSA"), "x").unwrap();
+
+        // 多个：报错
+        assert!(find_project_file(&dir).is_err());
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_write_project_file_atomic_tmp_cleaned() {
+        let dir = std::env::temp_dir().join(format!("gsa_test_{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("p.gsa");
+        write_project_file(&target, &sample_project()).unwrap();
+
+        // 目标文件有魔数头，同目录不残留 .tmp
+        let text = fs::read_to_string(&target).unwrap();
+        assert!(text.starts_with("GSA-PROJECT v1"));
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "不应残留临时文件");
+        fs::remove_dir_all(&dir).ok();
     }
 }

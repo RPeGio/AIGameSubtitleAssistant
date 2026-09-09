@@ -38,7 +38,7 @@ fn test_t3_end_to_end() {
         get_video_metadata(video.to_string_lossy().into_owned()).expect("读取视频元数据失败");
     assert_eq!(meta.width, 1920);
 
-    // 来自 t3 项目 project.json 语料区 OCR 选区轨（用户调整后的选区，已去除其它画面噪声）
+    // 来自 t3 项目语料区 OCR 选区轨（用户调整后的选区，已去除其它画面噪声）
     let clips = vec![
         OcrRegionInput { start: 36.373, end: 40.798, x1: 0.200, y1: 0.700, x2: 0.800, y2: 0.900 },
         OcrRegionInput { start: 43.330, end: 150.298, x1: 0.152, y1: 0.745, x2: 0.853, y2: 0.994 },

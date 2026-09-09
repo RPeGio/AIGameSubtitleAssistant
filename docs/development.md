@@ -29,7 +29,7 @@
 │  video ── ffmpeg/ffprobe（外部依赖，PATH 查找）              │
 │  ocr / asr / llm / fuse ── 各自的 pipeline + 进度事件        │
 │  ai_runtime ── provider trait + manager + runtime 配置      │
-│  project / export ── project.json 持久化 / 字幕导出          │
+│  project / export ── <项目名>.gsa 持久化 / 字幕导出          │
 └──────────────┬──────────────────────────────────────────────┘
                │ 子进程 + stdio（无端口/HTTP）
 ┌──────────────▼──────────────────────────────────────────────┐
@@ -57,7 +57,7 @@
 | `src-tauri/src/asr/mod.rs` | `run_asr`：音频提取（RAII 临时目录）→ 按参数选引擎 → `AsrSegment` 列表；重入守卫 + 取消（`asr_cancel`） |
 | `src-tauri/src/llm/mod.rs` | `run_llm`：单次 prompt 推理（前端测试台用）；`llm-progress` 事件 |
 | `src-tauri/src/fuse/mod.rs` | `run_fuse`：LLM 跨语言融合（详见[融合流水线](#融合流水线fuse)） |
-| `src-tauri/src/project/mod.rs` | Project / Track / TimelineEvent 数据模型、`project.json` 读写、最近项目列表 |
+| `src-tauri/src/project/mod.rs` | Project / Track / TimelineEvent 数据模型、`<项目名>.gsa` 读写（魔数头 `GSA-PROJECT v1` + JSON 主体，原子写）、最近项目列表 |
 | `src-tauri/src/export/mod.rs` | `export_track_subtitle`：单轨导出 SRT / ASS / LRC / TXT（SRT/LRC/TXT 带 UTF-8 BOM 防播放器按 GBK 误读；ASS 固定样式并转义 `\` / `{}`） |
 
 `subtitle/`、`timeline/` 是空壳注释模块：字幕生成实际在 `export`，时间轴实际在前端 store。
@@ -105,7 +105,7 @@ runtime/
 
 ```
 Project
-├── path                     # 项目文件夹绝对路径（内含 project.json）
+├── path                     # 项目文件夹绝对路径（内含 <项目名>.gsa）
 ├── video                    # 切片视频 —— 全局时间轴基准
 ├── source_video             # 剧情录屏 —— 语料 OCR 的文本源
 ├── corpus: Vec<CorpusItem>  # 可靠文本语料（独立于轨道，供融合消费）
@@ -130,6 +130,8 @@ Project
 | `manual` | 手动事件 |
 
 前端 `src/types/index.ts` 是与 Rust 结构镜像的 TS 定义，新增字段需两侧同步。
+
+项目以 `<项目名>.gsa` 单文件保存在项目文件夹根：首行为魔数头 `GSA-PROJECT v1`，其后为 JSON 主体（即上方结构，字段不变）。文件名由 `sanitize(项目名)` 生成（替换 Windows 非法字符等），写入采用临时文件 + rename 原子替换；打开时在目录中查找唯一 `*.gsa`。
 
 ## 前端结构
 

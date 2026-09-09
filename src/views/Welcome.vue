@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
 import { useProjectStore } from "../stores/project";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -47,6 +47,10 @@ async function handleOpenProject(path: string) {
 function isValidPath(input: string) {
   return input.length > 0;
 }
+
+// 项目名即项目文件名（<项目名>.gsa），Windows 非法文件名字符直接拦在前端
+const ILLEGAL_NAME_RE = /[\\/:*?"<>|\x00-\x1f]/;
+const nameIllegal = computed(() => ILLEGAL_NAME_RE.test(newProjectName.value));
 
 onMounted(() => {
   projectStore.refreshRecentProjects();
@@ -98,6 +102,9 @@ onMounted(() => {
             placeholder="项目名称"
             clearable
           />
+          <NText v-if="nameIllegal" type="error" style="font-size: 12px">
+            项目名含非法字符（\ / : * ? " &lt; &gt; |），无法用作项目文件名
+          </NText>
           <NInput
             v-model:value="newProjectPath"
             placeholder="选择项目保存位置"
@@ -106,7 +113,9 @@ onMounted(() => {
           <NButton @click="handleSelectFolder">选择文件夹</NButton>
           <NButton
             type="primary"
-            :disabled="!isValidPath(newProjectPath) || !newProjectName"
+            :disabled="
+              !isValidPath(newProjectPath) || !newProjectName || nameIllegal
+            "
             @click="handleCreateProject"
           >
             创建
