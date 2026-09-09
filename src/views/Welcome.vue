@@ -69,6 +69,23 @@ function isValidPath(input: string) {
 const ILLEGAL_NAME_RE = /[\\/:*?"<>|\x00-\x1f]/;
 const nameIllegal = computed(() => ILLEGAL_NAME_RE.test(newProjectName.value));
 
+// 后端 updated_at 是 Unix 秒字符串 → "YYYY-MM-DD HH:mm"
+function formatUpdatedAt(unixSecs: string): string {
+  const date = new Date(Number(unixSecs) * 1000);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+// 占位：重命名 / 删除项目功能后续补全
+function handleRenamePlaceholder() {
+  message.info("功能开发中");
+}
+
+function handleDeletePlaceholder() {
+  message.info("功能开发中");
+}
+
 onMounted(() => {
   projectStore.refreshRecentProjects();
 });
@@ -76,12 +93,10 @@ onMounted(() => {
 
 <template>
   <div class="welcome">
-    <div class="welcome-content">
-      <div class="logo-area">
-        <div class="logo-icon">GSA</div>
-        <h1 class="title">GameSubtitleAssistant</h1>
-        <p class="subtitle">AI 游戏剧情字幕生产工作站</p>
-      </div>
+    <div class="welcome-left">
+      <div class="logo-icon">GSA</div>
+      <h1 class="title">GameSubtitleAssistant</h1>
+      <p class="subtitle">AI 游戏剧情字幕生产工作站</p>
 
       <div class="actions">
         <NButton size="large" type="primary" @click="showCreateModal = true">
@@ -91,23 +106,39 @@ onMounted(() => {
           打开已有项目
         </NButton>
       </div>
+    </div>
 
-      <div v-if="projectStore.recentProjects.length > 0" class="recent-section">
-        <h2 class="recent-title">最近项目</h2>
-        <div class="recent-list">
-          <NCard
-            v-for="proj in projectStore.recentProjects"
-            :key="proj.path"
-            class="recent-card"
-            hoverable
-            @click="handleOpenProject(proj.path)"
-          >
-            <div class="recent-card-body">
-              <NText strong>{{ proj.name }}</NText>
-              <NText depth="3" class="recent-path">{{ proj.path }}</NText>
-            </div>
-          </NCard>
+    <div class="welcome-right">
+      <h2 class="recent-title">最近项目</h2>
+
+      <div v-if="projectStore.recentProjects.length > 0" class="recent-list">
+        <div
+          v-for="proj in projectStore.recentProjects"
+          :key="proj.path"
+          class="recent-item"
+          @click="handleOpenProject(proj.path)"
+        >
+          <div class="recent-item-main">
+            <NText strong>{{ proj.name }}</NText>
+            <NText depth="3" class="recent-path">{{ proj.path }}</NText>
+            <NText depth="3" class="recent-time">
+              最后打开：{{ formatUpdatedAt(proj.updated_at) }}
+            </NText>
+          </div>
+          <div class="recent-item-actions" @click.stop>
+            <NButton size="tiny" quaternary @click="handleRenamePlaceholder">
+              重命名
+            </NButton>
+            <NButton size="tiny" quaternary @click="handleDeletePlaceholder">
+              删除
+            </NButton>
+          </div>
         </div>
+      </div>
+
+      <div v-else class="recent-empty">
+        <p class="recent-empty-title">暂无最近项目</p>
+        <p class="recent-empty-hint">创建或打开一个项目后，将显示在这里</p>
       </div>
     </div>
 
@@ -147,35 +178,30 @@ onMounted(() => {
 .welcome {
   height: 100vh;
   display: flex;
-  align-items: center;
-  justify-content: center;
   background: var(--color-bg-primary);
 }
 
-.welcome-content {
-  max-width: 520px;
-  width: 100%;
+/* ── 左半边：logo 信息区，水平垂直居中 ── */
+.welcome-left {
+  flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 32px;
+  justify-content: center;
+  gap: 16px;
   padding: 48px 32px;
 }
 
-.logo-area {
-  text-align: center;
-}
-
 .logo-icon {
-  width: 80px;
-  height: 80px;
-  margin: 0 auto 16px;
+  width: 96px;
+  height: 96px;
+  margin-bottom: 8px;
   background: linear-gradient(135deg, var(--color-accent), #a29bfe);
-  border-radius: 20px;
+  border-radius: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 28px;
+  font-size: 32px;
   font-weight: 800;
   color: white;
 }
@@ -184,7 +210,6 @@ onMounted(() => {
   font-size: 32px;
   font-weight: 700;
   color: var(--color-text-primary);
-  margin-bottom: 8px;
 }
 
 .subtitle {
@@ -195,34 +220,60 @@ onMounted(() => {
 .actions {
   display: flex;
   gap: 12px;
+  margin-top: 24px;
 }
 
-.recent-section {
-  width: 100%;
+/* ── 右半边：最近项目列表 ── */
+.welcome-right {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg-secondary);
+  border-left: 1px solid var(--color-border);
+  padding: 32px 40px;
+  min-width: 0;
 }
 
 .recent-title {
   font-size: 14px;
   color: var(--color-text-secondary);
-  margin-bottom: 12px;
   text-transform: uppercase;
   letter-spacing: 1px;
+  margin-bottom: 16px;
+  flex-shrink: 0;
 }
 
 .recent-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.recent-card {
+.recent-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
   cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
 }
 
-.recent-card-body {
+.recent-item:hover {
+  background: var(--color-bg-tertiary);
+}
+
+.recent-item-main {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
+  min-width: 0;
 }
 
 .recent-path {
@@ -230,5 +281,38 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.recent-time {
+  font-size: 11px;
+}
+
+.recent-item-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* ── 空状态 ── */
+.recent-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px dashed var(--color-border);
+  border-radius: 12px;
+}
+
+.recent-empty-title {
+  font-size: 15px;
+  color: var(--color-text-secondary);
+}
+
+.recent-empty-hint {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  opacity: 0.7;
 }
 </style>
