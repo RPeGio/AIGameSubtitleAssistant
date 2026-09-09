@@ -547,6 +547,71 @@ pub fn set_project_video(project_path: String, video_path: String) -> Result<Pro
     Ok(project)
 }
 
+// ─── 项目重命名 / 最近项目条目管理 ─────────────────────────
+
+/// 重命名项目：重命名 .gsa 项目文件，并同步更新项目内 name 与最近项目列表。
+/// 项目身份 = 文件，重命名即把项目身份迁移到新文件
+///
+/// - `project_path`: 现有 .gsa 项目文件路径
+/// - `new_name`: 新项目名（同时决定新文件名，非法字符会被替换为 '_'）
+#[tauri::command]
+pub fn rename_project(
+    app: AppHandle,
+    project_path: String,
+    new_name: String,
+) -> Result<RecentProject, String> {
+    let project = rename_project_in(Path::new(&project_path), &new_name)?;
+    let entry = RecentProject {
+        path: project.path.clone(),
+        name: project.name.clone(),
+        updated_at: project.updated_at.clone(),
+    };
+    let recent =
+        replace_recent_entry(list_recent_projects(app.clone()), &project_path, entry.clone());
+    save_recent_projects(&app, &recent)?;
+    Ok(entry)
+}
+
+/// rename_project 的纯文件系统实现（无 AppHandle，便于测试）
+fn rename_project_in(old_file: &Path, new_name: &str) -> Result<Project, String> {
+    if !has_project_ext(old_file) {
+        return Err(format!(
+            "项目路径不是 .{} 项目文件: {}",
+            PROJECT_EXT,
+            old_file.display()
+        ));
+    }
+    let text = fs::read_to_string(old_file).map_err(|e| format!("无法读取项目文件: {}", e))?;
+    let mut project = parse_project(&text)?;
+
+    let dir = old_file.parent().unwrap_or(Path::new("."));
+    let new_file = project_file_path(dir, new_name);
+    // sanitize 后仍指向同一文件（名字没变）：无操作
+    if new_file == old_file {
+        return Ok(project);
+    }
+    if new_file.exists() {
+        return Err(format!("同名项目文件已存在: {}", new_file.display()));
+    }
+
+    project.name = sanitize_project_name(new_name);
+    project.path = new_file.to_string_lossy().to_string();
+    project.updated_at = now_iso();
+
+    // 先写新文件、成功后再删旧文件：写失败时旧项目文件不受影响
+    write_project_file(&new_file, &project)?;
+    fs::remove_file(old_file).map_err(|e| format!("重命名项目失败: {}", e))?;
+
+    Ok(project)
+}
+
+/// 从最近项目列表中移除一个条目（仅列表移除，不删除项目文件本身）
+#[tauri::command]
+pub fn remove_recent_project(app: AppHandle, project_path: String) -> Result<(), String> {
+    let recent = remove_recent_entry(list_recent_projects(app.clone()), &project_path);
+    save_recent_projects(&app, &recent)
+}
+
 // ─── 文本文件读取（语料导入用）────────────────────────────
 
 /// 读取用户选择的 txt 文本文件（语料页"手动提供文本"导入）。
@@ -596,12 +661,33 @@ fn append_recent_project(app: &AppHandle, project: &Project) -> Result<(), Strin
         recent.truncate(20);
     }
 
-    let file = get_app_data_file(app, RECENT_PROJECTS_FILE);
-    let json = serde_json::to_string_pretty(&recent)
-        .map_err(|e| format!("序列化最近项目列表失败: {}", e))?;
-    fs::write(&file, &json)
-        .map_err(|e| format!("写入最近项目列表失败: {}", e))?;
+    save_recent_projects(app, &recent)
+}
 
+/// 用新条目原位替换最近项目列表中 old_path 对应的条目；不在列表中则原样返回
+fn replace_recent_entry(
+    mut recent: Vec<RecentProject>,
+    old_path: &str,
+    entry: RecentProject,
+) -> Vec<RecentProject> {
+    if let Some(slot) = recent.iter_mut().find(|rp| rp.path == old_path) {
+        *slot = entry;
+    }
+    recent
+}
+
+/// 移除最近项目列表中指定路径的条目；不在列表中则原样返回
+fn remove_recent_entry(mut recent: Vec<RecentProject>, path: &str) -> Vec<RecentProject> {
+    recent.retain(|rp| rp.path != path);
+    recent
+}
+
+/// 将最近项目列表写回 app data 目录下的存储文件
+fn save_recent_projects(app: &AppHandle, recent: &[RecentProject]) -> Result<(), String> {
+    let file = get_app_data_file(app, RECENT_PROJECTS_FILE);
+    let json = serde_json::to_string_pretty(recent)
+        .map_err(|e| format!("序列化最近项目列表失败: {}", e))?;
+    fs::write(&file, &json).map_err(|e| format!("写入最近项目列表失败: {}", e))?;
     Ok(())
 }
 
@@ -1063,5 +1149,86 @@ mod tests {
         let reopened = open_project_at(&a.path).unwrap();
         assert_eq!(reopened.video, "clip.mp4");
         fs::remove_dir_all(&dir).ok();
+    }
+
+    // ── 项目重命名 / 最近项目条目管理 ──
+
+    fn recent_entry(path: &str) -> RecentProject {
+        RecentProject {
+            path: path.into(),
+            name: path.into(),
+            updated_at: "1".into(),
+        }
+    }
+
+    #[test]
+    fn test_rename_project_in_moves_file_and_updates_fields() {
+        let dir = new_test_dir("rename_move");
+        let a = create_project_in(&dir, "旧名").unwrap();
+        let old_file = PathBuf::from(&a.path);
+
+        let renamed = rename_project_in(&old_file, "新名").unwrap();
+        let new_file = PathBuf::from(&renamed.path);
+
+        assert!(!old_file.exists(), "旧项目文件应已移除");
+        assert!(new_file.exists(), "新项目文件应已创建");
+        assert_eq!(renamed.name, "新名");
+        assert_eq!(
+            renamed.path,
+            project_file_path(&dir, "新名").to_string_lossy().to_string()
+        );
+
+        // 重命名后的文件可正常打开，name 已更新
+        let reopened = open_project_at(&renamed.path).unwrap();
+        assert_eq!(reopened.name, "新名");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_rename_project_in_rejects_existing_target() {
+        let dir = new_test_dir("rename_conflict");
+        create_project_in(&dir, "甲").unwrap();
+        create_project_in(&dir, "乙").unwrap();
+        let a_file = project_file_path(&dir, "甲");
+
+        assert!(rename_project_in(&a_file, "乙").is_err());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_rename_project_in_same_name_is_noop() {
+        let dir = new_test_dir("rename_noop");
+        let a = create_project_in(&dir, "甲").unwrap();
+
+        let renamed = rename_project_in(Path::new(&a.path), "甲").unwrap();
+        assert_eq!(renamed.path, a.path);
+        assert!(Path::new(&a.path).exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_replace_recent_entry_replaces_in_place() {
+        let recent = vec![recent_entry("p1"), recent_entry("p2")];
+        let updated = replace_recent_entry(recent.clone(), "p2", recent_entry("p2x"));
+        assert_eq!(updated.len(), 2);
+        assert_eq!(updated[0].path, "p1"); // 原位替换，顺序不变
+        assert_eq!(updated[1].path, "p2x");
+
+        // 不在列表中：原样返回
+        let untouched = replace_recent_entry(recent, "missing", recent_entry("x"));
+        assert_eq!(untouched.len(), 2);
+        assert_eq!(untouched[0].path, "p1");
+        assert_eq!(untouched[1].path, "p2");
+    }
+
+    #[test]
+    fn test_remove_recent_entry_removes_only_target() {
+        let updated = remove_recent_entry(vec![recent_entry("p1"), recent_entry("p2")], "p1");
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].path, "p2");
+
+        // 不在列表中：原样返回
+        let untouched = remove_recent_entry(vec![recent_entry("p1")], "missing");
+        assert_eq!(untouched.len(), 1);
     }
 }

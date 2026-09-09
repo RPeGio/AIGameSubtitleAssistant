@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, nextTick } from "vue";
 import { useRouter } from "vue-router";
 import { useProjectStore } from "../stores/project";
 import { open } from "@tauri-apps/plugin-dialog";
-import { NButton, NCard, NInput, NModal, NSpace, NText, useMessage } from "naive-ui";
+import type { RecentProject } from "../types";
+import { NButton, NCard, NInput, NModal, NPopconfirm, NSpace, NText, useMessage } from "naive-ui";
 
 const router = useRouter();
 const projectStore = useProjectStore();
@@ -77,13 +78,76 @@ function formatUpdatedAt(unixSecs: string): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-// 占位：重命名 / 删除项目功能后续补全
-function handleRenamePlaceholder() {
-  message.info("功能开发中");
+// ── 行内重命名（复用轨道重命名交互：按钮触发，Enter/失焦提交、Esc 取消）──
+const renamingPath = ref<string | null>(null);
+const renameDraft = ref("");
+const renameInput = ref<HTMLInputElement | null>(null);
+
+/// v-for 内的模板 ref 会被收集为数组，focus 会失败；用函数 ref 绑定当前渲染的输入框
+function setRenameInput(el: unknown) {
+  renameInput.value = (el as HTMLInputElement) ?? null;
 }
 
-function handleDeletePlaceholder() {
-  message.info("功能开发中");
+function startRename(proj: RecentProject) {
+  if (renamingPath.value) return;
+  renamingPath.value = proj.path;
+  renameDraft.value = proj.name;
+  nextTick(() => {
+    renameInput.value?.focus();
+    renameInput.value?.select();
+  });
+}
+
+// 失焦提交必然伴随一次落点点击：记录刚提交的行，该次点击不触发"打开项目"
+let justCommittedPath: string | null = null;
+
+async function commitRename() {
+  const path = renamingPath.value;
+  if (!path) return;
+  const name = renameDraft.value.trim();
+  const proj = projectStore.recentProjects.find((p) => p.path === path);
+  if (name && name !== proj?.name && ILLEGAL_NAME_RE.test(name)) {
+    message.error("项目名含非法字符（\\ / : * ? \" < > |），无法用作项目文件名");
+    renameInput.value?.focus();
+    return;
+  }
+  renamingPath.value = null;
+  // 名字未变或为空：视为取消，不发请求
+  if (!name || name === proj?.name) return;
+  try {
+    await projectStore.renameProject(path, name);
+  } catch (e) {
+    message.error(`重命名失败：${e}`);
+  }
+}
+
+function cancelRename() {
+  renamingPath.value = null;
+}
+
+/// 重命名中的行：点击行内非输入框区域即提交，且该次点击不触发打开项目
+function onRowMouseDown(proj: RecentProject, e: MouseEvent) {
+  if (renamingPath.value !== proj.path) return;
+  if ((e.target as HTMLElement).closest(".rename-input")) return;
+  justCommittedPath = proj.path;
+  commitRename();
+}
+
+function onRowClick(proj: RecentProject) {
+  if (renamingPath.value === proj.path) return;
+  if (justCommittedPath === proj.path) {
+    justCommittedPath = null;
+    return;
+  }
+  handleOpenProject(proj.path);
+}
+
+async function handleRemoveProject(proj: RecentProject) {
+  try {
+    await projectStore.removeRecentProject(proj.path);
+  } catch (e) {
+    message.error(`移除失败：${e}`);
+  }
 }
 
 onMounted(() => {
@@ -116,22 +180,39 @@ onMounted(() => {
           v-for="proj in projectStore.recentProjects"
           :key="proj.path"
           class="recent-item"
-          @click="handleOpenProject(proj.path)"
+          @mousedown="onRowMouseDown(proj, $event)"
+          @click="onRowClick(proj)"
         >
           <div class="recent-item-main">
-            <NText strong>{{ proj.name }}</NText>
-            <NText depth="3" class="recent-path">{{ proj.path }}</NText>
-            <NText depth="3" class="recent-time">
-              最后打开：{{ formatUpdatedAt(proj.updated_at) }}
-            </NText>
+            <input
+              v-if="renamingPath === proj.path"
+              :ref="setRenameInput"
+              v-model="renameDraft"
+              class="rename-input"
+              @keydown.enter="commitRename"
+              @keydown.esc="cancelRename"
+              @blur="commitRename"
+            />
+            <template v-else>
+              <NText strong>{{ proj.name }}</NText>
+              <NText depth="3" class="recent-path">{{ proj.path }}</NText>
+              <NText depth="3" class="recent-time">
+                最后打开：{{ formatUpdatedAt(proj.updated_at) }}
+              </NText>
+            </template>
           </div>
-          <div class="recent-item-actions" @click.stop>
-            <NButton size="tiny" quaternary @click="handleRenamePlaceholder">
+          <div v-if="renamingPath !== proj.path" class="recent-item-actions" @click.stop>
+            <NButton size="tiny" quaternary @click="startRename(proj)">
               重命名
             </NButton>
-            <NButton size="tiny" quaternary @click="handleDeletePlaceholder">
-              删除
-            </NButton>
+            <NPopconfirm @positive-click="handleRemoveProject(proj)">
+              <template #trigger>
+                <NButton size="tiny" quaternary type="error">
+                  删除
+                </NButton>
+              </template>
+              从最近项目列表移除「{{ proj.name }}」？项目文件不会被删除
+            </NPopconfirm>
           </div>
         </div>
       </div>
@@ -274,6 +355,20 @@ onMounted(() => {
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+}
+
+.rename-input {
+  width: 100%;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  padding: 2px 6px;
+  outline: none;
+  box-sizing: border-box;
 }
 
 .recent-path {
