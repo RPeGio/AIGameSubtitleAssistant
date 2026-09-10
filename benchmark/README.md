@@ -16,7 +16,7 @@ cargo test --release --test bench_hardsub -- --ignored --nocapture --test-thread
 ```
 
 环境变量：`GSA_BENCH_TOLERANCE_SEC`（嵌字基准时间容差，默认 0.3s——1s 级偏差对字幕生产已是严重偏离）。
-数据在 `examples/benchmark_examples/`（视频不入库；参考文本与 `.gsa` 工程已强制入 git）。素材或 OCR 环境缺失时测试打印 `[跳过]` 并正常结束。
+数据在 `examples/benchmark_examples/`（**视频与 `.gsa` 工程不入库**——二者均为本地素材；仅参考文本 `*_reference.txt` 随 git 分发）。案例选区坐标已硬编码在 `src-tauri/tests/common/mod.rs`，以该文件为受控副本，`.gsa` 仅作本地留档。素材或 OCR 环境缺失时测试打印 `[跳过]` 并正常结束。
 
 ## 评分（扣分制，0–100）
 

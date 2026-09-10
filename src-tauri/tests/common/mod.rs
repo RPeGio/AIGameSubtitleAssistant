@@ -38,7 +38,8 @@ pub fn bench_data_dir() -> PathBuf {
 
 // ── 案例配置 ──
 // 选区坐标逐字取自 examples/benchmark_examples/ 下同名 .gsa 工程的
-// ocr_region 控制轨（归一化 0..1，git 档案留底），硬编码与工程解耦。
+// ocr_region 控制轨（归一化 0..1）。.gsa 工程不入库（本地素材，仅作留档），
+// 故本文件的硬编码即基准选区的受控副本——调整坐标须同步更新此处。
 
 pub struct CaseCfg {
     pub key: &'static str,
