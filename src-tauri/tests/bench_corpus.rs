@@ -38,10 +38,7 @@ fn run_case(cfg: &CaseCfg) {
     };
     let expected: Vec<String> = refs.iter().map(|r| r.text.clone()).collect();
 
-    let (segments, elapsed) = match run_ocr(&manager, &video, &corpus_regions(cfg.key)) {
-        Some(x) => x,
-        None => return,
-    };
+    let (segments, elapsed) = run_ocr(&manager, &video, &corpus_regions(cfg.key));
 
     // 语料提取：移植 src/stores/project.ts pushCorpusTexts（trim→丢空→按序精确去重）
     let produced = common::corpus_from_segments(&segments);

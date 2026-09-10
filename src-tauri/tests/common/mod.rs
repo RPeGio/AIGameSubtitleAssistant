@@ -160,36 +160,32 @@ pub fn build_ocr_manager() -> Option<OcrManager> {
     Some(manager)
 }
 
-/// 跑一次完整 OCR 流水线；失败时 eprintln 并返回 None。
+/// 跑一次完整 OCR 流水线，返回 (段列表, 耗时秒)。
+///
+/// 契约：**素材与运行环境的缺失由调用方提前判定并跳过**（`require_file` /
+/// `build_ocr_manager`）。因此走到这里仍失败，就是流水线的真实故障——
+/// 直接 panic 让基准测试失败，避免"回归被当成跳过"的假绿。
 pub fn run_ocr(
     manager: &OcrManager,
     video: &Path,
     regions: &[OcrRegionInput],
-) -> Option<(Vec<OcrSegment>, f64)> {
-    let meta = match get_video_metadata(video.to_string_lossy().into_owned()) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("[跳过] 读取视频元数据失败: {e}");
-            return None;
-        }
-    };
+) -> (Vec<OcrSegment>, f64) {
+    let video_str = video.to_string_lossy().into_owned();
+    let meta = get_video_metadata(video_str.clone())
+        .unwrap_or_else(|e| panic!("读取视频元数据失败（{video_str}）: {e}"));
     let t0 = Instant::now();
-    match run_ocr_pipeline(
+    let segments = run_ocr_pipeline(
         manager,
-        &video.to_string_lossy(),
+        &video_str,
         meta.width,
         meta.height,
         regions,
         &default_ocr_params(),
         meta.fps,
         |_, _, _, _| {},
-    ) {
-        Ok(segments) => Some((segments, t0.elapsed().as_secs_f64())),
-        Err(e) => {
-            eprintln!("[跳过] OCR 流水线失败: {e}");
-            None
-        }
-    }
+    )
+    .unwrap_or_else(|e| panic!("OCR 流水线失败（{video_str}）: {e}"));
+    (segments, t0.elapsed().as_secs_f64())
 }
 
 /// 语料提取：移植 src/stores/project.ts pushCorpusTexts 语义
@@ -236,19 +232,11 @@ pub fn parse_timecode(s: &str, fps: f64) -> Option<f64> {
     Some(h * 3600.0 + m * 60.0 + sec + f / fps)
 }
 
-/// 时间码行形态检测：`N:N:N:N - N:N:N:N`（各段为纯数字，不校验帧率合法性）
+/// 疑似时间码行：含 ≥3 个冒号且含 `-`（合法时码为 `HH:MM:SS:FF`，分隔为 ` - `）。
+/// 用于把"看起来是时间码但解析失败"的行判为真值数据错误，而不是静默并入上一条正文——
+/// 覆盖帧号越界、缺少空格分隔（`…:FF-…`）、段数不足等形态。
 fn looks_like_timecode_line(line: &str) -> bool {
-    let Some((a, b)) = line.split_once(" - ") else {
-        return false;
-    };
-    let is_tc = |s: &str| {
-        let parts: Vec<&str> = s.trim().split(':').collect();
-        parts.len() == 4
-            && parts
-                .iter()
-                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
-    };
-    is_tc(a) && is_tc(b)
+    line.matches(':').count() >= 3 && line.contains('-')
 }
 
 fn split_timecode_line(line: &str, fps: f64) -> Option<(f64, f64)> {
@@ -266,7 +254,7 @@ pub fn parse_reference(path: &Path, fps: f64) -> Result<Vec<RefEntry>, String> {
             entries.push(RefEntry { start: s, end: e, text: lines.join("\n") });
         }
     };
-    for line in text.lines() {
+    for (idx, line) in text.lines().enumerate() {
         let t = line.trim();
         if t.is_empty() {
             flush(&mut cur, &mut entries);
@@ -274,9 +262,11 @@ pub fn parse_reference(path: &Path, fps: f64) -> Result<Vec<RefEntry>, String> {
             flush(&mut cur, &mut entries);
             cur = Some((s, e, Vec::new()));
         } else if looks_like_timecode_line(t) {
-            // 形态是时间码却解析失败（帧号越界等）→ 参考文本真值有问题，报错而非静默并入正文
+            // 疑似时间码却解析失败（帧号越界 / 分隔或段数有误）→ 参考文本真值有问题，
+            // 报错并附行号，而不是静默并入上一条正文
             return Err(format!(
-                "时间码行无效（帧号须小于基准帧率 {fps}，请核对 ref_fps 与参考文本）：{t}"
+                "第 {} 行：时间码行无效（帧号须小于基准帧率 {fps}，且分隔/段数须为 `HH:MM:SS:FF - HH:MM:SS:FF`，请核对 ref_fps 与参考文本）：{t}",
+                idx + 1
             ));
         } else if let Some((_, _, lines)) = cur.as_mut() {
             lines.push(t.to_string());
@@ -711,6 +701,35 @@ mod tests {
         assert!(err.contains("时间码行无效"), "实际: {err}");
         // 同数据在 60fps 基准下正常解析
         assert_eq!(parse_reference(&path, 60.0).unwrap().len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parse_rejects_malformed_timecode_lines() {
+        // 各类"疑似时码但解析失败"的形态：都不允许静默并入上一条正文
+        let cases = [
+            "00:00:01:00-00:00:02:00",   // 缺空格分隔
+            "00:00:01 - 00:00:02:00",    // 起始段数不足
+            "00:00:01:45 - 00:00:02:00", // 帧号越界（30fps）
+        ];
+        let dir = std::env::temp_dir().join(format!("gsa_bench_bad_tc_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (i, bad) in cases.iter().enumerate() {
+            let path = dir.join(format!("ref_bad_{i}.txt"));
+            std::fs::write(&path, format!("{bad}\n台词\n\n")).unwrap();
+            let err = parse_reference(&path, 30.0).unwrap_err();
+            assert!(
+                err.contains("时间码行无效") && err.contains("第 1 行"),
+                "case {bad} 实际: {err}"
+            );
+        }
+
+        // 正常正文（冒号不足 3 个）不受影响
+        let path = dir.join("ref_ok.txt");
+        std::fs::write(&path, "00:00:01:00 - 00:00:02:00\n12:30 - 第 2 幕，A-B 路线\n\n").unwrap();
+        let refs = parse_reference(&path, 30.0).unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].text, "12:30 - 第 2 幕，A-B 路线");
         std::fs::remove_dir_all(&dir).ok();
     }
 

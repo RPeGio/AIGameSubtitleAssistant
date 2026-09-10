@@ -58,10 +58,7 @@ fn run_case(cfg: &CaseCfg) {
         })
         .count();
 
-    let (segments, elapsed) = match run_ocr(&manager, &video, &regions) {
-        Some(x) => x,
-        None => return,
-    };
+    let (segments, elapsed) = run_ocr(&manager, &video, &regions);
 
     let align = align_temporal(&refs, &segments);
     let tol = tolerance_sec();
