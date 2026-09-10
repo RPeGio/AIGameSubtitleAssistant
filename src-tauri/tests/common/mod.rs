@@ -55,7 +55,8 @@ pub struct CaseCfg {
 pub const MOON_SISTERS: CaseCfg = CaseCfg {
     key: "moon_sisters",
     ref_file: "quality_bench_test(voiced)_5min_reference.txt",
-    ref_fps: 30.0,
+    // 素材实测 r_frame_rate=60/1（ffprobe）——参考时间码按 60fps 帧号书写（帧号最大 57）
+    ref_fps: 60.0,
     corpus_video: "quality_bench_test_corpus(voiced)_5min.mp4",
     clip_video: "quality_bench_test(voiced)_5min.mp4",
 };
@@ -226,7 +227,27 @@ pub fn parse_timecode(s: &str, fps: f64) -> Option<f64> {
     let m: f64 = parts[1].parse().ok()?;
     let sec: f64 = parts[2].parse().ok()?;
     let f: f64 = parts[3].parse().ok()?;
+    // 帧号必须落在 [0, fps)：越界说明参考文本的基准帧率与配置不符
+    // （曾出现 ref_fps=30 而数据为 60fps 帧号 57 的静默算错）
+    if !(0.0..fps).contains(&f) {
+        return None;
+    }
     Some(h * 3600.0 + m * 60.0 + sec + f / fps)
+}
+
+/// 时间码行形态检测：`N:N:N:N - N:N:N:N`（各段为纯数字，不校验帧率合法性）
+fn looks_like_timecode_line(line: &str) -> bool {
+    let Some((a, b)) = line.split_once(" - ") else {
+        return false;
+    };
+    let is_tc = |s: &str| {
+        let parts: Vec<&str> = s.trim().split(':').collect();
+        parts.len() == 4
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+    };
+    is_tc(a) && is_tc(b)
 }
 
 fn split_timecode_line(line: &str, fps: f64) -> Option<(f64, f64)> {
@@ -251,6 +272,11 @@ pub fn parse_reference(path: &Path, fps: f64) -> Result<Vec<RefEntry>, String> {
         } else if let Some((s, e)) = split_timecode_line(t, fps) {
             flush(&mut cur, &mut entries);
             cur = Some((s, e, Vec::new()));
+        } else if looks_like_timecode_line(t) {
+            // 形态是时间码却解析失败（帧号越界等）→ 参考文本真值有问题，报错而非静默并入正文
+            return Err(format!(
+                "时间码行无效（帧号须小于基准帧率 {fps}，请核对 ref_fps 与参考文本）：{t}"
+            ));
         } else if let Some((_, _, lines)) = cur.as_mut() {
             lines.push(t.to_string());
         }
@@ -666,6 +692,25 @@ mod tests {
         let t = parse_timecode("00:00:36:16", 30.0).unwrap();
         assert!((t - 36.53333333).abs() < 1e-4);
         assert!(parse_timecode("bad", 30.0).is_none());
+    }
+
+    #[test]
+    fn parse_rejects_frame_index_at_or_above_fps() {
+        // 帧号必须 < 基准帧率：30fps 下 45 非法，60fps 下合法
+        assert!(parse_timecode("00:00:01:45", 30.0).is_none());
+        assert!(parse_timecode("00:00:01:45", 60.0).is_some());
+        assert!(parse_timecode("00:00:01:30", 30.0).is_none()); // 边界：等于 fps 也非法
+
+        // 参考文件中出现形态合法但帧号越界的行 → 解析报错，而非静默并入上一条正文
+        let dir = std::env::temp_dir().join(format!("gsa_bench_tc_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ref_tc.txt");
+        std::fs::write(&path, "00:00:01:45 - 00:00:02:00\n台词\n\n").unwrap();
+        let err = parse_reference(&path, 30.0).unwrap_err();
+        assert!(err.contains("时间码行无效"), "实际: {err}");
+        // 同数据在 60fps 基准下正常解析
+        assert_eq!(parse_reference(&path, 60.0).unwrap().len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
