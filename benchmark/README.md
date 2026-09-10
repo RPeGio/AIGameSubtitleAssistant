@@ -15,10 +15,12 @@ cargo test --release --test bench_corpus  -- --ignored --nocapture --test-thread
 cargo test --release --test bench_hardsub -- --ignored --nocapture --test-threads=1
 ```
 
-环境变量：`GSA_BENCH_TOLERANCE_SEC`（嵌字基准时间容差，默认 1.0s）。
+环境变量：`GSA_BENCH_TOLERANCE_SEC`（嵌字基准时间容差，默认 0.3s——1s 级偏差对字幕生产已是严重偏离）。
 数据在 `examples/benchmark_examples/`（视频不入库；参考文本与 `.gsa` 工程已强制入 git）。素材或 OCR 环境缺失时测试打印 `[跳过]` 并正常结束。
 
 ## 评分（扣分制，0–100）
+
+总分为均值式：**得分 = 100 − 100 × Σ扣分 ÷ 期望条目数**——按条目数归一，错误率相同则得分相同，与视频长短无关（10 条缺 1 与 200 条缺 20 同为 90 分）。
 
 **语料收集**：参考条目与 OCR 语料做顺序保持的文本对齐（宽松归一化：去空白 + 全角折叠 + 去标点）。
 

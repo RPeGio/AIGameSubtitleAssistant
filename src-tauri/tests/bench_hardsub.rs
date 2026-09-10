@@ -7,7 +7,8 @@
 //! 单独报告、不计缺陷。文本相似度仅报告，不参与评分。
 //!
 //! 运行：cargo test --release --test bench_hardsub -- --ignored --nocapture --test-threads=1
-//! 容差可用环境变量 GSA_BENCH_TOLERANCE_SEC 覆盖（默认 1.0s = 2×默认帧间隔）。
+//! 容差可用环境变量 GSA_BENCH_TOLERANCE_SEC 覆盖（默认 0.3s——1s 级偏差对字幕
+//! 生产已是严重偏离，只应作为严重缺陷出现）。
 //! 跑完把打印的 markdown 行粘到 benchmark/<案例>.md 的「嵌字时间轴」表。
 
 mod common;
@@ -21,7 +22,7 @@ fn tolerance_sec() -> f64 {
     std::env::var("GSA_BENCH_TOLERANCE_SEC")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(1.0)
+        .unwrap_or(0.3)
 }
 
 fn run_case(cfg: &CaseCfg) {
