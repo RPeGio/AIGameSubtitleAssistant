@@ -158,14 +158,14 @@ extract frames (ffmpeg) ─► crop region ─► dHash change detection (skip i
 
 - Input contract (enforced by the frontend): OCR texts come **only from the corpus** (no fallback to ocr_text tracks — that would treat "text to be replaced" as reliable); ASR segments = game-role tracks + embed_ocr hardsub events (hardsub events overlapping ASR beyond a ratio are dropped — voice-covered lines don't need hardsub).
 - Batching: OCR texts go **in full** into every batch prompt (semantic matching needs global view); transcript segments are batched 30 at a time (`BATCH_SIZE`), with `MAX_TOKENS=4096`.
-- Prompt design: OCR/ASR indices carry prefixes (`OCR[1]` / `ASR[3]`) — without prefixes small models confuse the two numbering systems; the LLM outputs only the correspondence `{"index", "ocr_index", "character"}`, and **the final text is copied verbatim from the OCR list by code** — small models cannot reliably "copy text", and paraphrasing corrupts it.
+- Prompt design: OCR/GC indices carry prefixes (`OCR[1]` / `GC[3]`, GC = game-content timeline segment) — without prefixes small models confuse the two numbering systems; the LLM outputs only the correspondence `{"index", "ocr_index", "character"}`, and **the final text is copied verbatim from the OCR list by code** — small models cannot reliably "copy text", and paraphrasing corrupts it.
 - Output: timing comes from the ASR segments; segments with `matched=false` — or entire batches whose JSON fails to parse — keep the original ASR text (counted in `failed_batches`).
 
 ### Progress events
 
 | Event | Payload |
 |---|---|
-| `ocr-progress` | `{clip_index, clip_total, frame_index, frame_total, stage...}` |
+| `ocr-progress` | `{clip_index, clip_count, progress, message}` |
 | `asr-progress` | `{progress: 0.0~1.0, message}` |
 | `llm-progress` | `{progress: 0.0~1.0, message}` |
 
@@ -175,7 +175,7 @@ Frontend event-name constants live in `src/types/index.ts` and must stay in sync
 
 | Module | Commands |
 |---|---|
-| project | `create_project` `open_project` `save_project` `set_project_video` `read_text_file` `list_recent_projects` |
+| project | `create_project` `open_project` `save_project` `set_project_video` `read_text_file` `list_recent_projects` `rename_project` `remove_recent_project` |
 | video | `get_video_metadata` |
 | ai_runtime | `check_ocr_runtime` `check_asr_runtime` `check_asr_engines` `check_llm_runtime` `asr_cancel` |
 | ocr | `run_ocr` `run_ocr_images` |

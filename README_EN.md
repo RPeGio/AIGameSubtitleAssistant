@@ -122,7 +122,7 @@ pnpm tauri build   # produce installers (note: runtime-resource bundling is not 
 
 **Done**: the full four-page workbench (corpus → transcribe → fuse → edit/export), the OCR pipeline (region selection / change detection / majority vote / multi-frame merge), FunASR + MOSS dual ASR engines with speaker diarization, the hardsub track, cross-language LLM fusion, multi-track timeline editing with undo/redo, single-track multi-format export, autosave.
 
-**In progress / to improve**: real-world long-text evaluation and tuning of the fusion pipeline; runtime-resource bundling (installer distribution); frontend UI/UX enhancements, refactoring of project storage configurations, etc.
+**In progress / to improve**: real-world long-text evaluation and tuning of the fusion pipeline; runtime-resource bundling (installer distribution).
 
 **Planned**: translation assistance and bilingual subtitles, more export formats (Premiere XML / DaVinci Resolve XML / Aegisub), in-app model management, TTS and voice cloning (see Phase 7 of the plan).
 

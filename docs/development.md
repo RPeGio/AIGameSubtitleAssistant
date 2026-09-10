@@ -158,14 +158,14 @@ Project
 
 - 输入约定（前端保证）：OCR 文本**只来自 corpus**（不回退 ocr_text 轨，防止把"待替换文本"当可靠语料）；ASR 段 = game 轨 + embed_ocr 嵌字段（与 ASR 重叠占比过高的嵌字段丢弃——有配音处不靠嵌字）。
 - 分批：OCR 文本**全量**入每批 prompt（语义匹配需要全局视野），ASR 段每批 30 条（`BATCH_SIZE`），`MAX_TOKENS=4096`。
-- Prompt 设计：OCR/ASR 编号带前缀（`OCR[1]` / `ASR[3]`）——批内两套编号无前缀时小模型会混淆；LLM 只输出 `{"index", "ocr_index", "character"}` 对应关系，**最终文本由代码从 OCR 列表逐字复制**——实测小模型无法可靠"复制文本"，让它复述会改字。
+- Prompt 设计：OCR/GC 编号带前缀（`OCR[1]` / `GC[3]`，GC = 游戏内容时间轴段）——批内两套编号无前缀时小模型会混淆；LLM 只输出 `{"index", "ocr_index", "character"}` 对应关系，**最终文本由代码从 OCR 列表逐字复制**——实测小模型无法可靠"复制文本"，让它复述会改字。
 - 输出：时间轴沿用 ASR 段；`matched=false` 或整批 JSON 解析失败的段保留 ASR 原文本（`failed_batches` 统计）。
 
 ### 进度事件
 
 | 事件名 | 载荷 |
 |---|---|
-| `ocr-progress` | `{clip_index, clip_total, frame_index, frame_total, stage...}` |
+| `ocr-progress` | `{clip_index, clip_count, progress, message}` |
 | `asr-progress` | `{progress: 0.0~1.0, message}` |
 | `llm-progress` | `{progress: 0.0~1.0, message}` |
 
@@ -175,7 +175,7 @@ Project
 
 | 模块 | 命令 |
 |---|---|
-| project | `create_project` `open_project` `save_project` `set_project_video` `read_text_file` `list_recent_projects` |
+| project | `create_project` `open_project` `save_project` `set_project_video` `read_text_file` `list_recent_projects` `rename_project` `remove_recent_project` |
 | video | `get_video_metadata` |
 | ai_runtime | `check_ocr_runtime` `check_asr_runtime` `check_asr_engines` `check_llm_runtime` `asr_cancel` |
 | ocr | `run_ocr` `run_ocr_images` |
