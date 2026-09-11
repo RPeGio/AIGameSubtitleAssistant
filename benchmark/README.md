@@ -6,7 +6,7 @@
 
 | 基准 | 测试 | 输入 | 期望 |
 |---|---|---|---|
-| ① 语料收集 | `bench_corpus` | 语料片（剧情/游戏录屏） | 参考文本**全部条目** |
+| ① 语料收集 | `bench_corpus` | 语料片（剧情/游戏录屏） | 参考文本全部条目**去重后**的文本 |
 | ② 嵌字时间轴 | `bench_hardsub` | 测试片（实况切片）内嵌字幕 | 参考文本内的**时间轴** |
 | ③ LLM 融合 | 暂缓 | 预校对工程 | 见下方占位说明 |
 
@@ -24,7 +24,7 @@ cargo test --release --test bench_hardsub -- --ignored --nocapture --test-thread
 
 总分为均值式：**得分 = 100 − 100 × Σ扣分 ÷ 期望条目数**——按条目数归一，错误率相同则得分相同，与视频长短无关（10 条缺 1 与 200 条缺 20 同为 90 分）。
 
-**语料收集**：参考条目与 OCR 语料做顺序保持的文本对齐（宽松归一化：去空白 + 全角折叠 + 去标点）。
+**语料收集**：参考条目与 OCR 语料做顺序保持的文本对齐（宽松归一化：去空白 + 全角折叠 + 去标点）。期望侧在**对齐前按 trim 后全等文本去重**（保留首现）——参考按实况片校对，主播切页回放会让同一对话出现两条时间轴，与产物侧 `pushCorpusTexts` 的去重语义镜像（见 [review-reports/BENCH_SCORING_DUPLICATE_EXPECTED.md](../review-reports/BENCH_SCORING_DUPLICATE_EXPECTED.md)）；折叠数在跑测摘要中单列。
 
 | 判定 | 扣分 |
 |---|---|
@@ -54,6 +54,10 @@ cargo test --release --test bench_hardsub -- --ignored --nocapture --test-thread
 - [moon_sisters.md](moon_sisters.md) — 5min 有配音 4 说话人（语料无噪）
 - [glupov.md](glupov.md) — 11min 无配音 1 说话人
 - [pierro_questions.md](pierro_questions.md) — 48min 有配音 4 说话人（语料带噪）
+
+## 管线缺陷报告
+
+基准暴露的 OCR 管线问题汇总（碎片化、段尾延伸、语料缺失、字符精度等，含证据与修复方向）：[OCR_PIPELINE_DEFECTS.md](OCR_PIPELINE_DEFECTS.md)。跑测日志存于 `log/`。
 
 ## 融合基准（占位）
 
