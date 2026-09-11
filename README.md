@@ -141,7 +141,7 @@ pnpm tauri build   # 产出安装包（注：运行时资源打包尚未配置�
 本项目的 AI 能力建立在以下优秀开源项目之上：
 - [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)
 - [FunASR](https://github.com/modelscope/FunASR)
-- [MOSS-Transcribe-Diarize](https://github.com/OpenMOSS) / [moss-transcribe.cpp](https://github.com/mudler/moss-transcribe.cpp)
+- [MOSS-Transcribe-Diarize](https://github.com/OpenMOSS/MOSS-Transcribe-Diarize) / [moss-transcribe.cpp](https://github.com/mudler/moss-transcribe.cpp)
 - [llama.cpp](https://github.com/ggml-org/llama.cpp)
 - [WeSpeaker](https://github.com/wenet-e2e/wespeaker)
 - [Silero VAD](https://github.com/snakers4/silero-vad)
