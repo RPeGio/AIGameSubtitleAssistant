@@ -1,9 +1,12 @@
 //! 基准①：语料收集（OCR 剧情录屏/游戏录屏 → 语料条目）质量评测。
 //!
-//! 判定标准（与用户确认）：期望 = 参考文本全部条目（语料片内容保证全覆盖，
-//! 时长差异无关）；产物多余行 = 噪音（仅统计不判败，案例3 噪音留作融合
-//! 容忍度验证素材）；缺失/识别错误 = 流水线缺陷，按严重程度扣分
-//! （正确 0 分；轻度扣 1−sim；严重/缺失扣 1，见 common::score_corpus）。
+//! 判定标准（与用户确认）：期望 = 参考文本全部条目**按 trim 后全等文本去重**
+//! （语料片内容保证全覆盖，时长差异无关；参考按实况片校对，主播切页回放会让
+//! 同一对话出现两条时间轴，与产物侧 pushCorpusTexts 的去重语义镜像——见
+//! review-reports/BENCH_SCORING_DUPLICATE_EXPECTED.md）；产物多余行 = 噪音
+//! （仅统计不判败，案例3 噪音留作融合容忍度验证素材）；缺失/识别错误 =
+//! 流水线缺陷，按严重程度扣分（正确 0 分；轻度扣 1−sim；严重/缺失扣 1，
+//! 见 common::score_corpus）。
 //!
 //! 运行：cargo test --release --test bench_corpus -- --ignored --nocapture --test-threads=1
 //! 跑完把打印的 markdown 行粘到 benchmark/<案例>.md 的「语料收集」表。
@@ -36,7 +39,20 @@ fn run_case(cfg: &CaseCfg) {
             return;
         }
     };
-    let expected: Vec<String> = refs.iter().map(|r| r.text.clone()).collect();
+    // 期望侧去重（方案 A，review-reports/BENCH_SCORING_DUPLICATE_EXPECTED.md）：
+    // 参考按实况片校对，主播切页回放会产生同文双时间轴；产物侧按设计去重，
+    // 期望侧也按 trim 后全等文本去重（保留首现），折叠数单列统计。
+    let mut expected: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut folded = 0usize;
+    for r in &refs {
+        let t = r.text.trim();
+        if t.is_empty() || !seen.insert(t.to_string()) {
+            folded += 1;
+            continue;
+        }
+        expected.push(t.to_string());
+    }
 
     let (segments, elapsed) = run_ocr(&manager, &video, &corpus_regions(cfg.key));
 
@@ -47,11 +63,12 @@ fn run_case(cfg: &CaseCfg) {
 
     // ── 终端摘要 ──
     println!(
-        "耗时 {:.1}s｜OCR 段 {} → 语料 {} 条（参考 {} 条）",
+        "耗时 {:.1}s｜OCR 段 {} → 语料 {} 条（参考 {} 条，同文折叠 {}）",
         elapsed,
         segments.len(),
         produced.len(),
-        refs.len()
+        refs.len(),
+        folded
     );
     println!(
         "评分 {:.1}/100｜正确 {} 轻度 {} 严重 {} 缺失 {}｜噪音行 {}｜CER 均值 {:.3} p95 {:.3} max {:.3}",
@@ -86,7 +103,7 @@ fn run_case(cfg: &CaseCfg) {
         format!("{:.1}", sc.score),
         format!("缺失{} 严重{} 轻度{}", sc.missing, sc.severe, sc.minor),
         format!("{}", sc.noise),
-        String::new(),
+        format!("期望侧同文折叠 {}", folded),
     ]);
 }
 
