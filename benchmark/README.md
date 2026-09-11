@@ -55,6 +55,10 @@ cargo test --release --test bench_hardsub -- --ignored --nocapture --test-thread
 - [glupov.md](glupov.md) — 11min 无配音 1 说话人
 - [pierro_questions.md](pierro_questions.md) — 48min 有配音 4 说话人（语料带噪）
 
+## 管线缺陷报告
+
+基准暴露的 OCR 管线问题汇总（碎片化、段尾延伸、语料缺失、字符精度等，含证据与修复方向）：[OCR_PIPELINE_DEFECTS.md](OCR_PIPELINE_DEFECTS.md)。跑测日志存于 `log/`。
+
 ## 融合基准（占位）
 
 LLM 融合基准暂缓：待语料与转写链路调试稳定后，在预校对工程（.gsa，语料准确、各轨角色与时间轴对齐）上启用。已定稿的设计：逐段索引对齐（融合输出时间轴恒等于输入段），按段判类 correct_replaced / correct_kept / missed_replacement / wrong_line / character_error，指标为替换准确率 + 角色名准确率 + failed_batches。
