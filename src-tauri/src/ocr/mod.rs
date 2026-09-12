@@ -353,9 +353,13 @@ pub fn merge_frames(
     segments
 }
 
-/// 归一化：仅留 Unicode 字母数字（含 CJK），剔除空白与标点 —— 用于子序列近似匹配
+/// 归一化：小写 + 仅留 Unicode 字母数字（含 CJK），剔除空白与标点
+/// —— 用于段间"包含关系"判定（大小写不敏感，兼容英文实况素材）
 fn norm_chars(s: &str) -> Vec<char> {
-    s.chars().filter(|c| c.is_alphanumeric()).collect()
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
 }
 
 /// 判断 a 的字符是否按序出现在 b 中（近似前缀/渐进片段匹配，双指针）
@@ -373,27 +377,53 @@ fn is_subsequence(a: &[char], b: &[char]) -> bool {
     true
 }
 
-/// 孤立短段并入相邻段：短段（≤ 2×interval）文本归一化后是相邻长段的子序列，
-/// 说明它是该句的渐进中间态/残缺帧 → 并入（取完整文本，时间合并）。
-/// 一遍正向扫描即可同时处理"短段在前"与"短段在后"两种方向。
-pub fn merge_fragments(segments: Vec<OcrSegment>, interval: f64) -> Vec<OcrSegment> {
+/// 渐进碎片的时间跨度上限（× interval）：超过即视为"短暂但完整的独立条目"，不拼接。
+///
+/// 取值依据（按基准诊断）：打字机中间态只活约 1 个网格间隔；独立条目（如单独显示的
+/// 角色名条）寿命通常数秒。实测真实碎片对最长 1.057s（0.5s 间隔下），故 2.5×interval
+/// 既容纳真实碎片、又守住独立条目。
+const PROGRESSIVE_MAX_SPAN_FACTOR: f64 = 2.5;
+
+/// 相邻段"包含关系拼接"：把同一句被拆开的分片合成一段（修复碎片化）。
+///
+/// 判据（较短者记 S、较长者记 L，两个方向共用）：
+/// 1. **时间相邻**：`L.start − S.end ≤ interval`（允许重叠）—— 排除跨空档的远距离误并
+/// 2. **归一化包含**：`norm(S)` 按序出现在 `norm(L)` 中（大小写/标点/换行不敏感）
+/// 3. **更长者胜**：`norm(L).len > norm(S).len`
+/// 4. **较短者短暂**：S 时长 ≤ `PROGRESSIVE_MAX_SPAN_FACTOR × interval`
+///
+/// 两个方向：
+/// - 前段是后段的渐进片段（打字机逐字显现）→ 取后段完整文本，保留前段起点
+/// - 后段是前段的残留片段（尾部残缺）→ 并入前段，时间取并集，文本不变
+///
+/// 备注：方向 1 的文本替换带**置信度守卫**（后段置信度不低于前段才替换文本）；
+/// 守卫的有效性待基准 A/B（有/无守卫对照）验证，当前保留原语义。
+pub fn merge_contained_adjacent(segments: Vec<OcrSegment>, interval: f64) -> Vec<OcrSegment> {
+    let max_span = interval * PROGRESSIVE_MAX_SPAN_FACTOR;
     let mut out: Vec<OcrSegment> = Vec::with_capacity(segments.len());
     for seg in segments {
         if let Some(last) = out.last_mut() {
-            let last_short = last.end - last.start <= interval * 2.0;
-            let seg_short = seg.end - seg.start <= interval * 2.0;
+            let contiguous = seg.start - last.end <= interval;
             let ln = norm_chars(&last.text);
             let sn = norm_chars(&seg.text);
-            if !ln.is_empty() && !sn.is_empty() {
-                if last_short && ln.len() < sn.len() && is_subsequence(&ln, &sn) {
-                    // 前段是后段的渐进片段 → 前段并入后段（取完整文本）
-                    last.text = seg.text;
-                    last.confidence = seg.confidence;
+            if contiguous && ln.len() >= 2 && sn.len() >= 2 {
+                // 方向 1：前段是后段的渐进片段 → 取完整文本（守卫：置信度不低于才替换）
+                if last.end - last.start <= max_span
+                    && ln.len() < sn.len()
+                    && is_subsequence(&ln, &sn)
+                {
+                    if seg.confidence >= last.confidence {
+                        last.text = seg.text.clone();
+                        last.confidence = seg.confidence;
+                    }
                     last.end = seg.end;
                     continue;
                 }
-                if seg_short && sn.len() < ln.len() && is_subsequence(&sn, &ln) {
-                    // 后段是前段的渐进片段 → 后段并入前段（文本不变，时间合并）
+                // 方向 2：后段是前段的残留片段 → 并入前段（文本不变，时间取并集）
+                if seg.end - seg.start <= max_span
+                    && sn.len() < ln.len()
+                    && is_subsequence(&sn, &ln)
+                {
                     last.end = seg.end;
                     continue;
                 }
@@ -903,8 +933,8 @@ where
                 .partial_cmp(&b.start)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        // 第二遍：孤立短段（渐进中间态/残缺帧，含误召回的抖动短字幕）并入相邻完整段
-        let segments = merge_fragments(segments, frame_interval);
+        // 第二遍：包含关系拼接（同一句的字幕分片合成一段，含误召回的抖动短字幕）
+        let segments = merge_contained_adjacent(segments, frame_interval);
         // 第三遍：相邻文本相似合并（消除阶段 2 召回的同句碎片/伪短字幕）
         let segments = merge_similar_adjacent(segments, merge_similarity);
         // 第四遍：精化可能让 start 提前 → clamp 相邻段时间，保证单调不重叠
@@ -1443,16 +1473,16 @@ mod tests {
         assert_eq!(segs.len(), 2);
     }
 
-    // ── 孤立短段并入 ──
+    // ── 相邻段包含关系拼接（碎片化修复）──
 
     #[test]
-    fn test_merge_fragments_absorb_prefix() {
+    fn test_merge_contained_absorb_progressive() {
         // 渐进中间态短段在前、完整句在后 → 并入（诊断案例：卡侬·那是我本职工）
         let segs = vec![
             OcrSegment { start: 1.0, end: 2.0, text: "卡侬\n·那是我本职工".into(), confidence: 0.8 },
             OcrSegment { start: 2.0, end: 9.0, text: "卡侬\n…那是我本职工作的一部分。他们的主祭呼唤我的名字。".into(), confidence: 0.9 },
         ];
-        let out = merge_fragments(segs, 0.5);
+        let out = merge_contained_adjacent(segs, 0.5);
         assert_eq!(out.len(), 1);
         assert!(out[0].text.starts_with("卡侬\n…那是我本职工作的一部分"));
         assert!((out[0].start - 1.0).abs() < 1e-9);
@@ -1460,25 +1490,96 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_fragments_absorb_suffix() {
-        // 完整句在前、尾部残缺短段在后 → 并入（时间合并，文本不变）
+    fn test_merge_contained_absorb_residual() {
+        // 完整句在前、尾部残缺短段在后 → 并入（文本不变，时间取并集）
         let segs = vec![
             OcrSegment { start: 1.0, end: 8.0, text: "卡侬\n…那是我本职工作的一部分。他们的主祭呼唤我的名字。".into(), confidence: 0.9 },
             OcrSegment { start: 8.0, end: 9.0, text: "呼唤我的名字".into(), confidence: 0.8 },
         ];
-        let out = merge_fragments(segs, 0.5);
+        let out = merge_contained_adjacent(segs, 0.5);
         assert_eq!(out.len(), 1);
         assert!((out[0].end - 9.0).abs() < 1e-9);
     }
 
     #[test]
-    fn test_merge_fragments_keeps_real_short() {
-        // 真短句（非相邻段子序列）不并入
+    fn test_merge_contained_case_insensitive_progressive() {
+        // 实况日志真实碎片对（pierro 44:01.556）：英文大小写/标点差异下仍应拼接
+        let segs = vec![
+            OcrSegment { start: 1.0, end: 1.484, text: "Paimon\n\"AL\"".into(), confidence: 0.9 },
+            OcrSegment { start: 1.484, end: 3.435, text: "Paimon\n\"Allies\"?".into(), confidence: 0.9 },
+        ];
+        let out = merge_contained_adjacent(segs, 0.5);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].text.contains("Allies"));
+        assert!((out[0].start - 1.0).abs() < 1e-9);
+        assert!((out[0].end - 3.435).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_merge_contained_accepts_span_within_2_5x() {
+        // 1.057s（2.11×interval）的真实碎片在 2.5×interval 护栏内 → 应拼接
+        let segs = vec![
+            OcrSegment { start: 1.0, end: 2.057, text: "Paimon\nal!? Uh..A—Actually, maybe it's best no".into(), confidence: 0.9 },
+            OcrSegment { start: 2.057, end: 15.0, text: "Paimon\nal!? Uh... A—Actually, maybe it's best not to...? What if Ronova suddenly pop up again? She might take this chance to".into(), confidence: 0.9 },
+        ];
+        let out = merge_contained_adjacent(segs, 0.5);
+        assert_eq!(out.len(), 1, "1.057s ≤ 1.25s 护栏应拼接");
+    }
+
+    #[test]
+    fn test_merge_contained_rejects_cross_gap() {
+        // 跨 2.86s 空档（远超 interval）即使文本包含也不拼接（决策：不覆盖此类碎片）
+        let segs = vec![
+            OcrSegment { start: 1.0, end: 2.029, text: "The Jester\nnthe circumstances, the Fat".into(), confidence: 0.9 },
+            OcrSegment { start: 4.886, end: 30.0, text: "The Jester\nn the circumstances, the Fatui need not hide anything from our allies.".into(), confidence: 0.9 },
+        ];
+        let out = merge_contained_adjacent(segs, 0.5);
+        assert_eq!(out.len(), 2, "空档 2.857s > 0.5s 应拒绝拼接");
+    }
+
+    #[test]
+    fn test_merge_contained_keeps_complete_brief_entry() {
+        // 短暂但完整的独立条目：包含关系成立但时长 3s 超护栏 → 保留（护栏取代 1/3 长度比守卫）
+        let segs = vec![
+            OcrSegment { start: 1.0, end: 4.0, text: "派蒙".into(), confidence: 0.9 },
+            OcrSegment { start: 4.0, end: 9.0, text: "派蒙：旅行者你来了".into(), confidence: 0.9 },
+        ];
+        let out = merge_contained_adjacent(segs, 0.5);
+        assert_eq!(out.len(), 2, "3s > 1.25s 护栏应保留为独立条目");
+    }
+
+    #[test]
+    fn test_merge_contained_keeps_shared_prefix_distinct() {
+        // 共享前缀但非包含的相邻短条 → 不并（由包含判据本身拒绝）
+        let segs = vec![
+            OcrSegment { start: 1.0, end: 1.4, text: "派蒙\n嗯？".into(), confidence: 0.9 },
+            OcrSegment { start: 1.4, end: 1.8, text: "派蒙\n最近上头安排我主管一支连队".into(), confidence: 0.9 },
+        ];
+        let out = merge_contained_adjacent(segs, 0.5);
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn test_merge_contained_confidence_guard() {
+        // 置信度守卫：完整文本置信度更低时只并时间、不替换文本（其有效性待基准 A/B 复核）
+        let segs = vec![
+            OcrSegment { start: 1.0, end: 1.5, text: "Paimon\nto challe".into(), confidence: 0.95 },
+            OcrSegment { start: 1.5, end: 3.0, text: "Paimon\nto challenge the Ruler of Death".into(), confidence: 0.60 },
+        ];
+        let out = merge_contained_adjacent(segs, 0.5);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].text, "Paimon\nto challe", "低置信度长文本不应覆盖高置信度短文本");
+        assert!((out[0].end - 3.0).abs() < 1e-9, "时间仍取并集");
+    }
+
+    #[test]
+    fn test_merge_contained_keeps_distinct_short() {
+        // 真短句（非包含）不并入
         let segs = vec![
             OcrSegment { start: 1.0, end: 2.0, text: "嗯？".into(), confidence: 0.9 },
             OcrSegment { start: 2.0, end: 9.0, text: "我们出发吧。".into(), confidence: 0.9 },
         ];
-        let out = merge_fragments(segs, 0.5);
+        let out = merge_contained_adjacent(segs, 0.5);
         assert_eq!(out.len(), 2);
     }
 
