@@ -398,8 +398,9 @@ const PROGRESSIVE_MAX_SPAN_FACTOR: f64 = 2.5;
 /// - 前段是后段的渐进片段（打字机逐字显现）→ 取后段完整文本，保留前段起点
 /// - 后段是前段的残留片段（尾部残缺）→ 并入前段，时间取并集，文本不变
 ///
-/// 备注：方向 1 的文本替换带**置信度守卫**（后段置信度不低于前段才替换文本）；
-/// 守卫的有效性待基准 A/B（有/无守卫对照）验证，当前保留原语义。
+/// 备注：方向 1 **不设置信度守卫**，一律取更长（更完整）文本——语料基准 A/B
+/// 证明守卫会在更长文本置信度仅略低时保留较短残片，使完整句从语料消失
+/// （glupov 语料 97.3→83.6 即由此引起，去守卫后恢复）。
 pub fn merge_contained_adjacent(segments: Vec<OcrSegment>, interval: f64) -> Vec<OcrSegment> {
     let max_span = interval * PROGRESSIVE_MAX_SPAN_FACTOR;
     let mut out: Vec<OcrSegment> = Vec::with_capacity(segments.len());
@@ -409,15 +410,13 @@ pub fn merge_contained_adjacent(segments: Vec<OcrSegment>, interval: f64) -> Vec
             let ln = norm_chars(&last.text);
             let sn = norm_chars(&seg.text);
             if contiguous && ln.len() >= 2 && sn.len() >= 2 {
-                // 方向 1：前段是后段的渐进片段 → 取完整文本（守卫：置信度不低于才替换）
+                // 方向 1：前段是后段的渐进片段 → 取完整文本（不设置信度守卫，依据见函数注释）
                 if last.end - last.start <= max_span
                     && ln.len() < sn.len()
                     && is_subsequence(&ln, &sn)
                 {
-                    if seg.confidence >= last.confidence {
-                        last.text = seg.text.clone();
-                        last.confidence = seg.confidence;
-                    }
+                    last.text = seg.text.clone();
+                    last.confidence = seg.confidence;
                     last.end = seg.end;
                     continue;
                 }
@@ -1562,16 +1561,17 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_contained_confidence_guard() {
-        // 置信度守卫：完整文本置信度更低时只并时间、不替换文本（其有效性待基准 A/B 复核）
+    fn test_merge_contained_takes_full_text() {
+        // 无置信度守卫：方向 1 一律取更长（更完整）文本——语料 A/B 证明守卫会在更长
+        // 文本置信度仅略低时保留较短残片（0.93 vs 0.94 属 OCR 噪声），使完整句从语料消失
         let segs = vec![
             OcrSegment { start: 1.0, end: 1.5, text: "Paimon\nto challe".into(), confidence: 0.95 },
             OcrSegment { start: 1.5, end: 3.0, text: "Paimon\nto challenge the Ruler of Death".into(), confidence: 0.60 },
         ];
         let out = merge_contained_adjacent(segs, 0.5);
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].text, "Paimon\nto challe", "低置信度长文本不应覆盖高置信度短文本");
-        assert!((out[0].end - 3.0).abs() < 1e-9, "时间仍取并集");
+        assert_eq!(out[0].text, "Paimon\nto challenge the Ruler of Death", "方向 1 取完整文本");
+        assert!((out[0].end - 3.0).abs() < 1e-9, "时间取并集");
     }
 
     #[test]
