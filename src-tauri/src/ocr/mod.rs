@@ -386,6 +386,43 @@ fn is_subsequence(a: &[char], b: &[char]) -> bool {
 /// 既容纳真实碎片、又守住独立条目。
 const PROGRESSIVE_MAX_SPAN_FACTOR: f64 = 2.5;
 
+/// 阶段 2 短字幕召回的时长下限（秒）：短于此视为逐帧闪烁/噪声，不值得召回。
+///
+/// 背景：每次召回 = 一次 ffmpeg 单帧抽取（~0.19s）+ 一次单图 OCR IPC（~0.42s）。
+/// pierro 嵌字跑实测在「恰 2 边界」窗口共触发 878 次候选、无门限时精化 546s；
+/// 绝大多数候选只持续 1~2 帧（≈33ms），是打字机/画面动效的亚阈值抖动而非真短字幕。
+///
+/// 取值依据（2026-09-14 门限网格实测，pierro 候选窗 878、贴边被拒 2）：
+/// 复合评分对召回数近似线性外推——门限 0.10/0.05 时召回 586、复合 16.1（无门限
+/// 15.5，+0.6 几乎无损），精化 −35%；门限 0.20/0.10 时召回 113、复合 18.8（+3.3），
+/// 精化 −86%。取 0.10/0.05 为平衡点：几乎白拿 35% 精化时间、质量不回退。
+const RECALL_MIN_SPAN_SEC: f64 = 0.1;
+/// 召回候选两侧（A/C 状态）各自的持续时长下限（秒）：排除"短字幕恰好贴住
+/// 窗口边缘"的伪影（真正的短字幕出现在窗口内部时，两侧都有垫底状态）。
+const RECALL_MIN_SIDE_SEC: f64 = 0.05;
+
+/// 阶段 2 召回候选判定：窗口内 `[m, s)` 为疑似短字幕（boundaries.len()==2 时）。
+///
+/// - 区间至少两帧（对应旧条件 `s > m + 1`）
+/// - 候选可见时长 ≥ `min_span`
+/// - 候选前后（A 侧 `[0, m)`、C 侧 `[s, wlen)`）各持续 ≥ `min_side`
+fn recall_eligible(
+    m: usize,
+    s: usize,
+    wlen: usize,
+    dense_interval: f64,
+    min_span: f64,
+    min_side: f64,
+) -> bool {
+    if s <= m + 1 || s >= wlen {
+        return false;
+    }
+    let span = (s - m) as f64 * dense_interval;
+    let a_side = m as f64 * dense_interval;
+    let c_side = (wlen - s) as f64 * dense_interval;
+    span >= min_span && a_side >= min_side && c_side >= min_side
+}
+
 /// 相邻段"包含关系拼接"：把同一句被拆开的分片合成一段（修复碎片化）。
 ///
 /// 判据（较短者记 S、较长者记 L，两个方向共用）：
@@ -482,6 +519,9 @@ fn merge_similar_adjacent(segments: Vec<OcrSegment>, threshold: f64) -> Vec<OcrS
 /// 性能策略：哈希全部来自扫描阶段的内存序列（`scan_frame_hashes`），
 /// 本函数零抽帧零落盘；仅阶段 2 召回时按需抽取一张中间帧 JPEG
 /// （OCR worker 消费文件路径，每窗口至多一次）。
+///
+/// `on_refine(done, total, frac, message)`：每批次帧进度回调一次（聚合上限 ~50 次），
+/// 用于消除精化阶段的长静默（pierro 曾 546s 无输出）。
 #[allow(clippy::too_many_arguments)]
 pub fn refine_window_changes(
     changes: &[crate::ai_runtime::dhash::FrameChange],
@@ -495,11 +535,24 @@ pub fn refine_window_changes(
     recall_dir: &Path,
     manager: &crate::ai_runtime::OcrManager,
     dev_debug: bool,
+    mut on_refine: impl FnMut(usize, usize, f64, String),
 ) -> (Vec<crate::ai_runtime::dhash::FrameChange>, Vec<OcrSegment>) {
     let dense_interval = 1.0 / src_fps;
     let mut short_segments: Vec<OcrSegment> = Vec::new();
     let mut refined: Vec<crate::ai_runtime::dhash::FrameChange> =
         Vec::with_capacity(changes.len());
+    // 进度聚合步长：全片至多 ~50 次回调，避免逐帧刷屏
+    let total = changes.len();
+    let step = (total / 50).max(1);
+    // P1 预筛门限：env 可覆盖（调参用），默认取常量
+    let min_span = std::env::var("GSA_RECALL_MIN_SPAN_SEC")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(RECALL_MIN_SPAN_SEC);
+    let min_side = std::env::var("GSA_RECALL_MIN_SIDE_SEC")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(RECALL_MIN_SIDE_SEC);
 
     for idx in 0..changes.len() {
         let mut fc = changes[idx].clone();
@@ -539,10 +592,21 @@ pub fn refine_window_changes(
                         // 故不做泛化，多突变/多短字幕留给后续更精确的判定。
                         if boundaries.len() == 2 {
                             let (m, s) = (boundaries[0], boundaries[1]);
-                            if s > m + 1 {
+                            // P1 预筛：候选须足够时长且两侧状态持续，
+                            // 过滤逐帧闪烁，避免无收益的 ffmpeg 抽帧 + OCR IPC
+                            if recall_eligible(
+                                m,
+                                s,
+                                window.len(),
+                                dense_interval,
+                                min_span,
+                                min_side,
+                            ) {
                                 // 区间中点帧做 OCR（避开切换过渡帧）；
                                 // 单帧 mjpeg 管道取内存字节 → base64，不落盘
                                 let mid = m + (s - m) / 2;
+                                let start = lo + m as f64 * dense_interval;
+                                let end = lo + s as f64 * dense_interval;
                                 if let Some(&(mid_time, _)) = window.get(mid) {
                                     if let Ok(jpeg) = crate::video::extract_single_frame_bytes(
                                         video_path,
@@ -568,10 +632,8 @@ pub fn refine_window_changes(
                                                 let text = r.text.trim().to_string();
                                                 if !text.is_empty() {
                                                     short_segments.push(OcrSegment {
-                                                        start: lo
-                                                            + m as f64 * dense_interval,
-                                                        end: lo
-                                                            + s as f64 * dense_interval,
+                                                        start,
+                                                        end,
                                                         confidence: r.confidence,
                                                         text,
                                                     });
@@ -587,6 +649,14 @@ pub fn refine_window_changes(
             }
         }
         refined.push(fc);
+        if idx % step == 0 || idx + 1 == total {
+            on_refine(
+                idx + 1,
+                total,
+                (idx + 1) as f64 / total.max(1) as f64,
+                format!("精化边界 {}/{} 帧", idx + 1, total),
+            );
+        }
     }
     (refined, short_segments)
 }
@@ -858,6 +928,12 @@ where
                 &clip_dir,
                 manager,
                 dev_debug,
+                // 精化阶段整体占用该 clip 进度 [0.55, 0.60]，随帧聚合上报（消除长静默）
+                |done, total, _frac, msg| {
+                    let frac = if total == 0 { 0.0 } else { done as f64 / total as f64 };
+                    let progress = (i as f64 + 0.55 + frac * 0.05) / clip_count as f64;
+                    emit(i, progress, msg);
+                },
             )
         } else {
             (changes, Vec::new())
@@ -1586,6 +1662,24 @@ mod tests {
     }
 
     // ── 相邻段时间 clamp（精化后防重叠）──
+
+    #[test]
+    fn test_recall_eligible_gates() {
+        // 60fps 密集采样：dt = 1/60 ≈ 0.0167s，min_span=0.2s（12 帧），min_side=0.1s（6 帧）
+        let dt = 1.0 / 60.0;
+        // 窗口过窄：s 或 m 贴边
+        assert!(!recall_eligible(1, 2, 30, dt, 0.2, 0.1)); // s == m+1
+        assert!(!recall_eligible(1, 3, 30, dt, 0.2, 0.1)); // span = 0.033 < 0.2
+        assert!(!recall_eligible(3, 15, 30, dt, 0.2, 0.1)); // a_side = 0.05 < 0.1
+        assert!(!recall_eligible(8, 28, 30, dt, 0.2, 0.1)); // c_side = 0.033 < 0.1
+        assert!(!recall_eligible(7, 28, 28, dt, 0.2, 0.1)); // s == wlen 贴尾
+        // 三边都够：a=0.117, span=0.2, c=0.15 → 可召回
+        assert!(recall_eligible(7, 19, 28, dt, 0.2, 0.1));
+        // 30fps：span 0.2s = 6 帧
+        let dt30 = 1.0 / 30.0;
+        assert!(!recall_eligible(7, 12, 28, dt30, 0.2, 0.1)); // span = 0.167 < 0.2
+        assert!(recall_eligible(7, 14, 28, dt30, 0.2, 0.1)); // span = 0.233 √
+    }
 
     #[test]
     fn test_clamp_segment_times_no_overlap() {
