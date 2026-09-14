@@ -64,7 +64,9 @@ fn run_case(cfg: &CaseCfg) {
     let tol = tolerance_sec();
     let sc = score_hardsub(&refs, &segments, &align, out_of_region, tol);
 
-    // ── 终端摘要 ──
+    // ── 终端摘要：结构轴 / 时间轴 / 复合评分 三轴并列 ──
+    // 读法：先看 ① 结构轴与 ② 时间轴，再看 ③ 复合评分。复合评分把两个轴压成一个数，
+    // 且"碎片罚 0.5"低于"时间罚 1.0"，因此纯结构修复（如碎片拼接）可能反而拉低复合分数。
     println!(
         "耗时 {:.1}s｜OCR 段 {}（参考 {} 条，选区外 {} 条，容差 {:.2}s）",
         elapsed,
@@ -73,14 +75,49 @@ fn run_case(cfg: &CaseCfg) {
         sc.n_out_of_region,
         tol
     );
+    println!("── ① 结构轴 ──");
     println!(
-        "评分 {:.1}/100｜1:1 {} 碎片 {} 合并 {} 缺失 {}｜噪音段 {}｜Δstart p95 {:.3}s Δend p95 {:.3}s｜≤容差 {:.0}%｜覆盖率 {:.0}%｜文本相似度均值 {:.3}",
-        sc.score, sc.one_to_one, sc.fragmented, sc.merged, sc.missed, sc.spurious,
-        sc.dstart_p95, sc.dend_p95,
+        "1:1 {}｜碎片 {} 条（多出 {} 段：2段 {} / 3段 {} / ≥4段 {}）｜被吞并 {}｜缺失 {}｜噪音段 {}",
+        sc.one_to_one,
+        sc.fragmented,
+        sc.extra_segments,
+        sc.frag_hist[0],
+        sc.frag_hist[1],
+        sc.frag_hist[2],
+        sc.merged,
+        sc.missed,
+        sc.spurious
+    );
+    println!(
+        "── ② 时间轴（仅 1:1 配对，n={}；Δ = 产出 − 参考，+ 表示偏晚/过伸）──",
+        sc.one_to_one
+    );
+    println!(
+        "Δstart：中位 {:+.3}s｜p95(|·|) {:.3}s｜最大(|·|) {:.3}s｜偏晚 {} / 偏早 {}｜容差内 {:.0}%",
+        sc.dstart_median_signed,
+        sc.dstart_p95,
+        sc.dstart_max,
+        sc.dstart_late,
+        sc.dstart_early,
+        sc.within_tol_start * 100.0
+    );
+    println!(
+        "Δend  ：中位 {:+.3}s｜p95(|·|) {:.3}s｜最大(|·|) {:.3}s｜过伸 {} / 欠伸 {}｜容差内 {:.0}%",
+        sc.dend_median_signed,
+        sc.dend_p95,
+        sc.dend_max,
+        sc.dend_over,
+        sc.dend_under,
+        sc.within_tol_end * 100.0
+    );
+    println!(
+        "复合 d=max(|Δstart|,|Δend|)：容差内 {:.0}%｜覆盖率 {:.0}%｜文本相似度均值 {:.3}",
         sc.within_tolerance * 100.0,
         sc.coverage * 100.0,
         sc.text_sim_mean
     );
+    println!("── ③ 复合评分（沿用旧口径，供跨版本可比）──");
+    println!("{:.1}/100", sc.score);
     if !align.missed.is_empty() {
         println!("── 缺失条目（时间轴）──");
         for &i in &align.missed {

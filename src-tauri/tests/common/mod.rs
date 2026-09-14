@@ -567,6 +567,30 @@ pub struct HardsubScore {
     pub coverage: f64,
     /// 1:1 配对文本相似度均值（仅报告，不计分）
     pub text_sim_mean: f64,
+
+    // ── 结构轴（碎片化规模）——与时间轴并列报告，避免被复合评分掩盖 ──
+    /// 碎片化多出的段数 Σ(N−1)（一条期望被拆成 N 段）
+    pub extra_segments: usize,
+    /// 碎片化段数直方图 [恰好 2 段, 恰好 3 段, ≥4 段]
+    pub frag_hist: [usize; 3],
+
+    // ── 时间轴（仅 1:1 配对；符号约定 Δ = 产出 − 参考，正 = 偏晚/过伸）──
+    /// Δstart 带符号中位数（正 = 起点偏晚）
+    pub dstart_median_signed: f64,
+    /// Δend 带符号中位数（正 = 终点过伸）
+    pub dend_median_signed: f64,
+    /// max|Δstart|、max|Δend|（显式给出，避免小样本 p95=max 被误读为普遍现象）
+    pub dstart_max: f64,
+    pub dend_max: f64,
+    /// 起点偏晚 / 偏早的配对数
+    pub dstart_late: usize,
+    pub dstart_early: usize,
+    /// 终点过伸 / 欠伸的配对数
+    pub dend_over: usize,
+    pub dend_under: usize,
+    /// |Δstart| ≤ 容差、|Δend| ≤ 容差 的占比（分轴达标率；d=max 会掩盖是哪一轴不达标）
+    pub within_tol_start: f64,
+    pub within_tol_end: f64,
 }
 
 /// 嵌字扣分（按期望条目；d = max(|Δstart|,|Δend|)）：
@@ -583,6 +607,9 @@ pub fn score_hardsub(
     let mut total = 0.0f64;
     let mut dstarts = Vec::new();
     let mut dends = Vec::new();
+    // 带符号偏差（Δ = 产出 − 参考）：正 = 偏晚/过伸，用于分辨"过伸"与"欠伸"
+    let mut dsigned = Vec::new();
+    let mut designed = Vec::new();
     let mut covered = Vec::new();
     let mut sims = Vec::new();
     for &(ei, pi) in &align.one_to_one {
@@ -600,6 +627,8 @@ pub fn score_hardsub(
         };
         dstarts.push(ds);
         dends.push(de);
+        dsigned.push(p.start - e.start);
+        designed.push(p.end - e.end);
         sims.push(similarity(&e.text, &p.text));
         let ed = (e.end - e.start).max(1e-9);
         let ov = (e.end.min(p.end) - e.start.max(p.start)).max(0.0);
@@ -635,6 +664,45 @@ pub fn score_hardsub(
             .count();
         hit as f64 / dstarts.len() as f64
     };
+
+    // ── 结构轴统计 ──
+    let mut extra_segments = 0usize;
+    let mut frag_hist = [0usize; 3];
+    for (_, parts) in &align.fragmented {
+        extra_segments += parts.len() - 1;
+        match parts.len() {
+            2 => frag_hist[0] += 1,
+            3 => frag_hist[1] += 1,
+            _ => frag_hist[2] += 1,
+        }
+    }
+
+    // ── 时间轴分轴统计（带符号方向 + 分轴达标率）──
+    let signed_median = |v: &[f64]| -> f64 {
+        if v.is_empty() {
+            return 0.0;
+        }
+        let mut s = v.to_vec();
+        s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        s[s.len() / 2]
+    };
+    let frac_within = |v: &[f64]| -> f64 {
+        if v.is_empty() {
+            return 0.0;
+        }
+        v.iter().filter(|x| x.abs() <= tolerance).count() as f64 / v.len() as f64
+    };
+    let dstart_late = dsigned.iter().filter(|d| **d > 0.0).count();
+    let dstart_early = dsigned.iter().filter(|d| **d < 0.0).count();
+    let dend_over = designed.iter().filter(|d| **d > 0.0).count();
+    let dend_under = designed.iter().filter(|d| **d < 0.0).count();
+
+    // 先算极值再消费向量（percentile 取得所有权）
+    let dstart_max = dstarts.iter().cloned().fold(0.0f64, f64::max);
+    let dend_max = dends.iter().cloned().fold(0.0f64, f64::max);
+    let dstart_p95 = percentile(dstarts, 0.95);
+    let dend_p95 = percentile(dends, 0.95);
+
     HardsubScore {
         score: if n_scored == 0 {
             100.0
@@ -648,11 +716,23 @@ pub fn score_hardsub(
         merged: align.merged.len(),
         missed: align.missed.len(),
         spurious: align.spurious.len(),
-        dstart_p95: percentile(dstarts, 0.95),
-        dend_p95: percentile(dends, 0.95),
+        dstart_p95,
+        dend_p95,
         within_tolerance: within,
         coverage: covered.iter().sum::<f64>() / covered.len().max(1) as f64,
         text_sim_mean: sims.iter().sum::<f64>() / sims.len().max(1) as f64,
+        extra_segments,
+        frag_hist,
+        dstart_median_signed: signed_median(&dsigned),
+        dend_median_signed: signed_median(&designed),
+        dstart_max,
+        dend_max,
+        dstart_late,
+        dstart_early,
+        dend_over,
+        dend_under,
+        within_tol_start: frac_within(&dsigned),
+        within_tol_end: frac_within(&designed),
     }
 }
 
@@ -845,5 +925,45 @@ mod tests {
         assert!((sc.score - 90.0).abs() < 1e-6, "score={}", sc.score);
         // d=0.6s 在容差 1.0s 内（进入线性扣分段但仍属"容差内"）→ 两条都算
         assert!((sc.within_tolerance - 1.0).abs() < 1e-6);
+    }
+
+    /// 分轴诊断：结构轴（碎片规模）+ 时间轴（带符号方向、分轴达标率）
+    #[test]
+    fn hardsub_axes_diagnostics() {
+        let e = |s: f64, en: f64, t: &str| RefEntry { start: s, end: en, text: t.to_string() };
+        let p = |s: f64, en: f64, t: &str| OcrSegment { start: s, end: en, text: t.into(), confidence: 1.0 };
+
+        let expected = vec![e(10.0, 20.0, "aaa"), e(30.0, 40.0, "bbb"), e(50.0, 60.0, "ccc")];
+        // e0：起点偏晚 +0.6、终点准确；e1：被拆成两段（多出 1 段）；e2：起点偏晚 +2.0、终点欠伸 −1.0
+        let produced = vec![
+            p(10.6, 20.0, "aaa"),
+            p(30.0, 34.0, "bbb"),
+            p(34.0, 40.5, "bbb"),
+            p(52.0, 59.0, "ccc"),
+        ];
+        let align = align_temporal(&expected, &produced);
+        assert_eq!(align.one_to_one.len(), 2);
+        assert_eq!(align.fragmented.len(), 1);
+        assert_eq!(align.fragmented[0].1.len(), 2);
+
+        let sc = score_hardsub(&expected, &produced, &align, 0, 0.3);
+
+        // 结构轴
+        assert_eq!(sc.extra_segments, 1, "被拆成 2 段 → 多出 1 段");
+        assert_eq!(sc.frag_hist, [1, 0, 0], "恰好 2 段的分组 1 个");
+
+        // 时间轴（仅 1:1：e0-p0 与 e2-p3）
+        assert_eq!(sc.dstart_late, 2, "两对起点都偏晚");
+        assert_eq!(sc.dstart_early, 0);
+        assert_eq!(sc.dend_over, 0);
+        assert_eq!(sc.dend_under, 1, "一对终点欠伸");
+        assert!((sc.dend_median_signed - 0.0).abs() < 1e-9, "Δend 中位 {:+}", sc.dend_median_signed);
+        assert!((sc.dstart_max - 2.0).abs() < 1e-9);
+        assert!((sc.dend_max - 1.0).abs() < 1e-9);
+        // 分轴达标率：起点 0/2（0.6 与 2.0 均超 0.3）；终点 1/2（0.0 达标，−1.0 不达标）
+        assert!((sc.within_tol_start - 0.0).abs() < 1e-9, "start {}", sc.within_tol_start);
+        assert!((sc.within_tol_end - 0.5).abs() < 1e-9, "end {}", sc.within_tol_end);
+        // 复合达标率：两对的 d 都不 ≤0.3
+        assert!((sc.within_tolerance - 0.0).abs() < 1e-9);
     }
 }
