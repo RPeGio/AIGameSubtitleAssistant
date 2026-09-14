@@ -270,7 +270,9 @@ fn vote_text(texts: &[(Arc<str>, f64)]) -> (Arc<str>, f64) {
 ///
 /// - 空文本是边界：不产生事件，且打断 run（连续空帧短于容错窗口时视为抖动不打断）
 /// - 相似文本（`merge_similarity`）视为同一句的过渡帧：合并，flush 时多数投票取最终文本
-/// - 事件 end = 该段最后一帧时间 + interval，并对 clip 结尾截断
+/// - 事件 end = 该段最后一帧的覆盖中点（`last + interval×0.5`，把段尾量化误差的
+///   期望压到 0 —— 旧值 `last + interval` 系统性 +0.5×interval，超 0.3s 容差），
+///   并对 clip 结尾截断
 /// - 整段落在 clip 之外（start >= clip_end）时丢弃，不产生越界时间
 /// - confidence 取投票胜出文本对应帧的置信度
 pub fn merge_frames(
@@ -296,7 +298,7 @@ pub fn merge_frames(
         if run.start >= clip_end {
             return;
         }
-        let end = (run.last + interval).min(clip_end).max(run.start);
+        let end = (run.last + interval * 0.5).min(clip_end).max(run.start);
         let (text, confidence) = vote_text(&run.texts);
         segments.push(OcrSegment {
             start: run.start,
@@ -1336,7 +1338,7 @@ mod tests {
         let segs = merge_frames(frames, 1.0, 10.0, 0.3);
         assert_eq!(segs.len(), 1);
         assert!((segs[0].start - 1.0).abs() < 1e-9);
-        assert!((segs[0].end - 4.0).abs() < 1e-9); // 3 + 1
+        assert!((segs[0].end - 3.5).abs() < 1e-9); // 3.0 + 0.5×1.0（覆盖中点）
         assert_eq!(segs[0].text, "A");
     }
 
@@ -1351,7 +1353,7 @@ mod tests {
         let segs = merge_frames(frames, 1.0, 10.0, 0.3);
         assert_eq!(segs.len(), 1);
         assert!((segs[0].start - 1.0).abs() < 1e-9);
-        assert!((segs[0].end - 3.0).abs() < 1e-9);
+        assert!((segs[0].end - 2.5).abs() < 1e-9); // 2.0 + 0.5
     }
 
     #[test]
@@ -1360,9 +1362,9 @@ mod tests {
         let segs = merge_frames(frames, 1.0, 10.0, 0.3);
         assert_eq!(segs.len(), 2);
         assert!((segs[0].start - 1.0).abs() < 1e-9);
-        assert!((segs[0].end - 2.0).abs() < 1e-9); // A 到 t2 变
+        assert!((segs[0].end - 1.5).abs() < 1e-9); // 1.0 + 0.5
         assert!((segs[1].start - 2.0).abs() < 1e-9);
-        assert!((segs[1].end - 4.0).abs() < 1e-9); // 3 + 1
+        assert!((segs[1].end - 3.5).abs() < 1e-9); // 3.0 + 0.5
     }
 
     #[test]
@@ -1371,7 +1373,7 @@ mod tests {
         let segs = merge_frames(frames, 1.0, 5.5, 0.3);
         assert_eq!(segs.len(), 1);
         assert!((segs[0].start - 4.0).abs() < 1e-9);
-        assert!((segs[0].end - 5.5).abs() < 1e-9); // min(5+1, 5.5)
+        assert!((segs[0].end - 5.5).abs() < 1e-9); // min(5+0.5, 5.5)
     }
 
     #[test]
@@ -1403,7 +1405,7 @@ mod tests {
         let segs = merge_frames(frames, 1.0, 10.0, 0.3);
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].text, "旅行者，你来了。前方似乎有东西在等待。");
-        assert!((segs[0].end - 4.0).abs() < 1e-9); // 3 + 1
+        assert!((segs[0].end - 3.5).abs() < 1e-9); // 3.0 + 0.5
     }
 
     #[test]
@@ -1455,7 +1457,7 @@ mod tests {
         let segs = merge_frames(frames, 0.5, 10.0, 0.3);
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].text, "A");
-        assert!((segs[0].end - 3.5).abs() < 1e-9); // last=3.0 + interval 0.5
+        assert!((segs[0].end - 3.25).abs() < 1e-9); // last=3.0 + 0.5×interval 0.25
     }
 
     #[test]
