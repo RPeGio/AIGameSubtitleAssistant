@@ -460,6 +460,12 @@ fn recall_eligible(
 /// 备注：方向 1 **不设置信度守卫**，一律取更长（更完整）文本——语料基准 A/B
 /// 证明守卫会在更长文本置信度仅略低时保留较短残片，使完整句从语料消失
 /// （glupov 语料 97.3→83.6 即由此引起，去守卫后恢复）。
+///
+/// 方向 1 的第二档判据（`is_line_prefix`，D9）：残片因漏检被拖长到数秒（超过
+/// 2.5×interval 护栏）时，若前段各行为后段对应行的逐行归一化前缀、且末行是
+/// 严格前缀（句中切断），仍判为同一句补全而拼接——glupov 嵌字 "…alive, I h"
+/// 撑 3.2s 即此类；末行整行相等 = 行边界切断（对话行清空只剩姓名框的独立状态），
+/// 不并入下一条。
 pub fn merge_contained_adjacent(segments: Vec<OcrSegment>, interval: f64) -> Vec<OcrSegment> {
     let max_span = interval * PROGRESSIVE_MAX_SPAN_FACTOR;
     let mut out: Vec<OcrSegment> = Vec::with_capacity(segments.len());
@@ -469,10 +475,12 @@ pub fn merge_contained_adjacent(segments: Vec<OcrSegment>, interval: f64) -> Vec
             let ln = norm_chars(&last.text);
             let sn = norm_chars(&seg.text);
             if contiguous && ln.len() >= 2 && sn.len() >= 2 {
-                // 方向 1：前段是后段的渐进片段 → 取完整文本（不设置信度守卫，依据见函数注释）
-                if last.end - last.start <= max_span
-                    && ln.len() < sn.len()
-                    && is_subsequence(&ln, &sn)
+                // 方向 1：前段是后段的渐进片段 → 取完整文本（不设置信度守卫，依据见函数注释）。
+                // 两档判据（任一命中即拼接）：短寿命残片+子序列（原护栏）；或
+                // 行级字面前缀（不限时长，见 is_line_prefix 注释）。
+                if ln.len() < sn.len()
+                    && (is_line_prefix(&last.text, &seg.text)
+                        || (last.end - last.start <= max_span && is_subsequence(&ln, &sn)))
                 {
                     last.text = seg.text.clone();
                     last.confidence = seg.confidence;
@@ -492,6 +500,30 @@ pub fn merge_contained_adjacent(segments: Vec<OcrSegment>, interval: f64) -> Vec
         out.push(seg);
     }
     out
+}
+
+/// 行级字面前缀：`prev` 的各行（归一化）逐行是 `next` 对应行的前缀，且末行须为
+/// **严格前缀**（句中切断）。用于方向 1 的第二档（不限时长）。
+///
+/// - 需 `prev` ≥ 2 行：挡住"派蒙"/"派蒙：旅行者你来了"这类单行独立短条
+///   （那是完整独立条目，由 2.5×interval 护栏保护，不得放宽）
+/// - 前 `prev` 行数 −1 行必须逐行归一化相等（大小写/标点/空白不敏感）；
+/// - 末行整行相等 = `prev` 恰在行边界结束 → 对话行清空的独立状态（姓名框），
+///   与下一条是不同条目，不拼接（glupov 语料 [……] 省略号条即此类）。
+fn is_line_prefix(prev: &str, next: &str) -> bool {
+    let p: Vec<Vec<char>> = prev.lines().map(norm_chars).collect();
+    let n: Vec<Vec<char>> = next.lines().map(norm_chars).collect();
+    if p.len() < 2 || n.is_empty() || p.len() > n.len() {
+        return false;
+    }
+    for (a, b) in p.iter().zip(n.iter()).take(p.len() - 1) {
+        if a != b {
+            return false;
+        }
+    }
+    let plast = &p[p.len() - 1];
+    let nlast = &n[p.len() - 1];
+    !plast.is_empty() && plast.len() < nlast.len() && nlast.starts_with(plast)
 }
 
 /// 修正相邻段时间重叠：段 `end` 不得超过下一段 `start`。
@@ -1707,6 +1739,61 @@ mod tests {
         ];
         let out = merge_contained_adjacent(segs, 0.5);
         assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn test_is_line_prefix_cases() {
+        // 逐行前缀 + 末行严格前缀（大小写/空白/标点容忍）
+        assert!(is_line_prefix("A\nb", "a\nbc"));
+        assert!(is_line_prefix("A\nbC", "a\nbcd e"));
+        // 末行整行相等 = 行边界切断（对话行清空状态）→ 否
+        assert!(!is_line_prefix("a\nbc", "a\nbc\nde"));
+        // 中段行不匹配 → 否
+        assert!(!is_line_prefix("a\nx\nbc", "a\ny\nbcd"));
+        // 前段行数多于后段 → 否
+        assert!(!is_line_prefix("a\nb\nc", "a\nbc"));
+        // 单行（派蒙 型独立短条）→ 否
+        assert!(!is_line_prefix("派蒙", "派蒙：旅行者你来了"));
+        // 空行/空文本 → 否
+        assert!(!is_line_prefix("a\n", "a\nb"));
+    }
+
+    #[test]
+    fn test_merge_contained_long_fragment_line_prefix() {
+        // D9：glupov 嵌字型——残片被漏检拖长到 3.2s（超 2.5×interval 护栏），
+        // 但末行是完整段末行的严格前缀 → 仍判为同一句补全，拼接
+        let segs = vec![
+            OcrSegment { start: 0.0, end: 3.2, text: "Anton\nFormer Acting Captain,\"Ninth Company\nIf they are still alive, I h".into(), confidence: 0.9 },
+            OcrSegment { start: 3.41, end: 4.2, text: "Anton\nFormer Acting Captain,\"Ninth Company'\nIf they are still alive, I hope they never come back here.".into(), confidence: 0.9 },
+        ];
+        let out = merge_contained_adjacent(segs, 0.5);
+        assert_eq!(out.len(), 1, "行级前缀应拼掉 3.2s 残片");
+        assert!((out[0].start - 0.0).abs() < 1e-9, "保留前段起点");
+        assert!((out[0].end - 4.2).abs() < 1e-9, "时间取并集");
+        assert!(out[0].text.contains("I hope they never come back here."), "取完整文本");
+    }
+
+    #[test]
+    fn test_merge_contained_wrap_extra_line() {
+        // 完整段因换行多出一行（3 段 vs 4 段）：末行仍为严格前缀 → 拼接
+        let segs = vec![
+            OcrSegment { start: 0.0, end: 1.0, text: "Anton\nFormer Acting Captain,\"Ninth Company\nlurderofBirds. Inever thought I'".into(), confidence: 0.9 },
+            OcrSegment { start: 1.2, end: 2.0, text: "Anton\nFormer Acting Captain,\"Ninth Company\nlurderofBirds. I never thought I'd see you again here in Snezhnograd. What a\npleasant surprise.".into(), confidence: 0.9 },
+        ];
+        let out = merge_contained_adjacent(segs, 0.5);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].text.contains("pleasant surprise."));
+    }
+
+    #[test]
+    fn test_merge_contained_line_boundary_keeps_distinct() {
+        // 对话行清空、只剩姓名框的独立状态：末行整行相等 → 行边界切断，不并入
+        let segs = vec![
+            OcrSegment { start: 0.0, end: 3.2, text: "安东\n原「第九连队」临时连长".into(), confidence: 0.9 },
+            OcrSegment { start: 3.41, end: 4.2, text: "安东\n原「第九连队」临时连长\n没有消息。但也许……没有消息就是最好的消息。".into(), confidence: 0.9 },
+        ];
+        let out = merge_contained_adjacent(segs, 0.5);
+        assert_eq!(out.len(), 2, "独立姓名框状态应保留");
     }
 
     // ── 相邻段时间 clamp（精化后防重叠）──
