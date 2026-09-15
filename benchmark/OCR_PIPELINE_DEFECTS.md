@@ -2,7 +2,7 @@
 
 - 日期：2026-09-11（原始）／2026-09-12（P0 根因诊断增补）／2026-09-14（P0/P1 落地增补）
 - 依据：三案例最近一次基准跑测（方案 A 口径基线，2026-09-11 行）与 `log/` 下 4 份跑测日志中产物与参考文本的逐条对比；D2 另经 P0 诊断修订（pierro 日志离线带符号 Δ 复算 + moon 逐帧哈希重扫）
-- 范围声明：仅收录**管线缺陷**；测量口径问题（参考重复条目→幻影缺失）已修复并另记于 [review-reports/BENCH_SCORING_DUPLICATE_EXPECTED.md](../review-reports/BENCH_SCORING_DUPLICATE_EXPECTED.md)；语料噪音混入按设计是融合容忍度考核素材，不算缺陷
+- 范围声明：仅收录**管线缺陷**；测量口径问题（参考重复条目→幻影缺失）已修复并另记于 [review-reports/BENCH_SCORING_DUPLICATE_EXPECTED.md](../review-reports/BENCH_SCORING_DUPLICATE_EXPECTED.md)，参考称谓笔误（旅行者/NO.0217 混用，pierro 语料严重 1 的成因之一）另记于 [review-reports/BENCH_PIERRO_REFERENCE_TRAVELER_MISMATCH.md](../review-reports/BENCH_PIERRO_REFERENCE_TRAVELER_MISMATCH.md)；语料噪音混入按设计是融合容忍度考核素材，不算缺陷
 - 数据速览（语料 99.7/97.3/96.7，嵌字 21.5/18.2/17.6，容差 0.3s）
 
 ## D1 碎片化：单条字幕被拆成多段（嵌字链路，影响最大）
