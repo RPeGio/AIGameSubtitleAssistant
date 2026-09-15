@@ -32,8 +32,11 @@ pub fn hamming_distance(a: u64, b: u64) -> u32 {
 /// 变化检测结果：一帧是否需要 OCR
 #[derive(Debug, Clone)]
 pub struct FrameChange {
-    /// 帧时间（秒）
+    /// 帧时间（秒）。帧级差分注入的时刻覆写只改此字段（有效边界），
+    /// 采样覆盖以 `sample_time` 计。
     pub time: f64,
+    /// 该帧的网格采样时刻（OCR 图像的实际采样点）；常规帧 = time
+    pub sample_time: f64,
     /// true → 相对最近一次已 OCR 的帧有明显变化，需要 OCR
     pub is_changed: bool,
     /// changed 帧"与之不同的上一段代表哈希"（窗口精化的基准 A；非 changed 帧为 None）
@@ -67,6 +70,78 @@ pub fn change_flags(hashes: &[u64], threshold: u32) -> Vec<(bool, Option<u64>)> 
         result.push((is_changed, base_hash));
     }
     result
+}
+
+/// 变化标志序列：(is_changed, base_hash)，与输入哈希序列等长
+pub type ChangeFlags = Vec<(bool, Option<u64>)>;
+
+/// 网格变化检测（含补漏，D8）。
+///
+/// 缺陷背景：`change_flags` 的代表链语义（每帧与"最近已 OCR 帧"比较）在
+/// **画面静止 + 同位置整行文字替换**时会整句漏检——两行文字在 9×8 dHash 下
+/// 距离仅 2~4 位（≤阈值 3），且字幕切换常落在两个网格样本之间。实测 pierro
+/// 语料 [75]"请期待吧……"显示 6 秒却从未触发 OCR，语料永久缺失。
+///
+/// 补漏两层：
+/// - **(1a) 帧级差分注入**：密集扫描相邻帧 `d > 阈值` 即帧级切换（代表链看不到、
+///   相邻帧看得见），其后首个网格样本强制 changed，并把该样本的有效时刻覆写为
+///   切换帧时刻——嵌字段首由此获得帧级精确起点，而非网格时刻；
+/// - **(1b) 静态超时保险丝**：距最近已 OCR 网格样本超过 `stale_timeout` 秒 →
+///   该样本强制 changed。渐进显示步进 ≤ 阈值时文本停在中途，超时帧读到完整
+///   文本，由合并层吸收文本（时间轴不动）。`stale_timeout <= 0` 关闭该层。
+///
+/// 返回 `(flags, time_overrides)`：flags 与 `grid_hashes` 等长（语义同
+/// `change_flags`）；time_overrides 与网格样本对齐，`Some(t)` 表示该样本
+/// 因帧级差分强制变化、有效时刻应取切换帧时刻 t。
+pub fn change_flags_rescued(
+    grid_hashes: &[u64],
+    grid_times: &[f64],
+    dense: &[(f64, u64)],
+    threshold: u32,
+    stale_timeout: f64,
+) -> (ChangeFlags, Vec<Option<f64>>) {
+    let n = grid_hashes.len();
+
+    // (1a) 帧级差分：切换点（dense 相邻 d > 阈值）映射到其后首个网格样本。
+    // 多个切换点落进同一网格区间时取最早者（首个状态最接近切换时刻）。
+    let mut force = vec![false; n];
+    let mut override_t: Vec<Option<f64>> = vec![None; n];
+    if dense.len() >= 2 {
+        let mut gi = 0usize;
+        for j in 1..dense.len() {
+            if hamming_distance(dense[j - 1].1, dense[j].1) > threshold {
+                let t = dense[j].0;
+                while gi < n && grid_times[gi] < t {
+                    gi += 1;
+                }
+                if gi < n && !force[gi] {
+                    force[gi] = true;
+                    override_t[gi] = Some(t);
+                }
+            }
+        }
+    }
+
+    // 代表链 walk：常规代表比较 + 强制 + 静态超时
+    let mut result = Vec::with_capacity(n);
+    let mut rep: Option<u64> = None;
+    let mut last_ocr_t = f64::NEG_INFINITY;
+    for k in 0..n {
+        let (is_changed, base_hash) = match rep {
+            None => (true, None),
+            Some(r) => {
+                let stale = stale_timeout > 0.0 && grid_times[k] - last_ocr_t > stale_timeout;
+                let changed = force[k] || stale || hamming_distance(r, grid_hashes[k]) > threshold;
+                (changed, if changed { Some(r) } else { None })
+            }
+        };
+        if is_changed {
+            rep = Some(grid_hashes[k]);
+            last_ocr_t = override_t[k].unwrap_or(grid_times[k]);
+        }
+        result.push((is_changed, base_hash));
+    }
+    (result, override_t)
 }
 
 /// 窗口精化的结果
@@ -188,6 +263,94 @@ mod tests {
         // 对照：距离恰等于阈值（5 位）→ 未变化
         let flags_eq = change_flags(&[0x0, 0x1F], 5);
         assert!(!flags_eq[1].0);
+    }
+
+    // ── change_flags_rescued（补漏，D8）──
+
+    #[test]
+    fn test_change_flags_rescued_dense_gap_injection() {
+        // 场景复刻 pierro 语料 [75]：字幕切换落在两个网格样本之间，
+        // 且新旧行的 dHash 距离 ≤ 阈值 → 常规代表链整句漏检。
+        // A=[74]文本，T=切换后首帧，B=[75]稳定文本；
+        // d(A,T)=4>3（帧级切换可检出）、d(A,B)=1、d(T,B)=3（均 ≤3，代表链看不见）。
+        let a = 0x0u64;
+        let t = 0xFu64;
+        let b = 0x1u64;
+        // dense（30fps）：0.0..0.2 为 A，0.3 起切换为 T，0.5 起稳定为 B
+        let dense = [
+            (0.0, a),
+            (0.1, a),
+            (0.2, a),
+            (0.3, t),
+            (0.4, t),
+            (0.5, b),
+            (0.6, b),
+        ];
+        // 网格（0.5s 相位，固定 x.0/x.5）：0.0 与 0.5 两样本都"看不到"切换
+        let grid_hashes = [a, b, b];
+        let grid_times = [0.0, 0.5, 1.0];
+        let (flags, overrides) =
+            change_flags_rescued(&grid_hashes, &grid_times, &dense, 3, 0.0);
+        // 常规链会全判"未变化"（首帧除外）；补漏后 0.5 样本被强制 changed
+        assert_eq!(
+            flags,
+            vec![(true, None), (true, Some(a)), (false, None)]
+        );
+        // 有效时刻覆写为切换帧时刻 0.3（帧级精确段首）
+        assert_eq!(overrides, vec![None, Some(0.3), None]);
+    }
+
+    #[test]
+    fn test_change_flags_rescued_stale_timeout() {
+        // 静态段：样本与代表距离恒 0，超过 stale_timeout → 强制采样
+        let h = 0x1234u64;
+        let dense = [(0.0, h), (20.0, h)];
+        let grid_hashes = [h, h, h, h, h];
+        let grid_times = [0.0, 3.0, 6.0, 9.0, 12.0];
+        let (flags, _) = change_flags_rescued(&grid_hashes, &grid_times, &dense, 3, 5.0);
+        // k1 距上次 3s ≤5 不强制；k2 距 6s >5 强制；k3 距 3s 不强制；k4 距 6s 强制
+        assert_eq!(
+            flags,
+            vec![
+                (true, None),
+                (false, None),
+                (true, Some(h)),
+                (false, None),
+                (true, Some(h))
+            ]
+        );
+    }
+
+    #[test]
+    fn test_change_flags_rescued_stale_disabled() {
+        // stale_timeout = 0 → (1b) 关闭，静态段不产生任何强制采样
+        let h = 0x1234u64;
+        let dense = [(0.0, h), (20.0, h)];
+        let grid_hashes = [h, h, h, h, h];
+        let grid_times = [0.0, 3.0, 6.0, 9.0, 12.0];
+        let (flags, _) = change_flags_rescued(&grid_hashes, &grid_times, &dense, 5, 0.0);
+        assert_eq!(
+            flags,
+            vec![(true, None), (false, None), (false, None), (false, None), (false, None)]
+        );
+    }
+
+    #[test]
+    fn test_change_flags_rescued_flags_match_plain_with_holes() {
+        // 无静态缺口时，补漏版的 flags 与常规版一致；
+        // 但被网格正常检出的切换点同样给出时刻覆写（切换帧时刻更精确）
+        // dense（0.5s）：0.0=0 → 0.5/1.0=0x3F → 1.5/2.0 起=0；
+        // 网格（1.0s）哈希取各网格时刻的密集哈希：[0, 0x3F, 0, 0, 0]
+        let hashes = vec![0u64, 0x3F, 0x3F, 0x0, 0x0];
+        let dense: Vec<(f64, u64)> =
+            (0..hashes.len()).map(|k| (k as f64 * 0.5, hashes[k])).collect();
+        let grid_hashes = vec![0u64, 0x3F, 0x0, 0x0, 0x0];
+        let grid_times: Vec<f64> = (0..grid_hashes.len()).map(|k| k as f64 * 1.0).collect();
+        let (rescued, overrides) =
+            change_flags_rescued(&grid_hashes, &grid_times, &dense, 5, 0.0);
+        assert_eq!(rescued, change_flags(&grid_hashes, 5));
+        // 网格 t=1.0 的变化帧其切换发生在 dense t=0.5；t=2.0 的变化帧切换在 t=1.5
+        assert_eq!(overrides, vec![None, Some(0.5), Some(1.5), None, None]);
     }
 
     // ── 窗口精化（refine_window_hashes）──

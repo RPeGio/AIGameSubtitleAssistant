@@ -33,9 +33,12 @@ pub struct OcrSegment {
 
 /// 一帧的文本（顺延后的完整序列）。
 /// text 用 `Arc<str>` 共享，未变化帧只做引用计数递增，不逐帧拷贝字符串。
+/// `sample_time` = 该帧的网格采样时刻（图像的实际采样点）；帧级差分注入的
+/// 时刻覆写只改 `time`（有效边界），采样覆盖仍以 `sample_time` 计。
 #[derive(Debug, Clone)]
 pub struct FrameText {
     pub time: f64,
+    pub sample_time: f64,
     pub text: Arc<str>,
     pub confidence: f64,
 }
@@ -128,6 +131,7 @@ pub fn ocr_pass(
             };
             texts.push(FrameText {
                 time: change.time,
+                sample_time: change.sample_time,
                 text,
                 confidence,
             });
@@ -168,8 +172,10 @@ fn assemble_grid_frames(
     let mut changes: Vec<FrameChange> = (0..total)
         .map(|k| {
             let (is_changed, base_hash) = flags.get(k).copied().unwrap_or((false, None));
+            let time = start + (k as f64) * interval;
             FrameChange {
-                time: start + (k as f64) * interval,
+                time,
+                sample_time: time,
                 is_changed,
                 base_hash,
             }
@@ -185,6 +191,7 @@ fn assemble_grid_frames(
         if let Some(jpeg) = recover_frame(time) {
             changes.push(FrameChange {
                 time,
+                sample_time: time,
                 is_changed: true,
                 base_hash,
             });
@@ -333,7 +340,9 @@ pub fn merge_frames(
         });
         if is_same {
             if let Some(r) = run.as_mut() {
-                r.last = f.time;
+                // 覆盖推进用采样时刻：帧级差分注入帧的有效时刻早于采样时刻，
+                // 段尾按采样覆盖计算（否则注入帧的段尾会提前，破坏下游拼接）
+                r.last = f.sample_time;
                 r.empty_since = None;
                 r.texts.push((f.text, f.confidence));
             }
@@ -344,7 +353,7 @@ pub fn merge_frames(
             run = Some(Run {
                 start: f.time,
                 texts: vec![(f.text, f.confidence)],
-                last: f.time,
+                last: f.sample_time,
                 empty_since: None,
             });
         }
@@ -404,6 +413,15 @@ const RECALL_MIN_SPAN_SEC: f64 = 0.15;
 /// 召回候选两侧（A/C 状态）各自的持续时长下限（秒）：排除"短字幕恰好贴住
 /// 窗口边缘"的伪影（真正的短字幕出现在窗口内部时，两侧都有垫底状态）。
 const RECALL_MIN_SIDE_SEC: f64 = 0.075;
+
+/// 静态超时强制采样（D8 1b）：网格连续未变化超过该秒数 → 强制 OCR 一帧。
+///
+/// 背景：9×8 dHash 对"画面静止 + 同位置整行文字替换"的分辨力不足（实测 pierro
+/// 语料 [74]↔[75] 距离仅 2~4 位 ≤ 阈值 3），且渐进显示的逐步变化同样低于阈值——
+/// 变化检测整句漏检时，静态超时帧可读到完整文本，由合并层吸收文本（时间轴不动）。
+/// 取值权衡：T 越小兜底越强但 OCR 负载越高（pierro 语料静默段约 961s/2897s，
+/// T=4s ≈ +240 帧 ≈ +1.8 分钟）。env：GSA_OCR_STALE_TIMEOUT_SEC（≤0 关闭）。
+const STALE_OCR_TIMEOUT_SEC: f64 = 4.0;
 
 /// 阶段 2 召回候选判定：窗口内 `[m, s)` 为疑似短字幕（boundaries.len()==2 时）。
 ///
@@ -763,6 +781,11 @@ where
     let dhash_threshold = params.dhash_threshold;
     let batch_size = params.batch_size.max(1);
     let merge_similarity = params.merge_similarity;
+    // D8(1b) 静态超时保险丝：env 可覆盖，≤0 关闭
+    let stale_timeout = std::env::var("GSA_OCR_STALE_TIMEOUT_SEC")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(STALE_OCR_TIMEOUT_SEC);
 
     // 临时目录：dev 时写仓库根 temp/ocr/<uuid> 并保留；否则系统临时目录 + 自动清理
     let base_dir = if dev_debug {
@@ -839,7 +862,17 @@ where
                 scan_stream[idx].1
             })
             .collect();
-        let flags = crate::ai_runtime::dhash::change_flags(&grid_hashes, dhash_threshold);
+        let grid_times: Vec<f64> = (0..grid_frame_count)
+            .map(|k| clip.start + (k as f64) * frame_interval)
+            .collect();
+        // D8：变化检测 + 补漏（帧级差分注入 + 静态超时），语义见 dhash::change_flags_rescued
+        let (flags, time_overrides) = crate::ai_runtime::dhash::change_flags_rescued(
+            &grid_hashes,
+            &grid_times,
+            &scan_stream,
+            dhash_threshold,
+            stale_timeout,
+        );
         // mjpeg 抽帧只为变化帧保留字节；未变化帧在流中读到即丢（零落盘）
         let keep: Vec<usize> = flags
             .iter()
@@ -887,7 +920,7 @@ where
         }
 
         // 装配 changes/jpegs：以 mjpeg 流实际帧数为准，幻影变化帧按网格时间补抽单帧
-        let (changes, jpegs) = assemble_grid_frames(
+        let (mut changes, jpegs) = assemble_grid_frames(
             &flags,
             grid.kept.iter().map(|f| f.jpeg.clone()).collect(),
             grid.total,
@@ -908,6 +941,15 @@ where
             },
         )
         .map_err(|e| format!("网格帧装配失败（clip {}）: {}", i, e))?;
+        // D8(1a)：帧级差分注入的变化帧，有效时刻覆写为切换帧时刻（帧级精确段首）；
+        // 采样覆盖（sample_time）保留原网格时刻，段尾推进不受段首前移影响。
+        // 精化的窗口边界读取 changes[].time，覆写须在精化前完成。
+        for (k, t) in time_overrides.iter().enumerate() {
+            if let (Some(t), Some(ch)) = (t, changes.get_mut(k)) {
+                ch.sample_time = ch.time;
+                ch.time = *t;
+            }
+        }
 
         // ── 窗口精化：帧级主边界（阶段 1）+ 短字幕召回（阶段 2）────
         // 窗口 = 扫描序列的时间切片（零抽帧零落盘）：
@@ -1201,6 +1243,7 @@ mod tests {
     fn frame(time: f64, changed: bool) -> FrameChange {
         FrameChange {
             time,
+            sample_time: time,
             is_changed: changed,
             base_hash: None,
         }
@@ -1209,6 +1252,7 @@ mod tests {
     fn ft(time: f64, text: &str, confidence: f64) -> FrameText {
         FrameText {
             time,
+            sample_time: time,
             text: Arc::from(text),
             confidence,
         }

@@ -113,8 +113,10 @@ fn bench_refinement() {
         let changes: Vec<FrameChange> = (0..grid.total)
             .map(|k| {
                 let (is_changed, base_hash) = flags.get(k).copied().unwrap_or((false, None));
+                let time = clip.start + (k as f64) * frame_interval;
                 FrameChange {
-                    time: clip.start + (k as f64) * frame_interval,
+                    time,
+                    sample_time: time,
                     is_changed,
                     base_hash,
                 }
@@ -134,6 +136,7 @@ fn bench_refinement() {
             &clip_dir,
             &manager,
             false,
+            |_, _, _, _| {},
         );
         let refine_dt = t2.elapsed();
 
