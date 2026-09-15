@@ -91,7 +91,7 @@ pub fn corpus_regions(key: &str) -> Vec<OcrRegionInput> {
             OcrRegionInput { start: 46.19806263843079, end: 76.41020246274422, x1: 0.20251116071428577, y1: 0.6553571428571429, x2: 0.8025111607142857, y2: 0.8553571428571429 },
         ],
         "pierro_questions" => vec![
-            OcrRegionInput { start: 0.0, end: 1272.3, x1: 0.2, y1: 0.7, x2: 0.8, y2: 0.86875 },
+            OcrRegionInput { start: 0.0, end: 1272.3, x1: 0.16484375, y1: 0.7, x2: 0.8326450892857143, y2: 0.86875 },
         ],
         _ => unreachable!("未知案例: {key}"),
     }
