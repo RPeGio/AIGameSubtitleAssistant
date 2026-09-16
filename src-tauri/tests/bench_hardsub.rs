@@ -65,8 +65,10 @@ fn run_case(cfg: &CaseCfg) {
     let sc = score_hardsub(&refs, &segments, &align, out_of_region, tol);
 
     // ── 终端摘要：结构轴 / 时间轴 / 复合评分 三轴并列 ──
-    // 读法：先看 ① 结构轴与 ② 时间轴，再看 ③ 复合评分。复合评分把两个轴压成一个数，
-    // 且"碎片罚 0.5"低于"时间罚 1.0"，因此纯结构修复（如碎片拼接）可能反而拉低复合分数。
+    // 读法：先看 ① 结构轴与 ② 时间轴，再看 ③ 复合评分。2026-09-15 口径变更后
+    // 碎片条目按并集首尾补算时间分（与 1:1 同公式），同一期望条目合并后扣分
+    // 必不高于碎片时（合并永不亏）；复合分历史数字不可跨口径对比（破坏性变更，
+    // 见 review-reports/BENCH_HARDSUB_SCORE_UNION_TIMING.md）。
     println!(
         "耗时 {:.1}s｜OCR 段 {}（参考 {} 条，选区外 {} 条，容差 {:.2}s）",
         elapsed,
@@ -116,7 +118,7 @@ fn run_case(cfg: &CaseCfg) {
         sc.coverage * 100.0,
         sc.text_sim_mean
     );
-    println!("── ③ 复合评分（沿用旧口径，供跨版本可比）──");
+    println!("── ③ 复合评分（碎片并集计时口径，2026-09-15 破坏性变更）──");
     println!("{:.1}/100", sc.score);
     if !align.missed.is_empty() {
         println!("── 缺失条目（时间轴）──");

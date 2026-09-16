@@ -593,9 +593,29 @@ pub struct HardsubScore {
     pub within_tol_end: f64,
 }
 
+/// 时间轴扣分（1:1 与碎片并集共用同一公式）：
+/// d = max(|Δstart|,|Δend|)；d ≤ 0.5×容差 → 0；(0.5×容差, 容差] → 线性 0..1；> 容差 → 1.0
+fn timing_penalty(start: f64, end: f64, ref_start: f64, ref_end: f64, tolerance: f64) -> f64 {
+    let d = (ref_start - start).abs().max((ref_end - end).abs());
+    let t_half = 0.5 * tolerance;
+    if d <= t_half {
+        0.0
+    } else if d <= tolerance {
+        (d - t_half) / (tolerance - t_half).max(1e-9)
+    } else {
+        1.0
+    }
+}
+
 /// 嵌字扣分（按期望条目；d = max(|Δstart|,|Δend|)）：
 /// d ≤ 0.5×容差 0；(0.5×容差, 容差] 线性扣 0..1；> 容差 扣 1；
-/// 碎片化 (N−1)×0.5；被吞并 1；缺失 1。
+/// 碎片化 (N−1)×0.5，并按**并集首尾补算时间分**（与 1:1 同公式）；被吞并 1；缺失 1。
+///
+/// 口径变更（2026-09-15，**破坏性**）：旧口径碎片条目完全豁免时间扣分（连 ② 时间轴
+/// 也只报 1:1 配对），碎片被合并成完整段后才开始计时，造成"完整段反而低于碎片段"
+/// 的反转（D9 实测 glupov 11.4→6.8）。并集相同时合并后扣分必不高于碎片时，
+/// 恢复单调（合并永不亏）；负分可接受（缺陷求和口径，不封顶）。
+/// 复合分历史数字不可跨此口径对比，见 review-reports/BENCH_HARDSUB_SCORE_UNION_TIMING.md。
 pub fn score_hardsub(
     expected: &[RefEntry],
     produced: &[OcrSegment],
@@ -603,7 +623,6 @@ pub fn score_hardsub(
     n_out_of_region: usize,
     tolerance: f64,
 ) -> HardsubScore {
-    let t_half = 0.5 * tolerance;
     let mut total = 0.0f64;
     let mut dstarts = Vec::new();
     let mut dends = Vec::new();
@@ -617,14 +636,7 @@ pub fn score_hardsub(
         let p = &produced[pi];
         let ds = (e.start - p.start).abs();
         let de = (e.end - p.end).abs();
-        let d = ds.max(de);
-        total += if d <= t_half {
-            0.0
-        } else if d <= tolerance {
-            (d - t_half) / (tolerance - t_half).max(1e-9)
-        } else {
-            1.0
-        };
+        total += timing_penalty(p.start, p.end, e.start, e.end, tolerance);
         dstarts.push(ds);
         dends.push(de);
         dsigned.push(p.start - e.start);
@@ -635,8 +647,20 @@ pub fn score_hardsub(
         covered.push((ov / ed).min(1.0));
     }
     for (ei, parts) in &align.fragmented {
-        total += (parts.len() - 1) as f64 * 0.5;
+        // 碎片并集首尾补算时间分（与 1:1 同公式）：旧口径碎片完全豁免计时、
+        // 合并成完整段后才开始计时 → "完整段反而低于碎片段"的反转；
+        // 并集相同时合并后扣分必不高于碎片时，合并永不亏（单调）。
         let e = &expected[*ei];
+        let union_start = parts
+            .iter()
+            .map(|&pi| produced[pi].start)
+            .fold(f64::INFINITY, f64::min);
+        let union_end = parts
+            .iter()
+            .map(|&pi| produced[pi].end)
+            .fold(f64::NEG_INFINITY, f64::max);
+        total += timing_penalty(union_start, union_end, e.start, e.end, tolerance);
+        total += (parts.len() - 1) as f64 * 0.5;
         let ed = (e.end - e.start).max(1e-9);
         let mut cov = 0.0;
         for &pi in parts {
@@ -707,7 +731,11 @@ pub fn score_hardsub(
         score: if n_scored == 0 {
             100.0
         } else {
-            (100.0 - 100.0 * total / n_scored as f64).max(0.0)
+            // 不封顶（2026-09-15 随碎片并集计时一并放开）：缺陷求和口径下
+            // 单条目扣分可超 1（如碎片 时间 1.0 + 结构 0.5），负分如实反映
+            // 计时/结构双差，且保住深度缺陷区的区分度（钳 0 会把 D9 前后
+            // −25.0/−15.9 压成同值 0，单调性仍在但分辨率尽失）
+            100.0 - 100.0 * total / n_scored as f64
         },
         n_scored,
         n_out_of_region,
@@ -965,5 +993,49 @@ mod tests {
         assert!((sc.within_tol_end - 0.5).abs() < 1e-9, "end {}", sc.within_tol_end);
         // 复合达标率：两对的 d 都不 ≤0.3
         assert!((sc.within_tolerance - 0.0).abs() < 1e-9);
+    }
+
+    /// 评分口径（2026-09-15 破坏性变更）：碎片条目按并集首尾补算时间分——
+    /// 同一条目合并后扣分必不高于碎片时（合并永不亏），消除"完整段反而低分"反转。
+    #[test]
+    fn hardsub_fragmented_union_timing_monotonic() {
+        let e = |s: f64, en: f64, t: &str| RefEntry { start: s, end: en, text: t.to_string() };
+        let p = |s: f64, en: f64, t: &str| OcrSegment { start: s, end: en, text: t.into(), confidence: 1.0 };
+        let expected = vec![e(10.0, 20.0, "a")];
+
+        // 干净拆分（并集 10..20 无偏差）：时间 0 + 结构 0.5 → 50.0；合并成一段 → 100.0
+        let frag = vec![p(10.0, 15.0, "a"), p(15.0, 20.0, "a")];
+        let af = align_temporal(&expected, &frag);
+        assert_eq!(af.fragmented.len(), 1);
+        let sf = score_hardsub(&expected, &frag, &af, 0, 0.3);
+        assert!((sf.score - 50.0).abs() < 1e-6, "碎片: {}", sf.score);
+
+        let merged = vec![p(10.0, 20.0, "a")];
+        let am = align_temporal(&expected, &merged);
+        assert_eq!(am.one_to_one.len(), 1);
+        let sm = score_hardsub(&expected, &merged, &am, 0, 0.3);
+        assert!((sm.score - 100.0).abs() < 1e-6, "合并: {}", sm.score);
+        assert!(sm.score >= sf.score, "合并不得低于碎片时");
+
+        // 并集偏晚 0.6s（> 容差 0.3）：碎片 = 时间 1.0 + 结构 0.5 → −50.0；合并 = 时间 1.0 → 0.0
+        let frag_late = vec![p(10.6, 15.0, "a"), p(15.0, 20.0, "a")];
+        let afl = align_temporal(&expected, &frag_late);
+        assert_eq!(afl.fragmented.len(), 1);
+        let sfl = score_hardsub(&expected, &frag_late, &afl, 0, 0.3);
+        assert!((sfl.score - (-50.0)).abs() < 1e-6, "碎片(偏晚): {}", sfl.score);
+
+        let merged_late = vec![p(10.6, 20.0, "a")];
+        let aml = align_temporal(&expected, &merged_late);
+        assert_eq!(aml.one_to_one.len(), 1);
+        let sml = score_hardsub(&expected, &merged_late, &aml, 0, 0.3);
+        assert!((sml.score - 0.0).abs() < 1e-6, "合并(偏晚): {}", sml.score);
+        assert!(sml.score >= sfl.score, "偏晚形态下合并同样不得低于碎片时");
+
+        // 多段碎片（3 段干净拆分）：结构 1.0 → 0.0；不封顶口径允许负分
+        let frag3 = vec![p(10.0, 13.0, "a"), p(13.0, 16.0, "a"), p(16.0, 20.0, "a")];
+        let af3 = align_temporal(&expected, &frag3);
+        assert_eq!(af3.fragmented.len(), 1);
+        let sf3 = score_hardsub(&expected, &frag3, &af3, 0, 0.3);
+        assert!((sf3.score - 0.0).abs() < 1e-6, "3 段碎片: {}", sf3.score);
     }
 }
