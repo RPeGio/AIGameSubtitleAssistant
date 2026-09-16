@@ -507,28 +507,52 @@ pub fn merge_contained_adjacent(segments: Vec<OcrSegment>, interval: f64) -> Vec
     out
 }
 
-/// 行级字面前缀：`prev` 的各行（归一化）逐行是 `next` 对应行的前缀，且末行须为
+/// 行级字面前缀的行间容差（D1 第 1 步，模糊化）：共享区 OCR 错位（替换 1~2 字符）
+/// 不再阻断同句判定。取值依据（glupov/pierro 嵌字事件取证）：已知错位残句对的
+/// 归一化编辑距离比 0.067~0.15（"nt they…"/"at they…"、"Dne…"/"one…" 等），
+/// 0.2 留 1.3~3 倍余量；不同句子的整行差异通常远超 0.2，误并由"逐行独立+
+/// 前缀结构+时间连续"三重约束兜底。极短行（≤4 字符）1 字符错位比率 ≥0.25
+/// 天然超阈，保守拒绝。
+const LINE_PREFIX_EDIT_TOLERANCE: f64 = 0.2;
+
+/// 行级字面前缀：`prev` 的各行（归一化）**模糊**匹配 `next` 对应行，且末行须为
 /// **严格前缀**（句中切断）。用于方向 1 的第二档（不限时长）。
 ///
 /// - 需 `prev` ≥ 2 行：挡住"派蒙"/"派蒙：旅行者你来了"这类单行独立短条
 ///   （那是完整独立条目，由 2.5×interval 护栏保护，不得放宽）
-/// - 前 `prev` 行数 −1 行必须逐行归一化相等（大小写/标点/空白不敏感）；
-/// - 末行整行相等 = `prev` 恰在行边界结束 → 对话行清空的独立状态（姓名框），
+/// - 前 `prev` 行数 −1 行逐行模糊相等：`edit_distance_ratio ≤ 0.2`（OCR 共享区
+///   错位/漏检 1 字符不再阻断，D1 已证案例 "nt they…"/"at they…" 等）；
+/// - 末行：`next` 对应行取**前 plast.len() 字符窗口**与 `plast` 比对，距离比 ≤ 0.2，
+///   且 `plast` 严格更短（句中切断/打字机补全中）；
+/// - 末行整行（模糊比 0）相等 = `prev` 恰在行边界结束 → 对话行清空的独立状态，
 ///   与下一条是不同条目，不拼接（glupov 语料 [……] 省略号条即此类）。
 fn is_line_prefix(prev: &str, next: &str) -> bool {
-    let p: Vec<Vec<char>> = prev.lines().map(norm_chars).collect();
-    let n: Vec<Vec<char>> = next.lines().map(norm_chars).collect();
+    let p: Vec<String> = prev
+        .lines()
+        .map(|l| norm_chars(l).into_iter().collect())
+        .collect();
+    let n: Vec<String> = next
+        .lines()
+        .map(|l| norm_chars(l).into_iter().collect())
+        .collect();
     if p.len() < 2 || n.is_empty() || p.len() > n.len() {
         return false;
     }
     for (a, b) in p.iter().zip(n.iter()).take(p.len() - 1) {
-        if a != b {
+        if edit_distance_ratio(a, b) > LINE_PREFIX_EDIT_TOLERANCE {
             return false;
         }
     }
     let plast = &p[p.len() - 1];
     let nlast = &n[p.len() - 1];
-    !plast.is_empty() && plast.len() < nlast.len() && nlast.starts_with(plast)
+    if plast.is_empty() || plast.len() >= nlast.len() {
+        return false;
+    }
+    // 末行模糊前缀：`next` 对应行取与 plast 等长的前缀窗口比对（共享区 1~2 字符
+    // 错位只需 1 次替换即可对齐，插入/删失导致的整体偏移会抬高比率而保守拒绝）
+    let nhead: String = nlast.chars().take(plast.chars().count()).collect();
+    let tail_len_ok = nlast.chars().count() > plast.chars().count();
+    tail_len_ok && edit_distance_ratio(plast, &nhead) <= LINE_PREFIX_EDIT_TOLERANCE
 }
 
 /// 修正相邻段时间重叠：段 `end` 不得超过下一段 `start`。
@@ -1751,14 +1775,32 @@ mod tests {
         // 逐行前缀 + 末行严格前缀（大小写/空白/标点容忍）
         assert!(is_line_prefix("A\nb", "a\nbc"));
         assert!(is_line_prefix("A\nbC", "a\nbcd e"));
+        // D1 第 1 步：共享区 1 字符错位（编辑距离比 0.067~0.15）不再阻断
+        // 已证案例（glupov/pierro 嵌字）：末行错位（替换）
+        assert!(is_line_prefix(
+            "Anton\ncompany\nnt they deserted t",
+            "Anton\ncompany\nat they deserted the Fatui"
+        ));
+        // 已证案例：先前行的错位不再阻断整段判定
+        assert!(is_line_prefix(
+            "Anton\ncompany\nMitya\nDne has recovered their strength",
+            "Anton\ncompany\nMitya\none has recovered their strength, we will be ready"
+        ));
         // 末行整行相等 = 行边界切断（对话行清空状态）→ 否
         assert!(!is_line_prefix("a\nbc", "a\nbc\nde"));
-        // 中段行不匹配 → 否
+        // 中段行差异过大（1/1 = 1.0 > 0.2）→ 否
         assert!(!is_line_prefix("a\nx\nbc", "a\ny\nbcd"));
+        // 中段行差异过大（不同句，比率 ≈1.0 > 0.2）→ 否
+        assert!(!is_line_prefix(
+            "a\n今天天气很好",
+            "a\n明天应该会下雨吧再说\n continued text here"
+        ));
         // 前段行数多于后段 → 否
         assert!(!is_line_prefix("a\nb\nc", "a\nbc"));
         // 单行（派蒙 型独立短条）→ 否
         assert!(!is_line_prefix("派蒙", "派蒙：旅行者你来了"));
+        // 极短末行 1 字符错位（比率 0.5 > 0.2）→ 保守拒绝
+        assert!(!is_line_prefix("a\nbc", "a\nxcdef"));
         // 空行/空文本 → 否
         assert!(!is_line_prefix("a\n", "a\nb"));
     }
