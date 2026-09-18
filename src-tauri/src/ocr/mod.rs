@@ -501,7 +501,9 @@ pub fn merge_contained_adjacent(segments: Vec<OcrSegment>, interval: f64) -> Vec
                 {
                     last.text = seg.text.clone();
                     last.confidence = seg.confidence;
-                    last.end = seg.end;
+                    // 并集而非赋值（D11）：段序按 start 排序，后段可能**嵌套**在前段跨度内
+                    // （打字机残片滞后入列），赋值会缩短已累积跨度
+                    last.end = last.end.max(seg.end);
                     continue;
                 }
                 // 方向 2：后段是前段的残留片段 → 并入前段（文本不变，时间取并集）。
@@ -522,7 +524,9 @@ pub fn merge_contained_adjacent(segments: Vec<OcrSegment>, interval: f64) -> Vec
                     && ((seg.end - seg.start <= max_span && is_subsequence(&sn, &ln))
                         || residual_tail_match)
                 {
-                    last.end = seg.end;
+                    // 并集而非赋值（D11）：嵌套残片（seg.end < last.end）赋值会把
+                    // 长段截断——pierro 实测 62.9s 静态段被 0.25s 嵌套残片截成 0.5s
+                    last.end = last.end.max(seg.end);
                     continue;
                 }
             }
@@ -1725,6 +1729,27 @@ mod tests {
         assert_eq!(out.len(), 1, "1.667s 句尾重读残尾（≤2.0s 门 + 字尾匹配）应并入");
         assert!(out[0].text.contains("dancing in front of your own"), "文本不变");
         assert!((out[0].end - 113.734).abs() < 1e-9, "时间取并集");
+    }
+
+    #[test]
+    fn test_merge_contained_nested_residual_does_not_shrink() {
+        // D11 回归：pierro 实测段序——残片 #81 经方向 1 吸收完整长段 #82（并集
+        // [484.55, 549.32]）后，又来了一个**嵌套在长段内**的短残片 #83
+        // （[486.73, 486.98]）；方向 2 若用赋值 `last.end = seg.end` 会把
+        // 64.8s 跨度截断成 2.4s（产出 62.5s 空窗、参考 65.7s 条目满扣）
+        let segs = vec![
+            OcrSegment { start: 484.55, end: 486.32, text: "Mitya\nre of the curse seems to be something like... when m".into(), confidence: 0.9 },
+            OcrSegment { start: 486.45, end: 549.32, text: "Mitya\nire of the curse seems to be something like... when moments of technological progress occur, all life in the vicinity is taken away.".into(), confidence: 0.95 },
+            OcrSegment { start: 486.73, end: 486.98, text: "Mitya\nire of the curse seems to be something like... when".into(), confidence: 0.9 },
+        ];
+        let out = merge_contained_adjacent(segs, 0.5);
+        assert_eq!(out.len(), 1, "三段应并成一段");
+        assert!(
+            (out[0].end - 549.32).abs() < 1e-9,
+            "嵌套残片不得截断已累积跨度（实得 {}）",
+            out[0].end
+        );
+        assert!((out[0].start - 484.55).abs() < 1e-9, "保留最早起点");
     }
 
     #[test]
