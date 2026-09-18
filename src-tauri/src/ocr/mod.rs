@@ -395,6 +395,17 @@ fn is_subsequence(a: &[char], b: &[char]) -> bool {
 /// 既容纳真实碎片、又守住独立条目。
 const PROGRESSIVE_MAX_SPAN_FACTOR: f64 = 2.5;
 
+/// 方向 2 长残尾档的时长上限（× interval）：D1 第 2 步定稿（2026-09-18）。
+///
+/// 取值依据（pre-merge 段序诊断，moon 嵌字 clip 2/5）：延迟重读残尾在 merge 输入
+/// 的真实形态是 `[01:52.067 → 01:53.734]`＝**1.667s**——最终事件里显示的 1.467s 是
+/// `clamp_segment_times` 压掉与后段重叠后的假象（曾据此误判门值）。独立姓名框态
+/// 实测 1.483s，与残尾仅差 0.18s，**时长门无法区分二者**（1.5s 门曾吞姓名框造成
+/// glupov 语料缺失 1）。故本档改由"**字尾匹配**"判别（残尾 ≈ 前段归一化文本的
+/// 等长尾窗：重读到句尾；姓名框是字头重复、尾窗比率 ≈1 被拒），时长门放到
+/// 4.0×interval = 2.0s 仅作上界。
+const RESIDUAL_MAX_SPAN_FACTOR: f64 = 4.0;
+
 /// 阶段 2 短字幕召回的时长下限（秒）：短于此视为逐帧闪烁/噪声，不值得召回。
 ///
 /// 背景：每次召回 = 一次 ffmpeg 单帧抽取（~0.19s）+ 一次单图 OCR IPC（~0.42s）。
@@ -473,6 +484,7 @@ fn recall_eligible(
 /// 不并入下一条。
 pub fn merge_contained_adjacent(segments: Vec<OcrSegment>, interval: f64) -> Vec<OcrSegment> {
     let max_span = interval * PROGRESSIVE_MAX_SPAN_FACTOR;
+    let residual_span = interval * RESIDUAL_MAX_SPAN_FACTOR;
     let mut out: Vec<OcrSegment> = Vec::with_capacity(segments.len());
     for seg in segments {
         if let Some(last) = out.last_mut() {
@@ -492,10 +504,23 @@ pub fn merge_contained_adjacent(segments: Vec<OcrSegment>, interval: f64) -> Vec
                     last.end = seg.end;
                     continue;
                 }
-                // 方向 2：后段是前段的残留片段 → 并入前段（文本不变，时间取并集）
-                if seg.end - seg.start <= max_span
-                    && sn.len() < ln.len()
-                    && is_subsequence(&sn, &ln)
+                // 方向 2：后段是前段的残留片段 → 并入前段（文本不变，时间取并集）。
+                // 两档判据（D1 第 2 步）：
+                // - 短残尾（≤ 2.5×interval）+ 归一化子序列；
+                // - 长残尾（≤ 4.0×interval）+ **字尾匹配**：残尾归一化串与前段归一化
+                //   文本的**等长尾窗**比对（编辑距离比 ≤ 0.2），即"重读到句尾"。
+                //   时长门不能区分长残尾与独立姓名框态（1.667s vs 1.483s），位置可以：
+                //   姓名框是字头重复（尾窗比率 ≈1）被拒。
+                let residual_tail_match = sn.len() < ln.len()
+                    && seg.end - seg.start <= residual_span
+                    && {
+                        let ltail: String = ln[ln.len() - sn.len()..].iter().collect();
+                        let sn_str: String = sn.iter().collect();
+                        edit_distance_ratio(&sn_str, &ltail) <= LINE_PREFIX_EDIT_TOLERANCE
+                    };
+                if sn.len() < ln.len()
+                    && ((seg.end - seg.start <= max_span && is_subsequence(&sn, &ln))
+                        || residual_tail_match)
                 {
                     last.end = seg.end;
                     continue;
@@ -1688,28 +1713,44 @@ mod tests {
     }
 
     #[test]
+    fn test_merge_contained_absorb_long_residual_tail_match() {
+        // D1 第 2 步定稿正例：moon clip 2/5 的 **pre-merge 真实形态**（段序 dump）——
+        // 残尾 [01:52.067→01:53.734] 时长 1.667s（> 2.5×interval，最终事件显示的
+        // 1.467s 是 clamp 假象），字尾窗比率 0.094 → 走长残尾档并入
+        let segs = vec![
+            OcrSegment { start: 97.001, end: 112.234, text: "Aria\nng to be an ordinary human girl and dancing in front of your own statue also\none of your duties? That's news to me.".into(), confidence: 0.9 },
+            OcrSegment { start: 112.067, end: 113.734, text: "Aria\none of\nyour duties? That's news to me.".into(), confidence: 0.9 },
+        ];
+        let out = merge_contained_adjacent(segs, 0.5);
+        assert_eq!(out.len(), 1, "1.667s 句尾重读残尾（≤2.0s 门 + 字尾匹配）应并入");
+        assert!(out[0].text.contains("dancing in front of your own"), "文本不变");
+        assert!((out[0].end - 113.734).abs() < 1e-9, "时间取并集");
+    }
+
+    #[test]
     fn test_merge_contained_rejects_namebox_state_as_residual() {
-        // 独立姓名框态（对话行清空后只剩姓名框）不得被方向 2 吞并：其文本是
-        // 任何带姓名框长段的子序列，仅时长门把它挡在外面。glupov 语料 [18]
-        // （……省略号条的匹配项）即靠该独立态配对——放宽方向 2 时长门曾把它
-        // 吞成缺失 1（2026-09-16 实证，见 D1 节"第 2 步"记录）
+        // 独立姓名框态（对话行清空后只剩姓名框）不得被方向 2 吞并：其文本是任何带
+        // 姓名框长段的子序列。glupov 语料 [18]（……省略号条的匹配项）即靠该独立态
+        // 配对——放宽时长门曾把它吞成缺失 1（2026-09-16 实证，见 D1 节第 2 步）
         let segs = vec![
             OcrSegment { start: 1.0, end: 9.0, text: "Sonnet\nI've taken a shine to our new master, sisters, and they're willing to send subordinates to share our work".into(), confidence: 0.9 },
             OcrSegment { start: 9.1, end: 12.2, text: "Sonnet".into(), confidence: 0.9 },
         ];
         let out = merge_contained_adjacent(segs, 0.5);
-        assert_eq!(out.len(), 2, "独立姓名框态保持独立（时长 3.1s > 2.5×interval）");
+        assert_eq!(out.len(), 2, "独立姓名框态保持独立（3.1s 超 2.0s 上界）");
     }
 
     #[test]
     fn test_merge_contained_rejects_namebox_short_state() {
-        // 同上的短态（1.483s > 1.25s 门）：glupov 语料 P17/P18 实测对
+        // 关键守护：glupov 语料 P17/P18 实测对（1.483s ≤ 2.0s 上界，**时长门放行**）
+        // ——必须由"字尾匹配"拒绝：姓名框是前段的**字头**重复，尾窗比率 ≈1。这条
+        // 测试即第 2 步首版（纯时长门放宽）吞掉 [18] 造成缺失 1 的回归守卫
         let segs = vec![
             OcrSegment { start: 60.7, end: 64.5, text: "安东\n原「第九连队」临时连长\n等大家恢复了精神，我们会随时准备迎接新的指令。直到陛下的宏愿实现，我们也许会死去，但不会被击垮。".into(), confidence: 0.9 },
             OcrSegment { start: 64.465, end: 65.948, text: "安东\n原「第九连队」临时连长".into(), confidence: 0.9 },
         ];
         let out = merge_contained_adjacent(segs, 0.5);
-        assert_eq!(out.len(), 2, "姓名框独立态不得并入（[18] 依赖它配对）");
+        assert_eq!(out.len(), 2, "姓名框字头态须由字尾匹配拒绝（[18] 依赖它配对）");
     }
 
     #[test]
