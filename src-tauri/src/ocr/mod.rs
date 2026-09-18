@@ -1688,6 +1688,31 @@ mod tests {
     }
 
     #[test]
+    fn test_merge_contained_rejects_namebox_state_as_residual() {
+        // 独立姓名框态（对话行清空后只剩姓名框）不得被方向 2 吞并：其文本是
+        // 任何带姓名框长段的子序列，仅时长门把它挡在外面。glupov 语料 [18]
+        // （……省略号条的匹配项）即靠该独立态配对——放宽方向 2 时长门曾把它
+        // 吞成缺失 1（2026-09-16 实证，见 D1 节"第 2 步"记录）
+        let segs = vec![
+            OcrSegment { start: 1.0, end: 9.0, text: "Sonnet\nI've taken a shine to our new master, sisters, and they're willing to send subordinates to share our work".into(), confidence: 0.9 },
+            OcrSegment { start: 9.1, end: 12.2, text: "Sonnet".into(), confidence: 0.9 },
+        ];
+        let out = merge_contained_adjacent(segs, 0.5);
+        assert_eq!(out.len(), 2, "独立姓名框态保持独立（时长 3.1s > 2.5×interval）");
+    }
+
+    #[test]
+    fn test_merge_contained_rejects_namebox_short_state() {
+        // 同上的短态（1.483s > 1.25s 门）：glupov 语料 P17/P18 实测对
+        let segs = vec![
+            OcrSegment { start: 60.7, end: 64.5, text: "安东\n原「第九连队」临时连长\n等大家恢复了精神，我们会随时准备迎接新的指令。直到陛下的宏愿实现，我们也许会死去，但不会被击垮。".into(), confidence: 0.9 },
+            OcrSegment { start: 64.465, end: 65.948, text: "安东\n原「第九连队」临时连长".into(), confidence: 0.9 },
+        ];
+        let out = merge_contained_adjacent(segs, 0.5);
+        assert_eq!(out.len(), 2, "姓名框独立态不得并入（[18] 依赖它配对）");
+    }
+
+    #[test]
     fn test_merge_contained_case_insensitive_progressive() {
         // 实况日志真实碎片对（pierro 44:01.556）：英文大小写/标点差异下仍应拼接
         let segs = vec![
