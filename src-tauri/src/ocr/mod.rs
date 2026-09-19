@@ -227,11 +227,80 @@ fn edit_distance_ratio(a: &str, b: &str) -> f64 {
     prev[n] as f64 / max_len
 }
 
+/// 行边界切断：较短文本的各行与较长文本**同序号行**归一化相等，且较长文本多出后续行。
+///
+/// 纯文本上，这两种语义**形态相同**，必须靠 `is_stable_line_boundary_cut` 的时长门区分：
+/// - **独立新字幕**：姓名框/头衔态稳定显示数秒后，下一条对话行整行出现。
+///   实测 glupov 嵌字：`Anton / Former Acting Captain,"Ninth Company"`（≈40 字符）
+///   稳定 3.95s 后出现 `No news. But perhaps...`（参考亦把二者记为两条，Δe 曾达 +10.40s）。
+/// - **同一条目延续**：打字机/换行续写，下一行在 <1.5s 内接上。
+///   实测 glupov 语料：`…第九连队的编制保住`（3 行）→ 0.47s 后补出换行第二行
+///   `了。我们没有让祖先与陛下蒙羞。`（4 行），属同一条字幕。
+///
+/// 注意：英文嵌字的姓名框+长头衔占比 ≈0.44 > 1/3，会顶破 `similar_text` 的 3× 前缀规则。
+fn is_line_boundary_cut(short: &str, long: &str) -> bool {
+    let s: Vec<String> = short
+        .lines()
+        .map(|l| norm_chars(l).into_iter().collect())
+        .collect();
+    let l: Vec<String> = long
+        .lines()
+        .map(|l| norm_chars(l).into_iter().collect())
+        .collect();
+    if s.is_empty() || l.len() <= s.len() {
+        return false;
+    }
+    if !s
+        .iter()
+        .zip(l.iter())
+        .all(|(a, b)| edit_distance_ratio(a, b) <= LINE_PREFIX_EDIT_TOLERANCE)
+    {
+        return false;
+    }
+    // 多出的行须是**新字幕的对话行**，而非换行余尾：以短态末行长度为尺度取 1/4 下限
+    // （新行常刚从打字机冒头，实测 glupov 首帧仅 `No news. But perha`＝14 字符 / 末行 31
+    // → 0.45 ✓；moon 换行余尾 `moon.`＝4 字符 / 末行 78 → 0.05 ✗ 不判切断，保持同一条目
+    // ——moon 参考把换行续写并入同一条，如 #16 [235.77 → 252.18]）。
+    let new_line_len = l[s.len()].chars().count();
+    let short_last_len = s[s.len() - 1].chars().count();
+    new_line_len * 4 >= short_last_len
+}
+
+/// 行边界切断判为"独立新字幕"所需的最短稳定时长（秒）。
+///
+/// 取 **2.0s**（> D10 保险丝 1.5s）——实测两侧兼容：
+/// - glupov 嵌字姓名框态稳定 **3.95s**（#18）与 **≈2.0s**（#21）→ 参考记为独立条目；
+/// - moon 嵌字姓名框态仅 **1.50s** → moon 参考把它并入对话行条目
+///   （`[20.50 → 33.95]` 条目文本就含姓名行），故不拆。
+const LINE_BOUNDARY_STABLE_SEC: f64 = 2.0;
+
+/// 触发行边界切断所需的**新文本帧**最低 OCR 置信度。
+///
+/// 低置信度帧多出的"一行"更可能是识别抖动而非真实新字幕：实测 moon 一帧
+/// `conf=0.64` 的乱码把已稳定 12.7s 的段落顶开成两段（1:1 18→15、碎片 1→4）。
+const LINE_BOUNDARY_MIN_CONF: f64 = 0.8;
+
+/// 稳定时长门 + 置信度门 + 行边界切断：三者同时成立才判为独立新字幕。
+fn is_stable_line_boundary_cut(
+    short: &str,
+    long: &str,
+    short_dur: f64,
+    long_conf: f64,
+) -> bool {
+    long_conf >= LINE_BOUNDARY_MIN_CONF
+        && short_dur >= LINE_BOUNDARY_STABLE_SEC
+        && is_line_boundary_cut(short, long)
+}
+
 /// 判断两段文本是否属于同一条字幕的延续
 ///
 /// - 完全相等：是
 /// - 前缀互相覆盖（打字机/渐进文本）：是
 /// - 编辑距离比例 ≤ 阈值（OCR 抖动/半句）：是
+///
+/// 注：行边界切断（姓名框态 → 下一条）**不在此处判定**——它需要短态持续时间，
+/// 由调用方用 `is_stable_line_boundary_cut` 拦截（`merge_frames` 的 run 分组与
+/// `merge_similar_adjacent` 各自持有时间信息）。
 fn similar_text(a: &str, b: &str, threshold: f64) -> bool {
     if a == b {
         return true;
@@ -411,7 +480,14 @@ pub fn merge_frames(
         // 相似基准 = run 内最近一帧文本（渐进时是超集，比较稳定）
         let is_same = matches!(&run, Some(r) if {
             let base: &str = r.texts.last().map(|(t, _)| t.as_ref()).unwrap_or("");
-            similar_text(base, f.text.as_ref(), merge_similarity)
+            // 稳定 ≥2.0s 的姓名框/头衔态之后出现整行新文本 = 独立新字幕（D11），run 在此断开
+            let stable_boundary = is_stable_line_boundary_cut(
+                base,
+                f.text.as_ref(),
+                f.time - r.start,
+                f.confidence,
+            );
+            !stable_boundary && similar_text(base, f.text.as_ref(), merge_similarity)
         });
         if is_same {
             if let Some(r) = run.as_mut() {
@@ -692,7 +768,14 @@ fn merge_similar_adjacent(segments: Vec<OcrSegment>, threshold: f64) -> Vec<OcrS
     let mut out: Vec<OcrSegment> = Vec::with_capacity(segments.len());
     for seg in segments {
         if let Some(last) = out.last_mut() {
-            if similar_text(&last.text, &seg.text, threshold) {
+            // 稳定 ≥2.0s 的姓名框/头衔态与下一条对话行不并（D11）
+            let stable_boundary = is_stable_line_boundary_cut(
+                &last.text,
+                &seg.text,
+                last.end - last.start,
+                seg.confidence,
+            );
+            if !stable_boundary && similar_text(&last.text, &seg.text, threshold) {
                 last.end = last.end.max(seg.end);
                 // 更长且置信度不低于原段才替换文本，避免用低置信度长文本覆盖清晰短文本
                 if seg.text.chars().count() > last.text.chars().count()
@@ -1706,6 +1789,89 @@ mod tests {
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].text, "旅行者，你来了。前方似乎有东西在等待。");
         assert!((segs[0].end - 3.5).abs() < 1e-9); // 3.0 + 0.5
+    }
+
+    #[test]
+    fn test_merge_similar_rejects_namebox_line_boundary() {
+        // D11 回归：姓名框/头衔态**稳定 ≥2.0s** 后，高置信度帧给出下一条对话行 → 两条独立字幕。
+        // 实测形态（glupov 嵌字 #18）：`Anton / Former Acting Captain,"Ninth Company"`
+        // ≈40 字符 vs 含对话行的 ≈90 字符，占比 0.44 > 1/3 会顶破 3× 前缀规则
+        let namebox = "Anton\nFormer Acting Captain,\"Ninth Company";
+        let full = "Anton\nFormer Acting Captain,\"Ninth Company\nNo news. But perhaps... no news is the best news.";
+        let frames = vec![
+            ft(1.0, namebox, 0.97),
+            ft(2.0, namebox, 0.97),
+            ft(2.8, namebox, 0.97),
+            ft(3.0, full, 0.96),
+            ft(4.0, full, 0.96),
+        ];
+        let segs = merge_frames(frames, 0.5, 30.0, 0.3);
+        assert_eq!(segs.len(), 2, "稳定姓名框态与对话行应是两条独立字幕");
+        assert_eq!(segs[0].text, namebox);
+        assert_eq!(segs[1].text, full);
+    }
+
+    #[test]
+    fn test_merge_similar_keeps_wrapped_tail_line() {
+        // 反向守卫：多出的行是**换行余尾**（远短于短态末行）→ 不判行边界切断，保持同一条目。
+        // 实测形态（moon 嵌字 #16）：`runaway princess back to the` → 补出 `moon.`（4 字符）
+        let base = "Aria\nlike the villain in a human novel who tries to bring the runaway princess back to the";
+        let wrapped = "Aria\nlike the villain in a human novel who tries to bring the runaway princess back to the\nmoon.";
+        let frames = vec![
+            ft(1.0, base, 0.95),
+            ft(3.0, base, 0.95),
+            ft(5.0, base, 0.95),
+            ft(5.5, wrapped, 0.95),
+            ft(6.5, wrapped, 0.95),
+        ];
+        let segs = merge_frames(frames, 0.5, 30.0, 0.3);
+        assert_eq!(segs.len(), 1, "换行余尾应保持同一条目");
+        assert_eq!(segs[0].text, wrapped);
+    }
+
+    #[test]
+    fn test_merge_similar_ignores_low_conf_extra_line() {
+        // 置信度门：低置信度帧多出的一行是识别抖动，不触发行边界切断
+        // （实测 moon：一帧 conf=0.64 的乱码把已稳定 12.7s 的段落顶开）
+        let base = "Sonnet\nthe big deal! We can just leave the work to those Moon Envoys";
+        let garbled = "Sonnet\nthe big deal! We can just leave the work to those Moon Envoys\nr";
+        let frames = vec![
+            ft(1.0, base, 0.97),
+            ft(2.0, base, 0.97),
+            ft(4.0, base, 0.97),
+            ft(4.5, garbled, 0.64),
+        ];
+        let segs = merge_frames(frames, 0.5, 30.0, 0.3);
+        assert_eq!(segs.len(), 1, "低置信度多行不应拆段");
+    }
+
+    #[test]
+    fn test_merge_similar_keeps_transient_line_boundary() {
+        // 反向守卫：同形态但短态**只持续 0.47s**（打字机换行续写）→ 仍属同一条字幕。
+        // 实测形态（glupov 语料）：`…第九连队的编制保住`（3 行）→ 补出换行第二行（4 行）
+        let partial = "安东\n原「第九连队」临时连长\n层岩巨渊的经历让他们吃了不少苦头，不过万幸，第九连队的编制保住";
+        let wrapped = "安东\n原「第九连队」临时连长\n层岩巨渊的经历让他们吃了不少苦头，不过万幸，第九连队的编制保住\n了。我们没有让祖先与陛下蒙羞。";
+        let frames = vec![
+            ft(1.00, partial, 0.92),
+            ft(1.25, partial, 0.93),
+            ft(1.50, wrapped, 0.91),
+            ft(1.75, wrapped, 0.92),
+        ];
+        let segs = merge_frames(frames, 0.25, 30.0, 0.3);
+        assert_eq!(segs.len(), 1, "打字机换行续写应保持同一条");
+        assert_eq!(segs[0].text, wrapped);
+    }
+
+    #[test]
+    fn test_merge_similar_keeps_partial_last_line() {
+        // 末行只写了一半（严格前缀）→ 仍是同一句的渐进补全，应合并为一条
+        let frames = vec![
+            ft(1.0, "派蒙\n前方似乎有", 0.9),
+            ft(2.0, "派蒙\n前方似乎有什么东西在等待。", 0.9),
+        ];
+        let segs = merge_frames(frames, 1.0, 10.0, 0.3);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].text, "派蒙\n前方似乎有什么东西在等待。");
     }
 
     #[test]
