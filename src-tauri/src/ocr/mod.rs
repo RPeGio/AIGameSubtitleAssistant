@@ -388,14 +388,18 @@ fn is_subsequence(a: &[char], b: &[char]) -> bool {
     true
 }
 
-/// 渐进碎片的时间跨度上限（× interval）：超过即视为"短暂但完整的独立条目"，不拼接。
+/// 渐进碎片的时间跨度上限（秒，**绝对秒下限**）：超过即视为"短暂但完整的独立条目"，不拼接。
 ///
 /// 取值依据（按基准诊断）：打字机中间态只活约 1 个网格间隔；独立条目（如单独显示的
-/// 角色名条）寿命通常数秒。实测真实碎片对最长 1.057s（0.5s 间隔下），故 2.5×interval
+/// 角色名条）寿命通常数秒。实测真实碎片对最长 1.057s（0.5s 间隔下），故 2.5×0.5s = 1.25s
 /// 既容纳真实碎片、又守住独立条目。
+///
+/// 2026-09-18 改为**绝对秒下限** `max(本值, factor × interval)`：网格降为 0.25s 后，
+/// 显示行为（碎片寿命）不随之减半，门限若同步减半会误伤真实碎片。
+const PROGRESSIVE_MAX_SPAN_SEC: f64 = 1.25;
 const PROGRESSIVE_MAX_SPAN_FACTOR: f64 = 2.5;
 
-/// 方向 2 长残尾档的时长上限（× interval）：D1 第 2 步定稿（2026-09-18）。
+/// 方向 2 长残尾档的时长上限（秒，**绝对秒下限**）：D1 第 2 步定稿（2026-09-18）。
 ///
 /// 取值依据（pre-merge 段序诊断，moon 嵌字 clip 2/5）：延迟重读残尾在 merge 输入
 /// 的真实形态是 `[01:52.067 → 01:53.734]`＝**1.667s**——最终事件里显示的 1.467s 是
@@ -403,8 +407,14 @@ const PROGRESSIVE_MAX_SPAN_FACTOR: f64 = 2.5;
 /// 实测 1.483s，与残尾仅差 0.18s，**时长门无法区分二者**（1.5s 门曾吞姓名框造成
 /// glupov 语料缺失 1）。故本档改由"**字尾匹配**"判别（残尾 ≈ 前段归一化文本的
 /// 等长尾窗：重读到句尾；姓名框是字头重复、尾窗比率 ≈1 被拒），时长门放到
-/// 4.0×interval = 2.0s 仅作上界。
+/// 4.0×0.5s = 2.0s 仅作上界；同样改为绝对秒下限（网格 0.25s 时仍为 2.0s，
+/// 否则 moon 那条 1.667s 残尾会因门限降到 1.0s 而重新变成碎片）。
+const RESIDUAL_MAX_SPAN_SEC: f64 = 2.0;
 const RESIDUAL_MAX_SPAN_FACTOR: f64 = 4.0;
+
+/// 相邻段拼接的时间邻接窗（秒，**绝对秒下限**）：两段间空档大于此值即视为不同条目。
+/// 0.5s = 原 0.5s 网格下一格；网格降为 0.25s 后仍保持 0.5s（显示行为的绝对尺度）。
+const CONTIGUOUS_MAX_GAP_SEC: f64 = 0.5;
 
 /// 阶段 2 短字幕召回的时长下限（秒）：短于此视为逐帧闪烁/噪声，不值得召回。
 ///
@@ -478,17 +488,19 @@ fn recall_eligible(
 /// （glupov 语料 97.3→83.6 即由此引起，去守卫后恢复）。
 ///
 /// 方向 1 的第二档判据（`is_line_prefix`，D9）：残片因漏检被拖长到数秒（超过
-/// 2.5×interval 护栏）时，若前段各行为后段对应行的逐行归一化前缀、且末行是
-/// 严格前缀（句中切断），仍判为同一句补全而拼接——glupov 嵌字 "…alive, I h"
+/// `PROGRESSIVE_MAX_SPAN_SEC` 护栏）时，若前段各行为后段对应行的逐行归一化前缀、
+/// 且末行是严格前缀（句中切断），仍判为同一句补全而拼接——glupov 嵌字 "…alive, I h"
 /// 撑 3.2s 即此类；末行整行相等 = 行边界切断（对话行清空只剩姓名框的独立状态），
 /// 不并入下一条。
 pub fn merge_contained_adjacent(segments: Vec<OcrSegment>, interval: f64) -> Vec<OcrSegment> {
-    let max_span = interval * PROGRESSIVE_MAX_SPAN_FACTOR;
-    let residual_span = interval * RESIDUAL_MAX_SPAN_FACTOR;
+    // 绝对秒下限与"网格相对项"取较大者：0.5s 网格下等价于原行为；更细网格下门限不随
+    // 采样率下降（碎片寿命是显示行为，与采样率无关）
+    let max_span = PROGRESSIVE_MAX_SPAN_SEC.max(interval * PROGRESSIVE_MAX_SPAN_FACTOR);
+    let residual_span = RESIDUAL_MAX_SPAN_SEC.max(interval * RESIDUAL_MAX_SPAN_FACTOR);
     let mut out: Vec<OcrSegment> = Vec::with_capacity(segments.len());
     for seg in segments {
         if let Some(last) = out.last_mut() {
-            let contiguous = seg.start - last.end <= interval;
+            let contiguous = seg.start - last.end <= CONTIGUOUS_MAX_GAP_SEC.max(interval);
             let ln = norm_chars(&last.text);
             let sn = norm_chars(&seg.text);
             if contiguous && ln.len() >= 2 && sn.len() >= 2 {

@@ -153,7 +153,12 @@ pub fn hardsub_regions(key: &str) -> Vec<OcrRegionInput> {
 
 pub fn default_ocr_params() -> OcrRunParams {
     OcrRunParams {
-        frame_interval: 0.5,
+        // 2026-09-18：0.5 → 0.25s。段边界量化误差 = ±interval/2，0.5s 网格下即为 ±0.25s，
+        // 与容差同量级；参考侧完成线性校准后，量化成为剩余主误差项，故对半细化网格。
+        // 代价：变化帧 OCR 次数上升（见基准耗时列）。合并层门限已改为绝对秒下限
+        // （`PROGRESSIVE_MAX_SPAN_SEC`/`RESIDUAL_MAX_SPAN_SEC`/`CONTIGUOUS_MAX_GAP_SEC`），
+        // 不随网格减半而收紧。
+        frame_interval: 0.25,
         dhash_threshold: 3,
         batch_size: 16,
         merge_similarity: 0.3,

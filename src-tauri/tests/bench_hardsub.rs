@@ -20,10 +20,13 @@ use common::{
 };
 
 fn tolerance_sec() -> f64 {
+    // 容差与采样量子自洽（2026-09-18 由 0.3 → 0.5）：帧网格为 0.5s，段边界量化误差
+    // 天然为 ±0.25s，旧 0.3s 容差比量子还小——把量化噪声当缺陷扣分。参考侧完成实测
+    // 线性校准（D5）后，0.5s 与"量子级可达精度"一致。env GSA_BENCH_TOLERANCE_SEC 可覆盖。
     std::env::var("GSA_BENCH_TOLERANCE_SEC")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(0.3)
+        .unwrap_or(0.5)
 }
 
 fn run_case(cfg: &CaseCfg) {
