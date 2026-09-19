@@ -250,10 +250,51 @@ fn similar_text(a: &str, b: &str, threshold: f64) -> bool {
     edit_distance_ratio(a, b) <= threshold
 }
 
-/// 从 run 内所有相似帧文本做多数投票：选与其它帧总相似度最高者。
+/// 判定"同一文本"的近似阈值（OCR 抖动：全半角括号、标点差异等）
+const SAME_TEXT_TOLERANCE: f64 = 0.1;
+
+/// 渐进补全偏好：更长（更完整）候选的承载门槛。
+///
+/// 两道通道之一即可：
+/// 1. **≥2 帧承载**——打字机补全通常会被后续网格/保险丝多次采到；
+/// 2. **是 run 的末态**（与 `texts.last()` 近似同文）——显示期的最终形态即该行完整文本；
+///    实测 glupov 语料 `…能力显得更关键。` 因 9×8 dHash 对尾部亚阈值变化不敏感而漏检，
+///    仅由 1.5s 保险丝在段尾补采到 1 帧，走此通道才认得出。
+///
+/// 单帧幻觉尾巴（`test_vote_ignores_noise_long_text` 的乱码行）虽可能是末态，但会
+/// 被下面的置信度门挡掉。
+const PROGRESSIVE_COMPLETE_MIN_SUPPORT: usize = 2;
+
+/// 渐进补全偏好：更长候选的平均置信度不得低于 medoid 胜者超过此幅度。
+///
+/// 守门依据（2026-09-18 语料实测）：**幻觉尾巴帧的 OCR 置信度显著更低**——
+/// moon 语料 `卡侬 / oo / 桑娜妲。…` 的承载帧 conf 0.65/0.70、`…也没什么意 / 见。o`
+/// 的承载帧 conf 0.50/0.63；而真实渐进补全（glupov `…所有事务，任务瞬间复杂了起来。`）
+/// 的完整态 conf 0.86 反而**高于**残缺态 0.80。故以"置信度不劣于胜者"为第二道门，
+/// 避免"更长者优先"把 D4 污染文本翻案。
+const PROGRESSIVE_COMPLETE_CONF_MARGIN: f64 = 0.10;
+
+/// 渐进补全偏好：更长候选相对 medoid 胜者的**最小归一化字符增量**。
+///
+/// 取值依据（2026-09-18 语料实测）：真实打字机补全的增量远大于此——
+/// `…所有事务，任务` → `…所有事务，任务瞬间复杂了起来。` 增量 9 字符、
+/// `…任务排期的能` → `…任务排期的能力显得更关键。` 增量 6 字符；
+/// 而 OCR 抖动变体（全半角括号、个别字错读）增量仅 0~1 字符。
+/// 0.5s 网格 A/B 实测：无此门时把一条原本"正确"（sim≥0.98）的条目换成了略偏的长变体
+/// （语料 97.1→96.9）；加门后不误换。
+const PROGRESSIVE_COMPLETE_MIN_GAIN: usize = 3;
+
+/// 从 run 内所有相似帧文本做多数投票：选与其它帧总相似度最高者（medoid）。
 ///
 /// 替代"更长者胜出"：被噪声污染的更长文本与多数帧差异大，不会被选中；
 /// 完全相同的候选平局时取更长（与旧行为兼容）。
+///
+/// **渐进补全偏好（D10，2026-09-18）**：medoid 在"打字机渐进链" P1 ⊂ P2 ⊂ P3 上
+/// **数学上必然落在中间态**（中间态到各态的平均距离最小），于是 run 内明明采到了
+/// 完整态，胜出的却是残缺文本。0.5s 网格下链短、恰好常落在完整态；网格降到 0.25s
+/// 后链变长，glupov 语料因此出现两条截断配对（sim 0.778/0.811，扣 0.41 = 全部回归）。
+/// 故在 medoid 之后补一步：若存在"严格更长、近似包含 medoid 胜者、且被 ≥2 帧承载"
+/// 的候选，取其中最长者——即该行显示期间的**最终完整态**（语料/翻译所需的形态）。
 fn vote_text(texts: &[(Arc<str>, f64)]) -> (Arc<str>, f64) {
     let mut best: &(Arc<str>, f64) = &texts[0];
     let mut best_score = f64::MIN;
@@ -266,6 +307,40 @@ fn vote_text(texts: &[(Arc<str>, f64)]) -> (Arc<str>, f64) {
         if score > best_score + 1e-9 || ((score - best_score).abs() <= 1e-9 && is_longer) {
             best_score = score;
             best = cand;
+        }
+    }
+    // 渐进补全偏好：medoid 之后再看是否存在"更完整的同一句"
+    let bn = norm_chars(&best.0);
+    if !bn.is_empty() {
+        let winner_conf = best.1;
+        let mut winner: Option<&(Arc<str>, f64)> = None;
+        for cand in texts {
+            let cn = norm_chars(&cand.0);
+            if cn.len() < bn.len() + PROGRESSIVE_COMPLETE_MIN_GAIN || !is_subsequence(&bn, &cn) {
+                continue;
+            }
+            let support = texts
+                .iter()
+                .filter(|(t, _)| edit_distance_ratio(t, &cand.0) <= SAME_TEXT_TOLERANCE)
+                .count();
+            // 通道 2：候选是 run 末态（显示期最终形态）
+            let is_final_state = texts
+                .last()
+                .is_some_and(|(t, _)| edit_distance_ratio(t, &cand.0) <= SAME_TEXT_TOLERANCE);
+            if support < PROGRESSIVE_COMPLETE_MIN_SUPPORT && !is_final_state {
+                continue;
+            }
+            // 置信度门：候选帧自身的置信度不得明显低于胜者帧（幻觉尾巴实测低 0.15~0.48）
+            if cand.1 + PROGRESSIVE_COMPLETE_CONF_MARGIN < winner_conf {
+                continue;
+            }
+            let longer = winner.map_or(true, |w| norm_chars(&w.0).len() < cn.len());
+            if longer {
+                winner = Some(cand);
+            }
+        }
+        if let Some(w) = winner {
+            return (w.0.clone(), w.1);
         }
     }
     (best.0.clone(), best.1)
@@ -1666,6 +1741,83 @@ mod tests {
         let segs = merge_frames(frames, 1.0, 10.0, 0.3);
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].text, "前方似乎有什么东西在等待。");
+    }
+
+    #[test]
+    fn test_vote_prefers_progressive_completion() {
+        // D10 回归：复刻 glupov 语料实测段（事件 [8.41 → 10.87]）——run 内每个网格帧都
+        // 入表、未变化帧顺延上一文本，故三态权重为 2/4/4；medoid 在此形状下落在**中间态**
+        // P2（残缺），而完整态 P3 就在同一 run 内、被 4 帧承载且置信度更高（实测 0.86 vs 0.80）
+        let p1 = "斯捷潘尼扬\n「编玛瑙]\n嗯，最近上头安";
+        let p2 = "斯捷潘尼扬\n「编玛瑙]\n嗯，最近上头安排我主管一支连队的所有事务，任务";
+        let p3 = "斯捷潘尼扬\n「编玛瑙」\n嗯，最近上头安排我主管一支连队的所有事务，任务瞬间复杂了起来。";
+        let mut frames = Vec::new();
+        let mut t = 1.0;
+        for (text, n, cf) in [(p1, 2, 0.83), (p2, 4, 0.80), (p3, 4, 0.86)] {
+            for _ in 0..n {
+                frames.push(ft(t, text, cf));
+                t += 0.25;
+            }
+        }
+        let segs = merge_frames(frames, 0.25, 30.0, 0.3);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].text, p3);
+    }
+
+    #[test]
+    fn test_vote_progressive_completion_needs_support() {
+        // 完整态只被 1 帧承载**且不是 run 末态**（其后还有残缺态帧）→ 不启用渐进偏好，
+        // 输出仍是 medoid 胜者（中间态）。守门理由：单帧的"更长"不可信
+        let p1 = "斯捷潘尼扬\n「编玛瑙]\n嗯，最近上头安";
+        let p2 = "斯捷潘尼扬\n「编玛瑙]\n嗯，最近上头安排我主管一支连队的所有事务，任务";
+        let p3 = "斯捷潘尼扬\n「编玛瑙」\n嗯，最近上头安排我主管一支连队的所有事务，任务瞬间复杂了起来。";
+        let mut frames = Vec::new();
+        let mut t = 1.0;
+        for (text, n, cf) in [(p1, 2, 0.83), (p2, 4, 0.80), (p3, 1, 0.86), (p2, 2, 0.80)] {
+            for _ in 0..n {
+                frames.push(ft(t, text, cf));
+                t += 0.25;
+            }
+        }
+        let segs = merge_frames(frames, 0.25, 30.0, 0.3);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].text, p2);
+    }
+
+    #[test]
+    fn test_vote_accepts_final_state_completion() {
+        // 完整态只被 1 帧承载但**就是 run 末态**（实测 glupov 语料 `…能力显得更关键。`：
+        // 尾部亚阈值变化漏检，仅 1.5s 保险丝在段尾补采到一帧，conf 0.86 > 残缺态 0.85）
+        let p2 = "斯捷潘尼扬\n「编玛瑙]\n战斗技巧退居到了次要位置，全局意识和任务排期的能";
+        let p3 = "斯捷潘尼扬\n「编玛瑙】\n战斗技巧退居到了次要位置，全局意识和任务排期的能力显得更关键。";
+        let frames = vec![
+            ft(1.00, "斯捷潘尼扬\n「编玛瑙]\n战斗技巧退居到", 0.81),
+            ft(1.25, "斯捷潘尼扬\n「编玛瑙]\n战斗技巧退居到了次要位置，全局意", 0.82),
+            ft(1.50, p2, 0.85),
+            ft(1.75, p2, 0.85),
+            ft(4.00, p3, 0.86),
+        ];
+        let segs = merge_frames(frames, 0.25, 30.0, 0.3);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].text, p3);
+    }
+
+    #[test]
+    fn test_vote_rejects_low_confidence_completion() {
+        // 低置信度"更长候选"被拒（moon 语料实测：`卡侬 / oo / 桑娜妲。…` 承载帧
+        // conf 0.65/0.70，而干净态 0.85）——支持度 ≥2 也要过置信度门
+        let clean = "卡侬\n桑娜妲。仔细想想，最近这些年，你丢下工作，偷偷跑出去找人类玩的次数，好像越来越多了。";
+        let tailed = "卡侬\noo\n桑娜妲。仔细想想，最近这些年，你丢下工作，偷偷跑出去找人类玩的次数，好像越来越多了。";
+        let frames = vec![
+            ft(1.0, clean, 0.98),
+            ft(1.25, clean, 0.85),
+            ft(1.5, tailed, 0.65),
+            ft(1.75, tailed, 0.70),
+            ft(2.0, clean, 0.85),
+        ];
+        let segs = merge_frames(frames, 0.25, 30.0, 0.3);
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].text, clean);
     }
 
     // ── 空帧容错 ──
