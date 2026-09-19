@@ -51,6 +51,15 @@ pub struct CaseCfg {
     pub corpus_video: &'static str,
     /// 测试片（主播实况切片，嵌字基准输入）
     pub clip_video: &'static str,
+    /// 参考时间码线性校准系数：`t_video ≈ t_ref × (1 + ref_scale) + ref_offset`。
+    ///
+    /// 依据（2026-09-18，D5 校准节）：探针 `temp/probe/ref_calib.py` 逐条实测"视频里
+    /// 字幕真正出现的时刻"（跨语言，靠 OCR 文本变化判定），稳健拟合得每案例的
+    /// 缩放/截距。三案例参考时间轴都是视频时间轴的**线性缩放**（Δ≈a+k·t、残差 ±0.02s）：
+    /// glupov k=0.709%/R²=0.99、pierro k=0.065%/R²=0.93、moon k≈0（无漂移）。
+    /// 仅嵌字基准调用（语料基准按文本顺序比对，不用时间码）。
+    pub ref_scale: f64,
+    pub ref_offset: f64,
 }
 
 pub const MOON_SISTERS: CaseCfg = CaseCfg {
@@ -60,6 +69,11 @@ pub const MOON_SISTERS: CaseCfg = CaseCfg {
     ref_fps: 60.0,
     corpus_video: "quality_bench_test_corpus(voiced)_5min.mp4",
     clip_video: "quality_bench_test(voiced)_5min.mp4",
+    // 实测**无漂移**（k≈0、R²=0.0015，15 条）→ 不施加校准：给一份本来就准的参考做
+    // 偏移校正没有依据（拟合出的 a=-0.075s 落在探针 ±0.25s 分辨率内，且部分来自
+    // "对话行清空早于新句首字"的判定拍差，非参考自身偏置）
+    ref_scale: 0.0,
+    ref_offset: 0.0,
 };
 
 pub const GLUPOV: CaseCfg = CaseCfg {
@@ -68,6 +82,9 @@ pub const GLUPOV: CaseCfg = CaseCfg {
     ref_fps: 60000.0 / 1001.0,
     corpus_video: "quality_bench_test_corpus(non-voiced)_11min.mp4",
     clip_video: "quality_bench_test(non-voiced)_11min.mp4",
+    // 18 条实测：k=+0.709%、a=-0.021s、R²=0.990（参考时间轴比视频快 0.7%）
+    ref_scale: 0.007092,
+    ref_offset: -0.021,
 };
 
 pub const PIERRO_QUESTIONS: CaseCfg = CaseCfg {
@@ -76,7 +93,23 @@ pub const PIERRO_QUESTIONS: CaseCfg = CaseCfg {
     ref_fps: 60000.0 / 1001.0,
     corpus_video: "quality_bench_test_corpus(voiced)_48min.mp4",
     clip_video: "quality_bench_test(voiced)_48min.mp4",
+    // 117 条实测：k=+0.065%、a=-0.121s、R²=0.928
+    ref_scale: 0.000645,
+    ref_offset: -0.121,
 };
+
+/// 对参考时间码施加线性校准（见 `CaseCfg::ref_scale` 注释）。
+/// 起止同乘同加：终点侧探针（`temp/probe/gt_probe_end.py`）独立实测的斜率与起点侧一致
+/// （pierro 0.056% vs 0.054%、glupov 0.474% vs 0.525%），故两端共用同一变换。
+pub fn apply_ref_calibration(refs: &mut [RefEntry], cfg: &CaseCfg) {
+    if cfg.ref_scale == 0.0 && cfg.ref_offset == 0.0 {
+        return;
+    }
+    for e in refs.iter_mut() {
+        e.start = e.start * (1.0 + cfg.ref_scale) + cfg.ref_offset;
+        e.end = e.end * (1.0 + cfg.ref_scale) + cfg.ref_offset;
+    }
+}
 
 /// 语料页选区（page=corpus, video=source）
 pub fn corpus_regions(key: &str) -> Vec<OcrRegionInput> {

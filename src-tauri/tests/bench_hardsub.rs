@@ -14,8 +14,9 @@
 mod common;
 
 use common::{
-    align_temporal, bench_data_dir, build_ocr_manager, hardsub_regions, print_md_row, run_ocr,
-    score_hardsub, require_file, CaseCfg, GLUPOV, MOON_SISTERS, PIERRO_QUESTIONS,
+    align_temporal, apply_ref_calibration, bench_data_dir, build_ocr_manager, hardsub_regions,
+    print_md_row, run_ocr, score_hardsub, require_file, CaseCfg, GLUPOV, MOON_SISTERS,
+    PIERRO_QUESTIONS,
 };
 
 fn tolerance_sec() -> f64 {
@@ -35,7 +36,7 @@ fn run_case(cfg: &CaseCfg) {
     }
     let Some(manager) = build_ocr_manager() else { return };
 
-    let refs = match common::parse_reference(&ref_path, cfg.ref_fps) {
+    let mut refs = match common::parse_reference(&ref_path, cfg.ref_fps) {
         Ok(r) if !r.is_empty() => r,
         Ok(_) => {
             eprintln!("[跳过] 参考文本解析为空：{}", ref_path.display());
@@ -46,6 +47,8 @@ fn run_case(cfg: &CaseCfg) {
             return;
         }
     };
+    // D5 校准：参考时间轴是视频时间轴的线性缩放（逐条实测后稳健拟合，见 CaseCfg 注释）
+    apply_ref_calibration(&mut refs, cfg);
     let regions = hardsub_regions(cfg.key);
 
     // 选区未覆盖的期望条目：与任何选区时间窗都不相交 → 单独报告，不计缺陷
