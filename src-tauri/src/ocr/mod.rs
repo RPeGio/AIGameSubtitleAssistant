@@ -747,6 +747,59 @@ fn is_line_prefix(prev: &str, next: &str) -> bool {
     tail_len_ok && edit_distance_ratio(plast, &nhead) <= LINE_PREFIX_EDIT_TOLERANCE
 }
 
+/// 段尾精化（B-ii）：把 `end = 末采样 + interval×0.5` 的**量化估计**替换为密帧实测的切换时刻。
+///
+/// 依据（2026-09-18 边界形态诊断）：Δend p95 达 0.87s（glupov）/0.62s（moon），而容差 0.5s。
+/// `末采样 + interval×0.5` 只是"覆盖率中点"估计（D2′），切换发生在采样点之后即欠伸、
+/// 采样点紧贴切换即过伸。而**切换是突变**（整行新字幕），密帧能逐帧定位。
+///
+/// 与阶段 1 起点精化同源同数据（`scan_stream` 内存密帧，零抽帧零落盘）：以末采样处的哈希为
+/// 基准，在**其后 1.5×interval 窗口**内找首个越阈帧（= 下一条字幕的切换帧），取该时刻为段尾。
+/// 该判据与变化检测同阈值同语义，故不会引入采样层看不到的新边界。
+/// 窗口内无越阈（本段延续到 clip 末尾）→ 保留原估计。
+fn refine_segment_ends(
+    segments: Vec<OcrSegment>,
+    dense: &[(f64, u64)],
+    threshold: u32,
+    interval: f64,
+    clip_end: f64,
+) -> Vec<OcrSegment> {
+    if dense.is_empty() {
+        return segments;
+    }
+    // 取时间上最接近 `t` 的密帧哈希（密帧间隔 ~1/src_fps，同一显示状态）
+    let hash_near = |t: f64| -> Option<u64> {
+        let i = dense.partition_point(|(dt, _)| *dt < t);
+        let cand = [i.checked_sub(1), (i < dense.len()).then_some(i)];
+        cand.into_iter()
+            .flatten()
+            .min_by(|&a, &b| {
+                (dense[a].0 - t)
+                    .abs()
+                    .partial_cmp(&(dense[b].0 - t).abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|k| dense[k].1)
+    };
+    segments
+        .into_iter()
+        .map(|mut seg| {
+            let last_sample = seg.end - interval * 0.5;
+            if let Some(base) = hash_near(last_sample) {
+                let hi = last_sample + interval * 1.5;
+                if let Some(&(t, _)) = dense
+                    .iter()
+                    .find(|(dt, h)| *dt > last_sample && *dt <= hi
+                        && crate::ai_runtime::dhash::hamming_distance(base, *h) > threshold)
+                {
+                    seg.end = t.clamp(seg.start, clip_end);
+                }
+            }
+            seg
+        })
+        .collect()
+}
+
 /// 修正相邻段时间重叠：段 `end` 不得超过下一段 `start`。
 ///
 /// 阶段 1 的窗口精化会把 changed 帧 `start` 提前到帧级边界，而 `end` 仍按
@@ -1320,7 +1373,10 @@ where
         let segments = merge_contained_adjacent(segments, frame_interval);
         // 第三遍：相邻文本相似合并（消除阶段 2 召回的同句碎片/伪短字幕）
         let segments = merge_similar_adjacent(segments, merge_similarity);
-        // 第四遍：精化可能让 start 提前 → clamp 相邻段时间，保证单调不重叠
+        // 第四遍（B-ii）：段尾精化——用密帧实测切换时刻替换"末采样+半间隔"的量化估计
+        let segments =
+            refine_segment_ends(segments, &scan_stream, dhash_threshold, frame_interval, clip.end);
+        // 第五遍：精化可能让 start 提前 → clamp 相邻段时间，保证单调不重叠
         let segments = clamp_segment_times(segments);
         if dev_debug {
             eprintln!("[ocr] clip {}/{}：合并 {} 条事件", i + 1, clip_count, segments.len());
@@ -1984,6 +2040,29 @@ mod tests {
         let segs = merge_frames(frames, 0.25, 30.0, 0.3);
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].text, clean);
+    }
+
+    // ── 段尾精化（B-ii）──
+
+    #[test]
+    fn test_refine_segment_ends_uses_dense_switch() {
+        // 段尾估计 = 末采样(10.0) + interval×0.5 = 10.25；密帧实测切换在 10.10 → 取 10.10
+        let segs = vec![OcrSegment { start: 8.0, end: 10.25, text: "X".into(), confidence: 0.9 }];
+        let a = 0x0u64;
+        let b = 0xFFFF_FFFF_FFFF_FFFFu64; // 汉明距离 64 > 阈值
+        let dense = vec![(9.0, a), (10.0, a), (10.1, b), (10.2, b)];
+        let out = refine_segment_ends(segs, &dense, 3, 0.5, 30.0);
+        assert!((out[0].end - 10.1).abs() < 1e-9, "实得 {}", out[0].end);
+    }
+
+    #[test]
+    fn test_refine_segment_ends_keeps_estimate_without_switch() {
+        // 窗口内无越阈（本段延续到 clip 末尾）→ 保留原估计
+        let segs = vec![OcrSegment { start: 8.0, end: 10.25, text: "X".into(), confidence: 0.9 }];
+        let a = 0x0u64;
+        let dense = vec![(9.0, a), (10.0, a), (11.0, a)];
+        let out = refine_segment_ends(segs, &dense, 3, 0.5, 30.0);
+        assert!((out[0].end - 10.25).abs() < 1e-9, "实得 {}", out[0].end);
     }
 
     // ── 空帧容错 ──
