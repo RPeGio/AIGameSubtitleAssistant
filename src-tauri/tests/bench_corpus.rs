@@ -65,7 +65,15 @@ fn run_case(cfg: &CaseCfg) {
     // 语料提取：移植 src/stores/project.ts pushCorpusTexts（trim→丢空→按序精确去重）
     let produced = common::corpus_from_segments(&segments);
     let (pairs, missed, extra) = align_sequences(&expected, &produced);
-    let sc = score_corpus(&expected, &produced, &pairs, missed.len(), extra.len());
+    // 口径修正：被后段**并入**的条目（识别精度问题，如 OCR 漏掉纯「……」对话行）
+    // 单列报告、不计满分缺失——见 common::absorbed_indices
+    let absorbed = common::absorbed_indices(&expected, &produced, &missed);
+    let real_missed: Vec<usize> = missed
+        .iter()
+        .copied()
+        .filter(|i| !absorbed.contains(i))
+        .collect();
+    let sc = score_corpus(&expected, &produced, &pairs, real_missed.len(), extra.len());
 
     // ── 终端摘要 ──
     println!(
@@ -77,13 +85,19 @@ fn run_case(cfg: &CaseCfg) {
         folded
     );
     println!(
-        "评分 {:.1}/100｜正确 {} 轻度 {} 严重 {} 缺失 {}｜噪音行 {}｜CER 均值 {:.3} p95 {:.3} max {:.3}",
-        sc.score, sc.correct, sc.minor, sc.severe, sc.missing, sc.noise,
+        "评分 {:.1}/100｜正确 {} 轻度 {} 严重 {} 缺失 {}（并入 {}）｜噪音行 {}｜CER 均值 {:.3} p95 {:.3} max {:.3}",
+        sc.score, sc.correct, sc.minor, sc.severe, sc.missing, absorbed.len(), sc.noise,
         sc.cer_mean, sc.cer_p95, sc.cer_max
     );
-    if !missed.is_empty() {
+    if !absorbed.is_empty() {
+        println!("── 被后段并入（识别精度问题，不计满分缺失）──");
+        for &i in &absorbed {
+            println!("  [{}] {}", i + 1, expected[i].replace('\n', " / "));
+        }
+    }
+    if !real_missed.is_empty() {
         println!("── 缺失条目 ──");
-        for &i in &missed {
+        for &i in &real_missed {
             println!("  [{}] {}", i + 1, expected[i].replace('\n', " / "));
         }
     }

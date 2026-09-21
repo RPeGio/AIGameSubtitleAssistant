@@ -496,6 +496,46 @@ pub fn align_sequences(expected: &[String], produced: &[String]) -> (Vec<Pairing
     (pairs, missed, extra)
 }
 
+/// 语料轴"**被并入**"判定（口径修正，2026-09-18，用户主观评审驱动）。
+///
+/// 缺失的参考条目若其**归一化文本**是某个产出行的**前缀或子序列**，说明它被该行吸收，
+/// 属**识别精度**问题而非管线丢失：典型是 OCR 漏掉只有「……」的对话行 → 产出退化为
+/// "姓名+头衔" → 恰好成为后段（姓名+头衔+对话）的前缀而被激进合并吞掉
+/// （glupov 语料 `00:08:47:41` 条即此）。这类单列报告、**不计满分缺失**。
+///
+/// 要求归一化文本 ≥4 字符，避免极短条目被平凡匹配。
+pub fn absorbed_indices(expected: &[String], produced: &[String], missed: &[usize]) -> Vec<usize> {
+    missed
+        .iter()
+        .copied()
+        .filter(|&ei| {
+            let ne: Vec<char> = normalize_lenient(&expected[ei]).chars().collect();
+            if ne.len() < 4 {
+                return false;
+            }
+            produced.iter().any(|p| {
+                let np: Vec<char> = normalize_lenient(p).chars().collect();
+                np.starts_with(&ne) || is_subsequence_chars(&ne, &np)
+            })
+        })
+        .collect()
+}
+
+/// a 的字符是否按序出现在 b 中（双指针）
+fn is_subsequence_chars(a: &[char], b: &[char]) -> bool {
+    let mut j = 0;
+    for &c in a {
+        while j < b.len() && b[j] != c {
+            j += 1;
+        }
+        if j >= b.len() {
+            return false;
+        }
+        j += 1;
+    }
+    true
+}
+
 // ── 嵌字时间轴对齐（重叠 ≥ 0.5×较短段时长；产出段至多归入一个期望条目）──
 
 #[derive(Debug, Default)]

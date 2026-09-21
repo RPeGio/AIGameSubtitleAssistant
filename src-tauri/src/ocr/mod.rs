@@ -759,20 +759,14 @@ fn is_line_prefix(prev: &str, next: &str) -> bool {
 /// 依据（2026-09-18 主观评审 + 基准实测）：真实字幕寿命通常 ≥1s（与 D10 保险丝 1.5s、
 /// D9 的 2.5×interval 护栏同源），短于此的产出段几乎必为**分段错误**——实测嵌字碎片成因：
 /// 打字机首帧、OCR 误读（`You've`→`Du've`、`ll the`→`u the`）、共享区少一个空格
-/// （`Onyx Agate`/`OnyxAgate`）、姓名框态、淡出残留、画面图案误识别。
+/// （`Onyx Agate`/`OnyxAgate`）、**长后段遮挡导致姓名框先变而打字机晚半秒进入**（moon #5）、
+/// 淡出残留、画面图案误识别。
 ///
-/// 取 **0.7s**（保守值，实测标定）：
-
-/// | 门 | 语料 glupov / moon | 嵌字 glupov / moon | 碎片 |
-/// |---|---|---|---|
-/// | 0.7s（默认） | 97.1 / 100.0 ✓ | 58.5 / 50.7 | 各 1 |
-/// | 1.3s | 97.1 / 100.0 ✓ | 58.5 / 50.7（未生效） | 各 1 |
-/// | 1.6s | 92.5 / 94.1（各缺失 1 ✗） | 60.8 / 53.4 | 各 0 |
-///
-/// 语料里存在 1.48s 姓名框/头衔态，与 moon 1.50s 姓名框态**结构同形但参考语义相反**
-/// （语料要求独立、moon 要求合并）→ 纯文本/时长判据无法两全，故默认取保守值；
-/// 前端把本值作为"字幕预估最短长度"暴露给用户自行权衡。
-pub const DEFAULT_MIN_SUBTITLE_SEC: f64 = 0.7;
+/// 取 **1.5s**（2026-09-18 用户校正后放宽）：覆盖实测的 glupov #4（1.25s 误读首帧）与
+/// moon #5（1.50s 姓名框态）。语料侧同形态条目（如 OCR 漏掉纯「……」行后退化为"姓名+头衔"
+/// 的那条）会因此被后段并入——用户判定其**根因是识别精度而非合并缺陷**，故语料基准增加
+/// "被并入"判定（`tests/common::absorbed_indices`）单列报告、不计满分缺失。
+pub const DEFAULT_MIN_SUBTITLE_SEC: f64 = 1.5;
 
 /// 短碎片与其后一条允许的时间间隔上限（秒）：实测存在 0.5~1.5s 的检测空洞
 /// （pierro 4→5、21→22 段间有空间隔，被既有 0.5s 邻接门挡掉而漏并）。
@@ -857,7 +851,7 @@ fn merge_short_fragments_into_next(
     let mut out: Vec<OcrSegment> = Vec::with_capacity(segments.len());
     for seg in segments {
         let merge = out.last().is_some_and(|last| {
-            last.end - last.start < min_subtitle_sec
+            last.end - last.start <= min_subtitle_sec
                 && seg.start - last.end <= SHORT_FRAGMENT_GAP_MAX_SEC
                 && short_fragment_related(&last.text, &seg.text)
         });
@@ -2299,10 +2293,9 @@ mod tests {
     }
 
     #[test]
-    fn test_short_fragment_keeps_ocr_misread_head_beyond_gate() {
-        // 已知未覆盖（glupov #4，1.25s 且合并时刻时长 >1.3s）：首帧 OCR 把 `ll the` 误读成
-        // `u the`，弱关联判据认得出，但时长门取保守值 0.7s → 保持独立。
-        // 提门到 1.6s 可合并（嵌字 glupov 58.5→60.8），但会使语料 97.1→92.5（缺失 1）→ 不可接受。
+    fn test_short_fragment_merges_ocr_misread_head() {
+        // 实测形态（glupov #4，1.25s）：首帧 OCR 把 `ll the` 误读成 `u the` → 并入后条
+        // （2026-09-18 用户校正：此类属识别精度问题，按合并处理）
         let segs = vec![
             OcrSegment {
                 start: 94.04,
@@ -2318,14 +2311,14 @@ mod tests {
             },
         ];
         let out = merge_short_fragments_into_next(segs, DEFAULT_MIN_SUBTITLE_SEC);
-        assert_eq!(out.len(), 2, "超出保守时长门 → 保持独立（已知残留）");
+        assert_eq!(out.len(), 1, "1.25s 误读首帧应被并入");
+        assert!((out[0].start - 94.04).abs() < 1e-9);
     }
 
     #[test]
-    fn test_short_fragment_keeps_namebox_state_beyond_gate() {
-        // 已知未覆盖（moon #5，1.50s 姓名框态）：与语料里 1.48s 姓名框/头衔态**结构完全同形**，
-        // 但参考语义相反（moon 参考要求合并、语料参考要求独立）→ 纯文本/时长判据无法两全，
-        // 取保守门后两者都保持独立（语料硬门优先）。
+    fn test_short_fragment_merges_namebox_state() {
+        // 实测形态（moon #5，1.50s）：长后段遮挡导致姓名框先变、打字机晚约 0.5s 进入
+        // → 属同一显示，应并入后条（2026-09-18 用户校正）
         let segs = vec![
             OcrSegment { start: 56.23, end: 57.73, text: "Sonnet\"".into(), confidence: 1.0 },
             OcrSegment {
@@ -2336,12 +2329,13 @@ mod tests {
             },
         ];
         let out = merge_short_fragments_into_next(segs, DEFAULT_MIN_SUBTITLE_SEC);
-        assert_eq!(out.len(), 2, "姓名框态超保守门 → 保持独立（已知残留）");
+        assert_eq!(out.len(), 1, "1.50s 姓名框态应被并入");
+        assert!((out[0].start - 56.23).abs() < 1e-9);
     }
 
     #[test]
     fn test_short_fragment_keeps_stable_namebox() {
-        // 3.52s 姓名框态（glupov #18）：超出 1.6s 时长门 → 保持独立（参考亦记为独立条目）
+        // 3.52s 姓名框态（glupov #18）：远超时长门 → 保持独立（其参考条目正文为「……」）
         let segs = vec![
             OcrSegment {
                 start: 531.08,
@@ -2357,7 +2351,7 @@ mod tests {
             },
         ];
         let out = merge_short_fragments_into_next(segs, DEFAULT_MIN_SUBTITLE_SEC);
-        assert_eq!(out.len(), 2, "稳定姓名框态（3.52s）应保持独立");
+        assert_eq!(out.len(), 2, "3.52s 姓名框态应保持独立");
     }
 
     // ── 条带起点判据（检测层思路②）──
