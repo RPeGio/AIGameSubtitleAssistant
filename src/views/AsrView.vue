@@ -108,6 +108,7 @@ const ocrParams = ref<OcrRunParams>({
   dhash_threshold: 3,
   batch_size: 16,
   merge_similarity: 0.3,
+  min_subtitle_sec: 0.7,
 });
 
 const hasClipVideo = computed(() => projectStore.currentVideoMeta !== null);

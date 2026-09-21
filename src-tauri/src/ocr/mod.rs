@@ -754,22 +754,25 @@ fn is_line_prefix(prev: &str, next: &str) -> bool {
     tail_len_ok && edit_distance_ratio(plast, &nhead) <= LINE_PREFIX_EDIT_TOLERANCE
 }
 
-/// 短碎片激进合并：碎片时长上限（秒）。
+/// 字幕预估最短长度的**默认值**（秒）——前端可调项 `OcrRunParams::min_subtitle_sec` 的缺省。
 ///
 /// 依据（2026-09-18 主观评审 + 基准实测）：真实字幕寿命通常 ≥1s（与 D10 保险丝 1.5s、
 /// D9 的 2.5×interval 护栏同源），短于此的产出段几乎必为**分段错误**——实测嵌字碎片成因：
 /// 打字机首帧、OCR 误读（`You've`→`Du've`、`ll the`→`u the`）、共享区少一个空格
 /// （`Onyx Agate`/`OnyxAgate`）、姓名框态、淡出残留、画面图案误识别。
 ///
-/// 取 **0.7s**（保守值，2026-09-18 实测标定）：覆盖主观评审报告的全部实际碎片
-/// （打字机首帧、少空格、OCR 误读、淡出残留），语料硬门逐位不变。
+/// 取 **0.7s**（保守值，实测标定）：
+
+/// | 门 | 语料 glupov / moon | 嵌字 glupov / moon | 碎片 |
+/// |---|---|---|---|
+/// | 0.7s（默认） | 97.1 / 100.0 ✓ | 58.5 / 50.7 | 各 1 |
+/// | 1.3s | 97.1 / 100.0 ✓ | 58.5 / 50.7（未生效） | 各 1 |
+/// | 1.6s | 92.5 / 94.1（各缺失 1 ✗） | 60.8 / 53.4 | 各 0 |
 ///
-/// **已知未覆盖**：glupov #4 的 1.25s 误读首帧（`u the` vs `ll the tedious…`，合并时刻
-/// 时长已 >1.3s）与 moon #5 的 1.50s 姓名框态。二者都要把门提到 ≥1.5s 才能覆盖，而
-/// 语料里存在 **1.48s 姓名框/头衔态**（glupov）与 moon #5 **结构完全同形**却要求相反语义
-/// （语料参考要求独立、moon 参考要求合并）→ 纯文本/时长判据无法两全；实测 1.6s 门
-/// 使语料 glupov 97.1→92.5、moon 100.0→94.1（各缺失 1）→ 不可接受，故取保守值。
-const SHORT_FRAGMENT_MAX_SEC: f64 = 0.7;
+/// 语料里存在 1.48s 姓名框/头衔态，与 moon 1.50s 姓名框态**结构同形但参考语义相反**
+/// （语料要求独立、moon 要求合并）→ 纯文本/时长判据无法两全，故默认取保守值；
+/// 前端把本值作为"字幕预估最短长度"暴露给用户自行权衡。
+pub const DEFAULT_MIN_SUBTITLE_SEC: f64 = 0.7;
 
 /// 短碎片与其后一条允许的时间间隔上限（秒）：实测存在 0.5~1.5s 的检测空洞
 /// （pierro 4→5、21→22 段间有空间隔，被既有 0.5s 邻接门挡掉而漏并）。
@@ -832,19 +835,29 @@ fn short_fragment_related(frag: &str, next: &str) -> bool {
     overlap_ratio(flast, nline) >= SHORT_FRAGMENT_OVERLAP
 }
 
-/// 短碎片激进合并：时长 < `SHORT_FRAGMENT_MAX_SEC` 的段若与其后一条弱关联，
+/// 短碎片激进合并：时长 < `min_subtitle_sec` 的段若与其后一条弱关联，
 /// 并入后一条——**保留碎片起点**（该显示的真实起点，常比后条检测到的起点更准）
 /// 与后条终点/文本（用户 2026-09-18 主观评审提案）。
 ///
+/// `min_subtitle_sec` 由 `OcrRunParams::min_subtitle_sec` 传入（前端可调，默认 0.7s，
+/// ≤0 关闭本 pass）。调大能减少碎片，但会提高"误吞真实短句"的概率——实测 1.6s 时
+/// 语料出现缺失（见 `SHORT_FRAGMENT_MAX_SEC` 注释的标定表）。
+///
 /// 与既有合并的分工：
 /// - `merge_contained_adjacent`：严格判据（子序列/行前缀）+ 1.25s 跨度门；
-/// - 本 pass：**放宽到弱关联** + 0.7s 时长门 + 2.0s 间隔门（跨检测空洞）；
+/// - 本 pass：**放宽到弱关联** + `min_subtitle_sec` 时长门 + 2.0s 间隔门（跨检测空洞）；
 /// - D12 的稳定姓名框态（≥2.0s）不在本 pass 范围，仍保持独立（实测参考亦记为独立条目）。
-fn merge_short_fragments_into_next(segments: Vec<OcrSegment>) -> Vec<OcrSegment> {
+fn merge_short_fragments_into_next(
+    segments: Vec<OcrSegment>,
+    min_subtitle_sec: f64,
+) -> Vec<OcrSegment> {
+    if min_subtitle_sec <= 0.0 {
+        return segments;
+    }
     let mut out: Vec<OcrSegment> = Vec::with_capacity(segments.len());
     for seg in segments {
         let merge = out.last().is_some_and(|last| {
-            last.end - last.start < SHORT_FRAGMENT_MAX_SEC
+            last.end - last.start < min_subtitle_sec
                 && seg.start - last.end <= SHORT_FRAGMENT_GAP_MAX_SEC
                 && short_fragment_related(&last.text, &seg.text)
         });
@@ -1135,6 +1148,10 @@ pub struct OcrRunParams {
     pub batch_size: usize,
     /// 合并相似度阈值（编辑距离比例，默认 0.3）
     pub merge_similarity: f64,
+    /// 字幕预估最短长度（秒，默认 0.7）：短于此的产出段若与后一条弱关联，则并入后一条
+    /// （保留碎片起点 + 后条终点/文本）。**前端可调**——调大能减少碎片，但会提高
+    /// "误吞真实短句"的概率（基准语料硬门会暴露）；实测 1.6s 会使语料出现缺失。
+    pub min_subtitle_sec: f64,
 }
 
 /// 进度事件载荷
@@ -1209,6 +1226,8 @@ where
     let dhash_threshold = params.dhash_threshold;
     let batch_size = params.batch_size.max(1);
     let merge_similarity = params.merge_similarity;
+    // 字幕预估最短长度：≤0 视为关闭短碎片激进合并
+    let min_subtitle_sec = params.min_subtitle_sec;
     // D8(1b) 静态超时保险丝：env 可覆盖，≤0 关闭
     let stale_timeout = std::env::var("GSA_OCR_STALE_TIMEOUT_SEC")
         .ok()
@@ -1489,7 +1508,7 @@ where
         // 第三遍：相邻文本相似合并（消除阶段 2 召回的同句碎片/伪短字幕）
         let segments = merge_similar_adjacent(segments, merge_similarity);
         // 第四遍：短碎片激进合并（弱关联 + 时长/间隔门；保留碎片起点，见函数注释）
-        let segments = merge_short_fragments_into_next(segments);
+        let segments = merge_short_fragments_into_next(segments, min_subtitle_sec);
         // 第五遍（B-ii）：段尾精化——用密帧实测切换时刻替换"末采样+半间隔"的量化估计
         let segments =
             refine_segment_ends(segments, &scan_stream, dhash_threshold, frame_interval, clip.end);
@@ -2179,7 +2198,7 @@ mod tests {
                 confidence: 0.95,
             },
         ];
-        let out = merge_short_fragments_into_next(segs);
+        let out = merge_short_fragments_into_next(segs, DEFAULT_MIN_SUBTITLE_SEC);
         assert_eq!(out.len(), 1);
         assert!((out[0].start - 10.0).abs() < 1e-9, "保留碎片起点");
         assert!((out[0].end - 16.0).abs() < 1e-9, "保留后条终点");
@@ -2198,7 +2217,7 @@ mod tests {
                 confidence: 0.95,
             },
         ];
-        let out = merge_short_fragments_into_next(segs);
+        let out = merge_short_fragments_into_next(segs, DEFAULT_MIN_SUBTITLE_SEC);
         assert_eq!(out.len(), 2);
     }
 
@@ -2220,7 +2239,7 @@ mod tests {
                 confidence: 0.95,
             },
         ];
-        let out = merge_short_fragments_into_next(segs);
+        let out = merge_short_fragments_into_next(segs, DEFAULT_MIN_SUBTITLE_SEC);
         assert_eq!(out.len(), 2, "纯省略号条必须保持独立");
     }
 
@@ -2253,7 +2272,7 @@ mod tests {
                 confidence: 0.96,
             },
         ];
-        let out = merge_short_fragments_into_next(segs);
+        let out = merge_short_fragments_into_next(segs, DEFAULT_MIN_SUBTITLE_SEC);
         assert_eq!(out.len(), 2, "超出保守时长门 → 保持独立（已知残留）");
     }
 
@@ -2271,7 +2290,7 @@ mod tests {
                 confidence: 0.96,
             },
         ];
-        let out = merge_short_fragments_into_next(segs);
+        let out = merge_short_fragments_into_next(segs, DEFAULT_MIN_SUBTITLE_SEC);
         assert_eq!(out.len(), 2, "姓名框态超保守门 → 保持独立（已知残留）");
     }
 
@@ -2292,7 +2311,7 @@ mod tests {
                 confidence: 0.96,
             },
         ];
-        let out = merge_short_fragments_into_next(segs);
+        let out = merge_short_fragments_into_next(segs, DEFAULT_MIN_SUBTITLE_SEC);
         assert_eq!(out.len(), 2, "稳定姓名框态（3.52s）应保持独立");
     }
 

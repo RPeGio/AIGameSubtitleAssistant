@@ -160,6 +160,8 @@ pub fn default_ocr_params() -> OcrRunParams {
         dhash_threshold: 3,
         batch_size: 16,
         merge_similarity: 0.3,
+        // 字幕预估最短长度：基准取产品默认值（前端可调，见 DEFAULT_MIN_SUBTITLE_SEC 标定表）
+        min_subtitle_sec: ai_game_subtitle_assistant_lib::ocr::DEFAULT_MIN_SUBTITLE_SEC,
     }
 }
 

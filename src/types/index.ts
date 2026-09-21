@@ -127,6 +127,10 @@ export interface OcrRunParams {
   dhash_threshold: number;
   batch_size: number;
   merge_similarity: number;
+  /// 字幕预估最短长度（秒，默认 0.7）：短于此的产出段若与后一条弱关联则并入后一条
+  /// （保留碎片起点 + 后条终点/文本）。调大能减少碎片，但会提高误吞真实短句的概率
+  /// （实测 1.6s 时基准语料出现缺失）；≤0 关闭该合并。
+  min_subtitle_sec: number;
 }
 
 export interface OcrSegment {
