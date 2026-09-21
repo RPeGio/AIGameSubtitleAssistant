@@ -875,6 +875,48 @@ fn merge_short_fragments_into_next(
     out
 }
 
+/// 条带（检测层思路②）：把 9×8 哈希的 8 行切成 3 条横带（3/3/2 行）。
+const BAND_ROWS: [(usize, usize); 3] = [(0, 3), (3, 6), (6, 8)];
+
+/// 主导性倍数：最大变化带须 ≥ 其它带最大值的此倍数，才认"这是文字带在变"。
+///
+/// 依据：字幕变化只发生在文字所在带；**运镜/整体运动会让所有带一起变** → 无主导 →
+/// 回退整区判据（这正是检测层尝试①过冲的根因：无案例区分能力时单侧灵敏度必然此消彼长）。
+const BAND_DOMINANCE: f64 = 2.0;
+
+/// 用**变化最大的那条带**定位本段起点（检测层思路②）。
+///
+/// 返回窗口内越阈帧下标；`None` 表示无主导带（运镜/整体变化）→ 调用方回退整区判据。
+/// 条带阈值按位数等比缩放（`threshold × 带位数 / 64`，下限 2），故条带判据在文字带上
+/// 比整区判据更灵敏——字幕带的局部字形变化不再被其它带平均稀释。
+fn band_onset(window: &[u64], base: u64, threshold: u32) -> Option<usize> {
+    let last = *window.last()?;
+    let totals: Vec<u32> = BAND_ROWS
+        .iter()
+        .map(|(a, b)| {
+            crate::ai_runtime::dhash::hamming_distance_rows(base, last, *a, *b)
+        })
+        .collect();
+    let (bi, &tmax) = totals.iter().enumerate().max_by_key(|(_, &t)| t)?;
+    let other_max = totals
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != bi)
+        .map(|(_, &t)| t)
+        .max()
+        .unwrap_or(0);
+    // 无主导带（最大值不足其它带的 2 倍）→ 视为整体变化，交回整区判据
+    if tmax == 0 || (tmax as f64) < BAND_DOMINANCE * (other_max as f64) {
+        return None;
+    }
+    let (a, b) = BAND_ROWS[bi];
+    let band_bits = ((b - a) as u32) * 8;
+    let band_th = ((threshold * band_bits) / 64).max(2);
+    window
+        .iter()
+        .position(|&h| crate::ai_runtime::dhash::hamming_distance_rows(base, h, a, b) > band_th)
+}
+
 /// 段尾精化（B-ii）：把 `end = 末采样 + interval×0.5` 的**量化估计**替换为密帧实测的切换时刻。
 ///
 /// 依据（2026-09-18 边界形态诊断）：Δend p95 达 0.87s（glupov）/0.62s（moon），而容差 0.5s。
@@ -1034,11 +1076,14 @@ pub fn refine_window_changes(
                     let hashes: Vec<u64> = window.iter().map(|(_, h)| *h).collect();
                     let boundaries =
                         crate::ai_runtime::dhash::boundary_indices(&hashes, base, dhash_threshold);
-                    // 下一段（f_k）的真实边界 = 最后一个变化帧
-                    if let Some(&last) = boundaries.last() {
-                        // 用窗口内实际帧时间（而非 lo + last*interval），窗口首帧
+                    // 起点优先用**变化最大带**的越阈帧（检测层思路②）：文字带局部字形变化
+                    // 不被其它带稀释；无主导带（运镜/整体变化）则回退整区判据（取最后越阈）
+                    let pick = band_onset(&hashes, base, dhash_threshold)
+                        .or_else(|| boundaries.last().copied());
+                    if let Some(main) = pick {
+                        // 用窗口内实际帧时间（而非 lo + main*interval），窗口首帧
                         // 未必恰在 lo，更精确也避免假设
-                        let new_time = window[last].0;
+                        let new_time = window[main].0;
                         if new_time < hi {
                             if dev_debug {
                                 eprintln!(
@@ -2313,6 +2358,31 @@ mod tests {
         ];
         let out = merge_short_fragments_into_next(segs, DEFAULT_MIN_SUBTITLE_SEC);
         assert_eq!(out.len(), 2, "稳定姓名框态（3.52s）应保持独立");
+    }
+
+    // ── 条带起点判据（检测层思路②）──
+
+    #[test]
+    fn test_band_onset_prefers_text_band() {
+        // 文字带（行 3..6）渐显：整区判据要到累计 4 bit 才越阈，条带判据在 3 bit 时即命中
+        let base = 0u64;
+        // 行 3..6 的位：bit 24..48 → 依次置位模拟渐变
+        let h1 = 0u64; // 无变化
+        let h2 = 1u64 << 24; // 文字带 1 bit
+        let h3 = (1u64 << 24) | (1u64 << 25) | (1u64 << 26); // 文字带 3 bit
+        let h4 = h3 | (1u64 << 27); // 4 bit
+        let window = vec![h1, h2, h3, h4];
+        let pos = band_onset(&window, base, 3);
+        assert_eq!(pos, Some(2), "条带阈值 max(2, 3×24/64=1)=2 → 第 3 帧即越阈");
+    }
+
+    #[test]
+    fn test_band_onset_none_when_global_motion() {
+        // 三条带一起变（运镜）→ 无主导带 → 返回 None，调用方回退整区判据
+        let base = 0u64;
+        let last = (1u64 << 2) | (1u64 << 26) | (1u64 << 58); // 每带各 1 bit，分布均匀
+        let window = vec![base, last];
+        assert_eq!(band_onset(&window, base, 3), None);
     }
 
     // ── 段尾精化（B-ii）──

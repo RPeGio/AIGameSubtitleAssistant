@@ -144,6 +144,21 @@ pub fn change_flags_rescued(
     (result, override_t)
 }
 
+/// 按行掩码的汉明距离（条形带判据，检测层思路②）。
+///
+/// `dhash_gray9x8` 的位布局是 `bit = y*8 + x`，故**每一行占连续 8 bit**，
+/// 行区间 `[row_from, row_to)` 天然对应选区的一条横带——无需改扫描/采样数据流，
+/// 也不影响全局变化检测（纯局部判据）。
+pub fn hamming_distance_rows(a: u64, b: u64, row_from: usize, row_to: usize) -> u32 {
+    let from = row_from.min(8) * 8;
+    let to = row_to.min(8) * 8;
+    if to <= from {
+        return 0;
+    }
+    let mask = ((1u64 << (to - from)) - 1) << from;
+    ((a ^ b) & mask).count_ones()
+}
+
 /// 窗口精化的结果
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowRefine {
@@ -389,6 +404,24 @@ mod tests {
         let r = refine_window_hashes(&hashes, 0u64, 3);
         assert_eq!(r.main_boundary, Some(4)); // hamming(0,15)=4 > 3，首超阈值帧
         assert!(r.sub_changes.is_empty());
+    }
+
+    // ── hamming_distance_rows（检测层思路②：按行条带）──
+
+    #[test]
+    fn test_hamming_distance_rows_isolates_bands() {
+        // 位布局 bit = y*8 + x：行 0 置位不应影响行 1~2 的条带距离
+        let a = 0u64;
+        let b = 1u64; // 仅最低位（y=0,x=0）
+        assert_eq!(hamming_distance_rows(a, b, 0, 3), 1);
+        assert_eq!(hamming_distance_rows(a, b, 3, 6), 0);
+        // 行 7 的位（bit 56..64）
+        let c = 1u64 << 60;
+        assert_eq!(hamming_distance_rows(a, c, 6, 8), 1);
+        assert_eq!(hamming_distance_rows(a, c, 0, 6), 0);
+        // 非法/空区间
+        assert_eq!(hamming_distance_rows(a, c, 5, 5), 0);
+        assert_eq!(hamming_distance_rows(a, c, 9, 12), 0);
     }
 
     // ── boundary_indices（阶段 2：变化帧全序列）──
