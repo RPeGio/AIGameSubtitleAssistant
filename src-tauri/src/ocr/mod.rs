@@ -306,14 +306,21 @@ fn similar_text(a: &str, b: &str, threshold: f64) -> bool {
         return true;
     }
     // 前缀互相覆盖（打字机/渐进文本）：仅当较短文本足够长（≥ 较长文本 1/3）时，
-    // 避免把"派蒙"与"派蒙：旅行者你来了"这类独立两行误合并（约占 1/4 的前缀）
+    // 避免把"派蒙"与"派蒙：旅行者你来了"这类独立两行误合并（约占 1/4 的前缀）。
+    //
+    // 判据走**归一化**字符（去空白/标点/大小写），与 `is_line_prefix`、
+    // `is_line_boundary_cut`、`norm_chars` 系判据保持一致：实测嵌字里
+    // `Onyx Agate` 与 `OnyxAgate`（少一个空格）曾因此判为"非前缀"而漏并
+    // （glupov 4→5、8→9；pierro 4→5、17→18、21→22 共 5 处碎片）。
     let (short, long) = if a.chars().count() <= b.chars().count() {
         (a, b)
     } else {
         (b, a)
     };
-    let short_len = short.chars().count();
-    if short_len > 0 && long.starts_with(short) && short_len * 3 >= long.chars().count() {
+    let sn = norm_chars(short);
+    let ln = norm_chars(long);
+    let short_len = sn.len();
+    if short_len > 0 && ln.starts_with(&sn) && short_len * 3 >= ln.len() {
         return true;
     }
     edit_distance_ratio(a, b) <= threshold
@@ -745,6 +752,114 @@ fn is_line_prefix(prev: &str, next: &str) -> bool {
     let nhead: String = nlast.chars().take(plast.chars().count()).collect();
     let tail_len_ok = nlast.chars().count() > plast.chars().count();
     tail_len_ok && edit_distance_ratio(plast, &nhead) <= LINE_PREFIX_EDIT_TOLERANCE
+}
+
+/// 短碎片激进合并：碎片时长上限（秒）。
+///
+/// 依据（2026-09-18 主观评审 + 基准实测）：真实字幕寿命通常 ≥1s（与 D10 保险丝 1.5s、
+/// D9 的 2.5×interval 护栏同源），短于此的产出段几乎必为**分段错误**——实测嵌字碎片成因：
+/// 打字机首帧、OCR 误读（`You've`→`Du've`、`ll the`→`u the`）、共享区少一个空格
+/// （`Onyx Agate`/`OnyxAgate`）、姓名框态、淡出残留、画面图案误识别。
+///
+/// 取 **0.7s**（保守值，2026-09-18 实测标定）：覆盖主观评审报告的全部实际碎片
+/// （打字机首帧、少空格、OCR 误读、淡出残留），语料硬门逐位不变。
+///
+/// **已知未覆盖**：glupov #4 的 1.25s 误读首帧（`u the` vs `ll the tedious…`，合并时刻
+/// 时长已 >1.3s）与 moon #5 的 1.50s 姓名框态。二者都要把门提到 ≥1.5s 才能覆盖，而
+/// 语料里存在 **1.48s 姓名框/头衔态**（glupov）与 moon #5 **结构完全同形**却要求相反语义
+/// （语料参考要求独立、moon 参考要求合并）→ 纯文本/时长判据无法两全；实测 1.6s 门
+/// 使语料 glupov 97.1→92.5、moon 100.0→94.1（各缺失 1）→ 不可接受，故取保守值。
+const SHORT_FRAGMENT_MAX_SEC: f64 = 0.7;
+
+/// 短碎片与其后一条允许的时间间隔上限（秒）：实测存在 0.5~1.5s 的检测空洞
+/// （pierro 4→5、21→22 段间有空间隔，被既有 0.5s 邻接门挡掉而漏并）。
+const SHORT_FRAGMENT_GAP_MAX_SEC: f64 = 2.0;
+
+/// 末行模糊前缀容差：覆盖 OCR 误读 1~2 字符（长句下比率远小于此）
+const SHORT_FRAGMENT_PREFIX_TOL: f64 = 0.3;
+
+/// 末行字符重叠率下限：覆盖乱序/替换型误读
+const SHORT_FRAGMENT_OVERLAP: f64 = 0.5;
+
+/// 字符多重集重叠率：`Σ min(count_a, count_b) / |a|`
+fn overlap_ratio(a: &[char], b: &[char]) -> f64 {
+    if a.is_empty() {
+        return 0.0;
+    }
+    let mut used = vec![false; b.len()];
+    let mut hit = 0usize;
+    for &c in a {
+        if let Some(i) = b.iter().enumerate().position(|(j, &d)| !used[j] && d == c) {
+            used[i] = true;
+            hit += 1;
+        }
+    }
+    hit as f64 / a.len() as f64
+}
+
+/// 短碎片与后一条的**弱关联**判定（只比较碎片末行与后一条对应行）。
+///
+/// 三条任一成立即算关联：归一化子序列（含空白/标点差异）、模糊前缀（OCR 误读 1~2 字符）、
+/// 字符重叠率 ≥0.5（乱序/替换型误读）。
+///
+/// **护栏**：要求碎片末行归一化后**非空**——这条保住 D9 的独立短条：
+/// glupov 语料 `[……]` 条末行归一化为空串，绝不能被并入下一条
+/// （否则语料出现"缺失"，是六项基准的长期硬门）。
+fn short_fragment_related(frag: &str, next: &str) -> bool {
+    let fl: Vec<Vec<char>> = frag.lines().map(norm_chars).collect();
+    let nl: Vec<Vec<char>> = next.lines().map(norm_chars).collect();
+    if fl.is_empty() || nl.is_empty() {
+        return false;
+    }
+    let flast = &fl[fl.len() - 1];
+    if flast.len() < 2 {
+        return false;
+    }
+    let idx = (fl.len() - 1).min(nl.len() - 1);
+    let nline = &nl[idx];
+    if nline.is_empty() {
+        return false;
+    }
+    if is_subsequence(flast, nline) {
+        return true;
+    }
+    let head: Vec<char> = nline.iter().copied().take(flast.len()).collect();
+    let hs: String = flast.iter().collect();
+    let hh: String = head.iter().collect();
+    if edit_distance_ratio(&hs, &hh) <= SHORT_FRAGMENT_PREFIX_TOL {
+        return true;
+    }
+    overlap_ratio(flast, nline) >= SHORT_FRAGMENT_OVERLAP
+}
+
+/// 短碎片激进合并：时长 < `SHORT_FRAGMENT_MAX_SEC` 的段若与其后一条弱关联，
+/// 并入后一条——**保留碎片起点**（该显示的真实起点，常比后条检测到的起点更准）
+/// 与后条终点/文本（用户 2026-09-18 主观评审提案）。
+///
+/// 与既有合并的分工：
+/// - `merge_contained_adjacent`：严格判据（子序列/行前缀）+ 1.25s 跨度门；
+/// - 本 pass：**放宽到弱关联** + 0.7s 时长门 + 2.0s 间隔门（跨检测空洞）；
+/// - D12 的稳定姓名框态（≥2.0s）不在本 pass 范围，仍保持独立（实测参考亦记为独立条目）。
+fn merge_short_fragments_into_next(segments: Vec<OcrSegment>) -> Vec<OcrSegment> {
+    let mut out: Vec<OcrSegment> = Vec::with_capacity(segments.len());
+    for seg in segments {
+        let merge = out.last().is_some_and(|last| {
+            last.end - last.start < SHORT_FRAGMENT_MAX_SEC
+                && seg.start - last.end <= SHORT_FRAGMENT_GAP_MAX_SEC
+                && short_fragment_related(&last.text, &seg.text)
+        });
+        if merge {
+            if let Some(last) = out.pop() {
+                out.push(OcrSegment {
+                    start: last.start,
+                    ..seg
+                });
+                continue;
+            }
+        }
+        out.push(seg);
+    }
+    out
 }
 
 /// 段尾精化（B-ii）：把 `end = 末采样 + interval×0.5` 的**量化估计**替换为密帧实测的切换时刻。
@@ -1373,10 +1488,12 @@ where
         let segments = merge_contained_adjacent(segments, frame_interval);
         // 第三遍：相邻文本相似合并（消除阶段 2 召回的同句碎片/伪短字幕）
         let segments = merge_similar_adjacent(segments, merge_similarity);
-        // 第四遍（B-ii）：段尾精化——用密帧实测切换时刻替换"末采样+半间隔"的量化估计
+        // 第四遍：短碎片激进合并（弱关联 + 时长/间隔门；保留碎片起点，见函数注释）
+        let segments = merge_short_fragments_into_next(segments);
+        // 第五遍（B-ii）：段尾精化——用密帧实测切换时刻替换"末采样+半间隔"的量化估计
         let segments =
             refine_segment_ends(segments, &scan_stream, dhash_threshold, frame_interval, clip.end);
-        // 第五遍：精化可能让 start 提前 → clamp 相邻段时间，保证单调不重叠
+        // 第六遍：精化可能让 start 提前 → clamp 相邻段时间，保证单调不重叠
         let segments = clamp_segment_times(segments);
         if dev_debug {
             eprintln!("[ocr] clip {}/{}：合并 {} 条事件", i + 1, clip_count, segments.len());
@@ -2040,6 +2157,143 @@ mod tests {
         let segs = merge_frames(frames, 0.25, 30.0, 0.3);
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].text, clean);
+    }
+
+    // ── 短碎片激进合并 ──
+
+    #[test]
+    fn test_short_fragment_merges_across_gap() {
+        // 实测形态（pierro 4→5 / 21→22）：碎片 0.4s、与其后一条间隔 1.2s（> 既有 0.5s 邻接门），
+        // 末行与后条对应行弱关联（少一个空格）→ 并入后条，保留碎片起点
+        let segs = vec![
+            OcrSegment {
+                start: 10.0,
+                end: 10.4,
+                text: "Stepanyan\nOnyx Agate\nHm? Oh, it's yo".into(),
+                confidence: 0.9,
+            },
+            OcrSegment {
+                start: 11.6,
+                end: 16.0,
+                text: "Stepanyan\nOnyx Agate\nHm? Oh, it's you... Glad to meet you again.".into(),
+                confidence: 0.95,
+            },
+        ];
+        let out = merge_short_fragments_into_next(segs);
+        assert_eq!(out.len(), 1);
+        assert!((out[0].start - 10.0).abs() < 1e-9, "保留碎片起点");
+        assert!((out[0].end - 16.0).abs() < 1e-9, "保留后条终点");
+        assert!(out[0].text.contains("Glad to meet you"));
+    }
+
+    #[test]
+    fn test_short_fragment_keeps_unrelated() {
+        // 碎片与其后一条**无关联**（不同句子）→ 不并（保护真实短条不被吞掉）
+        let segs = vec![
+            OcrSegment { start: 10.0, end: 10.4, text: "派蒙\n嗯".into(), confidence: 0.9 },
+            OcrSegment {
+                start: 10.6,
+                end: 14.0,
+                text: "旅行者\n前方似乎有什么东西在等待。".into(),
+                confidence: 0.95,
+            },
+        ];
+        let out = merge_short_fragments_into_next(segs);
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn test_short_fragment_keeps_ellipsis_entry() {
+        // D9 护栏：末行归一化后为空（纯省略号条）→ 绝不并入下一条，
+        // 否则语料出现"缺失"（glupov 语料 [……] 条即此类）
+        let segs = vec![
+            OcrSegment {
+                start: 531.0,
+                end: 531.4,
+                text: "安东\n原「第九连队」临时连长\n……".into(),
+                confidence: 0.9,
+            },
+            OcrSegment {
+                start: 534.0,
+                end: 545.0,
+                text: "安东\n原「第九连队」临时连长\n没有消息。但也许……没有消息就是最好的消息。".into(),
+                confidence: 0.95,
+            },
+        ];
+        let out = merge_short_fragments_into_next(segs);
+        assert_eq!(out.len(), 2, "纯省略号条必须保持独立");
+    }
+
+    #[test]
+    fn test_similar_text_prefix_ignores_whitespace() {
+        // 判据 bug 回归：前缀判据走归一化后，`Onyx Agate` 与 `OnyxAgate`（少一个空格）
+        // 仍判为同句延续（实测 glupov 4→5、8→9 与 pierro 4→5、17→18、21→22 因原始
+        // starts_with 而漏并）
+        let short = "Stepanyan\nOnyx Agate\n嗯？是你啊…居然有幸";
+        let long = "Stepanyan\nOnyxAgate\n嗯？是你啊…居然有幸再见面了。";
+        assert!(similar_text(short, long, 0.3), "空白差异不应阻断前缀判定");
+    }
+
+    #[test]
+    fn test_short_fragment_keeps_ocr_misread_head_beyond_gate() {
+        // 已知未覆盖（glupov #4，1.25s 且合并时刻时长 >1.3s）：首帧 OCR 把 `ll the` 误读成
+        // `u the`，弱关联判据认得出，但时长门取保守值 0.7s → 保持独立。
+        // 提门到 1.6s 可合并（嵌字 glupov 58.5→60.8），但会使语料 97.1→92.5（缺失 1）→ 不可接受。
+        let segs = vec![
+            OcrSegment {
+                start: 94.04,
+                end: 95.29,
+                text: "Stepanyan\nOnyx Agate\nu the".into(),
+                confidence: 0.82,
+            },
+            OcrSegment {
+                start: 95.29,
+                end: 106.77,
+                text: "Stepanyan\nOnyxAgate\nll the tedious, drawn-out paperwork and keeping a unit running smoothly".into(),
+                confidence: 0.96,
+            },
+        ];
+        let out = merge_short_fragments_into_next(segs);
+        assert_eq!(out.len(), 2, "超出保守时长门 → 保持独立（已知残留）");
+    }
+
+    #[test]
+    fn test_short_fragment_keeps_namebox_state_beyond_gate() {
+        // 已知未覆盖（moon #5，1.50s 姓名框态）：与语料里 1.48s 姓名框/头衔态**结构完全同形**，
+        // 但参考语义相反（moon 参考要求合并、语料参考要求独立）→ 纯文本/时长判据无法两全，
+        // 取保守门后两者都保持独立（语料硬门优先）。
+        let segs = vec![
+            OcrSegment { start: 56.23, end: 57.73, text: "Sonnet\"".into(), confidence: 1.0 },
+            OcrSegment {
+                start: 57.98,
+                end: 68.55,
+                text: "Sonnet\n've been having a great time playing around too, Canon!".into(),
+                confidence: 0.96,
+            },
+        ];
+        let out = merge_short_fragments_into_next(segs);
+        assert_eq!(out.len(), 2, "姓名框态超保守门 → 保持独立（已知残留）");
+    }
+
+    #[test]
+    fn test_short_fragment_keeps_stable_namebox() {
+        // 3.52s 姓名框态（glupov #18）：超出 1.6s 时长门 → 保持独立（参考亦记为独立条目）
+        let segs = vec![
+            OcrSegment {
+                start: 531.08,
+                end: 534.60,
+                text: "Anton\nFormer Acting Captain,\"Ninth Company".into(),
+                confidence: 0.97,
+            },
+            OcrSegment {
+                start: 535.03,
+                end: 545.33,
+                text: "Anton\nFormer Acting Captain,\"Ninth Company\nNo news. But perhaps... no news is the best news.".into(),
+                confidence: 0.96,
+            },
+        ];
+        let out = merge_short_fragments_into_next(segs);
+        assert_eq!(out.len(), 2, "稳定姓名框态（3.52s）应保持独立");
     }
 
     // ── 段尾精化（B-ii）──

@@ -56,6 +56,12 @@ fn run_case(cfg: &CaseCfg) {
 
     let (segments, elapsed) = run_ocr(&manager, &video, &corpus_regions(cfg.key));
 
+    // 主观评估产物：语料段写成 SRT（时间轴相对语料录屏），供对照录屏逐条目视
+    match common::write_bench_srt(cfg.key, "corpus", &segments) {
+        Ok((path, n)) => println!("主观评估产物（SRT）：{path}（{n} 条）"),
+        Err(e) => eprintln!("[警告] SRT 导出失败：{e}"),
+    }
+
     // 语料提取：移植 src/stores/project.ts pushCorpusTexts（trim→丢空→按序精确去重）
     let produced = common::corpus_from_segments(&segments);
     let (pairs, missed, extra) = align_sequences(&expected, &produced);

@@ -66,6 +66,13 @@ fn run_case(cfg: &CaseCfg) {
 
     let (segments, elapsed) = run_ocr(&manager, &video, &regions);
 
+    // 主观评估产物：把嵌字段写成 SRT（复用产品侧 format_srt + BOM），
+    // 供导入剪辑软件、对照实况切片视频逐条目视（分数之外的定性判断）
+    match common::write_bench_srt(cfg.key, "hardsub", &segments) {
+        Ok((path, n)) => println!("主观评估产物（SRT，可直接导入剪辑软件）：{path}（{n} 条）"),
+        Err(e) => eprintln!("[警告] SRT 导出失败：{e}"),
+    }
+
     let align = align_temporal(&refs, &segments);
     let tol = tolerance_sec();
     let sc = score_hardsub(&refs, &segments, &align, out_of_region, tol);

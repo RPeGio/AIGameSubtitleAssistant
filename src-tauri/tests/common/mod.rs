@@ -224,6 +224,23 @@ pub fn run_ocr(
     (segments, t0.elapsed().as_secs_f64())
 }
 
+/// 基准主观评估产物：把 OCR 段写成 SRT 到 `temp/bench_output/<case>_<kind>.srt`。
+///
+/// 复用产品侧 `export::write_segments_srt`（同一 SRT 格式化与 UTF-8 BOM 约定），
+/// 供导入剪辑软件、对照实况视频逐条目视——分数之外的定性判断。返回 (路径, 条数)。
+pub fn write_bench_srt(
+    case: &str,
+    kind: &str,
+    segments: &[OcrSegment],
+) -> Result<(String, usize), String> {
+    let dir = repo_root().join("temp").join("bench_output");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
+    let path = dir.join(format!("{case}_{kind}.srt"));
+    let path_str = path.to_string_lossy().into_owned();
+    let n = ai_game_subtitle_assistant_lib::export::write_segments_srt(segments, &path_str)?;
+    Ok((path_str, n))
+}
+
 /// 语料提取：移植 src/stores/project.ts pushCorpusTexts 语义
 /// （trim → 丢空串 → 与既有+批内精确去重）。改装配规则须与前端同步（project.ts:803-820）。
 pub fn corpus_from_segments(segments: &[OcrSegment]) -> Vec<String> {
