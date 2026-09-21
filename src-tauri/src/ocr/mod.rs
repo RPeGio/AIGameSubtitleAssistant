@@ -918,8 +918,11 @@ fn band_onset(window: &[u64], base: u64, threshold: u32) -> Option<usize> {
 /// 采样点紧贴切换即过伸。而**切换是突变**（整行新字幕），密帧能逐帧定位。
 ///
 /// 与阶段 1 起点精化同源同数据（`scan_stream` 内存密帧，零抽帧零落盘）：以末采样处的哈希为
-/// 基准，在**其后 1.5×interval 窗口**内找首个越阈帧（= 下一条字幕的切换帧），取该时刻为段尾。
-/// 该判据与变化检测同阈值同语义，故不会引入采样层看不到的新边界。
+/// 基准，在**其后 1.5×interval 窗口**内定位下一条字幕的切换帧，取该时刻为段尾。
+///
+/// **条带优先（检测层思路②延伸，2026-09-18）**：与起点同法——窗口内若存在**主导变化带**
+/// （某条带变化 ≥2× 其它带），用该带的首个越阈帧作段尾（局部字形切换不被其它带稀释）；
+/// 无主导带（运镜/整体变化）回退整区判据（同阈值同语义）。
 /// 窗口内无越阈（本段延续到 clip 末尾）→ 保留原估计。
 fn refine_segment_ends(
     segments: Vec<OcrSegment>,
@@ -951,11 +954,23 @@ fn refine_segment_ends(
             let last_sample = seg.end - interval * 0.5;
             if let Some(base) = hash_near(last_sample) {
                 let hi = last_sample + interval * 1.5;
-                if let Some(&(t, _)) = dense
+                let win: Vec<(f64, u64)> = dense
                     .iter()
-                    .find(|(dt, h)| *dt > last_sample && *dt <= hi
-                        && crate::ai_runtime::dhash::hamming_distance(base, *h) > threshold)
-                {
+                    .filter(|(dt, _)| *dt > last_sample && *dt <= hi)
+                    .copied()
+                    .collect();
+                let win_hashes: Vec<u64> = win.iter().map(|(_, h)| *h).collect();
+                // 条带优先；无主导带则回退整区首个越阈帧
+                let pick = band_onset(&win_hashes, base, threshold)
+                    .map(|j| win[j].0)
+                    .or_else(|| {
+                        win.iter()
+                            .find(|(_, h)| {
+                                crate::ai_runtime::dhash::hamming_distance(base, *h) > threshold
+                            })
+                            .map(|(t, _)| *t)
+                    });
+                if let Some(t) = pick {
                     seg.end = t.clamp(seg.start, clip_end);
                 }
             }
@@ -2390,6 +2405,19 @@ mod tests {
         let dense = vec![(9.0, a), (10.0, a), (10.1, b), (10.2, b)];
         let out = refine_segment_ends(segs, &dense, 3, 0.5, 30.0);
         assert!((out[0].end - 10.1).abs() < 1e-9, "实得 {}", out[0].end);
+    }
+
+    #[test]
+    fn test_refine_segment_ends_band_switch() {
+        // 段尾条带判据：文字带（行 3..6）在窗口第 2 帧越阈（2 bit > band_th=2? 用 3 bit）
+        // → 段尾取该帧时刻；整区判据（阈值 3）要到累计 4 bit 才命中
+        let segs = vec![OcrSegment { start: 8.0, end: 10.25, text: "X".into(), confidence: 0.9 }];
+        let a = 0u64;
+        let text3 = (1u64 << 24) | (1u64 << 25) | (1u64 << 26); // 文字带 3 bit
+        let text4 = text3 | (1u64 << 27); // 4 bit
+        let dense = vec![(10.0, a), (10.1, text3), (10.2, text4)];
+        let out = refine_segment_ends(segs, &dense, 3, 0.5, 30.0);
+        assert!((out[0].end - 10.1).abs() < 1e-9, "条带应比整区更早命中（实得 {}）", out[0].end);
     }
 
     #[test]
