@@ -53,6 +53,11 @@ fn run_case(cfg: &CaseCfg) {
     };
     // D5 校准：参考时间轴是视频时间轴的线性缩放（逐条实测后稳健拟合，见 CaseCfg 注释）
     apply_ref_calibration(&mut refs, cfg);
+    // 排除计分条目（素材侧缺陷，如 pierro 的人工 transition——用户主观评审确认）
+    let dropped = common::drop_excluded_refs(&mut refs, cfg);
+    if !dropped.is_empty() {
+        println!("排除计分条目 {} 条（素材侧缺陷，不计缺陷）：{}", dropped.len(), dropped.join("、"));
+    }
     let regions = hardsub_regions(cfg.key);
 
     // 选区未覆盖的期望条目：与任何选区时间窗都不相交 → 单独报告，不计缺陷

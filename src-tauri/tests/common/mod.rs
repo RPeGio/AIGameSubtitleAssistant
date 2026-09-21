@@ -60,7 +60,25 @@ pub struct CaseCfg {
     /// 仅嵌字基准调用（语料基准按文本顺序比对，不用时间码）。
     pub ref_scale: f64,
     pub ref_offset: f64,
+    /// **排除计分的参考条目**（1 基序号 + 原因）：计分前从参考集中剔除，其对应产出段
+    /// 变为"多余段"（仅统计不扣分）。用于**素材侧缺陷**——被判为不属于管线责任的条目。
+    ///
+    /// 依据（2026-09-18 用户主观评审，导入剪辑软件逐条对照实况视频）：pierro 切片含
+    /// **人工剪辑加的文字渐变 transition**（有且仅有两处，产出段 31-33 与 45-47 处），
+    /// 会在该处天然产生碎片/边界异常，用户明确"不计错"。
+    pub excluded_refs: &'static [(usize, &'static str)],
 }
+
+/// pierro 两处人工 transition 涉及的参考条目（用户 2026-09-18 确认有且仅此两处）：
+/// 产出段 31-33 ↔ 参考 #28/#29/#30（561~618s）、45-47 ↔ #41/#42/#43（787~828s）。
+const PIERRO_TRANSITION_REFS: &[(usize, &str)] = &[
+    (28, "人工 transition（561~618s）"),
+    (29, "人工 transition（561~618s）"),
+    (30, "人工 transition（561~618s）"),
+    (41, "人工 transition（787~828s）"),
+    (42, "人工 transition（787~828s）"),
+    (43, "人工 transition（787~828s）"),
+];
 
 pub const MOON_SISTERS: CaseCfg = CaseCfg {
     key: "moon_sisters",
@@ -74,6 +92,7 @@ pub const MOON_SISTERS: CaseCfg = CaseCfg {
     // "对话行清空早于新句首字"的判定拍差，非参考自身偏置）
     ref_scale: 0.0,
     ref_offset: 0.0,
+    excluded_refs: &[],
 };
 
 pub const GLUPOV: CaseCfg = CaseCfg {
@@ -85,6 +104,7 @@ pub const GLUPOV: CaseCfg = CaseCfg {
     // 18 条实测：k=+0.709%、a=-0.021s、R²=0.990（参考时间轴比视频快 0.7%）
     ref_scale: 0.007092,
     ref_offset: -0.021,
+    excluded_refs: &[],
 };
 
 pub const PIERRO_QUESTIONS: CaseCfg = CaseCfg {
@@ -96,7 +116,27 @@ pub const PIERRO_QUESTIONS: CaseCfg = CaseCfg {
     // 117 条实测：k=+0.065%、a=-0.121s、R²=0.928
     ref_scale: 0.000645,
     ref_offset: -0.121,
+    // 两处人工剪辑 transition（用户 2026-09-18 主观评审确认，仅此两处）→ 不计错
+    excluded_refs: PIERRO_TRANSITION_REFS,
 };
+
+/// 剔除**排除计分**的参考条目（见 `CaseCfg::excluded_refs`），返回 (保留条数, 剔除明细)。
+///
+/// 调用方（嵌字基准）在计分前调用；被剔除条目的产出段自然成为"多余段"（仅统计不扣分）。
+pub fn drop_excluded_refs(refs: &mut Vec<RefEntry>, cfg: &CaseCfg) -> Vec<String> {
+    let mut dropped = Vec::new();
+    // 按下标**降序**删除，避免删除后后续序号左移导致错删
+    let mut items: Vec<&(usize, &str)> = cfg.excluded_refs.iter().collect();
+    items.sort_by_key(|(i, _)| std::cmp::Reverse(*i));
+    for (idx, reason) in items {
+        let i = idx.saturating_sub(1);
+        if i < refs.len() {
+            refs.remove(i);
+            dropped.push(format!("#{idx}（{reason}）"));
+        }
+    }
+    dropped
+}
 
 /// 对参考时间码施加线性校准（见 `CaseCfg::ref_scale` 注释）。
 /// 起止同乘同加：终点侧探针（`temp/probe/gt_probe_end.py`）独立实测的斜率与起点侧一致
@@ -979,6 +1019,19 @@ mod tests {
         let produced = vec![p(0.2, 10.1)];
         let al = align_temporal(&expected, &produced);
         assert_eq!(al.one_to_one.len(), 1);
+    }
+
+    #[test]
+    fn drop_excluded_refs_removes_by_descending_index() {
+        // 排除计分：按 1 基序号剔除，降序删除避免序号左移错删
+        let mut refs: Vec<RefEntry> = (1..=6)
+            .map(|i| RefEntry { start: i as f64, end: i as f64 + 1.0, text: format!("L{i}") })
+            .collect();
+        let cfg = CaseCfg { excluded_refs: &[(2, "t1"), (5, "t2")], ..PIERRO_QUESTIONS };
+        let dropped = drop_excluded_refs(&mut refs, &cfg);
+        assert_eq!(dropped.len(), 2);
+        let texts: Vec<&str> = refs.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(texts, vec!["L1", "L3", "L4", "L6"], "应删掉第 2、5 条");
     }
 
     #[test]
