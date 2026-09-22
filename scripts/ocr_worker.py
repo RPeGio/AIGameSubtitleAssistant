@@ -14,6 +14,7 @@ predict——全程不产生临时文件，也天然规避 cv2 读图的非 ASCI
 模型只在首次需要时加载一次（内存常驻）。Rust 侧注入：
   - PADDLE_PDX_CACHE_HOME：模型缓存目录（runtime/models/paddleocr）
   - GSA_OCR_MODEL：模型档位 "mobile"（默认，快）| "server"（慢，更准）
+  - GSA_OCR_DEVICE：推理设备 "cpu" | "gpu:0"（见 _resolve_device；空 = 交给 paddlex 自动选）
 批量请求用一次 `ocr.predict(images列表)` 完成（真批处理）。
 """
 
@@ -87,11 +88,46 @@ def _clean_text(text):
     return "\n".join(lines)
 
 
+def _resolve_device():
+    """把 GSA_OCR_DEVICE 解析成可用的设备串；空串表示不指定（交给 paddlex 自动选）。
+
+    空 = 不传 device：paddlex 的 get_default_device() 会在 paddle 编译了 CUDA 且有
+    设备时自动选 gpu:0，否则 cpu —— 未启用 GPU 时行为与改动前完全一致。
+
+    显式要 gpu 但 CUDA 不可用时回退 cpu：Rust 侧只在 deps_gpu 存在时才把它挂到
+    PYTHONPATH 首位，所以"配了 gpu:0 但没跑 bootstrap_ocr_gpu.ps1"是常见误配；
+    回退 + 一行 stderr 提示，好过整轮 OCR 直接报错。
+    """
+    want = os.environ.get("GSA_OCR_DEVICE", "").strip().lower()
+    if not want:
+        return ""
+    device_type = want.split(":")[0]
+    if device_type != "gpu":
+        return want  # cpu 原样；npu/xpu 等交给 paddle 自己报错，不臆测
+    try:
+        import paddle
+
+        if paddle.device.is_compiled_with_cuda() and paddle.device.cuda.device_count() > 0:
+            return want
+    except Exception as e:
+        sys.stderr.write(f"[ocr_worker] 探测 CUDA 失败（{e}），回退 cpu\n")
+        return "cpu"
+    sys.stderr.write(
+        f"[ocr_worker] 请求 {want} 但当前 paddle 无可用 CUDA，回退 cpu；"
+        "如需 GPU 请先运行 scripts/bootstrap_ocr_gpu.ps1\n"
+    )
+    return "cpu"
+
+
 def make_ocr():
     from paddleocr import PaddleOCR
 
     model = os.environ.get("GSA_OCR_MODEL", "mobile").strip().lower()
     det, rec = MODEL_MAP.get(model, MODEL_MAP["mobile"])
+    device = _resolve_device()
+    # 记录实际生效的设备：GPU 基准对比时靠这一行确认真的跑在 GPU 上
+    sys.stderr.write(f"[ocr_worker] paddle 设备: {device or 'auto'}（GSA_OCR_MODEL={model}）\n")
+    extra = {"device": device} if device else {}
     return PaddleOCR(
         lang=LANG,
         text_detection_model_name=det,
@@ -99,6 +135,7 @@ def make_ocr():
         use_doc_orientation_classify=False,
         use_doc_unwarping=False,
         use_textline_orientation=False,
+        **extra,
     )
 
 
