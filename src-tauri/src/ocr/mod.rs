@@ -911,6 +911,72 @@ fn band_onset(window: &[u64], base: u64, threshold: u32) -> Option<usize> {
         .position(|&h| crate::ai_runtime::dhash::hamming_distance_rows(base, h, a, b) > band_th)
 }
 
+/// 标点归一化目标（**用户计划后续做成可配置**，故目标字符集中在此处，先取默认值）。
+///
+/// 默认（2026-09-18 用户指定）：
+/// - 各类括号（`（）`、`{}`、`【】`、`[]`、`〔〕〖〗〈〉《》『』` 及 `「」` 自身）→ `「」`；
+/// - 各类省略号（`...`、`。。`、`···`、`……`、`…`）→ 单个 `…`。
+///
+/// 说明：**半角 `()` 不参与归一化**——英文嵌字里它是正常标点；而 `[]`/`{}` 保留参与，
+/// 是因为实测 OCR 会把 `「」` 退化成 `]`/`【`（glupov/pierro 共 20+ 处），归一化正好修掉该缺陷。
+const NORM_OPEN_BRACKET: char = '「';
+const NORM_CLOSE_BRACKET: char = '」';
+const NORM_ELLIPSIS: char = '…';
+
+/// 括号字符 → 归一化目标（`None` 表示不是括号）
+fn bracket_target(c: char) -> Option<char> {
+    match c {
+        '（' | '【' | '[' | '{' | '〔' | '〖' | '〈' | '《' | '『' | '「' => Some(NORM_OPEN_BRACKET),
+        '）' | '】' | ']' | '}' | '〕' | '〗' | '〉' | '》' | '』' | '」' => Some(NORM_CLOSE_BRACKET),
+        _ => None,
+    }
+}
+
+/// 省略号类字符（连续出现 ≥2 个、或本身是 `…` 时，视为一个省略号）
+fn is_ellipsis_char(c: char) -> bool {
+    matches!(c, '.' | '．' | '。' | '·' | '・' | '‧' | '…')
+}
+
+/// 标点/省略号归一化（作用于最终段文本；不改动任何合并判据——判据走 `norm_chars`，
+/// 本就忽略标点，故此归一化对分段与计时零影响）。
+fn normalize_punctuation(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if let Some(t) = bracket_target(c) {
+            out.push(t);
+            i += 1;
+            continue;
+        }
+        if c == NORM_ELLIPSIS {
+            // 单个或多个 `…` 一律收敛为一个
+            out.push(NORM_ELLIPSIS);
+            i += 1;
+            while i < chars.len() && chars[i] == NORM_ELLIPSIS {
+                i += 1;
+            }
+            continue;
+        }
+        if is_ellipsis_char(c) {
+            // 连续 ≥2 个（如 `...`、`。。`、`···`）才算省略号；单个 `.`/`。` 原样保留
+            let mut j = i;
+            while j < chars.len() && is_ellipsis_char(chars[j]) && chars[j] != NORM_ELLIPSIS {
+                j += 1;
+            }
+            if j - i >= 2 {
+                out.push(NORM_ELLIPSIS);
+                i = j;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
 /// 段尾精化（B-ii）：把 `end = 末采样 + interval×0.5` 的**量化估计**替换为密帧实测的切换时刻。
 ///
 /// 依据（2026-09-18 边界形态诊断）：Δend p95 达 0.87s（glupov）/0.62s（moon），而容差 0.5s。
@@ -1567,7 +1633,11 @@ where
         let segments =
             refine_segment_ends(segments, &scan_stream, dhash_threshold, frame_interval, clip.end);
         // 第六遍：精化可能让 start 提前 → clamp 相邻段时间，保证单调不重叠
-        let segments = clamp_segment_times(segments);
+        let mut segments = clamp_segment_times(segments);
+        // 末步（输出层）：标点/省略号归一化——纯文本变换，不影响分段与计时
+        for seg in &mut segments {
+            seg.text = normalize_punctuation(&seg.text);
+        }
         if dev_debug {
             eprintln!("[ocr] clip {}/{}：合并 {} 条事件", i + 1, clip_count, segments.len());
             for seg in &segments {
@@ -2392,6 +2462,35 @@ mod tests {
         let last = (1u64 << 2) | (1u64 << 26) | (1u64 << 58); // 每带各 1 bit，分布均匀
         let window = vec![base, last];
         assert_eq!(band_onset(&window, base, 3), None);
+    }
+
+    // ── 标点/省略号归一化 ──
+
+    #[test]
+    fn test_normalize_punctuation_brackets() {
+        // 实测退化（glupov/pierro 共 20+ 处）：`「」` → `[]`/`【】`/`J` → 一律归一为「」
+        assert_eq!(normalize_punctuation("「编玛瑙]"), "「编玛瑙」");
+        assert_eq!(normalize_punctuation("【丑角】"), "「丑角」");
+        assert_eq!(normalize_punctuation("（派蒙）"), "「派蒙」");
+        assert_eq!(normalize_punctuation("{米提亚}"), "「米提亚」");
+        assert_eq!(normalize_punctuation("「诺艾尔」"), "「诺艾尔」");
+        // 半角 () 是英文正常标点 → 不参与归一化
+        assert_eq!(normalize_punctuation("(Paimon)"), "(Paimon)");
+    }
+
+    #[test]
+    fn test_normalize_punctuation_ellipsis() {
+        // 各类省略号 → 单个 `…`
+        assert_eq!(normalize_punctuation("等等..."), "等等…");
+        assert_eq!(normalize_punctuation("等等……"), "等等…");
+        assert_eq!(normalize_punctuation("等等。。。"), "等等…");
+        assert_eq!(normalize_punctuation("等等···"), "等等…");
+        assert_eq!(normalize_punctuation("等等…"), "等等…");
+        // 单个句号/点号**不**变（避免把陈述句尾的 。 变成省略号）
+        assert_eq!(normalize_punctuation("好的。"), "好的。");
+        assert_eq!(normalize_punctuation("Mr. Smith"), "Mr. Smith");
+        // 混排：括号 + 省略号
+        assert_eq!(normalize_punctuation("【丑角】……你来了..."), "「丑角」…你来了…");
     }
 
     // ── 段尾精化（B-ii）──

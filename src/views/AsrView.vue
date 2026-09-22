@@ -108,7 +108,7 @@ const ocrParams = ref<OcrRunParams>({
   dhash_threshold: 3,
   batch_size: 16,
   merge_similarity: 0.3,
-  min_subtitle_sec: 0.7,
+  min_subtitle_sec: 1.5,
 });
 
 const hasClipVideo = computed(() => projectStore.currentVideoMeta !== null);
@@ -348,6 +348,20 @@ async function startEmbedOcr() {
                   :step="0.05"
                   style="width: 100%"
                 />
+              </div>
+              <div class="cfg-field">
+                <NText depth="2">字幕预估最短长度（秒，越小越少误并）</NText>
+                <NInputNumber
+                  v-model:value="ocrParams.min_subtitle_sec"
+                  :min="0"
+                  :max="5"
+                  :step="0.1"
+                  style="width: 100%"
+                />
+                <NText depth="3" style="font-size: 12px">
+                  短于此长度的产出段若与后一条同句（前缀/子序列），并入后一条。默认 0.7；
+                  实测 1.5 能收掉长打字机/遮挡造成的碎片，但会提高"误吞真实短句"的概率（0 关闭）
+                </NText>
               </div>
             </div>
 
