@@ -15,6 +15,7 @@ predict——全程不产生临时文件，也天然规避 cv2 读图的非 ASCI
   - PADDLE_PDX_CACHE_HOME：模型缓存目录（runtime/models/paddleocr）
   - GSA_OCR_MODEL：模型档位 "mobile"（默认，快）| "server"（慢，更准）
   - GSA_OCR_DEVICE：推理设备 "cpu" | "gpu:0"（见 _resolve_device；空 = 交给 paddlex 自动选）
+  - GSA_OCR_TF32：设 "1" 才允许 TF32（默认关闭，见下方 TF32 段）
 批量请求用一次 `ocr.predict(images列表)` 完成（真批处理）。
 """
 
@@ -25,6 +26,16 @@ import os
 import sys
 
 LANG = "ch"
+
+# ─── TF32：默认关闭，换取与 CPU 逐字节一致的产出 ──────────────
+# Ada（sm_89）及以上的 cuBLAS/cuDNN 默认用 TF32 张量核做 FP32 矩阵乘（尾数 23→10 位），
+# 会让形近字形（「」/】/] 之类）的 argmax 在 CPU/GPU 间翻转。实测 bench_corpus 三案例
+# 共 4 处单字符标点差异，评分/CER 不受影响（评分口径去标点）但产出 SRT 不再逐字节一致。
+# 关掉后产出与 CPU 完全一致，代价约 3.8%（端到端 174.3s → 180.9s）。
+# 需要那 3.8% 时设 GSA_OCR_TF32=1。用 setdefault：用户已显式设 NVIDIA_TF32_OVERRIDE 时尊重之。
+# 必须在 import paddle 之前写入——CUDA 上下文建立后再设无效。
+if os.environ.get("GSA_OCR_TF32", "").strip() != "1":
+    os.environ.setdefault("NVIDIA_TF32_OVERRIDE", "0")
 
 # base64 → ndarray 解码依赖（均为 paddleocr 的传递依赖，runtime/deps 内自带）
 import cv2
