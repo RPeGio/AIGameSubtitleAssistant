@@ -130,6 +130,35 @@ def _resolve_device():
     return "cpu"
 
 
+# ─── det 分批：把"逐张跑 det"改成"一次 16 张" ──────────────
+# paddlex 的各子模型**总是**按自己的 batch_sampler 分块再逐块 process
+# （base_predictor.py:337 `for batch_data in batches: process(batch_data)`），而
+# paddlex 的 OCR.yaml 里 TextDetection 段没有 batch_size → 默认 1，也就是管线哪怕
+# 一次拿到 16 张，det 仍然逐张推理。实测（RTX 4060 + PP-OCRv5_mobile，886×124 语料帧）
+# 把 det 批设为 16 后 36.0 → 22.2 ms/帧（1.62×），且 16 已是平台（32/64 无进一步收益）。
+# 取值与 Rust 侧默认 IPC 批（OcrRunParams.batch_size = 16）对齐：det 实际批 =
+# min(IPC 批, 本值)，IPC 批更小时只是填不满，不会出错。
+# rec 侧不受影响：它逐输入图像调用（pipeline.py:446），子批上限就是单帧行数。
+DET_BATCH = 16
+
+
+def _paddlex_config():
+    """取官方 OCR 管线配置并把 det 批大小改成 DET_BATCH。
+
+    只能走 paddlex_config：paddleocr 的 PaddleOCR 包装层没有暴露
+    text_detection_batch_size（只有 ..._recognition_/_textline_orientation_ 两个）。
+    注意该参数会**整体替换**基线配置（_pipelines/base.py:95 把传入对象直接当基线），
+    所以必须先 load_pipeline_config("OCR") 取回官方配置再改，不能只传局部 dict，
+    否则 SubModules/PreProcess 等会全部缺失。
+    """
+    from paddlex.inference import load_pipeline_config
+
+    cfg = load_pipeline_config("OCR")
+    cfg["batch_size"] = DET_BATCH
+    cfg["SubModules"]["TextDetection"]["batch_size"] = DET_BATCH
+    return cfg
+
+
 def make_ocr():
     from paddleocr import PaddleOCR
 
@@ -146,6 +175,7 @@ def make_ocr():
         use_doc_orientation_classify=False,
         use_doc_unwarping=False,
         use_textline_orientation=False,
+        paddlex_config=_paddlex_config(),
         **extra,
     )
 
