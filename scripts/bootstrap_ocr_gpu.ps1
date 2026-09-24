@@ -139,8 +139,15 @@ $pipArgs = @(
   $want
 ) + $cudaLibs
 if ($Proxy) { $pipArgs += @("--proxy", $Proxy) }
+# pip 会往 stderr 打通知/警告（如 "A new release of pip is available"、"Target directory
+# ... already exists"），PS 5.1 在 ErrorActionPreference=Stop 下会把它抛成 NativeCommandError
+# 直接中断脚本（即使命令本身成功）。故两处 pip 调用都局部降级，只看退出码。
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 & $python @pipArgs
-if ($LASTEXITCODE -ne 0) {
+$pipExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+if ($pipExit -ne 0) {
   throw "安装失败：paddle 官方索引通常在国内较快，失败时检查网络或加 -Proxy"
 }
 
@@ -162,8 +169,13 @@ $cudnnArgs = @(
   $cudnnPin
 )
 if ($Proxy) { $cudnnArgs += @("--proxy", $Proxy) }
+# 同 2a：pip 的 stderr 通知会被 Stop 偏好抛成错误而中断（实测在 cuDNN 这步必现）
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 & $python @cudnnArgs
-if ($LASTEXITCODE -ne 0) {
+$cudnnExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+if ($cudnnExit -ne 0) {
   Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
   throw "cuDNN 安装失败：PyPI 直连受限时用 -Mirror 指定国内镜像（如 https://mirrors.ustc.edu.cn/pypi/simple/）或 -Proxy 走代理"
 }
