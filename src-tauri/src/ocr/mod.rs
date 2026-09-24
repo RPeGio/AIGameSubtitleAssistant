@@ -911,23 +911,65 @@ fn band_onset(window: &[u64], base: u64, threshold: u32) -> Option<usize> {
         .position(|&h| crate::ai_runtime::dhash::hamming_distance_rows(base, h, a, b) > band_th)
 }
 
-/// 标点归一化目标（**用户计划后续做成可配置**，故目标字符集中在此处，先取默认值）。
+/// 标点归一化配置（S1：参数化，供前端"个性化归一化目标"使用）。
 ///
-/// 默认（2026-09-18 用户指定）：
+/// 归一化是**精度策略的统一前置层**（用户 2026-09-24 决策）：术语表/一致性纠错都要求
+/// 产出文本与词条**同形**才能匹配，故先统一标点形态，纠错只需关心实词字形。
+#[derive(Debug, Clone, Deserialize)]
+pub struct PunctuationNorm {
+    /// 左括号归一化目标（默认 `「`；用户可改为 `[` 等）
+    #[serde(default = "default_open_bracket")]
+    pub open_bracket: char,
+    /// 右括号归一化目标（默认 `」`）
+    #[serde(default = "default_close_bracket")]
+    pub close_bracket: char,
+    /// 省略号归一化目标（默认 `…`；用户可改为 `……` 等）
+    #[serde(default = "default_ellipsis")]
+    pub ellipsis: String,
+    /// 是否修复"标点被识别成拉丁字母"（默认开，见 `fix_misread_punct_letters`）
+    #[serde(default = "default_true")]
+    pub fix_misread_letters: bool,
+}
+
+fn default_open_bracket() -> char {
+    DEFAULT_OPEN_BRACKET
+}
+fn default_close_bracket() -> char {
+    DEFAULT_CLOSE_BRACKET
+}
+fn default_ellipsis() -> String {
+    DEFAULT_ELLIPSIS.to_string()
+}
+fn default_true() -> bool {
+    true
+}
+
+impl Default for PunctuationNorm {
+    fn default() -> Self {
+        Self {
+            open_bracket: DEFAULT_OPEN_BRACKET,
+            close_bracket: DEFAULT_CLOSE_BRACKET,
+            ellipsis: DEFAULT_ELLIPSIS.to_string(),
+            fix_misread_letters: true,
+        }
+    }
+}
+
+/// 默认归一化目标（用户 2026-09-18 指定）：
 /// - 各类括号（`（）`、`{}`、`【】`、`[]`、`〔〕〖〗〈〉《》『』` 及 `「」` 自身）→ `「」`；
 /// - 各类省略号（`...`、`。。`、`···`、`……`、`…`）→ 单个 `…`。
 ///
 /// 说明：**半角 `()` 不参与归一化**——英文嵌字里它是正常标点；而 `[]`/`{}` 保留参与，
 /// 是因为实测 OCR 会把 `「」` 退化成 `]`/`【`（glupov/pierro 共 20+ 处），归一化正好修掉该缺陷。
-const NORM_OPEN_BRACKET: char = '「';
-const NORM_CLOSE_BRACKET: char = '」';
-const NORM_ELLIPSIS: char = '…';
+const DEFAULT_OPEN_BRACKET: char = '「';
+const DEFAULT_CLOSE_BRACKET: char = '」';
+const DEFAULT_ELLIPSIS: &str = "…";
 
-/// 括号字符 → 归一化目标（`None` 表示不是括号）
-fn bracket_target(c: char) -> Option<char> {
+/// 括号字符 → 是左括号还是右括号（`None` 表示不是括号）
+fn bracket_side(c: char) -> Option<bool> {
     match c {
-        '（' | '【' | '[' | '{' | '〔' | '〖' | '〈' | '《' | '『' | '「' => Some(NORM_OPEN_BRACKET),
-        '）' | '】' | ']' | '}' | '〕' | '〗' | '〉' | '》' | '』' | '」' => Some(NORM_CLOSE_BRACKET),
+        '（' | '【' | '[' | '{' | '〔' | '〖' | '〈' | '《' | '『' | '「' => Some(true),
+        '）' | '】' | ']' | '}' | '〕' | '〗' | '〉' | '》' | '』' | '」' => Some(false),
         _ => None,
     }
 }
@@ -937,24 +979,66 @@ fn is_ellipsis_char(c: char) -> bool {
     matches!(c, '.' | '．' | '。' | '·' | '・' | '‧' | '…')
 }
 
+/// 修复"标点被识别成拉丁字母"（S1 补充，2026-09-24）。
+///
+/// 依据字符精度诊断：英文嵌字里 `「」` 被读成行尾的 `j`（实测 9 处，占三案例全部字符错误的
+/// 约 20%）——与 `]`/`【` 同源，都是引号退化，但字母形态未被括号归一化覆盖。
+///
+/// **上下文约束**（避免误伤正常单词）：仅当该字母**紧邻行尾或已是行尾**、且**本行不含其它
+/// 未配对的括号**时才替换。实测形态：`Sonnet"` / `...sidej` / `The Jesterj`。
+fn fix_misread_punct_letters(text: &str, cfg: &PunctuationNorm) -> String {
+    let mut out = String::with_capacity(text.len());
+    for (li, line) in text.lines().enumerate() {
+        if li > 0 {
+            out.push('\n');
+        }
+        let chars: Vec<char> = line.chars().collect();
+        // 行内已配对括号数：有括号说明标点识别正常，不做字母替换
+        let has_bracket = chars.iter().any(|c| bracket_side(*c).is_some());
+        let trim_end = chars.len();
+        let mut buf: Vec<char> = Vec::with_capacity(chars.len());
+        for (i, &c) in chars.iter().enumerate() {
+            // j/J 位于行尾（后面只剩空白）且本行无其它括号 → 视为右括号退化
+            let is_tail = chars[i + 1..trim_end].iter().all(|x| x.is_whitespace());
+            if !has_bracket && is_tail && matches!(c, 'j' | 'J') {
+                buf.push(cfg.close_bracket);
+            } else {
+                buf.push(c);
+            }
+        }
+        out.extend(buf);
+    }
+    out
+}
+
 /// 标点/省略号归一化（作用于最终段文本；不改动任何合并判据——判据走 `norm_chars`，
 /// 本就忽略标点，故此归一化对分段与计时零影响）。
-fn normalize_punctuation(text: &str) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let mut out = String::with_capacity(text.len());
+fn normalize_punctuation(text: &str, cfg: &PunctuationNorm) -> String {
+    let src = if cfg.fix_misread_letters {
+        fix_misread_punct_letters(text, cfg)
+    } else {
+        text.to_string()
+    };
+    let chars: Vec<char> = src.chars().collect();
+    let mut out = String::with_capacity(src.len());
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
-        if let Some(t) = bracket_target(c) {
-            out.push(t);
+        if let Some(is_open) = bracket_side(c) {
+            if is_open {
+                out.push(cfg.open_bracket);
+            } else {
+                out.push(cfg.close_bracket);
+            }
             i += 1;
             continue;
         }
-        if c == NORM_ELLIPSIS {
-            // 单个或多个 `…` 一律收敛为一个
-            out.push(NORM_ELLIPSIS);
+        let ell: Vec<char> = cfg.ellipsis.chars().collect();
+        if !ell.is_empty() && c == ell[0] {
+            // 目标省略号本身：多个连续一律收敛为一个
+            out.push_str(&cfg.ellipsis);
             i += 1;
-            while i < chars.len() && chars[i] == NORM_ELLIPSIS {
+            while i < chars.len() && chars[i] == ell[0] {
                 i += 1;
             }
             continue;
@@ -962,11 +1046,11 @@ fn normalize_punctuation(text: &str) -> String {
         if is_ellipsis_char(c) {
             // 连续 ≥2 个（如 `...`、`。。`、`···`）才算省略号；单个 `.`/`。` 原样保留
             let mut j = i;
-            while j < chars.len() && is_ellipsis_char(chars[j]) && chars[j] != NORM_ELLIPSIS {
+            while j < chars.len() && is_ellipsis_char(chars[j]) && chars[j] != ell.first().copied().unwrap_or('\0') {
                 j += 1;
             }
             if j - i >= 2 {
-                out.push(NORM_ELLIPSIS);
+                out.push_str(&cfg.ellipsis);
                 i = j;
                 continue;
             }
@@ -1272,6 +1356,9 @@ pub struct OcrRunParams {
     /// （保留碎片起点 + 后条终点/文本）。**前端可调**——调大能减少碎片，但会提高
     /// "误吞真实短句"的概率（基准语料硬门会暴露）；实测 1.6s 会使语料出现缺失。
     pub min_subtitle_sec: f64,
+    /// 标点归一化配置（默认见 `PunctuationNorm::default`）；缺省时用默认值
+    #[serde(default)]
+    pub punctuation: PunctuationNorm,
 }
 
 /// 进度事件载荷
@@ -1348,6 +1435,8 @@ where
     let merge_similarity = params.merge_similarity;
     // 字幕预估最短长度：≤0 视为关闭短碎片激进合并
     let min_subtitle_sec = params.min_subtitle_sec;
+    // 标点归一化配置（精度策略的前置层，用户可个性目标字符）
+    let punctuation = params.punctuation.clone();
     // D8(1b) 静态超时保险丝：env 可覆盖，≤0 关闭
     let stale_timeout = std::env::var("GSA_OCR_STALE_TIMEOUT_SEC")
         .ok()
@@ -1636,7 +1725,7 @@ where
         let mut segments = clamp_segment_times(segments);
         // 末步（输出层）：标点/省略号归一化——纯文本变换，不影响分段与计时
         for seg in &mut segments {
-            seg.text = normalize_punctuation(&seg.text);
+            seg.text = normalize_punctuation(&seg.text, &punctuation);
         }
         if dev_debug {
             eprintln!("[ocr] clip {}/{}：合并 {} 条事件", i + 1, clip_count, segments.len());
@@ -2466,31 +2555,67 @@ mod tests {
 
     // ── 标点/省略号归一化 ──
 
+    /// 默认配置（测试用）
+    fn pn() -> PunctuationNorm {
+        PunctuationNorm::default()
+    }
+
     #[test]
     fn test_normalize_punctuation_brackets() {
-        // 实测退化（glupov/pierro 共 20+ 处）：`「」` → `[]`/`【】`/`J` → 一律归一为「」
-        assert_eq!(normalize_punctuation("「编玛瑙]"), "「编玛瑙」");
-        assert_eq!(normalize_punctuation("【丑角】"), "「丑角」");
-        assert_eq!(normalize_punctuation("（派蒙）"), "「派蒙」");
-        assert_eq!(normalize_punctuation("{米提亚}"), "「米提亚」");
-        assert_eq!(normalize_punctuation("「诺艾尔」"), "「诺艾尔」");
+        // 实测退化（glupov/pierro 共 20+ 处）：`「」` → `[]`/`【】` → 一律归一为「」
+        assert_eq!(normalize_punctuation("「编玛瑙]", &pn()), "「编玛瑙」");
+        assert_eq!(normalize_punctuation("【丑角】", &pn()), "「丑角」");
+        assert_eq!(normalize_punctuation("（派蒙）", &pn()), "「派蒙」");
+        assert_eq!(normalize_punctuation("{米提亚}", &pn()), "「米提亚」");
+        assert_eq!(normalize_punctuation("「诺艾尔」", &pn()), "「诺艾尔」");
         // 半角 () 是英文正常标点 → 不参与归一化
-        assert_eq!(normalize_punctuation("(Paimon)"), "(Paimon)");
+        assert_eq!(normalize_punctuation("(Paimon)", &pn()), "(Paimon)");
     }
 
     #[test]
     fn test_normalize_punctuation_ellipsis() {
         // 各类省略号 → 单个 `…`
-        assert_eq!(normalize_punctuation("等等..."), "等等…");
-        assert_eq!(normalize_punctuation("等等……"), "等等…");
-        assert_eq!(normalize_punctuation("等等。。。"), "等等…");
-        assert_eq!(normalize_punctuation("等等···"), "等等…");
-        assert_eq!(normalize_punctuation("等等…"), "等等…");
+        assert_eq!(normalize_punctuation("等等...", &pn()), "等等…");
+        assert_eq!(normalize_punctuation("等等……", &pn()), "等等…");
+        assert_eq!(normalize_punctuation("等等。。。", &pn()), "等等。。。".replace("。。。", "…"));
+        assert_eq!(normalize_punctuation("等等···", &pn()), "等等…");
+        assert_eq!(normalize_punctuation("等等…", &pn()), "等等…");
         // 单个句号/点号**不**变（避免把陈述句尾的 。 变成省略号）
-        assert_eq!(normalize_punctuation("好的。"), "好的。");
-        assert_eq!(normalize_punctuation("Mr. Smith"), "Mr. Smith");
+        assert_eq!(normalize_punctuation("好的。", &pn()), "好的。");
+        assert_eq!(normalize_punctuation("Mr. Smith", &pn()), "Mr. Smith");
         // 混排：括号 + 省略号
-        assert_eq!(normalize_punctuation("【丑角】……你来了..."), "「丑角」…你来了…");
+        assert_eq!(normalize_punctuation("【丑角】……你来了...", &pn()), "「丑角」…你来了…");
+    }
+
+    #[test]
+    fn test_normalize_punctuation_custom_targets() {
+        // S1：目标字符可配置（用户个性化归一化目标）
+        let cfg = PunctuationNorm {
+            open_bracket: '[',
+            close_bracket: ']',
+            ellipsis: "……".to_string(),
+            fix_misread_letters: true,
+        };
+        assert_eq!(normalize_punctuation("「丑角」……你来了...", &cfg), "[丑角]……你来了……");
+        assert_eq!(normalize_punctuation("【派蒙】", &cfg), "[派蒙]");
+    }
+
+    #[test]
+    fn test_normalize_fixes_misread_punct_letters() {
+        // S1 补充：英文嵌字引号被读成行尾 `j`（实测 9 处）→ 归一为右括号
+        assert_eq!(normalize_punctuation("The Jesterj", &pn()), "The Jester」");
+        assert_eq!(normalize_punctuation("Sonnetj", &pn()), "Sonnet」");
+        // 正常单词里的 j 不受影响（不在行尾）
+        assert_eq!(normalize_punctuation("just a moment", &pn()), "just a moment");
+        assert_eq!(normalize_punctuation("enjoy", &pn()), "enjoy");
+        // 行内已有括号 → 标点识别正常，不做字母替换
+        assert_eq!(normalize_punctuation("「joker」 tail j", &pn()), "「joker」 tail j");
+        // 关闭该修复时保持原样
+        let off = PunctuationNorm {
+            fix_misread_letters: false,
+            ..PunctuationNorm::default()
+        };
+        assert_eq!(normalize_punctuation("The Jesterj", &off), "The Jesterj");
     }
 
     // ── 段尾精化（B-ii）──

@@ -202,6 +202,8 @@ pub fn default_ocr_params() -> OcrRunParams {
         merge_similarity: 0.3,
         // 字幕预估最短长度：基准取产品默认值（前端可调，见 DEFAULT_MIN_SUBTITLE_SEC 标定表）
         min_subtitle_sec: ai_game_subtitle_assistant_lib::ocr::DEFAULT_MIN_SUBTITLE_SEC,
+        // 标点归一化：基准取产品默认配置（目标字符用户可配）
+        punctuation: Default::default(),
     }
 }
 

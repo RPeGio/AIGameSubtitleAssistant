@@ -31,6 +31,12 @@ const ocrParams = ref<OcrRunParams>({
   batch_size: 16,
   merge_similarity: 0.3,
   min_subtitle_sec: 1.5,
+  punctuation: {
+    open_bracket: "「",
+    close_bracket: "」",
+    ellipsis: "…",
+    fix_misread_letters: true,
+  },
 });
 
 const sourceMeta = computed(() => projectStore.sourceVideoMeta);

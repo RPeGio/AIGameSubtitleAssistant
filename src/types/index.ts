@@ -131,6 +131,21 @@ export interface OcrRunParams {
   /// （保留碎片起点 + 后条终点/文本）。调大能减少碎片，但会提高误吞真实短句的概率
   /// （实测 1.6s 时基准语料出现缺失）；≤0 关闭该合并。
   min_subtitle_sec: number;
+  /// 标点归一化配置（精度策略统一前置层；目标字符可由用户个性化）
+  punctuation: PunctuationNorm;
+}
+
+/// 标点归一化配置：把 OCR 产出的各类括号/省略号统一为用户偏好的形态。
+/// 归一化是术语表纠错与一致性纠错的前置条件（两侧词条需同形才能匹配）。
+export interface PunctuationNorm {
+  /// 左括号目标（默认「，可改 [）
+  open_bracket: string;
+  /// 右括号目标（默认」，可改 ]）
+  close_bracket: string;
+  /// 省略号目标（默认 …，可改 ……）
+  ellipsis: string;
+  /// 是否修复标点被识别成拉丁字母（如行尾 j → 右括号；默认开）
+  fix_misread_letters: boolean;
 }
 
 export interface OcrSegment {
