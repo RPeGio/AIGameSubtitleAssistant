@@ -84,9 +84,16 @@ if ($installedPython -or $Force) {
   New-Item -ItemType Directory -Force -Path $deps | Out-Null
 }
 Write-Host "==> 安装 OCR 依赖到 runtime\deps ..."
+# 局部放宽错误偏好：pip 在目标目录已存在时向 stderr 打 WARNING，
+# 外层 $ErrorActionPreference="Stop" 会把它当错误中断（重跑 bootstrap 时必现）。
+# 这里只看退出码，stderr 交给控制台显示；失败仍由下面的 $LASTEXITCODE 判定。
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 & $pythonExe -m pip install --disable-pip-version-check --no-warn-script-location `
   --target (Join-Path $runtime "deps") -r (Join-Path $scriptDir "ocr-requirements.txt")
-if ($LASTEXITCODE -ne 0) { throw "pip install 失败" }
+$pipExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+if ($pipExit -ne 0) { throw "pip install 失败" }
 
 # ── 3. 拷贝 worker 脚本 ──
 Write-Host "==> 拷贝 worker 脚本 ..."
@@ -108,5 +115,50 @@ $config = [ordered]@{
   ($config | ConvertTo-Json),
   (New-Object System.Text.UTF8Encoding $false)
 )
+
+# ── 5. 预置 OCR 模型 ──
+# 为什么需要这一步：worker 按 config.json 的 model_dir（models/paddleocr）查找模型，
+# 该目录为空时 worker 会尝试联网下载；首次下载慢或网络受限时会超时，导致基准测试
+# 直接报 OCR 环境未就绪并静默跳过（排查成本高）。这里优先从用户级缓存复制，缓存缺失时才联网。
+#
+# 注意：缓存位置是 paddlex 的默认落盘目录（用户主目录下的 .paddlex/official_models），
+# 与 worker 使用的项目内 model_dir 不同，故需显式复制。
+$modelRoot = Join-Path $runtime "models\paddleocr\official_models"
+New-Item -ItemType Directory -Force -Path $modelRoot | Out-Null
+$userCache = Join-Path $env:USERPROFILE ".paddlex\official_models"
+# 与 config.json 的 ocr_model=mobile 对应；换档位时同步改这里
+$models = @("PP-OCRv5_mobile_det", "PP-OCRv5_mobile_rec")
+foreach ($m in $models) {
+  $dst = Join-Path $modelRoot $m
+  if (Test-Path $dst) {
+    Write-Host "==> 模型 $m 已存在，跳过"
+    continue
+  }
+  $src = Join-Path $userCache $m
+  if (Test-Path $src) {
+    Write-Host "==> 从用户缓存复制模型 $m ..."
+    Copy-Item -Recurse -Force $src $dst
+  } else {
+    # 缓存缺失：用内嵌解释器触发 paddlex 下载（会落到 ~/.paddlex，再复制进来）
+    Write-Host "==> 缓存缺少 $m，联网下载（首次较慢）..."
+    $env:PYTHONPATH = Join-Path $runtime "deps"
+    $dlScript = Join-Path $env:TEMP "gsa_ocr_dl_model.py"
+    @(
+      "from paddleocr import PaddleOCR"
+      "PaddleOCR(lang='ch', text_detection_model_name='$m',"
+      "          use_doc_orientation_classify=False, use_doc_unwarping=False,"
+      "          use_textline_orientation=False)"
+    ) | Set-Content -Path $dlScript -Encoding UTF8
+    # 同 pip：paddlex 会往 stderr 打 INFO/WARNING，局部放宽错误偏好，只看退出码
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & $pythonExe $dlScript
+    $dlExit = $LASTEXITCODE
+    $ErrorActionPreference = $prevEap
+    Remove-Item -Force $dlScript -ErrorAction SilentlyContinue
+    if ($dlExit -ne 0) { throw "模型 $m 下载失败" }
+    Copy-Item -Recurse -Force $src $dst
+  }
+}
 
 Write-Host "==> OCR 运行环境就绪：$runtime"
