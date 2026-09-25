@@ -3,7 +3,7 @@ import { computed, ref } from "vue";
 import { useProjectStore } from "../stores/project";
 import SourceVideoPreview from "../components/SourceVideoPreview.vue";
 import SourceTimeline from "../components/SourceTimeline.vue";
-import type { OcrRunParams } from "../types";
+import type { Diff, OcrRunParams } from "../types";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -154,6 +154,21 @@ const corpus = computed(() => projectStore.currentProject?.corpus ?? []);
 
 function removeItem(id: string) {
   projectStore.removeCorpusItem(id);
+}
+
+// ── 待审批纠正 ────────────────────────────────────────
+// 术语表纠错在 Rust 侧只标记不改写语料文本，命中项在此逐条由用户裁决
+const pendingDiffs = computed(
+  () => projectStore.currentProject?.corpus_ocr_diffs ?? []
+);
+
+function approveDiff(d: Diff) {
+  projectStore.approveCorpusOcrDiff(d);
+  message.success(`已采纳：${d.old.join(" / ")} → ${d.new}`);
+}
+
+function discardDiff(d: Diff) {
+  projectStore.discardCorpusOcrDiff(d);
 }
 </script>
 
@@ -379,6 +394,24 @@ function removeItem(id: string) {
       </NCollapseItem>
     </NCollapse>
 
+    <!-- 待审批纠正（语料 OCR 术语表纠错的命中项，逐条独立裁决） -->
+    <div v-if="pendingDiffs.length > 0" class="diff-section">
+      <h3 class="corpus-title">待审批纠正（{{ pendingDiffs.length }}）</h3>
+      <NText depth="3" style="font-size: 12px">
+        采纳 = 对全部语料条目执行「原文 → 纠正文本」替换并移除该条；放弃 = 语料不动，仅移除该条。
+        两者都可用 Ctrl+Z 撤销
+      </NText>
+      <div class="diff-list">
+        <div v-for="(d, di) in pendingDiffs" :key="`${di}-${d.new}`" class="diff-item">
+          <span class="diff-old">{{ d.old.join(" / ") }}</span>
+          <span class="diff-arrow">→</span>
+          <span class="diff-new">{{ d.new }}</span>
+          <NButton size="tiny" type="primary" @click="approveDiff(d)">采纳</NButton>
+          <NButton size="tiny" quaternary @click="discardDiff(d)">放弃</NButton>
+        </div>
+      </div>
+    </div>
+
     <!-- 语料列表 -->
     <div class="corpus-section">
       <h3 class="corpus-title">语料列表（{{ corpus.length }}）</h3>
@@ -501,6 +534,48 @@ function removeItem(id: string) {
   font-weight: 600;
   color: var(--color-text-primary);
   margin-bottom: 12px;
+}
+
+.diff-section {
+  margin-bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.diff-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.diff-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--color-bg-secondary);
+  border-radius: 8px;
+}
+
+.diff-old {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  text-decoration: line-through;
+  word-break: break-all;
+}
+
+.diff-arrow {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
+.diff-new {
+  flex: 1;
+  font-size: 13px;
+  color: var(--color-text-primary);
+  word-break: break-all;
 }
 
 .corpus-empty {

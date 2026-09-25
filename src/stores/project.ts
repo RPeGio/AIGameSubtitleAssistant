@@ -871,6 +871,38 @@ export const useProjectStore = defineStore("project", () => {
     currentProject.value.corpus = currentProject.value.corpus.filter((c) => c.id !== id);
   }
 
+  // ── 待审批纠正（语料 OCR 的术语表纠错）─────────────────
+  // Rust 侧只标记、不改写语料文本；此处由用户逐条决定。
+  // 条目按**对象身份**定位而非下标：连点两次也不会因数组已收缩而误改相邻条目。
+
+  /// 采纳一条纠正：对**全部**语料条目执行「误读形态 → 纠正文本」替换，再移除该条目。
+  /// 跨条目、跨来源全局生效（用户决策：放弃逐块编辑能力）。
+  /// 替换规则与基准自动采纳一致（Rust `str::replace`：每个形态替换其**全部**出现）
+  function approveCorpusOcrDiff(diff: Diff) {
+    const project = currentProject.value;
+    const i = project?.corpus_ocr_diffs.indexOf(diff) ?? -1;
+    if (!project || i < 0) return;
+    recordSnapshot();
+    for (const item of project.corpus) {
+      let text = item.text;
+      // old 由 Rust 匹配器保证 ≥2 字符（单字词条不参与匹配），无空串/单字替换风险
+      for (const old of diff.old) {
+        text = text.split(old).join(diff.new);
+      }
+      item.text = text;
+    }
+    project.corpus_ocr_diffs.splice(i, 1);
+  }
+
+  /// 放弃一条纠正：语料文本原样不动，仅移除该条目
+  function discardCorpusOcrDiff(diff: Diff) {
+    const project = currentProject.value;
+    const i = project?.corpus_ocr_diffs.indexOf(diff) ?? -1;
+    if (!project || i < 0) return;
+    recordSnapshot();
+    project.corpus_ocr_diffs.splice(i, 1);
+  }
+
   /// 语料就绪：corpus 非空
   const corpusReady = computed(
     () => (currentProject.value?.corpus.length ?? 0) > 0
@@ -1352,6 +1384,8 @@ export const useProjectStore = defineStore("project", () => {
     addCorpusItem,
     pushCorpusTexts,
     removeCorpusItem,
+    approveCorpusOcrDiff,
+    discardCorpusOcrDiff,
     corpusReady,
     timelineReady,
     asrRunning,
