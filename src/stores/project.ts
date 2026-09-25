@@ -702,8 +702,8 @@ export const useProjectStore = defineStore("project", () => {
         writeOcrToCorpus(segments, false);
       } else if (regionPage === "asr") {
         // 转写页嵌字：产物写 embed_ocr 轨（clip 内嵌字轴，供融合作为游戏内容段）。
-        // 嵌字路径不消费 diffs：术语表是语料 OCR 独有功能，嵌字面板的术语表入口待移除；
-        // 该路径产生的 diffs 无审批列表可落，直接丢弃（不影响 embed 文本本身）
+        // 嵌字路径不消费 diffs：术语表是语料 OCR 独有功能（嵌字面板无术语表入口，
+        // 该路径恒不产出待审批条目），此处忽略属规则性不适用而非静默失效
         writeEmbedOcrSegments(segments);
       } else {
         writeOcrSegments(segments);
@@ -877,7 +877,12 @@ export const useProjectStore = defineStore("project", () => {
 
   /// 采纳一条纠正：对**全部**语料条目执行「误读形态 → 纠正文本」替换，再移除该条目。
   /// 跨条目、跨来源全局生效（用户决策：放弃逐块编辑能力）。
-  /// 替换规则与基准自动采纳一致（Rust `str::replace`：每个形态替换其**全部**出现）
+  ///
+  /// ⚠️ 与基准 `src-tauri/tests/common/mod.rs::apply_diffs_to_segments` 是同一规则的
+  /// 两份实现（基准在 tests/ 内，无法复用前端代码）：采纳 = 对该次 OCR 的**全部**
+  /// 条目文本做替换，每个误读形态替换其**全部**出现（JS `split/join` ≡ Rust
+  /// `str::replace`，R3 已用真实数据逐位对齐验证）。**任一侧改动必须同步另一侧**，
+  /// 否则基准分数不再代表产品行为
   function approveCorpusOcrDiff(diff: Diff) {
     const project = currentProject.value;
     const i = project?.corpus_ocr_diffs.indexOf(diff) ?? -1;
@@ -892,6 +897,16 @@ export const useProjectStore = defineStore("project", () => {
       item.text = text;
     }
     project.corpus_ocr_diffs.splice(i, 1);
+    // 替换后可能与本已正确的条目撞成同文（如语料里本就有「缟玛瑙…」）→ 按入库时的
+    // 同一去重口径清理（全等、保留首现；入库两条路径均已 trim，故直接比较文本即可）：
+    // pushCorpusTexts 的去重只覆盖新增，覆盖不到"由替换产生的重复"，
+    // 不去重会让重复行进入融合语料
+    const seen = new Set<string>();
+    project.corpus = project.corpus.filter((c) => {
+      if (seen.has(c.text)) return false;
+      seen.add(c.text);
+      return true;
+    });
   }
 
   /// 放弃一条纠正：语料文本原样不动，仅移除该条目

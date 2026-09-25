@@ -109,6 +109,7 @@ Project
 ├── video                    # clip video — the global timeline reference
 ├── source_video             # story recording — text source for corpus OCR
 ├── corpus: Vec<CorpusItem>  # reliable text corpus (independent of tracks; consumed by fusion)
+├── corpus_ocr_diffs: Vec<Diff>  # pending text corrections from corpus OCR (glossary; empty by default, legacy-compatible)
 └── tracks: Vec<Track>
      ├── track_type: "ocr_region" | "ocr_text" | "asr" | "manual" | "translation"
      ├── track_role:  "streamer" | "game"        # asr tracks only, defaults to game
@@ -153,6 +154,15 @@ extract frames (ffmpeg) ─► crop region ─► dHash change detection (skip i
 - Parameters (frontend defaults): frame interval 0.5s, dHash threshold 3, batch size 16, merge similarity 0.3.
 - **Merge rules** (`merge_frames`): adjacent similar texts join the same run; the run's final text is chosen by **majority vote** (instead of "longest wins" — a longer text polluted by noise scores low on total similarity and loses); empty frames tolerate a `(interval*1.5).max(0.8)` flicker window; typewriter-style progressive text (prefix supersets) merges into one event keeping the longest text.
 - Output destination is decided by the frontend: source mode → corpus (timing stripped); clip + page=asr → the embed_ocr (hardsub) track.
+- **Corrections only mark, never rewrite** (user decision, 2026-09-24/25): the last step runs punctuation
+  normalization (silent, targets configurable) and fuzzy glossary matching, but only **emits**
+  `Diff { old: Vec<String>, new: String }` (`old` is a set: one term may match several misread forms;
+  diffs are aggregated by `new`). `run_ocr` returns `(Vec<OcrSegment>, Vec<Diff>)`, leaving text
+  "normalized but unrefined"; the user approves each entry in the Corpus page. Approve = replace across
+  all corpus items and drop now-duplicate items; Discard = remove the entry only. Both are undoable.
+  The glossary is **corpus-OCR only** (no entry point in the hardsub panel). The approve rule exists in
+  two places and must stay in sync: `tests/common::apply_diffs_to_segments` ↔
+  `stores/project.ts::approveCorpusOcrDiff`.
 
 ### Fusion pipeline (`fuse/mod.rs`)
 

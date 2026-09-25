@@ -884,6 +884,31 @@ mod tests {
     }
 
     #[test]
+    fn test_open_legacy_project_file_without_corpus_ocr_diffs() {
+        // 旧版 .gsa 文件（无 corpus_ocr_diffs 字段）必须能正常打开：serde default 补空数组；
+        // 保存一次后字段落盘，此后不再依赖 default。走真实文件读写路径（非仅 serde 层）
+        let dir = new_test_dir("legacy_ocr_diffs");
+        let file = dir.join("legacy.gsa");
+        let legacy = format!(
+            "{} v1\n{}\n",
+            PROJECT_MAGIC,
+            r#"{"path":"","video":"clip.mp4","name":"旧项目","tracks":[],"created_at":"1","updated_at":"2"}"#
+        );
+        fs::write(&file, legacy).unwrap();
+
+        let opened = open_project_at(file.to_string_lossy().as_ref()).unwrap();
+        assert_eq!(opened.name, "旧项目");
+        assert!(opened.corpus_ocr_diffs.is_empty());
+
+        // 一次保存（等价自动保存）→ 字段写回文件并可读回
+        write_project_file(&file, &opened).unwrap();
+        let text = fs::read_to_string(&file).unwrap();
+        assert!(text.contains("corpus_ocr_diffs"), "保存后应含该字段");
+        assert!(parse_project(&text).unwrap().corpus_ocr_diffs.is_empty());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn test_project_source_video_corpus_roundtrip() {
         let mut project = Project {
             path: "C:/proj".into(),

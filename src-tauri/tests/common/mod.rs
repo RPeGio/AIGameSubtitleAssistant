@@ -13,7 +13,7 @@
 
 use ai_game_subtitle_assistant_lib::ai_runtime::config::RuntimeConfig;
 use ai_game_subtitle_assistant_lib::ai_runtime::OcrManager;
-use ai_game_subtitle_assistant_lib::ocr::{run_ocr_pipeline, OcrRegionInput, OcrRunParams, OcrSegment};
+use ai_game_subtitle_assistant_lib::ocr::{run_ocr_pipeline, Diff, OcrRegionInput, OcrRunParams, OcrSegment};
 use ai_game_subtitle_assistant_lib::video::get_video_metadata;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -284,20 +284,32 @@ pub fn run_ocr(
     )
     .unwrap_or_else(|e| panic!("OCR 流水线失败（{video_str}）: {e}"));
     // 基准侧模拟"用户全部采纳审批"（默认开，可用 GSA_BENCH_SKIP_DIFFS 关闭）：
-    // Rust 侧只标记不改文本，度量纠错策略本身的效果需在此应用；
-    // 应用规则与前端一致——对该次 OCR 的所有事件文本做 old→new 替换
+    // Rust 侧只标记不改文本，度量纠错策略本身的效果需在此应用
     if !diffs.is_empty() && std::env::var("GSA_BENCH_SKIP_DIFFS").is_err() {
         eprintln!("[精度] 自动采纳 {} 条待审批纠正：", diffs.len());
         for d in &diffs {
             eprintln!("[精度]   {} → {}", d.old.join("/"), d.new);
-            for seg in segments.iter_mut() {
-                for old in &d.old {
-                    seg.text = seg.text.replace(old.as_str(), d.new.as_str());
-                }
+        }
+        apply_diffs_to_segments(&mut segments, &diffs);
+    }
+    (segments, t0.elapsed().as_secs_f64())
+}
+
+/// 把一批待审批 `Diff` 应用到段文本（"全部采纳"）。
+///
+/// ⚠️ 与前端 `src/stores/project.ts::approveCorpusOcrDiff` 是**同一规则的两份实现**
+/// （基准在 tests/ 内，无法复用前端代码）：采纳 = 对该次 OCR 的**全部**事件文本做
+/// `old → new` 替换，每个误读形态替换其**全部**出现（Rust `str::replace`
+/// ≡ JS `split/join`，见 R3 对齐验证 `temp/probe/r3_approve_check.mjs`）。
+/// **任一侧改动必须同步另一侧**，否则基准分数不再代表产品行为。
+pub fn apply_diffs_to_segments(segments: &mut [OcrSegment], diffs: &[Diff]) {
+    for d in diffs {
+        for seg in segments.iter_mut() {
+            for old in &d.old {
+                seg.text = seg.text.replace(old.as_str(), d.new.as_str());
             }
         }
     }
-    (segments, t0.elapsed().as_secs_f64())
 }
 
 /// 基准主观评估产物：把 OCR 段写成 SRT 到 `temp/bench_output/<case>_<kind>.srt`。
