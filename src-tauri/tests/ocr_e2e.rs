@@ -53,10 +53,11 @@ fn test_t3_end_to_end() {
         min_subtitle_sec: 0.7,
         punctuation: Default::default(),
         glossary: Vec::new(),
+        consistency_hints: false,
     };
 
     let start = Instant::now();
-    let segments = run_ocr_pipeline(
+    let (segments, _diffs) = run_ocr_pipeline(
         &manager,
         &video.to_string_lossy(),
         meta.width,

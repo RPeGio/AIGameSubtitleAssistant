@@ -215,6 +215,8 @@ pub fn default_ocr_params() -> OcrRunParams {
                     .collect()
             })
             .unwrap_or_default(),
+        // 一致性纠错（S3）：基准默认关闭（只产出建议，需 env 显式开启验证）
+        consistency_hints: std::env::var("GSA_BENCH_CONSISTENCY").is_ok(),
     }
 }
 
@@ -265,7 +267,7 @@ pub fn run_ocr(
     let meta = get_video_metadata(video_str.clone())
         .unwrap_or_else(|e| panic!("读取视频元数据失败（{video_str}）: {e}"));
     let t0 = Instant::now();
-    let segments = run_ocr_pipeline(
+    let (mut segments, diffs) = run_ocr_pipeline(
         manager,
         &video_str,
         meta.width,
@@ -273,9 +275,28 @@ pub fn run_ocr(
         regions,
         &default_ocr_params(),
         meta.fps,
-        |_, _, _, _| {},
+        // 进度消息打到 stderr（进日志）：一致性纠错的"精度建议"即由此传出
+        |_, _, _, msg| {
+            if msg.starts_with("[精度建议]") {
+                eprintln!("{msg}");
+            }
+        },
     )
     .unwrap_or_else(|e| panic!("OCR 流水线失败（{video_str}）: {e}"));
+    // 基准侧模拟"用户全部采纳审批"（默认开，可用 GSA_BENCH_SKIP_DIFFS 关闭）：
+    // Rust 侧只标记不改文本，度量纠错策略本身的效果需在此应用；
+    // 应用规则与前端一致——对该次 OCR 的所有事件文本做 old→new 替换
+    if !diffs.is_empty() && std::env::var("GSA_BENCH_SKIP_DIFFS").is_err() {
+        eprintln!("[精度] 自动采纳 {} 条待审批纠正：", diffs.len());
+        for d in &diffs {
+            eprintln!("[精度]   {} → {}", d.old.join("/"), d.new);
+            for seg in segments.iter_mut() {
+                for old in &d.old {
+                    seg.text = seg.text.replace(old.as_str(), d.new.as_str());
+                }
+            }
+        }
+    }
     (segments, t0.elapsed().as_secs_f64())
 }
 

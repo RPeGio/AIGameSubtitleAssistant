@@ -31,6 +31,27 @@ pub struct OcrSegment {
     pub confidence: f64,
 }
 
+/// 一条待审批的文本纠正（S2 术语表 / S3 一致性纠错共用）。
+///
+/// **Rust 侧只标记、不改文本**（2026-09-24 用户决策）：产出文本保持"标点归一化后、
+/// 未精化"的形态，纠正以 `Diff` 形式交给前端；用户在前端逐条审批——
+/// - **采纳**：对该次 OCR 的所有事件文本执行 `old → new` 替换，条目出队；
+/// - **放弃**：不改文本，条目出队。
+///
+/// 这样做的理由：纠正的"是否正确"本质上需用户判断（用户明确指出"多数派不一定正确"），
+/// 而后端静默改写会让用户无从察觉；改为审批后，误报无害（点放弃即可）、判据也不必收紧。
+///
+/// `old` 用集合语义：同一目标可能对应多种误读形态（`编玛瑙` / `编玛脑`），
+/// 全部收进同一条目，采纳时一并替换。底层用 `HashSet` 去重，返回前 `collect` 为 `Vec`
+/// （JSON 无 set 类型，且 `Vec` 顺序稳定便于调试）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Diff {
+    /// 待替换的原文形态（去重后）
+    pub old: Vec<String>,
+    /// 替换目标（术语表词条，或一致性纠错的多数派写法）
+    pub new: String,
+}
+
 /// 一帧的文本（顺延后的完整序列）。
 /// text 用 `Arc<str>` 共享，未变化帧只做引用计数递增，不逐帧拷贝字符串。
 /// `sample_time` = 该帧的网格采样时刻（图像的实际采样点）；帧级差分注入的
@@ -1084,16 +1105,22 @@ const GLOSSARY_MATCH_TOL: f64 = 0.34;
 ///
 /// 机制：把文本切成**连续词字符**的片段（标点/空白作为不可跨越的分隔），
 /// 在每个片段内按**窗口**滑过（窗口长度 = 词条长度 ±1）与词条做模糊比较；
-/// 命中（编辑距离比例 ≤ `GLOSSARY_MATCH_TOL`）时用词条替换该窗口。
+/// 术语表标记（S2）：扫出与词条形近的片段，**只记录、不改文本**（2026-09-24 用户决策）。
+///
+/// 返回 (去重后的原文形态集合, 命中的词条)；`None` 表示无命中。
+/// 调用方把结果并入 `Diff`（同一词条可能对应多种误读形态，全部收进同一条目）。
 ///
 /// 与标点归一化的关系：**归一化是必须的前置**（用户 2026-09-24 决策）——词条与产出
 /// 必须同形才能匹配（`[编玛瑙】` 无法匹配 `「缟玛瑙」`），故本函数在归一化之后调用。
 ///
-/// 安全性：① 窗口不跨标点（见 `is_word_char`）；② 只替换与词条不同但足够相近的窗口；
-/// ③ 要求命中窗口与词条**首字符相同或长度相同**；④ 忽略单字符词条。
-fn apply_glossary(text: &str, glossary: &[String]) -> String {
+/// 安全性：① 窗口不跨标点（见 `is_word_char`）；② 只认与词条不同但足够相近的窗口；
+/// ③ 要求**首字符相同**或**仅 1 字符不同**；④ 忽略单字符词条。
+fn collect_glossary_hits(
+    text: &str,
+    glossary: &[String],
+) -> Option<(std::collections::HashSet<String>, String)> {
     if glossary.is_empty() {
-        return text.to_string();
+        return None;
     }
     // 预编译词条（去空白后按字符切），并过滤过短词条（1 字符词条误伤面太大）
     let terms: Vec<Vec<char>> = glossary
@@ -1102,17 +1129,15 @@ fn apply_glossary(text: &str, glossary: &[String]) -> String {
         .filter(|t| t.len() >= 2)
         .collect();
     if terms.is_empty() {
-        return text.to_string();
+        return None;
     }
     let chars: Vec<char> = text.chars().collect();
-    let mut out: Vec<char> = Vec::with_capacity(chars.len());
-    // `cursor` = 已消费到原文的哪个位置；`out` 里对应 [0, cursor) 已输出。
-    // 替换时把 [命中起点, 命中窗口末) 换成词条，然后 cursor 前移到窗口末——
-    // 这样刚写入的词条字符**不会**被后续扫描再次匹配（避免 `缟玛瑙瑙` 这类重复）。
+    let mut hits: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+    // `cursor` = 已扫到原文的哪个位置。命中后前移到窗口末，避免同一处重复计入。
     let mut cursor = 0;
     while cursor < chars.len() {
         if !is_word_char(chars[cursor]) {
-            out.push(chars[cursor]);
             cursor += 1;
             continue;
         }
@@ -1166,17 +1191,27 @@ fn apply_glossary(text: &str, glossary: &[String]) -> String {
         }
         match best {
             Some((s, wl, t, _)) => {
-                out.extend(chars[cursor..s].iter().copied()); // 命中点之前原样保留
-                out.extend(t.iter().copied()); // 写入词条
-                cursor = s + wl; // 跨过被替换窗口（窗口内原文已被词条覆盖）
+                // 记录命中的原文形态（集合去重）与目标词条；**不改文本**
+                let hit: String = chars[s..s + wl].iter().collect();
+                hits.entry(t.iter().collect::<String>())
+                    .or_default()
+                    .insert(hit);
+                cursor = s + wl; // 前移，避免同一处重复计入
             }
             None => {
-                out.push(chars[cursor]);
                 cursor += 1;
             }
         }
     }
-    out.into_iter().collect()
+    if hits.is_empty() {
+        return None;
+    }
+    // 多条词条命中时取命中形态最多的一条（其余下次运行仍会被标出）
+    let (new, olds) = hits
+        .into_iter()
+        .max_by_key(|(_, v)| v.len())
+        .expect("hits 非空");
+    Some((olds, new))
 }
 
 /// 字符级编辑距离（术语表匹配用；文本短，直接 DP）
@@ -1198,6 +1233,146 @@ fn levenshtein_chars(a: &[char], b: &[char]) -> usize {
         std::mem::swap(&mut prev, &mut cur);
     }
     prev[b.len()]
+}
+
+/// 一致性纠错（S3）：候选变体的最少总出现次数。
+///
+/// 出现太少（如仅 1~2 次）不足以判断哪个是"多数"，且容易把正常的不同词误判为变体。
+const CONSISTENCY_MIN_TOTAL: usize = 3;
+
+/// 一致性纠错（S3）：主导变体的最低占比。
+///
+/// 只有明显多数才算候选（如 11:0）。用户明确指出"多数派不一定正确"，故本阈值**不用于
+/// 自动改写**，仅用于筛选"值得提请用户注意"的变体；且最终是否采纳由用户决定。
+const CONSISTENCY_DOMINANCE: f64 = 0.7;
+
+/// 一致性纠错的输入形态：从产出文本中切出的**词片段**（连续词字符），带出现次数。
+///
+/// 用于发现"同一位置的形近变体"——例如 `编玛瑙` 出现 11 次而 `缟玛瑙` 0 次，
+/// 说明 OCR 对该词存在**系统性误读**（此时"多数"恰恰是错的，故只建议、不自动改）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConsistencyHint {
+    /// 少数派写法（疑似误读）
+    pub from: String,
+    /// 多数派写法（疑似正确）
+    pub to: String,
+    /// 少数派出现次数
+    pub from_count: usize,
+    /// 多数派出现次数
+    pub to_count: usize,
+}
+
+/// 一致性纠错（S3）：扫描全部产出文本，找出**形近变体对**并给出建议（不修改文本）。
+///
+/// 判据（保守，宁可漏报不可误报）：
+/// ① 两个片段**等长**、编辑距离恰为 1（形近误读的典型形态）；
+/// ② 二者合计出现次数 ≥ `CONSISTENCY_MIN_TOTAL`；
+/// ③ 主导方占比 ≥ `CONSISTENCY_DOMINANCE`。
+///
+/// **只返回建议**——由用户在前端确认后再写入术语表（复用 S2 的纠错通道）。
+/// 这样既避免"多数派是错的"时自动改坏文本，也把决定权留给用户。
+pub fn find_consistency_hints(segments: &[OcrSegment]) -> Vec<ConsistencyHint> {
+    // 统计词片段出现次数（跨全部条目）
+    let mut counts: std::collections::HashMap<Vec<char>, usize> = std::collections::HashMap::new();
+    for seg in segments {
+        for line in seg.text.lines() {
+            let chars: Vec<char> = line.chars().collect();
+            let mut i = 0;
+            while i < chars.len() {
+                if !is_word_char(chars[i]) {
+                    i += 1;
+                    continue;
+                }
+                let start = i;
+                while i < chars.len() && is_word_char(chars[i]) {
+                    i += 1;
+                }
+                // 只统计长度 ≥2 的片段（单字无法判断）
+                if i - start >= 2 {
+                    *counts.entry(chars[start..i].to_vec()).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+    // 找出形近变体对（等长 + 编辑距离 1）
+    let keys: Vec<Vec<char>> = counts.keys().cloned().collect();
+    let mut hints: Vec<ConsistencyHint> = Vec::new();
+    let mut paired: std::collections::HashSet<Vec<char>> = std::collections::HashSet::new();
+    for a in &keys {
+        if paired.contains(a) {
+            continue;
+        }
+        for b in &keys {
+            if a == b || a.len() != b.len() || paired.contains(b) {
+                continue;
+            }
+            if levenshtein_chars(a, b) != 1 {
+                continue;
+            }
+            let ca = counts[a];
+            let cb = counts[b];
+            let total = ca + cb;
+            if total < CONSISTENCY_MIN_TOTAL {
+                continue;
+            }
+            let (major, minor, cmaj, cmin) = if ca >= cb { (a, b, ca, cb) } else { (b, a, cb, ca) };
+            if (cmaj as f64) < CONSISTENCY_DOMINANCE * (total as f64) {
+                continue;
+            }
+            paired.insert(a.clone());
+            paired.insert(b.clone());
+            hints.push(ConsistencyHint {
+                from: minor.iter().collect(),
+                to: major.iter().collect(),
+                from_count: cmin,
+                to_count: cmaj,
+            });
+            break;
+        }
+    }
+    // 按"少数派出现次数"降序（更值得注意的排前面），再按字面稳定排序
+    hints.sort_by(|x, y| {
+        y.from_count
+            .cmp(&x.from_count)
+            .then_with(|| x.from.cmp(&y.from))
+    });
+    hints
+}
+
+/// 把一致性提示转成待审批 `Diff`（S3：`old = {少数派}`、`new = 多数派`）。
+///
+/// **Rust 侧不改文本**——与术语表一致，纠正交由用户在前端审批（用户指出"多数派不一定
+/// 正确"：OCR 系统性偏移时多数派恰恰是错的，故必须保留用户否决权）。
+fn consistency_diffs(segments: &[OcrSegment]) -> Vec<Diff> {
+    find_consistency_hints(segments)
+        .into_iter()
+        .map(|h| Diff {
+            old: vec![h.from],
+            new: h.to,
+        })
+        .collect()
+}
+
+/// 把一批命中形态并入 Diff 列表：同 `new` 的条目合并（`old` 取并集）。
+///
+/// 目的：同一词条在一次运行中可能命中多种误读形态（`编玛瑙`、`编玛脑`…），
+/// 用户只应审批**一条**（`→ 缟玛瑙`），故按 `new` 聚合。
+fn merge_diff(
+    diffs: &mut Vec<Diff>,
+    olds: std::collections::HashSet<String>,
+    new: String,
+) {
+    if let Some(d) = diffs.iter_mut().find(|d| d.new == new) {
+        let mut set: std::collections::HashSet<String> = d.old.iter().cloned().collect();
+        set.extend(olds);
+        let mut v: Vec<String> = set.into_iter().collect();
+        v.sort(); // 顺序稳定，便于调试与快照比较
+        d.old = v;
+    } else {
+        let mut v: Vec<String> = olds.into_iter().collect();
+        v.sort();
+        diffs.push(Diff { old: v, new });
+    }
 }
 
 /// 段尾精化（B-ii）：把 `end = 末采样 + interval×0.5` 的**量化估计**替换为密帧实测的切换时刻。
@@ -1505,6 +1680,13 @@ pub struct OcrRunParams {
     /// 空列表 = 关闭（默认）。**前端可增删条目**（input-text 列表）。
     #[serde(default)]
     pub glossary: Vec<String>,
+    /// 一致性纠错（S3，可选）：扫描产出文本中的形近变体并**只给建议**（不改写文本）。
+    ///
+    /// 用户指出"多数派不一定正确"，故本策略不做自动改写：运行结束后通过进度回调
+    /// 输出建议行（`[精度建议] 少数派 → 多数派（x/y 次）`），由用户决定是否写入术语表。
+    /// 默认关闭。
+    #[serde(default)]
+    pub consistency_hints: bool,
 }
 
 /// 进度事件载荷
@@ -1557,7 +1739,7 @@ pub fn run_ocr_pipeline<F>(
     params: &OcrRunParams,
     src_fps: f64,
     mut on_progress: F,
-) -> Result<Vec<OcrSegment>, String>
+) -> Result<(Vec<OcrSegment>, Vec<Diff>), String>
 where
     F: FnMut(usize, usize, f64, String),
 {
@@ -1585,6 +1767,8 @@ where
     let punctuation = params.punctuation.clone();
     // 术语表（S2，可选）：在标点归一化之后应用（词条与产出须同形才能匹配）
     let glossary = params.glossary.clone();
+    // 一致性纠错（S3，可选）：只在末尾产出建议，不改写文本
+    let consistency_hints = params.consistency_hints;
     // D8(1b) 静态超时保险丝：env 可覆盖，≤0 关闭
     let stale_timeout = std::env::var("GSA_OCR_STALE_TIMEOUT_SEC")
         .ok()
@@ -1621,6 +1805,8 @@ where
     };
 
     let mut all_segments = Vec::new();
+    // 待审批的文本纠正（术语表 + 一致性纠错）；Rust 侧只标记，不改文本
+    let mut diffs: Vec<Diff> = Vec::new();
     for (i, clip) in region_clips.iter().enumerate() {
         let clip_started = std::time::Instant::now();
         let clip_dir = base_dir.join(format!("clip_{}", i));
@@ -1871,11 +2057,16 @@ where
             refine_segment_ends(segments, &scan_stream, dhash_threshold, frame_interval, clip.end);
         // 第六遍：精化可能让 start 提前 → clamp 相邻段时间，保证单调不重叠
         let mut segments = clamp_segment_times(segments);
-        // 末步（输出层）：标点/省略号归一化 + 术语表纠错——纯文本变换，不影响分段与计时。
+        // 末步（输出层）：标点/省略号归一化（**静默执行**，用户 2026-09-24 决策）+
+        // 术语表**标记**（只收集 Diff，不改文本——纠正由前端审批后执行）。
         // 顺序关键：归一化必须先做（词条与产出须同形才能匹配）
         for seg in &mut segments {
             let normalized = normalize_punctuation(&seg.text, &punctuation);
-            seg.text = apply_glossary(&normalized, &glossary);
+            if let Some((olds, new)) = collect_glossary_hits(&normalized, &glossary) {
+                // 同一词条的多种误读形态合并进一个 Diff（`old` 为集合，跨条目全局生效）
+                merge_diff(&mut diffs, olds, new);
+            }
+            seg.text = normalized;
         }
         if dev_debug {
             eprintln!("[ocr] clip {}/{}：合并 {} 条事件", i + 1, clip_count, segments.len());
@@ -1897,13 +2088,40 @@ where
         }
     }
 
-    Ok(all_segments)
+    // ── 一致性纠错（S3，可选）：全部 clip 完成后扫描形近变体，产出待审批 Diff ──
+    // 与术语表一致：**只标记不改文本**（用户指出"多数派不一定正确"，须保留否决权）。
+    // 走一遍进度回调告知数量，便于前端/日志观察（审批列表由返回的 diffs 提供）
+    if consistency_hints {
+        let cd = consistency_diffs(&all_segments);
+        if cd.is_empty() {
+            on_progress(0, 0, 1.0, "[精度建议] 未发现形近变体（无需处理）".to_string());
+        } else {
+            on_progress(
+                0,
+                0,
+                1.0,
+                format!("[精度建议] 发现 {} 组形近变体（多数派未必正确，请自行确认）", cd.len()),
+            );
+            for d in &cd {
+                on_progress(
+                    0,
+                    0,
+                    1.0,
+                    format!("[精度建议] {} → {}", d.old.join("/"), d.new),
+                );
+                merge_diff(&mut diffs, d.old.iter().cloned().collect(), d.new.clone());
+            }
+        }
+    }
+
+    Ok((all_segments, diffs))
 }
 
 /// Tauri 命令：串联完整 OCR 流水线。
 ///
-/// 在后台线程跑（不阻塞 UI），过程中通过 `ocr-progress` 事件上报进度，
-/// 返回按时间排序的 OcrSegment 列表，由前端写入 ocr_text 轨道。
+/// 在后台线程跑（不阻塞 UI），过程中通过 `ocr-progress` 事件上报进度；
+/// 返回 (按时间排序的 OcrSegment 列表, 待审批的文本纠正 Diff 列表)。
+/// 文本保持"标点归一化后、未精化"形态——纠正由前端审批后执行（2026-09-24 用户决策）。
 #[tauri::command]
 pub async fn run_ocr(
     app: AppHandle,
@@ -1914,7 +2132,7 @@ pub async fn run_ocr(
     params: OcrRunParams,
     // 源视频帧率：窗口精化用。前端已获取元数据，直接传入避免重复探测
     src_fps: f64,
-) -> Result<Vec<OcrSegment>, String> {
+) -> Result<(Vec<OcrSegment>, Vec<Diff>), String> {
     let app_handle = app.clone();
 
     tauri::async_runtime::spawn_blocking(move || {
@@ -2768,85 +2986,175 @@ mod tests {
         assert_eq!(normalize_punctuation("The Jesterj", &off), "The Jesterj");
     }
 
-    // ── 术语表纠错（S2）──
+    // ── 术语表标记（S2，只收集 Diff、不改文本）──
 
     fn gl(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
     }
 
+    /// 便捷断言：文本经术语表标记后应得到 (old 集合, new)
+    fn hits(text: &str, glossary: &[String]) -> Option<(Vec<String>, String)> {
+        collect_glossary_hits(text, glossary).map(|(olds, new)| {
+            let mut v: Vec<String> = olds.into_iter().collect();
+            v.sort();
+            (v, new)
+        })
+    }
+
     #[test]
-    fn test_glossary_replaces_misread_near_form() {
+    fn test_glossary_collects_misread_near_form() {
         // 实测形态：缟玛瑙 被读成 编玛瑙（glupov 全部条目，共 11 处，首字即误读）
         let g = gl(&["缟玛瑙"]);
-        assert_eq!(apply_glossary("「编玛瑙」", &g), "「缟玛瑙」");
-        assert_eq!(apply_glossary("编玛瑙队长", &g), "缟玛瑙队长");
-        // 完全一致时不改动
-        assert_eq!(apply_glossary("缟玛瑙", &g), "缟玛瑙");
+        assert_eq!(hits("「编玛瑙」", &g), Some((vec!["编玛瑙".to_string()], "缟玛瑙".to_string())));
+        // **文本本身不被改写**（纠正由前端审批后执行）
+        assert_eq!(hits("编玛瑙队长", &g), Some((vec!["编玛瑙".to_string()], "缟玛瑙".to_string())));
+        // 完全一致 → 无命中
+        assert_eq!(hits("缟玛瑙", &g), None);
     }
 
     #[test]
-    fn test_glossary_replaces_long_term() {
-        // 长词条的尾部误读（实测 pierro：米提亚/派蒙 等角色名）
-        let g = gl(&["米提亚"]);
-        assert_eq!(apply_glossary("米提亚队长", &g), "米提亚队长");
-        assert_eq!(apply_glossary("米提哑队长", &g), "米提亚队长");
-    }
-
-    #[test]
-    fn test_glossary_keeps_unrelated_text() {
-        // 无关文本不受影响（不同词、长度差大的都不该被改写）
-        let g = gl(&["缟玛瑙"]);
-        assert_eq!(apply_glossary("这是一段普通的对话文本", &g), "这是一段普通的对话文本");
-        assert_eq!(apply_glossary("编队集合", &g), "编队集合");
-        // 空词表 = 关闭
-        assert_eq!(apply_glossary("编玛瑙", &[]), "编玛瑙");
+    fn test_glossary_merges_multiple_misread_forms() {
+        // 同一词条的多种误读形态应归入同一条目（old 为集合）。
+        // 注意：形态必须各自达标（等长 + 比例 ≤0.34 + 首字同/差 1 字）
+        let g = gl(&["斯捷潘尼扬"]);
+        let mut diffs: Vec<Diff> = Vec::new();
+        for t in ["斯捷潘尼杨", "斯捷潘尼羊"] {
+            if let Some((olds, new)) = collect_glossary_hits(t, &g) {
+                merge_diff(&mut diffs, olds, new);
+            }
+        }
+        assert_eq!(diffs.len(), 1, "同一词条只应产生一条待审批条目");
+        assert_eq!(diffs[0].new, "斯捷潘尼扬");
+        assert_eq!(diffs[0].old, vec!["斯捷潘尼杨".to_string(), "斯捷潘尼羊".to_string()]);
     }
 
     #[test]
     fn test_glossary_match_rules() {
-        // 规则：首字符相同 或 仅 1 字符不同（**无长度特判**，不为个别词条开小灶）
-        // 首字误读可纠（术语表的主用途）
-        assert_eq!(apply_glossary("编玛瑙", &gl(&["缟玛瑙"])), "缟玛瑙");
-        assert_eq!(apply_glossary("NO.0219", &gl(&["NO.0217"])), "NO.0217");
-        // 同词内后续字误读可纠
-        assert_eq!(apply_glossary("米提哑队长", &gl(&["米提亚"])), "米提亚队长");
-        // 已知代价：同首字、差 1 字的长短语也会被改写（如 防线→造物 类），
-        // 由**用户词表自身规避**（这类词不入表），而非加代码特判
-        assert_eq!(apply_glossary("天空岛的造特", &gl(&["天空岛的造物"])), "天空岛的造物");
-        // 差异 >1 字符或比例超标 → 不改
-        assert_eq!(apply_glossary("编玛瑙队长", &gl(&["缟玛瑙"])), "缟玛瑙队长");
-        assert_eq!(apply_glossary("完全不相关的文本", &gl(&["缟玛瑙"])), "完全不相关的文本");
+        // 规则：等长 + 编辑距离比例 ≤0.34 + （首字符相同 或 仅 1 字符不同）
+        assert!(hits("编玛瑙", &gl(&["缟玛瑙"])).is_some()); // 首字误读（3 字差 1）
+        assert!(hits("NO.0219", &gl(&["NO.0217"])).is_some());
+        assert!(hits("米提哑队长", &gl(&["米提亚"])).is_some()); // 同词内后续字误读
+        assert!(hits("天空岛的造特", &gl(&["天空岛的造物"])).is_some());
+        // 命中是**滑窗**语义：长片段里的局部误读也能标出（`编玛瑙队长` → 前 3 字命中）
+        assert_eq!(
+            hits("编玛瑙队长", &gl(&["缟玛瑙"])),
+            Some((vec!["编玛瑙".to_string()], "缟玛瑙".to_string()))
+        );
+        // 完全不相关 → 不命中
+        assert_eq!(hits("完全不相关的文本", &gl(&["缟玛瑙"])), None);
+        // 长度不足（片段比词条短）→ 不命中
+        assert_eq!(hits("玛瑙", &gl(&["缟玛瑙"])), None);
+    }
+
+    #[test]
+    fn test_glossary_keeps_unrelated_text() {
+        let g = gl(&["缟玛瑙"]);
+        assert_eq!(hits("这是一段普通的对话文本", &g), None);
+        assert_eq!(hits("编队集合", &g), None);
+        // 空词表 = 关闭
+        assert_eq!(hits("编玛瑙", &[]), None);
     }
 
     #[test]
     fn test_glossary_does_not_swallow_adjacent_punctuation() {
-        // 回归用例（2026-09-24 实测）：词条 NO.0217 曾匹配到 `，NO.0217`（跨标点窗口），
-        // 替换后变成 `抱歉NO.02177，`（逗号丢失 + 长度错位），使 pierro 语料 99.6→99.0
+        // 回归用例（2026-09-24 实测）：词条 NO.0217 曾把 `，NO.0217` 当作窗口
+        // （跨标点），导致替换后逗号丢失、长度错位。现在只收集命中、不改文本，
+        // 但仍须保证**窗口不跨标点**（否则 old 会含逗号，前端替换会出问题）
         let g = gl(&["NO.0217"]);
-        assert_eq!(
-            apply_glossary("抱歉，NO.0217，前面在剧院我走得有些匆忙。", &g),
-            "抱歉，NO.0217，前面在剧院我走得有些匆忙。"
-        );
-        // 逗号/句号等标点必须原样保留
-        assert_eq!(apply_glossary("见，NO.0217。", &g), "见，NO.0217。");
-        // 真正的误读仍能纠正（同片段内）
-        assert_eq!(apply_glossary("NO.0219", &g), "NO.0217");
+        assert_eq!(hits("抱歉，NO.0217，前面在剧院我走得有些匆忙。", &g), None);
+        assert_eq!(hits("见，NO.0217。", &g), None);
+        // 真正的误读仍能标出（同片段内、不跨标点）
+        assert_eq!(hits("NO.0219", &g), Some((vec!["NO.0219".to_string()], "NO.0217".to_string())));
     }
 
     #[test]
     fn test_glossary_after_punctuation_normalization() {
-        // 顺序：先归一化标点 → 再术语表（否则 `[编玛瑙】` 的括号会干扰匹配）
+        // 顺序：先归一化标点 → 再术语表（否则 `「斯捷潘尼杨」` 的括号会干扰匹配）
         let g = gl(&["斯捷潘尼扬"]);
         let normalized = normalize_punctuation("「斯捷潘尼杨」", &pn());
         assert_eq!(normalized, "「斯捷潘尼杨」");
-        assert_eq!(apply_glossary(&normalized, &g), "「斯捷潘尼扬」");
+        assert_eq!(
+            hits(&normalized, &g),
+            Some((vec!["斯捷潘尼杨".to_string()], "斯捷潘尼扬".to_string()))
+        );
     }
 
     #[test]
     fn test_glossary_ignores_single_char_terms() {
         // 单字符词条误伤面过大 → 忽略
-        let g = gl(&["缟"]);
-        assert_eq!(apply_glossary("编玛瑙", &g), "编玛瑙");
+        assert_eq!(hits("编玛瑙", &gl(&["缟"])), None);
+    }
+
+    // ── 一致性纠错（S3）──
+
+    fn seg_texts(texts: &[&str]) -> Vec<OcrSegment> {
+        texts
+            .iter()
+            .enumerate()
+            .map(|(i, t)| OcrSegment {
+                start: i as f64,
+                end: i as f64 + 1.0,
+                text: t.to_string(),
+                confidence: 0.9,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_consistency_hints_finds_variant_pair() {
+        // 实测形态：缟玛瑙 被系统性读成 编玛瑙（glupov 11 处）——但若**两种写法并存**，
+        // 才构成"变体对"可报；此处构造 3:1 的共存情形
+        let segs = seg_texts(&["「缟玛瑙」", "「缟玛瑙」", "「缟玛瑙」", "「编玛瑙」"]);
+        let hints = find_consistency_hints(&segs);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].from, "编玛瑙");
+        assert_eq!(hints[0].to, "缟玛瑙");
+        assert_eq!(hints[0].from_count, 1);
+        assert_eq!(hints[0].to_count, 3);
+    }
+
+    #[test]
+    fn test_consistency_hints_needs_two_variants() {
+        // 只有一种写法（无变体）→ 没有可比较对象，不报建议
+        let segs = seg_texts(&["「编玛瑙」", "「编玛瑙」", "「编玛瑙」"]);
+        assert!(find_consistency_hints(&segs).is_empty());
+    }
+
+    #[test]
+    fn test_consistency_hints_reports_majority_as_target() {
+        // 两种变体并存：多数派作为 to、少数派作为 from（**只建议，不改写文本**）
+        let segs = seg_texts(&[
+            "斯捷潘尼扬",
+            "斯捷潘尼扬",
+            "斯捷潘尼扬",
+            "斯捷潘尼杨", // 少数派（1 次）
+        ]);
+        let hints = find_consistency_hints(&segs);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].from, "斯捷潘尼杨");
+        assert_eq!(hints[0].to, "斯捷潘尼扬");
+        assert_eq!(hints[0].from_count, 1);
+        assert_eq!(hints[0].to_count, 3);
+    }
+
+    #[test]
+    fn test_consistency_hints_skips_unbalanced_and_short() {
+        // 占比不足 0.7（2:2）→ 不报
+        let segs = seg_texts(&["斯捷潘尼扬", "斯捷潘尼扬", "斯捷潘尼杨", "斯捷潘尼杨"]);
+        assert!(find_consistency_hints(&segs).is_empty());
+        // 合计出现次数 < 3（1:1）→ 不报
+        let segs2 = seg_texts(&["斯捷潘尼扬", "斯捷潘尼杨"]);
+        assert!(find_consistency_hints(&segs2).is_empty());
+        // 单字片段不参与（无法判断）
+        let segs3 = seg_texts(&["扬", "扬", "杨"]);
+        assert!(find_consistency_hints(&segs3).is_empty());
+    }
+
+    #[test]
+    fn test_consistency_hints_ignores_non_near_form() {
+        // 等长但差 2 字符以上 → 视为不同词，不报
+        let segs = seg_texts(&["斯捷潘尼扬", "斯捷潘尼扬", "斯捷潘尼扬", "完全不同词"]);
+        assert!(find_consistency_hints(&segs).is_empty());
     }
 
     // ── 段尾精化（B-ii）──
