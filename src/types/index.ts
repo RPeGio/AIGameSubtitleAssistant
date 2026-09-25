@@ -92,6 +92,10 @@ export interface Project {
   name: string;
   /// 可靠文本语料集合（独立于轨道，供 LLM 融合消费）
   corpus: CorpusItem[];
+  /// 语料 OCR 的待审批文本纠正（术语表纠错）。Rust 侧只标记、**不改写**语料文本；
+  /// 采纳 = 对全部 corpus 条目执行 old→new 替换并移除该条目，放弃 = 仅移除条目。
+  /// 重跑语料 OCR 时整体覆盖；旧项目文件无此字段（后端 serde default 补空数组）
+  corpus_ocr_diffs: Diff[];
   tracks: Track[];
   created_at: string;
   updated_at: string;

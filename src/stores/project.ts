@@ -237,8 +237,13 @@ export const useProjectStore = defineStore("project", () => {
   // ── 撤销/重做：快照式操作记录 ─────────────────────────
   // 每次操作前把当前 tracks 深拷贝入 undo 栈（一个操作 = 一个撤销步骤）；
   // 高频写入（拖动改时/区域拖动/文字编辑）在操作开始点记录，写入中不重复记录
-  /// 快照结构：tracks 与 corpus 一起入栈——语料的增删也走撤销栈
-  type UndoSnapshot = { tracks: Track[]; corpus: CorpusItem[] };
+  /// 快照结构：tracks / corpus / 待审批纠正一起入栈——三者都是"可撤销的项目数据"，
+  /// 撤销/重做须同时恢复文字与审批条目（丢失条目会让已执行的纠正无法回退）
+  type UndoSnapshot = {
+    tracks: Track[];
+    corpus: CorpusItem[];
+    corpus_ocr_diffs: Diff[];
+  };
   const undoStack = ref<UndoSnapshot[]>([]);
   const redoStack = ref<UndoSnapshot[]>([]);
   const MAX_HISTORY = 60;
@@ -248,6 +253,9 @@ export const useProjectStore = defineStore("project", () => {
     return {
       tracks: JSON.parse(JSON.stringify(p?.tracks ?? [])) as Track[],
       corpus: JSON.parse(JSON.stringify(p?.corpus ?? [])) as CorpusItem[],
+      corpus_ocr_diffs: JSON.parse(
+        JSON.stringify(p?.corpus_ocr_diffs ?? [])
+      ) as Diff[],
     };
   }
 
@@ -265,6 +273,7 @@ export const useProjectStore = defineStore("project", () => {
     const snap = undoStack.value.pop()!;
     currentProject.value.tracks = snap.tracks;
     currentProject.value.corpus = snap.corpus;
+    currentProject.value.corpus_ocr_diffs = snap.corpus_ocr_diffs;
   }
 
   function redo() {
@@ -273,6 +282,7 @@ export const useProjectStore = defineStore("project", () => {
     const snap = redoStack.value.pop()!;
     currentProject.value.tracks = snap.tracks;
     currentProject.value.corpus = snap.corpus;
+    currentProject.value.corpus_ocr_diffs = snap.corpus_ocr_diffs;
   }
 
   function clearHistory() {
@@ -671,11 +681,9 @@ export const useProjectStore = defineStore("project", () => {
     ocrMessage.value = "准备中...";
     try {
       // run_ocr 返回 (segments, diffs) 两元组：Rust 侧只做标点归一化（静默），
-      // 术语表/一致性纠错只**标记**为待审批 Diff，不改写文本（R1 用户决策）。
-      // 第二个元素（待审批列表）暂不消费：R2 持久化到 project.corpusOcrDiffs，
-      // R3 接入审批 UI。此刻若存入 currentProject，会被 save_project 的 Rust
-      // Project 结构（尚无该字段）静默丢弃，属误导，故不落。
-      const [segments] = await invoke<[OcrSegment[], Diff[]]>("run_ocr", {
+      // 术语表/一致性纠错只**标记**为待审批 Diff，不改写文本（R1 用户决策）；
+      // 产出文本保持"归一化后、未精化"形态，纠正由前端审批后执行。
+      const [segments, diffs] = await invoke<[OcrSegment[], Diff[]]>("run_ocr", {
         videoPath: meta.path,
         videoW: meta.width,
         videoH: meta.height,
@@ -684,10 +692,18 @@ export const useProjectStore = defineStore("project", () => {
         params,
       });
       if (videoKey === "source") {
-        // 语料页：产物提取进 corpus（去时间轴，作为可靠文本语料）
-        writeOcrToCorpus(segments);
+        // 语料页：产物提取进 corpus（去时间轴，作为可靠文本语料），
+        // 待审批纠正一并落 project.corpus_ocr_diffs（重跑覆盖，与产物轨同口径）。
+        // 一次 OCR = 一个撤销步骤：快照先于两处写入，writeOcrToCorpus 不再自行入栈。
+        // 项目可能在 OCR 期间被关闭（侧栏返回键无守卫），此时与 writeOcrToCorpus 同口径丢弃
+        const project = currentProject.value;
+        recordSnapshot();
+        if (project) project.corpus_ocr_diffs = diffs;
+        writeOcrToCorpus(segments, false);
       } else if (regionPage === "asr") {
-        // 转写页嵌字：产物写 embed_ocr 轨（clip 内嵌字轴，供融合作为游戏内容段）
+        // 转写页嵌字：产物写 embed_ocr 轨（clip 内嵌字轴，供融合作为游戏内容段）。
+        // 嵌字路径不消费 diffs：术语表是语料 OCR 独有功能，嵌字面板的术语表入口待移除；
+        // 该路径产生的 diffs 无审批列表可落，直接丢弃（不影响 embed 文本本身）
         writeEmbedOcrSegments(segments);
       } else {
         writeOcrSegments(segments);
@@ -805,8 +821,13 @@ export const useProjectStore = defineStore("project", () => {
   // ── 文本语料（corpus）─────────────────────────────────
 
   /// 批量把文本加入 corpus：与现有语料及批内做精确去重，一次撤销快照。
-  /// 返回实际新增条数
-  function pushCorpusTexts(texts: string[], source: CorpusItem["source"]): number {
+  /// `record=false` 时调用方负责已记录快照（如 OCR 写入需与待审批条目合成一步），
+  /// 避免一次操作产生两个撤销步骤。返回实际新增条数
+  function pushCorpusTexts(
+    texts: string[],
+    source: CorpusItem["source"],
+    record = true
+  ): number {
     const project = currentProject.value;
     if (!project) return 0;
     const existing = new Set(project.corpus.map((c) => c.text));
@@ -819,15 +840,16 @@ export const useProjectStore = defineStore("project", () => {
       added.push({ id: generateId(), text, source, created_at: now });
     }
     if (added.length > 0) {
-      recordSnapshot();
+      if (record) recordSnapshot();
       project.corpus.push(...added);
     }
     return added.length;
   }
 
-  /// 把 OCR 段文本提取进 corpus（去时间轴，去重），供融合页消费
-  function writeOcrToCorpus(segments: OcrSegment[]) {
-    pushCorpusTexts(segments.map((s) => s.text), "ocr_track");
+  /// 把 OCR 段文本提取进 corpus（去时间轴，去重），供融合页消费。
+  /// `record=false` 由调用方统一记快照（OCR 写入还需同步落盘待审批纠正）
+  function writeOcrToCorpus(segments: OcrSegment[], record = true) {
+    pushCorpusTexts(segments.map((s) => s.text), "ocr_track", record);
   }
 
   /// 手动添加一条语料（粘贴文本）

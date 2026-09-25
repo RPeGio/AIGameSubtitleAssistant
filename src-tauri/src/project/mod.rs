@@ -1,3 +1,4 @@
+use crate::ocr::Diff;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -179,6 +180,12 @@ pub struct Project {
     /// 可靠文本语料集合（独立于轨道，供 LLM 融合消费）；缺省空
     #[serde(default)]
     pub corpus: Vec<CorpusItem>,
+    /// 语料 OCR 的待审批文本纠正（术语表纠错）——Rust 侧只标记、**不改写**语料文本；
+    /// 采纳 = 对全部 corpus 条目执行 old→new 替换并移除该条目，放弃 = 仅移除条目。
+    /// 重跑语料 OCR 时整体覆盖（与产物轨"清空并填充"同口径）。
+    /// 缺省空：旧项目文件无此字段，靠 `default` 兼容
+    #[serde(default)]
+    pub corpus_ocr_diffs: Vec<Diff>,
     /// 所有轨道
     pub tracks: Vec<Track>,
     pub created_at: String,
@@ -426,6 +433,7 @@ fn create_project_in(dir: &Path, name: &str) -> Result<Project, String> {
         source_video: String::new(),
         name: name.to_string(),
         corpus: Vec::new(),
+        corpus_ocr_diffs: Vec::new(),
         tracks: Vec::new(),
         created_at: now.clone(),
         updated_at: now,
@@ -852,12 +860,27 @@ mod tests {
 
     #[test]
     fn test_project_legacy_json_defaults_source_video_corpus() {
-        // 文件缺 source_video/corpus（旧数据）→ 默认空串 / 空语料
+        // 文件缺 source_video/corpus/corpus_ocr_diffs（旧数据）→ 默认空串 / 空集合
         let json = r#"{"path":"C:/proj","video":"clip.mp4","name":"示例","tracks":[],"created_at":"1","updated_at":"2"}"#;
         let project: Project = serde_json::from_str(json).unwrap();
         assert_eq!(project.source_video, "");
         assert!(project.corpus.is_empty());
+        assert!(project.corpus_ocr_diffs.is_empty());
         assert_eq!(project.video, "clip.mp4");
+    }
+
+    #[test]
+    fn test_project_corpus_ocr_diffs_roundtrip() {
+        // 待审批纠正必须能落盘/读回：save_project 把前端 JSON 反序列化进 Project 再写盘，
+        // 未声明字段会被静默丢弃——本测试守住该字段不丢（前端审批列表依赖它跨会话存在）
+        let mut project = sample_project();
+        project.corpus_ocr_diffs = vec![Diff {
+            old: vec!["编玛瑙".into(), "编玛脑".into()],
+            new: "缟玛瑙".into(),
+        }];
+        let text = serialize_project(&project).unwrap();
+        let back = parse_project(&text).unwrap();
+        assert_eq!(back.corpus_ocr_diffs, project.corpus_ocr_diffs);
     }
 
     #[test]
@@ -873,6 +896,7 @@ mod tests {
                 source: "paste".into(),
                 created_at: "1".into(),
             }],
+            corpus_ocr_diffs: vec![],
             tracks: vec![],
             created_at: "1".into(),
             updated_at: "2".into(),
@@ -932,6 +956,7 @@ mod tests {
                 source: "paste".into(),
                 created_at: "1".into(),
             }],
+            corpus_ocr_diffs: vec![],
             tracks: vec![sample_track()],
             created_at: "1".into(),
             updated_at: "2".into(),
@@ -1059,6 +1084,7 @@ mod tests {
             source_video: String::new(),
             name: name.into(),
             corpus: vec![],
+            corpus_ocr_diffs: vec![],
             tracks: vec![],
             created_at: "1".into(),
             updated_at: "2".into(),
