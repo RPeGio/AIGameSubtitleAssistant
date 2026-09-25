@@ -1061,6 +1061,145 @@ fn normalize_punctuation(text: &str, cfg: &PunctuationNorm) -> String {
     out
 }
 
+/// 术语匹配的"词字符"判定：字母/数字/汉字，外加**词内可能出现的符号**（`.`、`-`、`_`、`·`）。
+///
+/// 关键约束（2026-09-24 回归修复）：匹配窗口**只能是连续词字符**——否则窗口会跨过标点，
+/// 替换时把相邻标点吞掉。实测反例：词条 `NO.0217` 在 `抱歉，NO.0217，前面…` 上匹配到
+/// `，NO.0217`（含逗号），替换后变成 `抱歉NO.02177，`（逗号丢失 + 长度错位）。
+///
+/// `.`/`-` 等必须算词字符，否则 `NO.0217` 会被切成 `NO`+`0217` 两个片段而永远匹配不上；
+/// 而**全角标点与空白**（`，。！？「」` 等）不算，保证窗口不跨句读标点。
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | '·' | '/' | ':')
+}
+
+/// 术语表纠错的模糊匹配容差（编辑距离比例）。
+///
+/// 依据字符精度诊断（D4，2026-09-24）：主要是**形近字**误读（`缟`→`编` 等），
+/// 词条长度通常 ≥3 字符，1 个字符差的比例远小于此值，故 0.34 能覆盖单字误读，
+/// 又不会把两个不同的短词判为同一个（如 3 字符词差 2 个字符 = 0.67 > 0.34）。
+const GLOSSARY_MATCH_TOL: f64 = 0.34;
+
+/// 术语表纠错（S2，可选精度策略，由用户提供词表）。
+///
+/// 机制：把文本切成**连续词字符**的片段（标点/空白作为不可跨越的分隔），
+/// 在每个片段内按**窗口**滑过（窗口长度 = 词条长度 ±1）与词条做模糊比较；
+/// 命中（编辑距离比例 ≤ `GLOSSARY_MATCH_TOL`）时用词条替换该窗口。
+///
+/// 与标点归一化的关系：**归一化是必须的前置**（用户 2026-09-24 决策）——词条与产出
+/// 必须同形才能匹配（`[编玛瑙】` 无法匹配 `「缟玛瑙」`），故本函数在归一化之后调用。
+///
+/// 安全性：① 窗口不跨标点（见 `is_word_char`）；② 只替换与词条不同但足够相近的窗口；
+/// ③ 要求命中窗口与词条**首字符相同或长度相同**；④ 忽略单字符词条。
+fn apply_glossary(text: &str, glossary: &[String]) -> String {
+    if glossary.is_empty() {
+        return text.to_string();
+    }
+    // 预编译词条（去空白后按字符切），并过滤过短词条（1 字符词条误伤面太大）
+    let terms: Vec<Vec<char>> = glossary
+        .iter()
+        .map(|t| t.chars().filter(|c| !c.is_whitespace()).collect::<Vec<char>>())
+        .filter(|t| t.len() >= 2)
+        .collect();
+    if terms.is_empty() {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<char> = Vec::with_capacity(chars.len());
+    // `cursor` = 已消费到原文的哪个位置；`out` 里对应 [0, cursor) 已输出。
+    // 替换时把 [命中起点, 命中窗口末) 换成词条，然后 cursor 前移到窗口末——
+    // 这样刚写入的词条字符**不会**被后续扫描再次匹配（避免 `缟玛瑙瑙` 这类重复）。
+    let mut cursor = 0;
+    while cursor < chars.len() {
+        if !is_word_char(chars[cursor]) {
+            out.push(chars[cursor]);
+            cursor += 1;
+            continue;
+        }
+        // 当前片段 = 连续词字符 [cursor, seg_end)
+        let seg_end = {
+            let mut e = cursor;
+            while e < chars.len() && is_word_char(chars[e]) {
+                e += 1;
+            }
+            e
+        };
+        // 片段内滑窗匹配（窗口不得越过 seg_end）
+        let mut best: Option<(usize, usize, &Vec<char>, usize)> = None; // (起点, 窗口长, 词条, 词条长)
+        for t in &terms {
+            let tl = t.len();
+            // **只允许等长窗口**：词条纠错针对的是"形近字替换"（长度不变），
+            // 允许 ±1 长度差会在替换时增减字符——实测产生 `NO.02177`（残留数字）、
+            // `米提亚长`（丢掉「队」）这类破坏性改写
+            for wl in [tl] {
+                let mut s = cursor;
+                while s + wl <= seg_end {
+                    let win = &chars[s..s + wl];
+                    let d = levenshtein_chars(win, t);
+                    let ratio = d as f64 / tl.max(wl) as f64;
+                    // 命中条件（**普遍规则，不为个别词条做长度特判**）：
+                    // ① 等长窗口（见上）；
+                    // ② 有差异且编辑距离比例 ≤ 容差；
+                    // ③ **首字符相同**（同词内后续字误读，如 米提哑→米提亚）
+                    //    或 **仅 1 字符不同**（任意位置的单字形近误读，如 编玛瑙→缟玛瑙）。
+                    //    后者是术语表的主要价值来源：用户先跑一次自动纠错、发现被 vote
+                    //    多数的词整体是错的（含首字），再用术语表替换。不加长度特判——
+                    //    曾为单个长短语加的特判已回退，长短语误伤由用户词表自身规避
+                    //    （实测 `天空岛的造物` 会改写 `天空岛的防线`，故不入词表）。
+                    let one_char_near = d == 1;
+                    if d > 0
+                        && ratio <= GLOSSARY_MATCH_TOL
+                        && (win.first() == t.first() || one_char_near)
+                    {
+                        // 择优：起点更靠前优先；同起点时更长的词条优先
+                        let better = match best {
+                            None => true,
+                            Some((bs, _, _, btl)) => s < bs || (s == bs && tl > btl),
+                        };
+                        if better {
+                            best = Some((s, wl, t, tl));
+                        }
+                    }
+                    s += 1;
+                }
+            }
+        }
+        match best {
+            Some((s, wl, t, _)) => {
+                out.extend(chars[cursor..s].iter().copied()); // 命中点之前原样保留
+                out.extend(t.iter().copied()); // 写入词条
+                cursor = s + wl; // 跨过被替换窗口（窗口内原文已被词条覆盖）
+            }
+            None => {
+                out.push(chars[cursor]);
+                cursor += 1;
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// 字符级编辑距离（术语表匹配用；文本短，直接 DP）
+fn levenshtein_chars(a: &[char], b: &[char]) -> usize {
+    if a.is_empty() {
+        return b.len();
+    }
+    if b.is_empty() {
+        return a.len();
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            cur[j + 1] = (prev[j + 1] + 1).min(cur[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
 /// 段尾精化（B-ii）：把 `end = 末采样 + interval×0.5` 的**量化估计**替换为密帧实测的切换时刻。
 ///
 /// 依据（2026-09-18 边界形态诊断）：Δend p95 达 0.87s（glupov）/0.62s（moon），而容差 0.5s。
@@ -1359,6 +1498,13 @@ pub struct OcrRunParams {
     /// 标点归一化配置（默认见 `PunctuationNorm::default`）；缺省时用默认值
     #[serde(default)]
     pub punctuation: PunctuationNorm,
+    /// 术语表（S2，可选精度策略）：用户提供的正确词条列表（如游戏专有名词）。
+    ///
+    /// 产出文本在**标点归一化之后**与词条做模糊匹配（编辑距离比例 ≤0.34），
+    /// 命中即替换为词条——用于纠正形近字误读（如 `编玛瑙` → `缟玛瑙`）。
+    /// 空列表 = 关闭（默认）。**前端可增删条目**（input-text 列表）。
+    #[serde(default)]
+    pub glossary: Vec<String>,
 }
 
 /// 进度事件载荷
@@ -1437,6 +1583,8 @@ where
     let min_subtitle_sec = params.min_subtitle_sec;
     // 标点归一化配置（精度策略的前置层，用户可个性目标字符）
     let punctuation = params.punctuation.clone();
+    // 术语表（S2，可选）：在标点归一化之后应用（词条与产出须同形才能匹配）
+    let glossary = params.glossary.clone();
     // D8(1b) 静态超时保险丝：env 可覆盖，≤0 关闭
     let stale_timeout = std::env::var("GSA_OCR_STALE_TIMEOUT_SEC")
         .ok()
@@ -1723,9 +1871,11 @@ where
             refine_segment_ends(segments, &scan_stream, dhash_threshold, frame_interval, clip.end);
         // 第六遍：精化可能让 start 提前 → clamp 相邻段时间，保证单调不重叠
         let mut segments = clamp_segment_times(segments);
-        // 末步（输出层）：标点/省略号归一化——纯文本变换，不影响分段与计时
+        // 末步（输出层）：标点/省略号归一化 + 术语表纠错——纯文本变换，不影响分段与计时。
+        // 顺序关键：归一化必须先做（词条与产出须同形才能匹配）
         for seg in &mut segments {
-            seg.text = normalize_punctuation(&seg.text, &punctuation);
+            let normalized = normalize_punctuation(&seg.text, &punctuation);
+            seg.text = apply_glossary(&normalized, &glossary);
         }
         if dev_debug {
             eprintln!("[ocr] clip {}/{}：合并 {} 条事件", i + 1, clip_count, segments.len());
@@ -2616,6 +2766,87 @@ mod tests {
             ..PunctuationNorm::default()
         };
         assert_eq!(normalize_punctuation("The Jesterj", &off), "The Jesterj");
+    }
+
+    // ── 术语表纠错（S2）──
+
+    fn gl(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn test_glossary_replaces_misread_near_form() {
+        // 实测形态：缟玛瑙 被读成 编玛瑙（glupov 全部条目，共 11 处，首字即误读）
+        let g = gl(&["缟玛瑙"]);
+        assert_eq!(apply_glossary("「编玛瑙」", &g), "「缟玛瑙」");
+        assert_eq!(apply_glossary("编玛瑙队长", &g), "缟玛瑙队长");
+        // 完全一致时不改动
+        assert_eq!(apply_glossary("缟玛瑙", &g), "缟玛瑙");
+    }
+
+    #[test]
+    fn test_glossary_replaces_long_term() {
+        // 长词条的尾部误读（实测 pierro：米提亚/派蒙 等角色名）
+        let g = gl(&["米提亚"]);
+        assert_eq!(apply_glossary("米提亚队长", &g), "米提亚队长");
+        assert_eq!(apply_glossary("米提哑队长", &g), "米提亚队长");
+    }
+
+    #[test]
+    fn test_glossary_keeps_unrelated_text() {
+        // 无关文本不受影响（不同词、长度差大的都不该被改写）
+        let g = gl(&["缟玛瑙"]);
+        assert_eq!(apply_glossary("这是一段普通的对话文本", &g), "这是一段普通的对话文本");
+        assert_eq!(apply_glossary("编队集合", &g), "编队集合");
+        // 空词表 = 关闭
+        assert_eq!(apply_glossary("编玛瑙", &[]), "编玛瑙");
+    }
+
+    #[test]
+    fn test_glossary_match_rules() {
+        // 规则：首字符相同 或 仅 1 字符不同（**无长度特判**，不为个别词条开小灶）
+        // 首字误读可纠（术语表的主用途）
+        assert_eq!(apply_glossary("编玛瑙", &gl(&["缟玛瑙"])), "缟玛瑙");
+        assert_eq!(apply_glossary("NO.0219", &gl(&["NO.0217"])), "NO.0217");
+        // 同词内后续字误读可纠
+        assert_eq!(apply_glossary("米提哑队长", &gl(&["米提亚"])), "米提亚队长");
+        // 已知代价：同首字、差 1 字的长短语也会被改写（如 防线→造物 类），
+        // 由**用户词表自身规避**（这类词不入表），而非加代码特判
+        assert_eq!(apply_glossary("天空岛的造特", &gl(&["天空岛的造物"])), "天空岛的造物");
+        // 差异 >1 字符或比例超标 → 不改
+        assert_eq!(apply_glossary("编玛瑙队长", &gl(&["缟玛瑙"])), "缟玛瑙队长");
+        assert_eq!(apply_glossary("完全不相关的文本", &gl(&["缟玛瑙"])), "完全不相关的文本");
+    }
+
+    #[test]
+    fn test_glossary_does_not_swallow_adjacent_punctuation() {
+        // 回归用例（2026-09-24 实测）：词条 NO.0217 曾匹配到 `，NO.0217`（跨标点窗口），
+        // 替换后变成 `抱歉NO.02177，`（逗号丢失 + 长度错位），使 pierro 语料 99.6→99.0
+        let g = gl(&["NO.0217"]);
+        assert_eq!(
+            apply_glossary("抱歉，NO.0217，前面在剧院我走得有些匆忙。", &g),
+            "抱歉，NO.0217，前面在剧院我走得有些匆忙。"
+        );
+        // 逗号/句号等标点必须原样保留
+        assert_eq!(apply_glossary("见，NO.0217。", &g), "见，NO.0217。");
+        // 真正的误读仍能纠正（同片段内）
+        assert_eq!(apply_glossary("NO.0219", &g), "NO.0217");
+    }
+
+    #[test]
+    fn test_glossary_after_punctuation_normalization() {
+        // 顺序：先归一化标点 → 再术语表（否则 `[编玛瑙】` 的括号会干扰匹配）
+        let g = gl(&["斯捷潘尼扬"]);
+        let normalized = normalize_punctuation("「斯捷潘尼杨」", &pn());
+        assert_eq!(normalized, "「斯捷潘尼杨」");
+        assert_eq!(apply_glossary(&normalized, &g), "「斯捷潘尼扬」");
+    }
+
+    #[test]
+    fn test_glossary_ignores_single_char_terms() {
+        // 单字符词条误伤面过大 → 忽略
+        let g = gl(&["缟"]);
+        assert_eq!(apply_glossary("编玛瑙", &g), "编玛瑙");
     }
 
     // ── 段尾精化（B-ii）──

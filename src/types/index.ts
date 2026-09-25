@@ -133,6 +133,9 @@ export interface OcrRunParams {
   min_subtitle_sec: number;
   /// 标点归一化配置（精度策略统一前置层；目标字符可由用户个性化）
   punctuation: PunctuationNorm;
+  /// 术语表（可选精度策略）：正确词条列表，产出文本在标点归一化后与之模糊匹配并纠正。
+  /// 空数组 = 关闭。前端为可增删的条目列表。
+  glossary: string[];
 }
 
 /// 标点归一化配置：把 OCR 产出的各类括号/省略号统一为用户偏好的形态。

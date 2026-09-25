@@ -37,7 +37,17 @@ const ocrParams = ref<OcrRunParams>({
     ellipsis: "…",
     fix_misread_letters: true,
   },
+  glossary: [],
 });
+
+/// 术语表条目操作（可增删的 input-text 列表）
+function addGlossaryTerm() {
+  ocrParams.value.glossary.push("");
+}
+
+function removeGlossaryTerm(i: number) {
+  ocrParams.value.glossary.splice(i, 1);
+}
 
 const sourceMeta = computed(() => projectStore.sourceVideoMeta);
 const hasSourceVideo = computed(() => sourceMeta.value !== null);
@@ -241,6 +251,32 @@ function removeItem(id: string) {
                   短于此长度的产出段若与后一条同句（前缀/子序列），并入后一条。默认 0.7；
                   实测 1.5 能收掉长打字机/遮挡造成的碎片，但会提高"误吞真实短句"的概率（0 关闭）
                 </NText>
+              </div>
+              <div class="cfg-field">
+                <div style="display: flex; align-items: center; justify-content: space-between">
+                  <NText depth="2">术语表（可选，用于纠正形近字误读）</NText>
+                  <NButton size="tiny" quaternary @click="addGlossaryTerm">+ 添加</NButton>
+                </div>
+                <div v-if="ocrParams.glossary.length === 0">
+                  <NText depth="3" style="font-size: 12px">
+                    未配置。留空即关闭；填入正确词条（如角色名/专有名词）后，识别结果中与之
+                    相近的文本（形近字误读）会被自动纠正
+                  </NText>
+                </div>
+                <div
+                  v-for="(_, gi) in ocrParams.glossary"
+                  :key="gi"
+                  style="display: flex; gap: 6px; margin-top: 6px"
+                >
+                  <NInput
+                    v-model:value="ocrParams.glossary[gi]"
+                    placeholder="正确词条，如 缟玛瑙"
+                    size="small"
+                  />
+                  <NButton size="small" quaternary type="error" @click="removeGlossaryTerm(gi)">
+                    删除
+                  </NButton>
+                </div>
               </div>
             </div>
 

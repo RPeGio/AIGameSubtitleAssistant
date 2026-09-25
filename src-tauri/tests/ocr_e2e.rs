@@ -52,6 +52,7 @@ fn test_t3_end_to_end() {
         merge_similarity: 0.3,
         min_subtitle_sec: 0.7,
         punctuation: Default::default(),
+        glossary: Vec::new(),
     };
 
     let start = Instant::now();

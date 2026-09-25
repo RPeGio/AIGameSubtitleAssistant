@@ -204,6 +204,17 @@ pub fn default_ocr_params() -> OcrRunParams {
         min_subtitle_sec: ai_game_subtitle_assistant_lib::ocr::DEFAULT_MIN_SUBTITLE_SEC,
         // 标点归一化：基准取产品默认配置（目标字符用户可配）
         punctuation: Default::default(),
+        // 术语表：基准默认关闭（S2 精度策略为可选项，且会改写产出文本）。
+        // 用 env GSA_BENCH_GLOSSARY="词条1,词条2" 注入以验证纠错效果（不改基准默认行为）
+        glossary: std::env::var("GSA_BENCH_GLOSSARY")
+            .ok()
+            .map(|v| {
+                v.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default(),
     }
 }
 
