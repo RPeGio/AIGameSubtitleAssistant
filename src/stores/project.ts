@@ -9,6 +9,7 @@ import type {
   CorpusItem,
   OcrRunParams,
   OcrSegment,
+  Diff,
   OcrProgress,
   AsrRunParams,
   AsrSegment,
@@ -669,7 +670,12 @@ export const useProjectStore = defineStore("project", () => {
     ocrProgress.value = 0;
     ocrMessage.value = "准备中...";
     try {
-      const segments = await invoke<OcrSegment[]>("run_ocr", {
+      // run_ocr 返回 (segments, diffs) 两元组：Rust 侧只做标点归一化（静默），
+      // 术语表/一致性纠错只**标记**为待审批 Diff，不改写文本（R1 用户决策）。
+      // 第二个元素（待审批列表）暂不消费：R2 持久化到 project.corpusOcrDiffs，
+      // R3 接入审批 UI。此刻若存入 currentProject，会被 save_project 的 Rust
+      // Project 结构（尚无该字段）静默丢弃，属误导，故不落。
+      const [segments] = await invoke<[OcrSegment[], Diff[]]>("run_ocr", {
         videoPath: meta.path,
         videoW: meta.width,
         videoH: meta.height,

@@ -158,6 +158,14 @@ export interface OcrSegment {
   confidence: number;
 }
 
+/// 一条待审批的文本纠正（Rust 侧 `ocr::Diff`，术语表/一致性纠错共用）。
+/// `old` 为集合语义：同一目标词条可对应多种误读形态，采纳时一并替换。
+/// Rust 侧只标记、不改写文本，纠正由前端审批后执行。
+export interface Diff {
+  old: string[];
+  new: string;
+}
+
 export interface OcrProgress {
   clip_index: number;
   clip_count: number;
