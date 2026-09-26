@@ -15,7 +15,7 @@ mod common;
 
 use common::{
     align_temporal, apply_ref_calibration, bench_data_dir, build_ocr_manager, hardsub_regions,
-    print_md_row, run_ocr, score_hardsub, require_file, CaseCfg, GLUPOV, MOON_SISTERS,
+    print_md_row, run_ocr_with_params, score_hardsub, require_file, CaseCfg, GLUPOV, MOON_SISTERS,
     PIERRO_QUESTIONS,
 };
 
@@ -70,7 +70,19 @@ fn run_case(cfg: &CaseCfg) {
         })
         .count();
 
-    let (segments, elapsed) = run_ocr(&manager, &video, &regions);
+    // 参数：嵌字基准按**素材实测的最小字幕时长**设 min_subtitle_sec（与语料基准分离，
+    // 见 CaseCfg::hardsub_min_subtitle_sec）——实况/录屏的字幕寿命天然长于剧情语料，
+    // 提高该门可让 D12 稳定态门槛造出的短碎片在 D14 pass 被并入后条。
+    let params = common::hardsub_ocr_params(cfg);
+    println!(
+        "min_subtitle_sec = {:.2}s（该素材实测值{}）",
+        params.min_subtitle_sec,
+        match std::env::var("GSA_BENCH_HARDSUB_MIN_SUBTITLE_SEC") {
+            Ok(_) => "，env 覆盖中",
+            Err(_) => "",
+        }
+    );
+    let (segments, elapsed) = run_ocr_with_params(&manager, &video, &regions, &params);
 
     // 主观评估产物：把嵌字段写成 SRT（复用产品侧 format_srt + BOM），
     // 供导入剪辑软件、对照实况切片视频逐条目视（分数之外的定性判断）

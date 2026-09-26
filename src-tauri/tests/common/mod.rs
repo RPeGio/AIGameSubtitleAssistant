@@ -67,6 +67,19 @@ pub struct CaseCfg {
     /// **人工剪辑加的文字渐变 transition**（有且仅有两处，产出段 31-33 与 45-47 处），
     /// 会在该处天然产生碎片/边界异常，用户明确"不计错"。
     pub excluded_refs: &'static [(usize, &'static str)],
+    /// **嵌字基准专用** `min_subtitle_sec`（秒）：该素材"字幕实际最短寿命"的实测值。
+    ///
+    /// 依据（2026-09-26 探针 `temp/probe/ref_duration_stats.py`，统计参考条目时长）：
+    /// **实况/录屏嵌字的字幕寿命天然长于剧情语料**——三案例参考条目最短时长分别为
+    /// glupov **3.52s** / moon **3.62s** / pierro **2.25s**（p5：4.48 / 3.75 / 3.97），
+    /// 而语料侧存在 1.48s 的姓名框/头衔态（D14 记录）。
+    ///
+    /// 故嵌字基准按素材各自标定该门，**语料基准仍用产品默认**
+    /// `DEFAULT_MIN_SUBTITLE_SEC = 1.5`（不随本字段变化）——分开之后，提高嵌字门
+    /// 不再触碰语料硬门。该门只作用于 D14 短碎片合并 pass
+    /// （`merge_short_fragments_into_next`）的时长条件，且仍需"末行与后条对应行弱关联"
+    /// 才吞并，故提高它不会盲目并掉无关短句。
+    pub hardsub_min_subtitle_sec: f64,
 }
 
 /// pierro 两处人工 transition 涉及的参考条目（用户 2026-09-18 确认有且仅此两处）：
@@ -93,6 +106,8 @@ pub const MOON_SISTERS: CaseCfg = CaseCfg {
     ref_scale: 0.0,
     ref_offset: 0.0,
     excluded_refs: &[],
+    // 实测最短 3.62s（p5 3.75s）
+    hardsub_min_subtitle_sec: 3.6,
 };
 
 pub const GLUPOV: CaseCfg = CaseCfg {
@@ -105,6 +120,9 @@ pub const GLUPOV: CaseCfg = CaseCfg {
     ref_scale: 0.007092,
     ref_offset: -0.021,
     excluded_refs: &[],
+    // 实测最短 3.52s（第 17 条姓名框态，p5 4.48s）——**必须低于 3.52**，
+    // 否则 D12 保护的姓名框档案会被本 pass 吞并（glupov 会回归）
+    hardsub_min_subtitle_sec: 3.4,
 };
 
 pub const PIERRO_QUESTIONS: CaseCfg = CaseCfg {
@@ -118,6 +136,11 @@ pub const PIERRO_QUESTIONS: CaseCfg = CaseCfg {
     ref_offset: -0.121,
     // 两处人工剪辑 transition（用户 2026-09-18 主观评审确认，仅此两处）→ 不计错
     excluded_refs: PIERRO_TRANSITION_REFS,
+    // 实测最短 2.25s（另有 0.60s 的异常条目，疑似参考笔误）。取 3.5s 的目标：
+    // 盖住 D12 门槛造出的 6 条碎片短态（2.55~3.38s），使它们在 D14 pass 被并入后条。
+    // 是否误吞合法的 2.25~2.83s 短条（如「丑角」/可以。）取决于"弱关联"判据，
+    // 由基准实测检验（缺失/被吞并不得增加）。
+    hardsub_min_subtitle_sec: 3.5,
 };
 
 /// 剔除**排除计分**的参考条目（见 `CaseCfg::excluded_refs`），返回 (保留条数, 剔除明细)。
@@ -192,6 +215,22 @@ pub fn hardsub_regions(key: &str) -> Vec<OcrRegionInput> {
 }
 
 pub fn default_ocr_params() -> OcrRunParams {
+    ocr_params_with_min(ai_game_subtitle_assistant_lib::ocr::DEFAULT_MIN_SUBTITLE_SEC)
+}
+
+/// **嵌字基准专用**参数：其余同产品默认，仅把 `min_subtitle_sec` 换成该素材实测值
+/// （`CaseCfg::hardsub_min_subtitle_sec`）。语料基准不走这里，继续用产品默认 1.5s。
+///
+/// env `GSA_BENCH_HARDSUB_MIN_SUBTITLE_SEC` 可覆盖，用于参数标定扫描（不必改代码）。
+pub fn hardsub_ocr_params(cfg: &CaseCfg) -> OcrRunParams {
+    let v = std::env::var("GSA_BENCH_HARDSUB_MIN_SUBTITLE_SEC")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(cfg.hardsub_min_subtitle_sec);
+    ocr_params_with_min(v)
+}
+
+fn ocr_params_with_min(min_subtitle_sec: f64) -> OcrRunParams {
     OcrRunParams {
         // 2026-09-18：0.25s 试验后回退 0.5s。0.25s 的收益（嵌字 +2.3~+10）不足以抵消代价：
         // 语料回归（glupov 97.1→96.1，细网格更早采到打字机过渡帧）、耗时 +34%~+57%。
@@ -200,8 +239,9 @@ pub fn default_ocr_params() -> OcrRunParams {
         dhash_threshold: 3,
         batch_size: 16,
         merge_similarity: 0.3,
-        // 字幕预估最短长度：基准取产品默认值（前端可调，见 DEFAULT_MIN_SUBTITLE_SEC 标定表）
-        min_subtitle_sec: ai_game_subtitle_assistant_lib::ocr::DEFAULT_MIN_SUBTITLE_SEC,
+        // 字幕预估最短长度：由调用方给定（产品默认 `DEFAULT_MIN_SUBTITLE_SEC`；
+        // 嵌字基准按素材实测值传入，见 `hardsub_ocr_params`）
+        min_subtitle_sec,
         // 标点归一化：基准取产品默认配置（目标字符用户可配）
         punctuation: Default::default(),
         // 术语表：基准默认关闭（S2 精度策略为可选项，且会改写产出文本）。
@@ -263,6 +303,16 @@ pub fn run_ocr(
     video: &Path,
     regions: &[OcrRegionInput],
 ) -> (Vec<OcrSegment>, f64) {
+    run_ocr_with_params(manager, video, regions, &default_ocr_params())
+}
+
+/// 同 `run_ocr`，但显式传入运行参数——嵌字基准据此按素材实测值覆盖 `min_subtitle_sec`。
+pub fn run_ocr_with_params(
+    manager: &OcrManager,
+    video: &Path,
+    regions: &[OcrRegionInput],
+    params: &OcrRunParams,
+) -> (Vec<OcrSegment>, f64) {
     let video_str = video.to_string_lossy().into_owned();
     let meta = get_video_metadata(video_str.clone())
         .unwrap_or_else(|e| panic!("读取视频元数据失败（{video_str}）: {e}"));
@@ -273,7 +323,7 @@ pub fn run_ocr(
         meta.width,
         meta.height,
         regions,
-        &default_ocr_params(),
+        params,
         meta.fps,
         // 进度消息打到 stderr（进日志）：一致性纠错的"精度建议"即由此传出
         |_, _, _, msg| {

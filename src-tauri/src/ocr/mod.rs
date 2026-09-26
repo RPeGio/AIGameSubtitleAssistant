@@ -815,14 +815,17 @@ fn overlap_ratio(a: &[char], b: &[char]) -> f64 {
     hit as f64 / a.len() as f64
 }
 
-/// 短碎片与后一条的**弱关联**判定（只比较碎片末行与后一条对应行）。
+/// 短碎片与后一条的**弱关联**判定（末行层面比较，另加前置行护栏）。
 ///
 /// 三条任一成立即算关联：归一化子序列（含空白/标点差异）、模糊前缀（OCR 误读 1~2 字符）、
 /// 字符重叠率 ≥0.5（乱序/替换型误读）。
 ///
-/// **护栏**：要求碎片末行归一化后**非空**——这条保住 D9 的独立短条：
-/// glupov 语料 `[……]` 条末行归一化为空串，绝不能被并入下一条
-/// （否则语料出现"缺失"，是六项基准的长期硬门）。
+/// **两道护栏**：
+/// 1. 前置行一致性：碎片除末行外的各行须与后条同序号行模糊相等（见函数内注释）——
+///    否则"换了说话人"的两条无关短句会被末行的字符重叠率误判为续写；
+/// 2. 碎片末行归一化后长度 ≥2 且后条对应行非空——这条保住 D9 的独立短条：
+///    glupov 语料 `[……]` 条末行归一化为空串，绝不能被并入下一条
+///    （否则语料出现"缺失"，是六项基准的长期硬门）。
 fn short_fragment_related(frag: &str, next: &str) -> bool {
     let fl: Vec<Vec<char>> = frag.lines().map(norm_chars).collect();
     let nl: Vec<Vec<char>> = next.lines().map(norm_chars).collect();
@@ -832,6 +835,29 @@ fn short_fragment_related(frag: &str, next: &str) -> bool {
     let flast = &fl[fl.len() - 1];
     if flast.len() < 2 {
         return false;
+    }
+    // ── 前置行一致性护栏（关键）──
+    // 碎片除末行外的各行须与后条**同序号行**模糊相等：字幕的前置行是**姓名框/头衔块**，
+    // 同一条字幕的渐进显示里它逐字不变。若不校验它，末行的"字符重叠率"会把**换了说话人**
+    // 的两条无关短句误判为续写——实测（2026-09-26，按素材标定 min_subtitle_sec 时暴露）：
+    // pierro `「丑角」/可以。`(2.83s) → `派蒙/欸！真的可以吗！…`（重叠 0.50）、
+    // moon `卡侬/…艾莉亚。` → `艾莉亚/卡侬妹妹。`（重叠 1.00）、
+    // glupov `斯捷潘尼扬/「缟玛瑙」/嗯？是你啊…` → 另一句（重叠 0.55）均为此类误判。
+    // 加上本护栏后这些对手全部被判为无关；glupov 那条真·姓名框态（前置行同为
+    // `安东/原「第九连队」临时连长`）仍被正确认定。
+    for (a, b) in fl
+        .iter()
+        .zip(nl.iter())
+        .take(fl.len().saturating_sub(1))
+    {
+        if a.is_empty() {
+            continue; // OCR 丢弃的不可识别行（如「……」）视为通配
+        }
+        let s: String = a.iter().collect();
+        let t: String = b.iter().copied().take(a.len()).collect();
+        if edit_distance_ratio(&s, &t) > SHORT_FRAGMENT_PREFIX_TOL {
+            return false;
+        }
     }
     let idx = (fl.len() - 1).min(nl.len() - 1);
     let nline = &nl[idx];
@@ -854,9 +880,10 @@ fn short_fragment_related(frag: &str, next: &str) -> bool {
 /// 并入后一条——**保留碎片起点**（该显示的真实起点，常比后条检测到的起点更准）
 /// 与后条终点/文本（用户 2026-09-18 主观评审提案）。
 ///
-/// `min_subtitle_sec` 由 `OcrRunParams::min_subtitle_sec` 传入（前端可调，默认 0.7s，
-/// ≤0 关闭本 pass）。调大能减少碎片，但会提高"误吞真实短句"的概率——实测 1.6s 时
-/// 语料出现缺失（见 `SHORT_FRAGMENT_MAX_SEC` 注释的标定表）。
+/// `min_subtitle_sec` 由 `OcrRunParams::min_subtitle_sec` 传入（**前端可调，产品默认
+/// 1.5s**，见 `DEFAULT_MIN_SUBTITLE_SEC`；≤0 关闭本 pass）。调大能减少碎片，但会提高
+/// "误吞真实短句"的概率——该门与素材相关：实况嵌字的字幕寿命天然长于剧情语料，
+/// 基准按素材分别标定（`tests/common::CaseCfg::hardsub_min_subtitle_sec`）。
 ///
 /// 与既有合并的分工：
 /// - `merge_contained_adjacent`：严格判据（子序列/行前缀）+ 1.25s 跨度门；
@@ -1666,9 +1693,12 @@ pub struct OcrRunParams {
     pub batch_size: usize,
     /// 合并相似度阈值（编辑距离比例，默认 0.3）
     pub merge_similarity: f64,
-    /// 字幕预估最短长度（秒，默认 0.7）：短于此的产出段若与后一条弱关联，则并入后一条
-    /// （保留碎片起点 + 后条终点/文本）。**前端可调**——调大能减少碎片，但会提高
-    /// "误吞真实短句"的概率（基准语料硬门会暴露）；实测 1.6s 会使语料出现缺失。
+    /// 字幕预估最短长度（秒，产品默认 1.5，见 `DEFAULT_MIN_SUBTITLE_SEC`）：短于此的产出段
+    /// 若与后一条弱关联，则并入后一条（保留碎片起点 + 后条终点/文本）。**前端可调**——
+    /// 调大能减少碎片，但会提高"误吞真实短句"的概率（基准语料硬门会暴露）。
+    ///
+    /// 该门是**素材相关**的：实况嵌字的字幕寿命天然长于剧情语料（基准实测参考条目最短
+    /// 时长：嵌字 3.52/3.62/2.25s vs 语料 1.48s），故基准按素材分别标定。
     pub min_subtitle_sec: f64,
     /// 标点归一化配置（默认见 `PunctuationNorm::default`）；缺省时用默认值
     #[serde(default)]
