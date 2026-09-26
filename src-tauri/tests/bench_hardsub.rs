@@ -145,6 +145,32 @@ fn run_case(cfg: &CaseCfg) {
             println!("  [{}] {:7.2} → {:7.2}  {}", i + 1, refs[i].start, refs[i].end, refs[i].text.replace('\n', " / "));
         }
     }
+    // 碎片明细：计数之外的定性信息（哪条参考被拆、拆成什么样），用于定位合并层缺口
+    // （D1/D12 类问题必须看"参考一行 vs 产出多行"的形态才能判定成因）
+    if !align.fragmented.is_empty() {
+        println!("── 碎片条目明细（1:N）──");
+        for (ei, parts) in &align.fragmented {
+            let e = &refs[*ei];
+            println!(
+                "  [{}] {:7.2} → {:7.2}  1→{} 段｜参考：{}",
+                ei + 1,
+                e.start,
+                e.end,
+                parts.len(),
+                e.text.replace('\n', " / ")
+            );
+            for &pi in parts {
+                let p = &segments[pi];
+                println!(
+                    "        产出 {:7.2} → {:7.2}  conf={:.2}  {}",
+                    p.start,
+                    p.end,
+                    p.confidence,
+                    p.text.replace('\n', " / ")
+                );
+            }
+        }
+    }
 
     // ── 可粘贴 markdown 行（列：日期|commit|评分|1:1/碎片/合并/缺失|Δstart p95|≤容差|覆盖率|噪音段|备注）──
     println!("\n<!-- 粘贴到 benchmark/{}.md 的「嵌字时间轴」表 -->", cfg.key);
