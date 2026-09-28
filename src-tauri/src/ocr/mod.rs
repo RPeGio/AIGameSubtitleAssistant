@@ -2095,13 +2095,23 @@ where
         let segments = merge_contained_adjacent(segments, frame_interval);
         // 第三遍：相邻文本相似合并（消除阶段 2 召回的同句碎片/伪短字幕）
         let segments = merge_similar_adjacent(segments, merge_similarity);
-        // 第四遍：短碎片激进合并（弱关联 + 时长/间隔门；保留碎片起点，见函数注释）
-        let segments = merge_short_fragments_into_next(segments, min_subtitle_sec);
-        // 第五遍（B-ii）：段尾精化——用密帧实测切换时刻替换"末采样+半间隔"的量化估计
+        // 第四遍（B-ii）：段尾精化——用密帧实测切换时刻替换"末采样+半间隔"的量化估计
         let segments =
             refine_segment_ends(segments, &scan_stream, dhash_threshold, frame_interval, clip.end);
-        // 第六遍：精化可能让 start 提前 → clamp 相邻段时间，保证单调不重叠
-        let mut segments = clamp_segment_times(segments);
+        // 第五遍：精化可能让 start 提前 → clamp 相邻段时间，保证单调不重叠
+        let segments = clamp_segment_times(segments);
+        // 第六遍：短碎片激进合并（弱关联 + 时长/间隔门；保留碎片起点，见函数注释）
+        //
+        // ⚠ **顺序要求（P2，2026-09-28）**：必须在**段尾精化与 clamp 之后**跑。本 pass 的时长门
+        // `min_subtitle_sec` 语义是"字幕最短寿命"，而它的判据取 `last.end - last.start`：
+        //   · 精化把终点前移到**实测切换时刻**；
+        //   · clamp 再把与后段重叠的终点压掉。
+        // 两者都会让时长变短——若在它们之前跑，比较的是"末采样 + 半间隔"的**粗估**时长
+        // （长 0~0.5s），擦边的碎片会被误判为超阈而漏并。实测 pierro SRT `#111`（D12 碎片）：
+        // clamp 前 ≈3.63s（超 3.5s 门被拒）、clamp 后 **3.38s**（应在门内）。
+        // 合并后再 `clamp` 本会产生重叠，故必须放在 clamp 之后（合并结果沿用后条已 clamp 的终点，
+        // 而碎片的起点 ≤ 前段终点，故不引入重叠）。
+        let mut segments = merge_short_fragments_into_next(segments, min_subtitle_sec);
         // 末步（输出层）：标点/省略号归一化（**静默执行**，用户 2026-09-24 决策）+
         // 术语表**标记**（只收集 Diff，不改文本——纠正由前端审批后执行）。
         // 顺序关键：归一化必须先做（词条与产出须同形才能匹配）
