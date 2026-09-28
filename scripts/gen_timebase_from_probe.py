@@ -24,6 +24,7 @@
 import hashlib
 import itertools
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -149,8 +150,30 @@ def theil_sen(rows):
     return (sl[m // 2] if m % 2 else (sl[m // 2 - 1] + sl[m // 2]) / 2) if sl else 0.0
 
 
+def pooled_a(fits):
+    """三案例 a 的逆方差加权均值 + 同质性 χ²（用于"统一 a"口径）。
+
+    返回 (a_pooled, ci95_pooled, chi2, dof, p)；p 仅在 dof==2 时给出（精确式）。
+    """
+    ws, num = [], 0.0
+    for _, (f, _, _, _) in fits.items():
+        se = f["a_ci95"] / 1.96
+        w = 1.0 / (se * se)
+        ws.append((w, f["a"], se))
+        num += w * f["a"]
+    wsum = sum(w for w, _, _ in ws)
+    a = num / wsum
+    ci = 1.96 / (wsum ** 0.5)
+    chi2 = sum(((ai - a) / se) ** 2 for _, ai, se in ws)
+    dof = len(ws) - 1
+    p = math.exp(-chi2 / 2) if dof == 2 else float("nan")   # dof=2 时 χ² 上尾概率的闭式
+    return a, ci, chi2, dof, p
+
+
 def main():
     apply_now = "--apply" in sys.argv
+    apply_pooled = "--apply-pooled-a" in sys.argv
+    apply_per_case = "--apply-per-case-a" in sys.argv
     set_a = None
     for i, tok in enumerate(sys.argv):          # 兼容 --set-a -0.139 与 --set-a=-0.139
         if tok == "--set-a" and i + 1 < len(sys.argv):
@@ -163,8 +186,10 @@ def main():
         return 1
     rows = load_probe()
     print(f"探针记录 {len(rows)} 条（{PROBE_TSV.name}）｜"
-          f"{'应用新 fit 到 applied' if apply_now else '只更新 fit，applied 保持不变'}\n")
-    for case, (clip_name, ref_name) in CASES.items():
+          f"{'应用统一 a（合并估计）' if apply_pooled else ('应用新 fit 到 applied' if apply_now else '只更新 fit，applied 保持不变')}\n")
+    # pass 1：先算出各案例的 fit（统一 a 需要用到全部案例）
+    fits = {}
+    for case in CASES:
         case_rows = [r for r in rows if r["case"] == case]
         valid, invalid = [], []
         for r in case_rows:
@@ -174,22 +199,54 @@ def main():
         if len(valid) < 5:
             print(f"{case}: 有效点不足（{len(valid)}）→ 跳过", file=sys.stderr)
             continue
-        f = fit(valid)
+        fits[case] = (fit(valid), valid, invalid, case_rows)
+    pooled = None
+    if apply_pooled:
+        a_p, ci_p, chi2, dof, p = pooled_a(fits)
+        pooled = (a_p, ci_p, chi2, dof, p)
+        pstr = f"，p≈{p:.2f}" if p == p else ""
+        print(f"统一 a（三案例逆方差加权均值）= {a_p:+.4f}s（95%CI ±{ci_p:.4f}）｜"
+              f"同质性 χ²={chi2:.2f} / {dof} dof{pstr}\n")
+
+    # pass 2：写产物
+    for case, (clip_name, ref_name) in CASES.items():
+        if case not in fits:
+            continue
+        f, valid, invalid, case_rows = fits[case]
         out = OUT_DIR / f"{case}_timebase.json"
         prev = json.loads(out.read_text(encoding="utf-8")) if out.is_file() else None
+        base_k = prev["applied"]["k"] if prev else APPLIED_FALLBACK[case][0]
         if set_a is not None:
-            # 统一口径实验：三案例共用同一个 a，k 仍取各自 fit（配合 git checkout 还原）
-            ap_k, ap_a = round(f["k"], 6), set_a
+            # 统一口径实验：只改 a，k 保持现用值（配合 git checkout 还原）
+            ap_k, ap_a = base_k, set_a
+            note = f"实验口径：统一 a={set_a}（k 保持现用值）——实验后须还原"
+        elif apply_pooled:
+            ap_k, ap_a = base_k, round(pooled[0], 3)
+            pstr = f"，p≈{pooled[4]:.2f}" if pooled[4] == pooled[4] else ""
+            note = (f"统一 a（三案例合并估计）{ap_a:+.3f}s（95%CI ±{pooled[1]:.3f}；"
+                    f"同质性 χ²={pooled[2]:.2f}/{pooled[3]}dof{pstr}）；"
+                    f"k 保持各案例现用值（= 细网格 Theil–Sen 抗差估计）")
+            if case in NOTE:
+                note += "；" + NOTE[case]
+        elif apply_per_case:
+            # 逐案例**实测** a（细网格探针的 fit；k 仍保持现用值）——与"手抄常量"不同：
+            # 现在每个 a 都是 ±0.03~0.14s 的实测量，故可以逐案例使用
+            ap_k, ap_a = base_k, round(f["a"], 4)
+            note = (f"逐案例实测 a（细网格探针 fit，{f['a']:+.3f}s ±{f['a_ci95']:.3f}）；"
+                    f"k 保持现用值（= 细网格 Theil–Sen 抗差估计）")
+            if case in NOTE:
+                note += "；" + NOTE[case]
         elif prev and not apply_now:
             ap_k, ap_a = prev["applied"]["k"], prev["applied"]["a"]
+            note = NOTE.get(case, "")
         elif apply_now:
             ap_k, ap_a = round(f["k"], 6), round(f["a"], 4)
+            note = NOTE.get(case, "")
         else:
             ap_k, ap_a = APPLIED_FALLBACK[case]
-        note = NOTE.get(case, "")
-        if set_a is not None:
-            note = f"实验：统一 a={set_a}（k 取本案例 fit）——实验后须还原"
-        if abs(round(f["k"], 6) - ap_k) > 1e-9 or abs(round(f["a"], 3) - ap_a) > 1e-6:
+            note = NOTE.get(case, "")
+        if (set_a is None and not apply_pooled
+                and (abs(round(f["k"], 6) - ap_k) > 1e-9 or abs(round(f["a"], 3) - ap_a) > 1e-6)):
             note = (note + "；" if note else "") + (
                 f"⚠ 当前 fit（k={f['k']:+.6f} a={f['a']:+.3f}）与 applied 不同——"
                 f"切换需显式运行 --apply 并重记基线")
@@ -246,8 +303,11 @@ def main():
               f"  a={f['a']:+.3f}s ±{f['a_ci95']:.3f}"
               f"  R²={f['r2']:.4f} rmse={f['rmse']:.3f}s"
               f"  TheilSen={theil_sen(valid) * 100:+.4f}%")
-        print(f"{'':<17} applied: k={ap_k:+.6f} a={ap_a:+.3f}"
-              f"{'  ⚠ 与 fit 不同（待决策切换）' if abs(round(f['k'], 6) - ap_k) > 1e-9 or abs(round(f['a'], 3) - ap_a) > 1e-6 else '  （与 fit 一致）'}")
+        same_as_fit = (abs(round(f["k"], 6) - ap_k) <= 1e-9 and abs(round(f["a"], 3) - ap_a) <= 1e-6)
+        tag = ("  （与 fit 一致）" if same_as_fit else
+               "  （统一口径：a 取三案例合并估计，与各案例 fit 允许不同）"
+               if apply_pooled else "  ⚠ 与 fit 不同（切换需 --apply）")
+        print(f"{'':<17} applied: k={ap_k:+.6f} a={ap_a:+.3f}{tag}")
     return 0
 
 

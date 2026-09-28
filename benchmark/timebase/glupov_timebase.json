@@ -28,8 +28,8 @@
   },
   "applied": {
     "k": 0.007092,
-    "a": -0.021,
-    "note": "⚠ 当前 fit（k=+0.007195 a=-0.065）与 applied 不同——切换需显式运行 --apply 并重记基线"
+    "a": -0.0651,
+    "note": "逐案例实测 a（细网格探针 fit，-0.065s ±0.137）；k 保持现用值（= 细网格 Theil–Sen 抗差估计）；⚠ 当前 fit（k=+0.007195 a=-0.065）与 applied 不同——切换需显式运行 --apply 并重记基线"
   },
   "quality_gate": {
     "max_resid_median_sec": 0.15,
