@@ -815,16 +815,18 @@ fn overlap_ratio(a: &[char], b: &[char]) -> f64 {
     hit as f64 / a.len() as f64
 }
 
-/// 短碎片与后一条的**弱关联**判定（末行层面比较，另加前置行护栏）。
+/// 短碎片与后一条的**弱关联**判定（比较行层面，另加前置行护栏）。
 ///
 /// 三条任一成立即算关联：归一化子序列（含空白/标点差异）、模糊前缀（OCR 误读 1~2 字符）、
-/// 字符重叠率 ≥0.5（乱序/替换型误读）。
+/// 字符重叠率 ≥0.5（乱序/替换型误读）。比较行 = 碎片中**最后一个归一化长度 ≥2 的行**
+/// （尾部单字符行——OCR 把界面数字读成的 `0`/`O`/`A`——不参与比较），并用它在碎片中的
+/// **位置**定位后条的对应行。
 ///
 /// **两道护栏**：
-/// 1. 前置行一致性：碎片除末行外的各行须与后条同序号行模糊相等（见函数内注释）——
-///    否则"换了说话人"的两条无关短句会被末行的字符重叠率误判为续写；
-/// 2. 碎片末行归一化后长度 ≥2 且后条对应行非空——这条保住 D9 的独立短条：
-///    glupov 语料 `[……]` 条末行归一化为空串，绝不能被并入下一条
+/// 1. 前置行一致性：比较行之前的各行须与后条同序号行模糊相等（见函数内注释）——
+///    否则"换了说话人"的两条无关短句会被比较行的字符重叠率误判为续写；
+/// 2. 碎片**字面末行**归一化为空串（纯标点条，如 `……`）→ 直接否决，且碎片至少要有一行
+///    归一化长度 ≥2——这条保住 D9 的独立短条：glupov 语料 `[……]` 条绝不能被并入下一条
 ///    （否则语料出现"缺失"，是六项基准的长期硬门）。
 fn short_fragment_related(frag: &str, next: &str) -> bool {
     let fl: Vec<Vec<char>> = frag.lines().map(norm_chars).collect();
@@ -832,10 +834,27 @@ fn short_fragment_related(frag: &str, next: &str) -> bool {
     if fl.is_empty() || nl.is_empty() {
         return false;
     }
-    let flast = &fl[fl.len() - 1];
-    if flast.len() < 2 {
-        return false;
+    // ── 比较行选择（P1，2026-09-28）──
+    // 旧实现取**字面末行**并要求其归一化长度 ≥2。问题是 OCR 会把界面数字/字母读成单字符
+    // 行并落在末尾（实测 pierro `MurderofBirds`/`0`(0.484s)、`Paimon`/`Huh?`/`0`(0.383s)、
+    // `Mitya`/`…seems to be so`/`O`(0.901s)），这些**前缀碎片**在弱关联判据之前就被否决，
+    // 因而无法被本 pass 吸收（用户 2026-09-28 导入 Premiere 时暴露：`0` 那一行还被解析器
+    // 当成字幕序号，导致其后全部被截断）。
+    //
+    // 现改为：**尾部长度 <2 的行不参与比较**（它们不可能独立承载一条字幕），取**最后一个
+    // 长度 ≥2 的行**作为比较行，并用**它在下标中的位置**定位后条的对应行。
+    //
+    // **D9 护栏原意保持不变**：字面末行归一化为**空串**（纯标点条，如 `……`）时直接否决
+    // ——这类条必须独立留存，绝不能被并入下一条（否则语料出现"缺失"，长期硬门）。
+    // 只有"长度恰为 1"的末行（如 moon 语料真实句尾 `了。`）不再由本门决定去留，
+    // 改由时长门（`min_subtitle_sec`）与弱关联判据处理。
+    if fl.last().map_or(true, |l| l.is_empty()) {
+        return false; // D9：纯省略号/纯标点条 → 绝不并入
     }
+    let Some(fidx) = (0..fl.len()).rev().find(|&i| fl[i].len() >= 2) else {
+        return false; // 碎片全为单字符/垃圾行，无从比较
+    };
+    let flast = &fl[fidx];
     // ── 前置行一致性护栏（关键）──
     // 碎片除末行外的各行须与后条**同序号行**模糊相等：字幕的前置行是**姓名框/头衔块**，
     // 同一条字幕的渐进显示里它逐字不变。若不校验它，末行的"字符重叠率"会把**换了说话人**
@@ -845,11 +864,7 @@ fn short_fragment_related(frag: &str, next: &str) -> bool {
     // glupov `斯捷潘尼扬/「缟玛瑙」/嗯？是你啊…` → 另一句（重叠 0.55）均为此类误判。
     // 加上本护栏后这些对手全部被判为无关；glupov 那条真·姓名框态（前置行同为
     // `安东/原「第九连队」临时连长`）仍被正确认定。
-    for (a, b) in fl
-        .iter()
-        .zip(nl.iter())
-        .take(fl.len().saturating_sub(1))
-    {
+    for (a, b) in fl.iter().zip(nl.iter()).take(fidx) {
         if a.is_empty() {
             continue; // OCR 丢弃的不可识别行（如「……」）视为通配
         }
@@ -859,7 +874,7 @@ fn short_fragment_related(frag: &str, next: &str) -> bool {
             return false;
         }
     }
-    let idx = (fl.len() - 1).min(nl.len() - 1);
+    let idx = fidx.min(nl.len() - 1);
     let nline = &nl[idx];
     if nline.is_empty() {
         return false;
@@ -2852,6 +2867,93 @@ mod tests {
         ];
         let out = merge_short_fragments_into_next(segs, DEFAULT_MIN_SUBTITLE_SEC);
         assert_eq!(out.len(), 2, "纯省略号条必须保持独立");
+    }
+
+    #[test]
+    fn test_short_fragment_merges_trailing_garbage_line() {
+        // P1（2026-09-28）：碎片末行是 OCR 把界面数字读成的单字符行（`0`）时，比较行应回退到
+        // **最后一个长度 ≥2 的行**。实测 pierro SRT #107 `MurderofBirds`/`0`（0.484s）此前
+        // 因此无法被吸收；导入 Premiere 时该 `0` 还被解析器当成字幕序号，导致其后全部被截断。
+        let segs = vec![
+            OcrSegment {
+                start: 2570.585,
+                end: 2571.069,
+                text: "MurderofBirds\n0".into(),
+                confidence: 0.9,
+            },
+            OcrSegment {
+                start: 2571.069,
+                end: 2590.188,
+                text: "MurderofBirds\nfor telling me so much. I'm a bit surprised, honestly.".into(),
+                confidence: 0.95,
+            },
+        ];
+        let out = merge_short_fragments_into_next(segs, DEFAULT_MIN_SUBTITLE_SEC);
+        assert_eq!(out.len(), 1, "尾部单字符垃圾行不应阻止吸收前缀碎片");
+        assert!((out[0].start - 2570.585).abs() < 1e-9, "保留碎片起点");
+        assert!(out[0].text.contains("for telling me so much"));
+    }
+
+    #[test]
+    fn test_short_fragment_merges_trailing_garbage_after_partial_line() {
+        // 同型第二例（pierro SRT #125）：`Paimon`/`Huh?`/`0`（0.383s）→ 比较行回退到 `Huh?`，
+        // 它与后条对应行弱关联（子序列）→ 并入后条
+        let segs = vec![
+            OcrSegment {
+                start: 2894.342,
+                end: 2894.725,
+                text: "Paimon\nHuh?\n0".into(),
+                confidence: 0.9,
+            },
+            OcrSegment {
+                start: 2894.725,
+                end: 2945.993,
+                text: "Paimon\nHuh? Oh, hey there, Odette!".into(),
+                confidence: 0.95,
+            },
+        ];
+        let out = merge_short_fragments_into_next(segs, DEFAULT_MIN_SUBTITLE_SEC);
+        assert_eq!(out.len(), 1, "比较行回退后与后条弱关联即应吸收");
+    }
+
+    #[test]
+    fn test_short_fragment_keeps_all_garbage_lines() {
+        // 碎片全为单字符行时无从比较 → 保持独立（glupov SRT #24 单行 `A` 即此类）；
+        // 放宽比较行的选择**不等于**放开护栏，仍需存在长度 ≥2 的行
+        let segs = vec![
+            OcrSegment { start: 584.243, end: 584.627, text: "A".into(), confidence: 0.9 },
+            OcrSegment {
+                start: 586.0,
+                end: 590.0,
+                text: "派蒙\n这里是哪里？".into(),
+                confidence: 0.95,
+            },
+        ];
+        let out = merge_short_fragments_into_next(segs, DEFAULT_MIN_SUBTITLE_SEC);
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn test_short_fragment_long_entry_with_short_tail_keeps() {
+        // 真实短句尾（moon 语料 #3：末行 `了。` 归一化长度 1）仍不受影响——P1 只放宽"比较行"
+        // 的选择，**不放开时长门**：9.57s 的条目远超 min_subtitle_sec，保持独立
+        let segs = vec![
+            OcrSegment {
+                start: 100.0,
+                end: 109.567,
+                text: "卡侬\n桑娜妲。仔细想想，最近这些年，你丢下工作，偷偷跑出去找人类玩的次数\n了。"
+                    .into(),
+                confidence: 0.9,
+            },
+            OcrSegment {
+                start: 109.567,
+                end: 120.0,
+                text: "卡侬\n那你可得好好补偿我。".into(),
+                confidence: 0.95,
+            },
+        ];
+        let out = merge_short_fragments_into_next(segs, DEFAULT_MIN_SUBTITLE_SEC);
+        assert_eq!(out.len(), 2, "长条目不受时长门触碰");
     }
 
     #[test]
