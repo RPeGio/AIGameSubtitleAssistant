@@ -7,9 +7,10 @@
 //! 单独报告、不计缺陷。文本相似度仅报告，不参与评分。
 //!
 //! 运行：cargo test --release --test bench_hardsub -- --ignored --nocapture --test-threads=1
-//! 容差可用环境变量 GSA_BENCH_TOLERANCE_SEC 覆盖（默认 0.3s——1s 级偏差对字幕
-//! 生产已是严重偏离，只应作为严重缺陷出现）。
+//! 容差可用环境变量 GSA_BENCH_TOLERANCE_SEC 覆盖（默认 0.6s，见 `tolerance_sec`）。
 //! 跑完把打印的 markdown 行粘到 benchmark/<案例>.md 的「嵌字时间轴」表。
+//! 参考时基换算来自 `examples/benchmark_examples/<key>_timebase.json`（带 SHA256 守卫，
+//! 素材一换立即报错——见 `common::load_timebase`）。
 
 mod common;
 
@@ -22,7 +23,8 @@ use common::{
 fn tolerance_sec() -> f64 {
     // 容差与采样量子自洽：帧网格 0.5s 的段边界量化误差天然为 ±0.25s，旧 0.3s 容差比量子
     // 还小——把量化噪声当缺陷扣分。2026-09-18 先取 0.5s（=2×量化），后按用户决策提到
-    // **0.6s**（=2.4×量化，口径上更自洽；实测三案例 65.6 / 60.5 / 71.4 全过 60）。
+    // **0.6s**（=2.4×量化，口径上更自洽）。当前三案例实测 glupov 72.2 / moon 64.5 /
+    // pierro 69.3（2026-09-26，含 D17 与按素材标定的 min_subtitle_sec）。
     // env GSA_BENCH_TOLERANCE_SEC 可覆盖。
     std::env::var("GSA_BENCH_TOLERANCE_SEC")
         .ok()
@@ -51,8 +53,25 @@ fn run_case(cfg: &CaseCfg) {
             return;
         }
     };
-    // D5 校准：参考时间轴是视频时间轴的线性缩放（逐条实测后稳健拟合，见 CaseCfg 注释）
-    apply_ref_calibration(&mut refs, cfg);
+    // 时基换算：参考时间轴与 clip 时间轴差一个线性缩放（参考是素材字幕的中文翻译、
+    // 时码继承自外部字幕源）。换算值来自可审计产物 <key>_timebase.json，
+    // 加载时校验 clip/参考文件的 SHA256 与质量门——素材一换立即失败，不静默错算。
+    let tb = match common::load_timebase(cfg) {
+        Ok(tb) => tb,
+        Err(e) => panic!("时基产物校验失败：{e}"),
+    };
+    println!(
+        "时基换算（{}）：k={:+.6}（95%CI ±{:.6}） a={:+.3}s｜拟合 n={} R²={:.3} 残差中位 {:.3}s｜{}",
+        cfg.key,
+        tb.fit.k,
+        tb.fit.k_ci95,
+        tb.applied.a,
+        tb.fit.n_used,
+        tb.fit.r2,
+        tb.fit.resid_median_sec,
+        tb.applied.note
+    );
+    apply_ref_calibration(&mut refs, &tb);
     // 排除计分条目（素材侧缺陷，如 pierro 的人工 transition——用户主观评审确认）
     let dropped = common::drop_excluded_refs(&mut refs, cfg);
     if !dropped.is_empty() {

@@ -51,15 +51,17 @@ pub struct CaseCfg {
     pub corpus_video: &'static str,
     /// 测试片（主播实况切片，嵌字基准输入）
     pub clip_video: &'static str,
-    /// 参考时间码线性校准系数：`t_video ≈ t_ref × (1 + ref_scale) + ref_offset`。
+    /// 参考时间轴的线性换算（`t_video ≈ t_ref × (1 + k) + a`）**不再写在这里**：
+    /// 它已搬到可审计产物 `examples/benchmark_examples/<key>_timebase.json`
+    /// （`load_timebase` 加载，并断言 clip/参考文件的 SHA256 与质量门）。
     ///
-    /// 依据（2026-09-18，D5 校准节）：探针 `temp/probe/ref_calib.py` 逐条实测"视频里
-    /// 字幕真正出现的时刻"（跨语言，靠 OCR 文本变化判定），稳健拟合得每案例的
-    /// 缩放/截距。三案例参考时间轴都是视频时间轴的**线性缩放**（Δ≈a+k·t、残差 ±0.02s）：
-    /// glupov k=0.709%/R²=0.99、pierro k=0.065%/R²=0.93、moon k≈0（无漂移）。
-    /// 仅嵌字基准调用（语料基准按文本顺序比对，不用时间码）。
-    pub ref_scale: f64,
-    pub ref_offset: f64,
+    /// 背景（A4）：参考文本是素材英文字幕的**中文翻译**，时码继承自外部字幕源，
+    /// 其时间轴与交付 clip 差一个线性缩放——实测 glupov ≈+0.71%（片尾累计 ≈4s，
+    /// 而容差只有 0.6s）、pierro ≈+0.065%、moon ≈0。**改 ref_fps 改不动它**
+    /// （HH:MM:SS 是字面秒，只有 FF 字段除以 fps，逐条 ≤1ms）；"非丢帧时码"语义
+    /// 也被证伪（pierro 实测距其 11.6σ）。故只能换算，不能"修解析器"。
+    /// 仅嵌字基准使用（语料基准按文本顺序比对，不用时间码）。
+    ///
     /// **排除计分的参考条目**（1 基序号 + 原因）：计分前从参考集中剔除，其对应产出段
     /// 变为"多余段"（仅统计不扣分）。用于**素材侧缺陷**——被判为不属于管线责任的条目。
     ///
@@ -100,11 +102,6 @@ pub const MOON_SISTERS: CaseCfg = CaseCfg {
     ref_fps: 60.0,
     corpus_video: "quality_bench_test_corpus(voiced)_5min.mp4",
     clip_video: "quality_bench_test(voiced)_5min.mp4",
-    // 实测**无漂移**（k≈0、R²=0.0015，15 条）→ 不施加校准：给一份本来就准的参考做
-    // 偏移校正没有依据（拟合出的 a=-0.075s 落在探针 ±0.25s 分辨率内，且部分来自
-    // "对话行清空早于新句首字"的判定拍差，非参考自身偏置）
-    ref_scale: 0.0,
-    ref_offset: 0.0,
     excluded_refs: &[],
     // 实测最短 3.62s（p5 3.75s）
     hardsub_min_subtitle_sec: 3.6,
@@ -116,9 +113,6 @@ pub const GLUPOV: CaseCfg = CaseCfg {
     ref_fps: 60000.0 / 1001.0,
     corpus_video: "quality_bench_test_corpus(non-voiced)_11min.mp4",
     clip_video: "quality_bench_test(non-voiced)_11min.mp4",
-    // 18 条实测：k=+0.709%、a=-0.021s、R²=0.990（参考时间轴比视频快 0.7%）
-    ref_scale: 0.007092,
-    ref_offset: -0.021,
     excluded_refs: &[],
     // 实测最短 3.52s（第 17 条姓名框态，p5 4.48s）——**必须低于 3.52**，
     // 否则 D12 保护的姓名框档案会被本 pass 吞并（glupov 会回归）
@@ -131,9 +125,6 @@ pub const PIERRO_QUESTIONS: CaseCfg = CaseCfg {
     ref_fps: 60000.0 / 1001.0,
     corpus_video: "quality_bench_test_corpus(voiced)_48min.mp4",
     clip_video: "quality_bench_test(voiced)_48min.mp4",
-    // 117 条实测：k=+0.065%、a=-0.121s、R²=0.928
-    ref_scale: 0.000645,
-    ref_offset: -0.121,
     // 两处人工剪辑 transition（用户 2026-09-18 主观评审确认，仅此两处）→ 不计错
     excluded_refs: PIERRO_TRANSITION_REFS,
     // 实测最短 2.25s（另有 0.60s 的异常条目，疑似参考笔误）。取 3.5s 的目标：
@@ -161,16 +152,289 @@ pub fn drop_excluded_refs(refs: &mut Vec<RefEntry>, cfg: &CaseCfg) -> Vec<String
     dropped
 }
 
-/// 对参考时间码施加线性校准（见 `CaseCfg::ref_scale` 注释）。
+// ─── 参考时基产物（A4）────────────────────────────────────
+//
+// 参考文本是素材英文字幕的**中文翻译**，时码继承自外部字幕源，其时间轴与交付 clip 差一个
+// **线性缩放**（实测 glupov k≈+0.71%、pierro k≈+0.065%、moon k≈0；glupov 到片尾累计
+// ≈4s，而评分容差只有 0.6s）。该换算原先以手抄常量写在 `CaseCfg` 里：不可审计，且
+// **素材被替换/重编码时会静默错算分数**。现改为加载产物
+// `examples/benchmark_examples/<key>_timebase.json`，并断言：
+//   1. `case` 与配置一致；
+//   2. **clip 与参考文件的 SHA256 + 字节数**与产物记录一致（素材一换立即报错，不静默错算）；
+//   3. **质量门**：残差中位 ≤0.15s、k 的 95% CI 半宽 ≤0.1%（超出即"该案例时间轴不可精细评分"）；
+//   4. 逐条探针实测值条数与 `probe.n_total` 一致。
+// 产物由 `scripts/gen_timebase_from_probe.py` 从探针数据生成（内嵌算法说明、逐条实测值、
+// 被剔除点及其所测文本），故可离线审计。
+
+/// 时基产物（只取基准需要的字段；serde 默认忽略其余）。
+#[derive(serde::Deserialize, Debug)]
+pub struct Timebase {
+    pub case: String,
+    pub probe: TimebaseProbe,
+    pub fit: TimebaseFit,
+    pub applied: TimebaseApplied,
+    pub quality_gate: TimebaseGate,
+    pub inputs: TimebaseInputs,
+    pub onsets: Vec<TimebaseOnset>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct TimebaseProbe {
+    /// 探针原始记录数（含被剔除点）
+    pub n_total: usize,
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct TimebaseFit {
+    /// 线性缩放 k（拟合值，未必等于 `applied.k`）
+    pub k: f64,
+    pub r2: f64,
+    pub rmse_sec: f64,
+    pub resid_median_sec: f64,
+    /// k 的 95% 置信区间半宽
+    pub k_ci95: f64,
+    pub n_used: usize,
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct TimebaseApplied {
+    /// 实际施加的换算 `t_video = t_ref × (1 + k) + a`
+    pub k: f64,
+    pub a: f64,
+    pub note: String,
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct TimebaseGate {
+    pub max_resid_median_sec: f64,
+    pub max_k_ci95: f64,
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct TimebaseInputs {
+    pub clip: TimebaseInputFile,
+    pub reference: TimebaseInputFile,
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct TimebaseInputFile {
+    pub file: String,
+    pub bytes: u64,
+    pub sha256: String,
+}
+
+#[derive(serde::Deserialize, Debug)]
+pub struct TimebaseOnset {
+    pub idx: u32,
+    pub ref_start: f64,
+    pub t_onset: f64,
+}
+
+/// 加载并校验某案例的时基产物。
+///
+/// `clip` / `reference` 显式传入（而非从 `data_dir` 拼），便于单测用临时文件验证守卫。
+pub fn load_timebase_from(
+    json_path: &Path,
+    clip: &Path,
+    reference: &Path,
+    expected_case: &str,
+) -> Result<Timebase, String> {
+    let text = std::fs::read_to_string(json_path)
+        .map_err(|e| format!("读取时基产物失败（{}）：{e}", json_path.display()))?;
+    let tb: Timebase = serde_json::from_str(&text)
+        .map_err(|e| format!("解析时基产物失败（{}）：{e}", json_path.display()))?;
+
+    if tb.case != expected_case {
+        return Err(format!(
+            "时基产物案例不符：产物为 {}，配置为 {expected_case}（{}）",
+            tb.case,
+            json_path.display()
+        ));
+    }
+    if tb.onsets.len() != tb.probe.n_total {
+        return Err(format!(
+            "时基产物自相矛盾：onsets {} 条 ≠ probe.n_total {} 条（{}）",
+            tb.onsets.len(),
+            tb.probe.n_total,
+            json_path.display()
+        ));
+    }
+    for (label, want, path) in [
+        ("clip", &tb.inputs.clip, clip),
+        ("参考文件", &tb.inputs.reference, reference),
+    ] {
+        let got_bytes = std::fs::metadata(path)
+            .map_err(|e| format!("读取{label}失败（{}）：{e}", path.display()))?
+            .len();
+        if got_bytes != want.bytes {
+            return Err(format!(
+                "{label}已被替换：字节数 {got_bytes} ≠ 产物记录 {}（{}）。\n\
+                 换素材后必须重跑探针并用 scripts/gen_timebase_from_probe.py 重新生成产物，\
+                 否则分数是静默错的。",
+                want.bytes,
+                path.display()
+            ));
+        }
+        let got = sha256_file(path)?;
+        if !got.eq_ignore_ascii_case(&want.sha256) {
+            return Err(format!(
+                "{label}已被替换：SHA256 {} ≠ 产物记录 {}（{}）。\n\
+                 换素材后必须重跑探针并用 scripts/gen_timebase_from_probe.py 重新生成产物，\
+                 否则分数是静默错的。",
+                got,
+                want.sha256,
+                path.display()
+            ));
+        }
+    }
+    if tb.fit.resid_median_sec > tb.quality_gate.max_resid_median_sec {
+        return Err(format!(
+            "时基产物质量门不过：残差中位 {:.3}s > {:.3}s（{}）→ 该案例时间轴不可精细评分",
+            tb.fit.resid_median_sec,
+            tb.quality_gate.max_resid_median_sec,
+            json_path.display()
+        ));
+    }
+    if tb.fit.k_ci95 > tb.quality_gate.max_k_ci95 {
+        return Err(format!(
+            "时基产物质量门不过：k 的 95% CI 半宽 {:.5} > {:.5}（{}）→ k 欠定，不可用于评分",
+            tb.fit.k_ci95,
+            tb.quality_gate.max_k_ci95,
+            json_path.display()
+        ));
+    }
+    Ok(tb)
+}
+
+/// 按案例配置加载时基产物。
+///
+/// 产物在 **`benchmark/timebase/<key>_timebase.json`**（入库目录；`examples/` 整体被
+/// gitignore，素材与参考都不入库，故产物不能放那里）；素材与参考文件则按 `bench_data_dir()`
+/// 定位（本地）。
+pub fn load_timebase(cfg: &CaseCfg) -> Result<Timebase, String> {
+    let data = bench_data_dir();
+    load_timebase_from(
+        &repo_root()
+            .join("benchmark")
+            .join("timebase")
+            .join(format!("{}_timebase.json", cfg.key)),
+        &data.join(cfg.clip_video),
+        &data.join(cfg.ref_file),
+        cfg.key,
+    )
+}
+
+/// 计算文件 SHA256（守卫用；1.4GB 素材约数秒，只在基准/守卫测试里跑）。
+fn sha256_file(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let mut file =
+        std::fs::File::open(path).map_err(|e| format!("打开 {} 失败：{e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        use std::io::Read;
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// 对参考时间码施加时基换算（`t_video = t_ref × (1 + k) + a`，来自 `Timebase::applied`）。
+///
 /// 起止同乘同加：终点侧探针（`temp/probe/gt_probe_end.py`）独立实测的斜率与起点侧一致
 /// （pierro 0.056% vs 0.054%、glupov 0.474% vs 0.525%），故两端共用同一变换。
-pub fn apply_ref_calibration(refs: &mut [RefEntry], cfg: &CaseCfg) {
-    if cfg.ref_scale == 0.0 && cfg.ref_offset == 0.0 {
+pub fn apply_ref_calibration(refs: &mut [RefEntry], tb: &Timebase) {
+    let (k, a) = (tb.applied.k, tb.applied.a);
+    if k == 0.0 && a == 0.0 {
         return;
     }
     for e in refs.iter_mut() {
-        e.start = e.start * (1.0 + cfg.ref_scale) + cfg.ref_offset;
-        e.end = e.end * (1.0 + cfg.ref_scale) + cfg.ref_offset;
+        e.start = e.start * (1.0 + k) + a;
+        e.end = e.end * (1.0 + k) + a;
+    }
+}
+
+/// 守卫测试：素材被替换 / 案例错配 / 质量门不过时，必须**报错**而不是静默错算分数。
+///
+/// 用临时小文件构造，不触碰真实素材（否则每次测试都要哈希 2GB）。
+#[test]
+fn test_timebase_guard_rejects_replaced_media() {
+    let dir = std::env::temp_dir().join("gsa_timebase_guard_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("建临时目录");
+    let clip = dir.join("clip.mp4");
+    let reference = dir.join("ref.txt");
+    std::fs::write(&clip, b"fake-clip-bytes").expect("写 clip");
+    std::fs::write(&reference, b"00:00:01:00 - 00:00:02:00\nX\n").expect("写参考");
+
+    let mk = |case: &str, resid: f64, ci: f64, clip_sha: &str| {
+        serde_json::json!({
+            "case": case,
+            "probe": {"n_total": 1},
+            "fit": {"k": 0.0, "r2": 1.0, "rmse_sec": 0.0, "resid_median_sec": resid,
+                    "k_ci95": ci, "n_used": 1},
+            "applied": {"k": 0.0, "a": 0.0, "note": "单测"},
+            "quality_gate": {"max_resid_median_sec": 0.15, "max_k_ci95": 0.001},
+            "inputs": {
+                "clip": {"file": "clip.mp4",
+                         "bytes": std::fs::metadata(&clip).unwrap().len(),
+                         "sha256": clip_sha},
+                "reference": {"file": "ref.txt",
+                              "bytes": std::fs::metadata(&reference).unwrap().len(),
+                              "sha256": sha256_file(&reference).unwrap()},
+            },
+            "onsets": [{"idx": 1, "ref_start": 0.0, "t_onset": 0.0}],
+        })
+    };
+    let good_sha = sha256_file(&clip).expect("哈希 clip");
+    let json_path = dir.join("unit_case_timebase.json");
+
+    // 正例：全部一致 → 通过
+    std::fs::write(&json_path, mk("unit_case", 0.0, 0.0, &good_sha).to_string()).unwrap();
+    assert!(load_timebase_from(&json_path, &clip, &reference, "unit_case").is_ok());
+
+    // 反例 1：素材被替换（内容变 → SHA256 变）
+    let bad_sha = sha256_file(&reference).unwrap();
+    std::fs::write(&json_path, mk("unit_case", 0.0, 0.0, &bad_sha).to_string()).unwrap();
+    let err = load_timebase_from(&json_path, &clip, &reference, "unit_case").unwrap_err();
+    assert!(err.contains("已被替换"), "应报素材被替换：{err}");
+    assert!(err.contains("重新生成产物"), "应给出可操作指引：{err}");
+
+    // 反例 2：案例错配
+    std::fs::write(&json_path, mk("other_case", 0.0, 0.0, &good_sha).to_string()).unwrap();
+    let err = load_timebase_from(&json_path, &clip, &reference, "unit_case").unwrap_err();
+    assert!(err.contains("案例不符"), "应报案例错配：{err}");
+
+    // 反例 3：质量门不过（残差中位超限 / k 的 CI 超限）
+    std::fs::write(&json_path, mk("unit_case", 0.5, 0.0, &good_sha).to_string()).unwrap();
+    let err = load_timebase_from(&json_path, &clip, &reference, "unit_case").unwrap_err();
+    assert!(err.contains("残差中位"), "应报残差门不过：{err}");
+    std::fs::write(&json_path, mk("unit_case", 0.0, 0.01, &good_sha).to_string()).unwrap();
+    let err = load_timebase_from(&json_path, &clip, &reference, "unit_case").unwrap_err();
+    assert!(err.contains("k 的 95% CI"), "应报 k 欠定：{err}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 守卫测试②：**入库产物**与本地素材一致——换素材/改参考后必须重新生成产物。
+///
+/// 素材缺失时跳过（无素材的机器不失败）；存在则校验 SHA256、字节数与质量门。
+/// 注意会哈希真实素材（约 2GB，十秒内），这是该守卫的固有代价。
+#[test]
+fn test_shipped_timebase_artifacts_match_media() {
+    for cfg in [MOON_SISTERS, GLUPOV, PIERRO_QUESTIONS] {
+        let data = bench_data_dir();
+        if !data.join(cfg.clip_video).is_file() || !data.join(cfg.ref_file).is_file() {
+            eprintln!("[跳过] {} 缺少本地素材", cfg.key);
+            continue;
+        }
+        let tb = load_timebase(&cfg).unwrap_or_else(|e| panic!("{} 时基产物校验失败：{e}", cfg.key));
+        assert!(tb.fit.n_used > 0 && tb.fit.n_used <= tb.probe.n_total);
     }
 }
 

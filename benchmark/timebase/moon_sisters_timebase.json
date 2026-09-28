@@ -1,0 +1,141 @@
+{
+  "schema": 1,
+  "case": "moon_sisters",
+  "probe": {
+    "source": "temp/probe/ref_calib.tsv",
+    "date": "2026-09-19",
+    "method": "逐条实测视频中字幕真正出现的时刻（0.25s 网格 + 连续两帧变化判据；跨语言、不依赖参考文本），与参考时间码作差得 Δ(t)",
+    "n_total": 15,
+    "excluded": []
+  },
+  "fit": {
+    "estimator": "两参数最小二乘 + 迭代稳健剔除（阈值 max(1.0, 4·MAD)，至多 3 轮）；本产物由 scripts/gen_timebase_from_probe.py 复现 ref_calib_fit.py 得到",
+    "k": -5.678e-05,
+    "a": -0.0752,
+    "k_ci95": 0.00073496,
+    "a_ci95": 0.1214,
+    "r2": 0.0015,
+    "rmse_sec": 0.1178,
+    "resid_median_sec": 0.0806,
+    "n_used": 15,
+    "robust_check": {
+      "theil_sen_k_all_points": 0.0,
+      "theil_sen_k_used_points": 0.0,
+      "note": "Theil–Sen（点对斜率中位数）不做任何剔除；与拟合值接近即说明 k 不是挑点挑出来的"
+    }
+  },
+  "applied": {
+    "k": 0.0,
+    "a": 0.0,
+    "note": "刻意不校准：参考经复核无漂移（k≈0），拟合返回的 a=−0.075s 与估计量在真值 (0,0) 上的偏差地板同值"
+  },
+  "quality_gate": {
+    "max_resid_median_sec": 0.15,
+    "max_k_ci95": 0.001
+  },
+  "inputs": {
+    "clip": {
+      "file": "quality_bench_test(voiced)_5min.mp4",
+      "bytes": 129246838,
+      "sha256": "555f4385c47df736a69e3ea54e15b9c4dc8ac79088539d466eb88fd39330caae",
+      "duration_sec": 315.001667
+    },
+    "reference": {
+      "file": "quality_bench_test(voiced)_5min_reference.txt",
+      "bytes": 2319,
+      "sha256": "16f3296c117a0d9caa3c8b4df959a55edc123206f1cdb84d47221701e59ea15e"
+    }
+  },
+  "onsets": [
+    {
+      "idx": 3,
+      "ref_start": 20.5,
+      "t_onset": 20.25,
+      "delta": -0.25
+    },
+    {
+      "idx": 4,
+      "ref_start": 33.95,
+      "t_onset": 33.95,
+      "delta": 0.0
+    },
+    {
+      "idx": 5,
+      "ref_start": 56.45,
+      "t_onset": 56.45,
+      "delta": 0.0
+    },
+    {
+      "idx": 6,
+      "ref_start": 68.75,
+      "t_onset": 68.5,
+      "delta": -0.25
+    },
+    {
+      "idx": 7,
+      "ref_start": 96.067,
+      "t_onset": 96.067,
+      "delta": 0.0
+    },
+    {
+      "idx": 8,
+      "ref_start": 113.617,
+      "t_onset": 113.617,
+      "delta": 0.0
+    },
+    {
+      "idx": 9,
+      "ref_start": 117.833,
+      "t_onset": 117.833,
+      "delta": 0.0
+    },
+    {
+      "idx": 10,
+      "ref_start": 121.583,
+      "t_onset": 121.583,
+      "delta": 0.0
+    },
+    {
+      "idx": 11,
+      "ref_start": 135.533,
+      "t_onset": 135.283,
+      "delta": -0.25
+    },
+    {
+      "idx": 13,
+      "ref_start": 167.75,
+      "t_onset": 167.75,
+      "delta": 0.0
+    },
+    {
+      "idx": 15,
+      "ref_start": 218.517,
+      "t_onset": 218.517,
+      "delta": 0.0
+    },
+    {
+      "idx": 16,
+      "ref_start": 235.767,
+      "t_onset": 235.767,
+      "delta": 0.0
+    },
+    {
+      "idx": 17,
+      "ref_start": 252.183,
+      "t_onset": 251.933,
+      "delta": -0.25
+    },
+    {
+      "idx": 18,
+      "ref_start": 255.8,
+      "t_onset": 255.8,
+      "delta": 0.0
+    },
+    {
+      "idx": 19,
+      "ref_start": 265.3,
+      "t_onset": 265.05,
+      "delta": -0.25
+    }
+  ]
+}
