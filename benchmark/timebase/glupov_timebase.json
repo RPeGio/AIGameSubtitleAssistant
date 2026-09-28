@@ -2,51 +2,34 @@
   "schema": 1,
   "case": "glupov",
   "probe": {
-    "source": "temp/probe/ref_calib.tsv",
-    "date": "2026-09-19",
-    "method": "逐条实测视频中字幕真正出现的时刻（0.25s 网格 + 连续两帧变化判据；跨语言、不依赖参考文本），与参考时间码作差得 Δ(t)",
+    "source": "temp/probe/ref_calib_fine.tsv",
+    "date": "2026-09-28",
+    "method": "细网格夹逼探针 scripts/bench_timebase_probe.py（0.05s 网格；t_a=末个未变帧、t_b=首个已变帧，取中点 τ，不确定度 ±(t_b−t_a)/2；窗口按当前换算预居中到 ±0.4s）。跨语言、不依赖参考文本内容。",
     "n_total": 20,
-    "excluded": [
-      {
-        "idx": 22,
-        "ref_start": 567.133,
-        "delta": -0.5,
-        "reason": "稳健剔除：残差超 max(1.0, 4·MAD)",
-        "reference_text": "安东 / 原「第九连队」临时连长 / 我会相信他们叛离了愚人众，逃到了安全的地方，活了下",
-        "probe_saw": "Anton Former Acting Captain,\"Ninth C → Anton Former Acting Captain,\"Ninth C",
-        "pipeline_delta": "-0.507"
-      },
-      {
-        "idx": 19,
-        "ref_start": 531.184,
-        "delta": 0.0,
-        "reason": "硬编码：探针测到的是相邻条目的变化（非本句出现）",
-        "reference_text": "安东 / 原「第九连队」临时连长 / 没有消息。但也许……没有消息就是最好的消息。",
-        "probe_saw": "Anton Former Acting Captain,\"Ninth C → Anton FormerActing Captain,\"Ninth Co",
-        "pipeline_delta": "-0.101"
-      }
-    ]
+    "failed": [],
+    "excluded": []
   },
   "fit": {
-    "estimator": "两参数最小二乘 + 迭代稳健剔除（阈值 max(1.0, 4·MAD)，至多 3 轮）；本产物由 scripts/gen_timebase_from_probe.py 复现 ref_calib_fit.py 得到",
-    "k": 0.00709182,
-    "a": -0.0215,
-    "k_ci95": 0.00032383,
-    "a_ci95": 0.1063,
-    "r2": 0.9903,
-    "rmse_sec": 0.1211,
-    "resid_median_sec": 0.0189,
-    "n_used": 18,
+    "estimator": "最小二乘（有效点全量，**不做残差剔除**）＋ 95% CI；另附 Theil–Sen 抗差复核。有效性由先验规则判定：探针必须测到实质文本变化（归一化差异 > 0.35）",
+    "k": 0.00719506,
+    "a": -0.0651,
+    "k_ci95": 0.00038351,
+    "a_ci95": 0.1368,
+    "r2": 0.9854,
+    "rmse_sec": 0.16,
+    "resid_median_sec": -0.0142,
+    "n_used": 20,
+    "point_halfwidth_sec": 0.025,
     "robust_check": {
-      "theil_sen_k_all_points": 0.006844,
-      "theil_sen_k_used_points": 0.0070895,
-      "note": "Theil–Sen（点对斜率中位数）不做任何剔除；与拟合值接近即说明 k 不是挑点挑出来的"
+      "theil_sen_k_valid_points": 0.00709167,
+      "theil_sen_k_all_rows": 0.00709167,
+      "note": "Theil–Sen（点对斜率中位数）不做任何剔除；与拟合值接近即说明 k 稳健"
     }
   },
   "applied": {
     "k": 0.007092,
     "a": -0.021,
-    "note": "沿用稳健拟合值"
+    "note": "⚠ 当前 fit（k=+0.007195 a=-0.065）与 applied 不同——切换需显式运行 --apply 并重记基线"
   },
   "quality_gate": {
     "max_resid_median_sec": 0.15,
@@ -69,122 +52,122 @@
     {
       "idx": 2,
       "ref_start": 75.417,
-      "t_onset": 75.917,
-      "delta": 0.5
+      "t_onset": 75.8559,
+      "halfwidth": 0.025
     },
     {
       "idx": 3,
       "ref_start": 84.3,
-      "t_onset": 84.8,
-      "delta": 0.5
+      "t_onset": 84.9022,
+      "halfwidth": 0.025
     },
     {
       "idx": 4,
       "ref_start": 93.384,
-      "t_onset": 94.134,
-      "delta": 0.75
+      "t_onset": 94.0,
+      "halfwidth": 0.025
     },
     {
       "idx": 5,
       "ref_start": 106.0,
-      "t_onset": 106.75,
-      "delta": 0.75
+      "t_onset": 106.7558,
+      "halfwidth": 0.025
     },
     {
       "idx": 6,
       "ref_start": 114.551,
-      "t_onset": 115.301,
-      "delta": 0.75
+      "t_onset": 115.2669,
+      "halfwidth": 0.025
     },
     {
       "idx": 7,
       "ref_start": 138.551,
-      "t_onset": 139.301,
-      "delta": 0.75
+      "t_onset": 139.3872,
+      "halfwidth": 0.025
     },
     {
       "idx": 8,
       "ref_start": 162.367,
-      "t_onset": 163.367,
-      "delta": 1.0
+      "t_onset": 163.4225,
+      "halfwidth": 0.025
     },
     {
       "idx": 9,
       "ref_start": 173.884,
-      "t_onset": 175.134,
-      "delta": 1.25
+      "t_onset": 175.1214,
+      "halfwidth": 0.025
     },
     {
       "idx": 10,
       "ref_start": 196.701,
-      "t_onset": 198.201,
-      "delta": 1.5
+      "t_onset": 198.0497,
+      "halfwidth": 0.025
     },
     {
       "idx": 11,
       "ref_start": 222.584,
-      "t_onset": 224.084,
-      "delta": 1.5
+      "t_onset": 224.1665,
+      "halfwidth": 0.025
     },
     {
       "idx": 13,
       "ref_start": 322.667,
-      "t_onset": 325.167,
-      "delta": 2.5
+      "t_onset": 324.9097,
+      "halfwidth": 0.025
     },
     {
       "idx": 14,
       "ref_start": 328.551,
-      "t_onset": 331.051,
-      "delta": 2.5
+      "t_onset": 330.8846,
+      "halfwidth": 0.025
     },
     {
       "idx": 15,
       "ref_start": 445.701,
-      "t_onset": 448.951,
-      "delta": 3.25
+      "t_onset": 448.9156,
+      "halfwidth": 0.025
     },
     {
       "idx": 16,
       "ref_start": 458.634,
-      "t_onset": 461.884,
-      "delta": 3.25
+      "t_onset": 461.7906,
+      "halfwidth": 0.025
     },
     {
       "idx": 17,
       "ref_start": 469.951,
-      "t_onset": 473.201,
-      "delta": 3.25
+      "t_onset": 473.1378,
+      "halfwidth": 0.025
     },
     {
       "idx": 18,
       "ref_start": 527.684,
-      "t_onset": 531.184,
-      "delta": 3.5
+      "t_onset": 531.2304,
+      "halfwidth": 0.025
     },
     {
       "idx": 19,
       "ref_start": 531.184,
-      "t_onset": 531.184,
-      "delta": 0.0
+      "t_onset": 535.5547,
+      "halfwidth": 0.025
     },
     {
       "idx": 20,
       "ref_start": 541.434,
-      "t_onset": 545.184,
-      "delta": 3.75
+      "t_onset": 545.0776,
+      "halfwidth": 0.025
     },
     {
       "idx": 21,
       "ref_start": 562.684,
-      "t_onset": 566.684,
-      "delta": 4.0
+      "t_onset": 566.6286,
+      "halfwidth": 0.025
     },
     {
       "idx": 22,
       "ref_start": 567.133,
-      "t_onset": 566.633,
-      "delta": -0.5
+      "t_onset": 571.0596,
+      "halfwidth": 0.025
     }
   ]
 }

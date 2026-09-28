@@ -2,51 +2,46 @@
   "schema": 1,
   "case": "pierro_questions",
   "probe": {
-    "source": "temp/probe/ref_calib.tsv",
-    "date": "2026-09-19",
-    "method": "逐条实测视频中字幕真正出现的时刻（0.25s 网格 + 连续两帧变化判据；跨语言、不依赖参考文本），与参考时间码作差得 Δ(t)",
+    "source": "temp/probe/ref_calib_fine.tsv",
+    "date": "2026-09-28",
+    "method": "细网格夹逼探针 scripts/bench_timebase_probe.py（0.05s 网格；t_a=末个未变帧、t_b=首个已变帧，取中点 τ，不确定度 ±(t_b−t_a)/2；窗口按当前换算预居中到 ±0.4s）。跨语言、不依赖参考文本内容。",
     "n_total": 119,
+    "failed": [],
     "excluded": [
       {
-        "idx": 106,
-        "ref_start": 2642.417,
-        "delta": -0.75,
-        "reason": "稳健剔除：残差超 max(1.0, 4·MAD)",
-        "reference_text": "「丑角」 / 为了推进「槲寄生计划」，我们必须解决「死之执政」的问题。而你……也没打算放",
-        "probe_saw": "TheJester n the circumstances, the F → The Jester Project Mist",
-        "pipeline_delta": "1.474"
-      },
-      {
-        "idx": 116,
-        "ref_start": 2809.651,
-        "delta": -1.0,
-        "reason": "稳健剔除：残差超 max(1.0, 4·MAD)",
-        "reference_text": "派蒙 / 欸！真的可以吗！要不、要不还是算了，万一若娜瓦抓住机会，忽然冒出来……",
-        "probe_saw": "Paimon Paimon knows it's top secret → Paimon eal!? Uh.",
-        "pipeline_delta": "1.424"
+        "idx": 89,
+        "ref_start": 2065.0,
+        "bracket": [
+          2066.3609,
+          2066.4109
+        ],
+        "reason": "变化后文本为空（窗内被清空而非换句）",
+        "before": "The Jester n took up temporary residence in my palace until, of course, the arrival of the Cataclysm.",
+        "after": ""
       }
     ]
   },
   "fit": {
-    "estimator": "两参数最小二乘 + 迭代稳健剔除（阈值 max(1.0, 4·MAD)，至多 3 轮）；本产物由 scripts/gen_timebase_from_probe.py 复现 ref_calib_fit.py 得到",
-    "k": 0.00064534,
-    "a": -0.1209,
-    "k_ci95": 3.259e-05,
-    "a_ci95": 0.0506,
-    "r2": 0.9279,
-    "rmse_sec": 0.1529,
-    "resid_median_sec": 0.0204,
-    "n_used": 117,
+    "estimator": "最小二乘（有效点全量，**不做残差剔除**）＋ 95% CI；另附 Theil–Sen 抗差复核。有效性由先验规则判定：探针必须测到实质文本变化（归一化差异 > 0.35）",
+    "k": 0.00065608,
+    "a": -0.1487,
+    "k_ci95": 2.052e-05,
+    "a_ci95": 0.0323,
+    "r2": 0.9708,
+    "rmse_sec": 0.0982,
+    "resid_median_sec": 0.0234,
+    "n_used": 118,
+    "point_halfwidth_sec": 0.025,
     "robust_check": {
-      "theil_sen_k_all_points": 0.00063919,
-      "theil_sen_k_used_points": 0.00064603,
-      "note": "Theil–Sen（点对斜率中位数）不做任何剔除；与拟合值接近即说明 k 不是挑点挑出来的"
+      "theil_sen_k_valid_points": 0.00064502,
+      "theil_sen_k_all_rows": 0.00064503,
+      "note": "Theil–Sen（点对斜率中位数）不做任何剔除；与拟合值接近即说明 k 稳健"
     }
   },
   "applied": {
     "k": 0.000645,
     "a": -0.121,
-    "note": "沿用稳健拟合值（剔除 2 个离群探针点）"
+    "note": "⚠ 当前 fit（k=+0.000656 a=-0.149）与 applied 不同——切换需显式运行 --apply 并重记基线"
   },
   "quality_gate": {
     "max_resid_median_sec": 0.15,
@@ -69,716 +64,716 @@
     {
       "idx": 1,
       "ref_start": 54.05,
-      "t_onset": 54.05,
-      "delta": 0.0
+      "t_onset": 54.0889,
+      "halfwidth": 0.025
     },
     {
       "idx": 2,
       "ref_start": 63.117,
-      "t_onset": 63.117,
-      "delta": 0.0
+      "t_onset": 63.1115,
+      "halfwidth": 0.025
     },
     {
       "idx": 3,
       "ref_start": 109.868,
-      "t_onset": 109.618,
-      "delta": -0.25
+      "t_onset": 109.6924,
+      "halfwidth": 0.025
     },
     {
       "idx": 4,
       "ref_start": 119.317,
-      "t_onset": 119.317,
-      "delta": 0.0
+      "t_onset": 119.2979,
+      "halfwidth": 0.025
     },
     {
       "idx": 5,
       "ref_start": 130.184,
-      "t_onset": 130.434,
-      "delta": 0.25
+      "t_onset": 130.2715,
+      "halfwidth": 0.025
     },
     {
       "idx": 6,
       "ref_start": 130.784,
-      "t_onset": 130.284,
-      "delta": -0.5
+      "t_onset": 130.7725,
+      "halfwidth": 0.025
     },
     {
       "idx": 7,
       "ref_start": 149.767,
-      "t_onset": 149.767,
-      "delta": 0.0
+      "t_onset": 149.768,
+      "halfwidth": 0.025
     },
     {
       "idx": 8,
       "ref_start": 180.551,
-      "t_onset": 180.551,
-      "delta": 0.0
+      "t_onset": 180.421,
+      "halfwidth": 0.025
     },
     {
       "idx": 9,
       "ref_start": 192.017,
-      "t_onset": 192.017,
-      "delta": 0.0
+      "t_onset": 191.9445,
+      "halfwidth": 0.025
     },
     {
       "idx": 10,
       "ref_start": 203.834,
-      "t_onset": 203.834,
-      "delta": 0.0
+      "t_onset": 203.7696,
+      "halfwidth": 0.025
     },
     {
       "idx": 11,
       "ref_start": 227.317,
-      "t_onset": 227.317,
-      "delta": 0.0
+      "t_onset": 227.2176,
+      "halfwidth": 0.025
     },
     {
       "idx": 12,
       "ref_start": 273.234,
-      "t_onset": 273.234,
-      "delta": 0.0
+      "t_onset": 273.1638,
+      "halfwidth": 0.025
     },
     {
       "idx": 13,
       "ref_start": 278.934,
-      "t_onset": 278.934,
-      "delta": 0.0
+      "t_onset": 278.9682,
+      "halfwidth": 0.025
     },
     {
       "idx": 14,
       "ref_start": 323.133,
-      "t_onset": 322.883,
-      "delta": -0.25
+      "t_onset": 322.7459,
+      "halfwidth": 0.025
     },
     {
       "idx": 15,
       "ref_start": 347.934,
-      "t_onset": 347.934,
-      "delta": 0.0
+      "t_onset": 348.0127,
+      "halfwidth": 0.025
     },
     {
       "idx": 16,
       "ref_start": 356.184,
-      "t_onset": 356.434,
-      "delta": 0.25
+      "t_onset": 356.3173,
+      "halfwidth": 0.025
     },
     {
       "idx": 17,
       "ref_start": 364.184,
-      "t_onset": 364.184,
-      "delta": 0.0
+      "t_onset": 364.2224,
+      "halfwidth": 0.025
     },
     {
       "idx": 18,
       "ref_start": 366.851,
-      "t_onset": 366.851,
-      "delta": 0.0
+      "t_onset": 366.8915,
+      "halfwidth": 0.025
     },
     {
       "idx": 19,
       "ref_start": 386.934,
-      "t_onset": 386.934,
-      "delta": 0.0
+      "t_onset": 386.8878,
+      "halfwidth": 0.025
     },
     {
       "idx": 20,
       "ref_start": 399.4,
-      "t_onset": 399.65,
-      "delta": 0.25
+      "t_onset": 399.612,
+      "halfwidth": 0.025
     },
     {
       "idx": 21,
       "ref_start": 408.017,
-      "t_onset": 408.267,
-      "delta": 0.25
+      "t_onset": 408.2339,
+      "halfwidth": 0.025
     },
     {
       "idx": 22,
       "ref_start": 419.133,
-      "t_onset": 419.383,
-      "delta": 0.25
+      "t_onset": 419.2578,
+      "halfwidth": 0.025
     },
     {
       "idx": 23,
       "ref_start": 436.901,
-      "t_onset": 437.151,
-      "delta": 0.25
+      "t_onset": 437.0867,
+      "halfwidth": 0.025
     },
     {
       "idx": 24,
       "ref_start": 449.517,
-      "t_onset": 449.767,
-      "delta": 0.25
+      "t_onset": 449.6611,
+      "halfwidth": 0.025
     },
     {
       "idx": 25,
       "ref_start": 455.701,
-      "t_onset": 455.951,
-      "delta": 0.25
+      "t_onset": 455.9486,
+      "halfwidth": 0.025
     },
     {
       "idx": 26,
       "ref_start": 483.551,
-      "t_onset": 483.801,
-      "delta": 0.25
+      "t_onset": 483.8164,
+      "halfwidth": 0.025
     },
     {
       "idx": 27,
       "ref_start": 549.601,
-      "t_onset": 549.601,
-      "delta": 0.0
+      "t_onset": 549.6091,
+      "halfwidth": 0.025
     },
     {
       "idx": 28,
       "ref_start": 560.868,
-      "t_onset": 561.118,
-      "delta": 0.25
+      "t_onset": 561.1333,
+      "halfwidth": 0.025
     },
     {
       "idx": 29,
       "ref_start": 586.834,
-      "t_onset": 587.084,
-      "delta": 0.25
+      "t_onset": 586.9667,
+      "halfwidth": 0.025
     },
     {
       "idx": 30,
       "ref_start": 599.817,
-      "t_onset": 600.067,
-      "delta": 0.25
+      "t_onset": 599.9584,
+      "halfwidth": 0.025
     },
     {
       "idx": 31,
       "ref_start": 617.367,
-      "t_onset": 617.617,
-      "delta": 0.25
+      "t_onset": 617.6692,
+      "halfwidth": 0.025
     },
     {
       "idx": 32,
       "ref_start": 621.384,
-      "t_onset": 621.634,
-      "delta": 0.25
+      "t_onset": 621.5385,
+      "halfwidth": 0.025
     },
     {
       "idx": 33,
       "ref_start": 633.417,
-      "t_onset": 633.667,
-      "delta": 0.25
+      "t_onset": 633.6296,
+      "halfwidth": 0.025
     },
     {
       "idx": 34,
       "ref_start": 665.417,
-      "t_onset": 665.667,
-      "delta": 0.25
+      "t_onset": 665.6003,
+      "halfwidth": 0.025
     },
     {
       "idx": 35,
       "ref_start": 669.984,
-      "t_onset": 670.234,
-      "delta": 0.25
+      "t_onset": 670.1205,
+      "halfwidth": 0.025
     },
     {
       "idx": 36,
       "ref_start": 685.35,
-      "t_onset": 685.85,
-      "delta": 0.5
+      "t_onset": 685.6964,
+      "halfwidth": 0.025
     },
     {
       "idx": 37,
       "ref_start": 742.567,
-      "t_onset": 742.817,
-      "delta": 0.25
+      "t_onset": 742.8002,
+      "halfwidth": 0.025
     },
     {
       "idx": 38,
       "ref_start": 751.517,
-      "t_onset": 751.767,
-      "delta": 0.25
+      "t_onset": 751.7059,
+      "halfwidth": 0.025
     },
     {
       "idx": 39,
       "ref_start": 759.334,
-      "t_onset": 759.834,
-      "delta": 0.5
+      "t_onset": 759.7274,
+      "halfwidth": 0.025
     },
     {
       "idx": 40,
       "ref_start": 772.217,
-      "t_onset": 772.717,
-      "delta": 0.5
+      "t_onset": 772.669,
+      "halfwidth": 0.025
     },
     {
       "idx": 41,
       "ref_start": 787.834,
-      "t_onset": 788.334,
-      "delta": 0.5
+      "t_onset": 788.1963,
+      "halfwidth": 0.025
     },
     {
       "idx": 42,
       "ref_start": 812.901,
-      "t_onset": 813.401,
-      "delta": 0.5
+      "t_onset": 813.3792,
+      "halfwidth": 0.025
     },
     {
       "idx": 43,
       "ref_start": 816.767,
-      "t_onset": 817.267,
-      "delta": 0.5
+      "t_onset": 817.2982,
+      "halfwidth": 0.025
     },
     {
       "idx": 44,
       "ref_start": 827.284,
-      "t_onset": 827.784,
-      "delta": 0.5
+      "t_onset": 827.7212,
+      "halfwidth": 0.025
     },
     {
       "idx": 45,
       "ref_start": 847.167,
-      "t_onset": 847.667,
-      "delta": 0.5
+      "t_onset": 847.6673,
+      "halfwidth": 0.025
     },
     {
       "idx": 46,
       "ref_start": 854.834,
-      "t_onset": 855.334,
-      "delta": 0.5
+      "t_onset": 855.3395,
+      "halfwidth": 0.025
     },
     {
       "idx": 47,
       "ref_start": 874.734,
-      "t_onset": 875.234,
-      "delta": 0.5
+      "t_onset": 875.2023,
+      "halfwidth": 0.025
     },
     {
       "idx": 48,
       "ref_start": 912.951,
-      "t_onset": 913.451,
-      "delta": 0.5
+      "t_onset": 913.3938,
+      "halfwidth": 0.025
     },
     {
       "idx": 49,
       "ref_start": 916.517,
-      "t_onset": 917.017,
-      "delta": 0.5
+      "t_onset": 916.9123,
+      "halfwidth": 0.025
     },
     {
       "idx": 50,
       "ref_start": 920.567,
-      "t_onset": 921.067,
-      "delta": 0.5
+      "t_onset": 921.065,
+      "halfwidth": 0.025
     },
     {
       "idx": 51,
       "ref_start": 950.384,
-      "t_onset": 950.884,
-      "delta": 0.5
+      "t_onset": 950.9007,
+      "halfwidth": 0.025
     },
     {
       "idx": 52,
       "ref_start": 959.584,
-      "t_onset": 960.084,
-      "delta": 0.5
+      "t_onset": 960.1568,
+      "halfwidth": 0.025
     },
     {
       "idx": 53,
       "ref_start": 995.684,
-      "t_onset": 996.184,
-      "delta": 0.5
+      "t_onset": 996.2302,
+      "halfwidth": 0.025
     },
     {
       "idx": 54,
       "ref_start": 1031.984,
-      "t_onset": 1032.484,
-      "delta": 0.5
+      "t_onset": 1032.5539,
+      "halfwidth": 0.025
     },
     {
       "idx": 55,
       "ref_start": 1077.384,
-      "t_onset": 1078.134,
-      "delta": 0.75
+      "t_onset": 1077.9826,
+      "halfwidth": 0.025
     },
     {
       "idx": 56,
       "ref_start": 1096.934,
-      "t_onset": 1097.684,
-      "delta": 0.75
+      "t_onset": 1097.5958,
+      "halfwidth": 0.025
     },
     {
       "idx": 57,
       "ref_start": 1119.267,
-      "t_onset": 1120.017,
-      "delta": 0.75
+      "t_onset": 1119.9429,
+      "halfwidth": 0.025
     },
     {
       "idx": 58,
       "ref_start": 1135.584,
-      "t_onset": 1136.084,
-      "delta": 0.5
+      "t_onset": 1136.0704,
+      "halfwidth": 0.025
     },
     {
       "idx": 59,
       "ref_start": 1150.15,
-      "t_onset": 1150.9,
-      "delta": 0.75
+      "t_onset": 1150.896,
+      "halfwidth": 0.025
     },
     {
       "idx": 60,
       "ref_start": 1164.868,
-      "t_onset": 1164.868,
-      "delta": 0.0
+      "t_onset": 1165.5729,
+      "halfwidth": 0.025
     },
     {
       "idx": 61,
       "ref_start": 1167.117,
-      "t_onset": 1167.867,
-      "delta": 0.75
+      "t_onset": 1167.7736,
+      "halfwidth": 0.025
     },
     {
       "idx": 62,
       "ref_start": 1186.501,
-      "t_onset": 1187.001,
-      "delta": 0.5
+      "t_onset": 1187.0198,
+      "halfwidth": 0.025
     },
     {
       "idx": 63,
       "ref_start": 1242.35,
-      "t_onset": 1243.1,
-      "delta": 0.75
+      "t_onset": 1243.1557,
+      "halfwidth": 0.025
     },
     {
       "idx": 64,
       "ref_start": 1256.35,
-      "t_onset": 1256.85,
-      "delta": 0.5
+      "t_onset": 1256.8647,
+      "halfwidth": 0.025
     },
     {
       "idx": 65,
       "ref_start": 1268.684,
-      "t_onset": 1269.434,
-      "delta": 0.75
+      "t_onset": 1269.3063,
+      "halfwidth": 0.025
     },
     {
       "idx": 66,
       "ref_start": 1283.817,
-      "t_onset": 1284.567,
-      "delta": 0.75
+      "t_onset": 1284.5995,
+      "halfwidth": 0.025
     },
     {
       "idx": 67,
       "ref_start": 1326.617,
-      "t_onset": 1327.367,
-      "delta": 0.75
+      "t_onset": 1327.377,
+      "halfwidth": 0.025
     },
     {
       "idx": 68,
       "ref_start": 1345.751,
-      "t_onset": 1346.501,
-      "delta": 0.75
+      "t_onset": 1346.5228,
+      "halfwidth": 0.025
     },
     {
       "idx": 69,
       "ref_start": 1358.367,
-      "t_onset": 1359.117,
-      "delta": 0.75
+      "t_onset": 1359.1972,
+      "halfwidth": 0.025
     },
     {
       "idx": 70,
       "ref_start": 1367.284,
-      "t_onset": 1368.034,
-      "delta": 0.75
+      "t_onset": 1368.1195,
+      "halfwidth": 0.025
     },
     {
       "idx": 71,
       "ref_start": 1386.651,
-      "t_onset": 1387.651,
-      "delta": 1.0
+      "t_onset": 1387.499,
+      "halfwidth": 0.025
     },
     {
       "idx": 72,
       "ref_start": 1404.634,
-      "t_onset": 1405.384,
-      "delta": 0.75
+      "t_onset": 1405.344,
+      "halfwidth": 0.025
     },
     {
       "idx": 73,
       "ref_start": 1420.551,
-      "t_onset": 1421.301,
-      "delta": 0.75
+      "t_onset": 1421.2208,
+      "halfwidth": 0.025
     },
     {
       "idx": 74,
       "ref_start": 1486.45,
-      "t_onset": 1487.2,
-      "delta": 0.75
+      "t_onset": 1487.2632,
+      "halfwidth": 0.025
     },
     {
       "idx": 75,
       "ref_start": 1523.4,
-      "t_onset": 1524.4,
-      "delta": 1.0
+      "t_onset": 1524.337,
+      "halfwidth": 0.025
     },
     {
       "idx": 76,
       "ref_start": 1589.651,
-      "t_onset": 1590.651,
-      "delta": 1.0
+      "t_onset": 1590.63,
+      "halfwidth": 0.025
     },
     {
       "idx": 77,
       "ref_start": 1604.918,
-      "t_onset": 1605.918,
-      "delta": 1.0
+      "t_onset": 1605.9068,
+      "halfwidth": 0.025
     },
     {
       "idx": 78,
       "ref_start": 1622.651,
-      "t_onset": 1623.651,
-      "delta": 1.0
+      "t_onset": 1623.5513,
+      "halfwidth": 0.025
     },
     {
       "idx": 79,
       "ref_start": 1687.167,
-      "t_onset": 1688.167,
-      "delta": 1.0
+      "t_onset": 1688.2091,
+      "halfwidth": 0.025
     },
     {
       "idx": 80,
       "ref_start": 1705.384,
-      "t_onset": 1706.384,
-      "delta": 1.0
+      "t_onset": 1706.3877,
+      "halfwidth": 0.025
     },
     {
       "idx": 81,
       "ref_start": 1716.801,
-      "t_onset": 1718.051,
-      "delta": 1.25
+      "t_onset": 1717.9621,
+      "halfwidth": 0.025
     },
     {
       "idx": 82,
       "ref_start": 1782.267,
-      "t_onset": 1783.267,
-      "delta": 1.0
+      "t_onset": 1783.2705,
+      "halfwidth": 0.025
     },
     {
       "idx": 83,
       "ref_start": 1792.033,
-      "t_onset": 1792.533,
-      "delta": 0.5
+      "t_onset": 1792.9432,
+      "halfwidth": 0.025
     },
     {
       "idx": 84,
       "ref_start": 1815.317,
-      "t_onset": 1816.317,
-      "delta": 1.0
+      "t_onset": 1816.2919,
+      "halfwidth": 0.025
     },
     {
       "idx": 85,
       "ref_start": 1823.884,
-      "t_onset": 1824.884,
-      "delta": 1.0
+      "t_onset": 1824.8146,
+      "halfwidth": 0.025
     },
     {
       "idx": 86,
       "ref_start": 1836.35,
-      "t_onset": 1837.35,
-      "delta": 1.0
+      "t_onset": 1837.2888,
+      "halfwidth": 0.025
     },
     {
       "idx": 87,
       "ref_start": 1952.033,
-      "t_onset": 1953.283,
-      "delta": 1.25
+      "t_onset": 1953.1464,
+      "halfwidth": 0.025
     },
     {
       "idx": 88,
       "ref_start": 2050.384,
-      "t_onset": 2051.634,
-      "delta": 1.25
+      "t_onset": 2051.6102,
+      "halfwidth": 0.025
     },
     {
       "idx": 89,
       "ref_start": 2065.0,
-      "t_onset": 2066.5,
-      "delta": 1.5
+      "t_onset": 2066.3859,
+      "halfwidth": 0.025
     },
     {
       "idx": 90,
       "ref_start": 2114.717,
-      "t_onset": 2116.217,
-      "delta": 1.5
+      "t_onset": 2116.1854,
+      "halfwidth": 0.025
     },
     {
       "idx": 91,
       "ref_start": 2128.934,
-      "t_onset": 2130.184,
-      "delta": 1.25
+      "t_onset": 2130.1614,
+      "halfwidth": 0.025
     },
     {
       "idx": 92,
       "ref_start": 2209.551,
-      "t_onset": 2210.801,
-      "delta": 1.25
+      "t_onset": 2210.7797,
+      "halfwidth": 0.025
     },
     {
       "idx": 93,
       "ref_start": 2225.951,
-      "t_onset": 2227.201,
-      "delta": 1.25
+      "t_onset": 2227.2407,
+      "halfwidth": 0.025
     },
     {
       "idx": 94,
       "ref_start": 2256.517,
-      "t_onset": 2257.767,
-      "delta": 1.25
+      "t_onset": 2257.7266,
+      "halfwidth": 0.025
     },
     {
       "idx": 95,
       "ref_start": 2280.701,
-      "t_onset": 2282.201,
-      "delta": 1.5
+      "t_onset": 2282.1258,
+      "halfwidth": 0.025
     },
     {
       "idx": 96,
       "ref_start": 2297.25,
-      "t_onset": 2298.5,
-      "delta": 1.25
+      "t_onset": 2298.586,
+      "halfwidth": 0.025
     },
     {
       "idx": 97,
       "ref_start": 2337.35,
-      "t_onset": 2338.6,
-      "delta": 1.25
+      "t_onset": 2338.5619,
+      "halfwidth": 0.025
     },
     {
       "idx": 98,
       "ref_start": 2411.801,
-      "t_onset": 2413.301,
-      "delta": 1.5
+      "t_onset": 2413.3104,
+      "halfwidth": 0.025
     },
     {
       "idx": 99,
       "ref_start": 2454.517,
-      "t_onset": 2456.017,
-      "delta": 1.5
+      "t_onset": 2456.0043,
+      "halfwidth": 0.025
     },
     {
       "idx": 100,
       "ref_start": 2470.267,
-      "t_onset": 2471.767,
-      "delta": 1.5
+      "t_onset": 2471.6643,
+      "halfwidth": 0.025
     },
     {
       "idx": 101,
       "ref_start": 2482.767,
-      "t_onset": 2484.267,
-      "delta": 1.5
+      "t_onset": 2484.2728,
+      "halfwidth": 0.025
     },
     {
       "idx": 102,
       "ref_start": 2547.567,
-      "t_onset": 2549.067,
-      "delta": 1.5
+      "t_onset": 2549.0644,
+      "halfwidth": 0.025
     },
     {
       "idx": 103,
       "ref_start": 2570.0,
-      "t_onset": 2571.25,
-      "delta": 1.25
+      "t_onset": 2571.3616,
+      "halfwidth": 0.025
     },
     {
       "idx": 104,
       "ref_start": 2588.901,
-      "t_onset": 2590.401,
-      "delta": 1.5
+      "t_onset": 2590.3247,
+      "halfwidth": 0.025
     },
     {
       "idx": 105,
       "ref_start": 2640.017,
-      "t_onset": 2641.517,
-      "delta": 1.5
+      "t_onset": 2641.5235,
+      "halfwidth": 0.025
     },
     {
       "idx": 106,
       "ref_start": 2642.417,
-      "t_onset": 2641.667,
-      "delta": -0.75
+      "t_onset": 2644.0254,
+      "halfwidth": 0.025
     },
     {
       "idx": 107,
       "ref_start": 2660.717,
-      "t_onset": 2662.467,
-      "delta": 1.75
+      "t_onset": 2662.3375,
+      "halfwidth": 0.025
     },
     {
       "idx": 108,
       "ref_start": 2671.25,
-      "t_onset": 2672.75,
-      "delta": 1.5
+      "t_onset": 2672.8272,
+      "halfwidth": 0.025
     },
     {
       "idx": 109,
       "ref_start": 2709.467,
-      "t_onset": 2711.217,
-      "delta": 1.75
+      "t_onset": 2711.1187,
+      "halfwidth": 0.025
     },
     {
       "idx": 110,
       "ref_start": 2726.033,
-      "t_onset": 2727.783,
-      "delta": 1.75
+      "t_onset": 2727.7457,
+      "halfwidth": 0.025
     },
     {
       "idx": 111,
       "ref_start": 2748.951,
-      "t_onset": 2750.701,
-      "delta": 1.75
+      "t_onset": 2750.528,
+      "halfwidth": 0.025
     },
     {
       "idx": 112,
       "ref_start": 2763.567,
-      "t_onset": 2764.567,
-      "delta": 1.0
+      "t_onset": 2765.1037,
+      "halfwidth": 0.025
     },
     {
       "idx": 113,
       "ref_start": 2782.884,
-      "t_onset": 2784.634,
-      "delta": 1.75
+      "t_onset": 2784.6332,
+      "halfwidth": 0.025
     },
     {
       "idx": 114,
       "ref_start": 2798.15,
-      "t_onset": 2799.9,
-      "delta": 1.75
+      "t_onset": 2799.909,
+      "halfwidth": 0.025
     },
     {
       "idx": 115,
       "ref_start": 2806.817,
-      "t_onset": 2808.567,
-      "delta": 1.75
+      "t_onset": 2808.5819,
+      "halfwidth": 0.025
     },
     {
       "idx": 116,
       "ref_start": 2809.651,
-      "t_onset": 2808.651,
-      "delta": -1.0
+      "t_onset": 2811.3169,
+      "halfwidth": 0.025
     },
     {
       "idx": 117,
       "ref_start": 2822.884,
-      "t_onset": 2824.634,
-      "delta": 1.75
+      "t_onset": 2824.559,
+      "halfwidth": 0.025
     },
     {
       "idx": 118,
       "ref_start": 2836.617,
-      "t_onset": 2838.367,
-      "delta": 1.75
+      "t_onset": 2838.3509,
+      "halfwidth": 0.025
     },
     {
       "idx": 119,
       "ref_start": 2892.868,
-      "t_onset": 2894.618,
-      "delta": 1.75
+      "t_onset": 2894.7374,
+      "halfwidth": 0.025
     }
   ]
 }
