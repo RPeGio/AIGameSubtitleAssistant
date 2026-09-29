@@ -8,7 +8,7 @@
 |---|---|---|---|
 | ① 语料收集 | `bench_corpus` | 语料片（剧情/游戏录屏） | 参考文本全部条目**去重后**的文本 |
 | ② 嵌字时间轴 | `bench_hardsub` | 测试片（实况切片）内嵌字幕 | 参考文本内的**时间轴** |
-| ③ LLM 融合 | 暂缓 | 预校对工程 | 见下方占位说明 |
+| ③ LLM 融合 | 待实施（下一阶段） | 预校对工程 | 见 [OCR_TIMELINE_CLOSURE.md §三](OCR_TIMELINE_CLOSURE.md) |
 
 ```powershell
 cargo test --release --test bench_corpus  -- --ignored --nocapture --test-threads=1
@@ -80,6 +80,13 @@ cargo test --release --test bench_hardsub -- --ignored --nocapture --test-thread
 
 基准暴露的 OCR 管线问题汇总（碎片化、段尾延伸、语料缺失、字符精度等，含证据与修复方向）：[OCR_PIPELINE_DEFECTS.md](OCR_PIPELINE_DEFECTS.md)。跑测日志存于 `log/`。
 
-## 融合基准（占位）
+## 融合基准（下一阶段）
 
-LLM 融合基准暂缓：待语料与转写链路调试稳定后，在预校对工程（.gsa，语料准确、各轨角色与时间轴对齐）上启用。已定稿的设计：逐段索引对齐（融合输出时间轴恒等于输入段），按段判类 correct_replaced / correct_kept / missed_replacement / wrong_line / character_error，指标为替换准确率 + 角色名准确率 + failed_batches。
+**OCR 时间轴已封盘（2026-09-29）**：语料 97.1/100.0/99.6、嵌字 71.5/71.4/71.2（0.5s 网格、容差 0.6s、
+逐案例时基）；起止两侧帧级真值归因完毕，0.5s 网格内无通用可修项——封盘声明、分支全部优化清单与
+融合基准落地计划见 **[OCR_TIMELINE_CLOSURE.md](OCR_TIMELINE_CLOSURE.md)**。
+
+LLM 融合基准已定稿的设计：在预校对工程（.gsa，语料准确、各轨角色与时间轴对齐）上启用；
+**逐段索引对齐**（融合输出时间轴恒等于输入段）、按段判类 correct_replaced / correct_kept /
+missed_replacement / wrong_line / character_error，指标为替换准确率 + 角色名准确率 + failed_batches；
+展开成可执行步骤的分步计划见 closure 文档 §三）。
