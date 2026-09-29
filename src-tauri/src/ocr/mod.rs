@@ -392,7 +392,29 @@ const PROGRESSIVE_COMPLETE_MIN_GAIN: usize = 3;
 /// 后链变长，glupov 语料因此出现两条截断配对（sim 0.778/0.811，扣 0.41 = 全部回归）。
 /// 故在 medoid 之后补一步：若存在"严格更长、近似包含 medoid 胜者、且被 ≥2 帧承载"
 /// 的候选，取其中最长者——即该行显示期间的**最终完整态**（语料/翻译所需的形态）。
+/// 渐进补全偏好的**调试开关**：`GSA_OCR_PROGRESSIVE_COMPLETE=0/false/off/no` 关闭本步。
+///
+/// 用途（A5）：**同一次构建**下做受控 A/B——关闭时 `vote_text` 直接返回 medoid 胜者，行为
+/// 等同本偏好引入之前的状态，避免以往"两臂代码不同、结论被别的改动污染"的问题。
+/// 默认开启。解析逻辑抽成纯函数 `progressive_complete_enabled_from`，便于单测（不去改
+/// 进程环境变量，避免测试并发竞态）。
+fn progressive_complete_enabled_from(v: Option<&str>) -> bool {
+    !matches!(
+        v.unwrap_or("").trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "off" | "no"
+    )
+}
+
+fn progressive_complete_enabled() -> bool {
+    progressive_complete_enabled_from(std::env::var("GSA_OCR_PROGRESSIVE_COMPLETE").ok().as_deref())
+}
+
 fn vote_text(texts: &[(Arc<str>, f64)]) -> (Arc<str>, f64) {
+    vote_text_with(texts, progressive_complete_enabled())
+}
+
+/// `vote_text` 的实现体：`progressive` = 是否启用渐进补全偏好（生产路径取环境开关）。
+fn vote_text_with(texts: &[(Arc<str>, f64)], progressive: bool) -> (Arc<str>, f64) {
     let mut best: &(Arc<str>, f64) = &texts[0];
     let mut best_score = f64::MIN;
     for cand in texts {
@@ -407,8 +429,9 @@ fn vote_text(texts: &[(Arc<str>, f64)]) -> (Arc<str>, f64) {
         }
     }
     // 渐进补全偏好：medoid 之后再看是否存在"更完整的同一句"
+    // （可用 GSA_OCR_PROGRESSIVE_COMPLETE=0 关闭，供同构建受控 A/B）
     let bn = norm_chars(&best.0);
-    if !bn.is_empty() {
+    if !bn.is_empty() && progressive {
         let winner_conf = best.1;
         let mut winner: Option<&(Arc<str>, f64)> = None;
         for cand in texts {
@@ -2799,9 +2822,14 @@ mod tests {
     #[test]
     fn test_vote_rejects_low_confidence_completion() {
         // 低置信度"更长候选"被拒（moon 语料实测：`卡侬 / oo / 桑娜妲。…` 承载帧
-        // conf 0.65/0.70，而干净态 0.85）——支持度 ≥2 也要过置信度门
+        // conf 0.65/0.70，而干净态 0.85）——支持度 ≥2 也要过置信度门。
+        //
+        // ⚠ A5 复核（2026-09-29）：候选的**归一化增量必须 ≥3**（`MIN_GAIN`），否则会先被
+        // 上一道门挡掉，本用例就测不到置信度门——原写法 `oo` 增量恰为 2，属**恒真用例**。
+        // 现改为 `oOo`（增量 3）：过关卡到置信度门后才被拒（把 MARGIN 临时放大到 1.0
+        // 会让本用例变红，即它确实在测这道门）。
         let clean = "卡侬\n桑娜妲。仔细想想，最近这些年，你丢下工作，偷偷跑出去找人类玩的次数，好像越来越多了。";
-        let tailed = "卡侬\noo\n桑娜妲。仔细想想，最近这些年，你丢下工作，偷偷跑出去找人类玩的次数，好像越来越多了。";
+        let tailed = "卡侬\noOo\n桑娜妲。仔细想想，最近这些年，你丢下工作，偷偷跑出去找人类玩的次数，好像越来越多了。";
         let frames = vec![
             ft(1.0, clean, 0.98),
             ft(1.25, clean, 0.85),
@@ -2812,6 +2840,76 @@ mod tests {
         let segs = merge_frames(frames, 0.25, 30.0, 0.3);
         assert_eq!(segs.len(), 1);
         assert_eq!(segs[0].text, clean);
+    }
+
+    #[test]
+    fn test_vote_progressive_completion_at_0_5s_weights() {
+        // A5 语境：网格回退 **0.5s**（2026-09-19 `1f05e7c`）后，run 内权重形状从 0.25s 的
+        // 2/4/4 缩短为 **1/2/2**。本用例把该形状下的**两臂**都钉住：
+        //   关偏好 → medoid 落在中间态 P2（残缺）；开偏好 → 取到 run 末态 P3（完整）。
+        // 即"该偏好在当前默认网格下确实会改变文本"有单测级证据；基准层面的受控 A/B 见 A5-P2。
+        let p1 = "斯捷潘尼扬\n「编玛瑙]\n嗯，最近上头安";
+        let p2 = "斯捷潘尼扬\n「编玛瑙]\n嗯，最近上头安排我主管一支连队的所有事务，任务";
+        let p3 = "斯捷潘尼扬\n「编玛瑙」\n嗯，最近上头安排我主管一支连队的所有事务，任务瞬间复杂了起来。";
+        let texts: Vec<(Arc<str>, f64)> = vec![
+            (Arc::from(p1), 0.83),
+            (Arc::from(p2), 0.80),
+            (Arc::from(p2), 0.80),
+            (Arc::from(p3), 0.86),
+            (Arc::from(p3), 0.86),
+        ];
+        assert_eq!(
+            vote_text_with(&texts, false).0.as_ref(),
+            p2,
+            "关偏好时 medoid 落在中间态（1/2/2 权重）"
+        );
+        assert_eq!(vote_text_with(&texts, true).0.as_ref(), p3, "开偏好时取完整态");
+    }
+
+    #[test]
+    fn test_vote_progressive_min_gain_guards_noise_variant() {
+        // 真实素材（glupov 语料 ev13：`原「第九连队」临时连长` 被 OCR 读成
+        // `原「第九连队J临时连长`）：噪声变体只多 **1** 个归一化字符，落在 `MIN_GAIN=3` 之下
+        // → 即使它是 run 末态、且置信度更高（0.95 vs 0.85）也不得翻案。
+        // 依据：`temp/probe/attr_05_corpus.log` 实测——去掉 `MIN_GAIN` 后语料 97.1→96.9，
+        // 差异恰为这一条。
+        //
+        // 两条断言一起说明"是哪道门在起作用"：增量 1 被挡；把增量加到 3 后就**真会被选中**
+        // （说明支持度/末态/置信度三门都放行，唯独 MIN_GAIN 守住）——把 `MIN_GAIN` 临时
+        // 改为 0 会让第一条断言变红。
+        let clean = "斯捷潘尼扬\n「缟玛瑙」\n原「第九连队临时连长";
+        let noise1 = "斯捷潘尼扬\n「缟玛瑙」\n原「第九连队J临时连长";
+        let noise3 = "斯捷潘尼扬\n「缟玛瑙」\n原「第九连队JKL临时连长";
+        let mk = |noisy: &str| -> Vec<(Arc<str>, f64)> {
+            vec![
+                (Arc::from(clean), 0.85),
+                (Arc::from(clean), 0.85),
+                (Arc::from(clean), 0.85),
+                (Arc::from(noisy), 0.95),
+            ]
+        };
+        assert_eq!(
+            vote_text_with(&mk(noise1), true).0.as_ref(),
+            clean,
+            "增量 1 的噪声变体应被 MIN_GAIN 挡住"
+        );
+        assert_eq!(
+            vote_text_with(&mk(noise3), true).0.as_ref(),
+            noise3,
+            "增量 ≥3 时 MIN_GAIN 不再挡 → 证明上一条确实由它守住"
+        );
+    }
+
+    #[test]
+    fn test_progressive_complete_switch_parsing() {
+        // A5 的受控 A/B 开关语义：只有显式的 0/false/off/no（大小写、首尾空白无关）才关闭；
+        // 其余（含未设置、空串、无法识别的值）一律保持开启——避免"拼错变量名就静默关掉偏好"。
+        for off in ["0", "false", "FALSE", "off", "Off", " no "] {
+            assert!(!progressive_complete_enabled_from(Some(off)), "应关闭：{off}");
+        }
+        for on in [None, Some(""), Some("1"), Some("true"), Some("yes"), Some("whatever")] {
+            assert!(progressive_complete_enabled_from(on), "应开启：{on:?}");
+        }
     }
 
     // ── 短碎片激进合并 ──
