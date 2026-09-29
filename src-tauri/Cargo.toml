@@ -23,3 +23,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg"] }
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.21"
 
+[dev-dependencies]
+# 基准守卫：校验时基产物记录的素材 SHA256（tests/common/mod.rs::sha256_file）
+sha2 = "0.10"
+

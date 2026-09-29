@@ -46,7 +46,7 @@
 | 模块 | 职责 |
 |---|---|
 | `src-tauri/src/video/mod.rs` | ffprobe 元数据（`get_video_metadata`）；帧提取 / 音频提取供 OCR / ASR 复用；FFmpeg 定位：系统 PATH → ffmpeg-sidecar 目录，找不到报 `FFMPEG_NOT_FOUND` |
-| `src-tauri/src/ocr/mod.rs` | 完整 OCR 流水线 `run_ocr`（后台线程 + `ocr-progress` 事件）：抽帧 → 变化检测 → 窗口精化 → OCR → 合并；`run_ocr_images` 直接识别截图 |
+| `src-tauri/src/ocr/`（`mod.rs` 门面 + `params`/`pipeline`/`merge`/`refine`/`correct`/`commands` 子模块） | 完整 OCR 流水线 `run_ocr`（后台线程 + `ocr-progress` 事件）：抽帧 → 变化检测 → 窗口精化 → OCR → 合并；`run_ocr_images` 直接识别截图；`approve_corpus_diff` 采纳语料纠正（替换规则的单一实现，与基准共用） |
 | `src-tauri/src/ai_runtime/dhash.rs` | 帧裁切区域的 64-bit dHash + 汉明距离变化判定 |
 | `src-tauri/src/ai_runtime/mod.rs` | AI Runtime 骨架：OCR/ASR/LLM 的 provider trait + manager + NoneProvider 占位（环境未就绪时保证可编译、返回"未就绪"） |
 | `src-tauri/src/ai_runtime/paddle.rs` | PaddleOCR worker provider：常驻子进程，JSON lines over stdio（`{"id":1,"images":[...]}` / `ping` / `shutdown`） |
@@ -109,6 +109,7 @@ Project
 ├── video                    # 切片视频 —— 全局时间轴基准
 ├── source_video             # 剧情录屏 —— 语料 OCR 的文本源
 ├── corpus: Vec<CorpusItem>  # 可靠文本语料（独立于轨道，供融合消费）
+├── corpus_ocr_diffs: Vec<Diff>  # 语料 OCR 的待审批文本纠正（术语表纠错；缺省空，旧项目兼容）
 └── tracks: Vec<Track>
      ├── track_type: "ocr_region" | "ocr_text" | "asr" | "manual" | "translation"
      ├── track_role:  "streamer" | "game"        # 仅 asr 轨，缺省 game
@@ -153,6 +154,13 @@ Project
 - 参数（前端默认值）：帧间隔 0.5s、dHash 阈值 3、批大小 16、合并相似度 0.3。
 - **合并规则**（`merge_frames`）：相邻相似文本归入同一 run；run 内**多数投票**选最终文本（替代"更长者优先"——被噪声污染的更长文本总相似度低，不会被选中）；空帧有 `(interval*1.5).max(0.8)` 的抖动容错窗口；打字机式渐进文本（前缀超集）合并为一条保留最长。
 - 产物去向由前端决定：source 模式 → corpus 语料（去时间轴）；clip + page=asr → embed_ocr 嵌字轨。
+- **精度纠错 = 只标记不改写**（用户决策，2026-09-24/25）：末步做标点归一化（静默，目标字符可配）
+  与术语表模糊匹配，但**只产出** `Diff { old: Vec<String>, new: String }`（`old` 为集合语义：
+  同一词条可对应多种误读形态，按 `new` 聚合）。`run_ocr` 返回 `(Vec<OcrSegment>, Vec<Diff>)`，
+  文本保持"归一化后、未精化"形态；纠正由前端**逐条审批**（语料页"待审批纠正"列表）——
+  采纳 = 对全部 corpus 条目替换并清理撞同文的重复条目，放弃 = 仅移除条目，两者都可撤销。
+  术语表为**语料 OCR 独有**（嵌字面板无入口）。采纳规则在基准与前端各一份实现，须同步：
+  `tests/common::apply_diffs_to_segments` ↔ `stores/project.ts::approveCorpusOcrDiff`。
 
 ### 融合流水线（`fuse/mod.rs`）
 
@@ -178,7 +186,7 @@ Project
 | project | `create_project` `open_project` `save_project` `set_project_video` `read_text_file` `list_recent_projects` `rename_project` `remove_recent_project` |
 | video | `get_video_metadata` |
 | ai_runtime | `check_ocr_runtime` `check_asr_runtime` `check_asr_engines` `check_llm_runtime` `asr_cancel` |
-| ocr | `run_ocr` `run_ocr_images` |
+| ocr | `run_ocr` `run_ocr_images` `approve_corpus_diff` |
 | asr | `run_asr` |
 | llm | `run_llm` |
 | fuse | `run_fuse` |

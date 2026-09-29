@@ -4,7 +4,10 @@ import { useProjectStore } from "../stores/project";
 /// 视频画面在容器内的真实渲染矩形（object-fit: contain 的 letterbox 校正）。
 /// 供预览覆盖层（OCR 选区、字幕层等）把归一化坐标换算成容器像素。
 /// 用法：模板根元素绑定 `ref="containerRef"`，读取 `contentRect`。
-export function useVideoContentRect() {
+/// `videoKey`："clip"（默认，切片视频 currentVideoMeta）| "source"（剧情录屏
+/// sourceVideoMeta）——语料页预览的是 source 视频（宽高比与切片不同），
+/// letterbox 必须按实际显示视频的宽高比计算，否则选区映射系统性偏移。
+export function useVideoContentRect(videoKey: "source" | "clip" = "clip") {
   const projectStore = useProjectStore();
 
   const containerRef = ref<HTMLElement | null>(null);
@@ -32,7 +35,10 @@ export function useVideoContentRect() {
     const cw = containerSize.value.width;
     const ch = containerSize.value.height;
     if (cw <= 0 || ch <= 0) return { left: 0, top: 0, width: cw, height: ch };
-    const meta = projectStore.currentVideoMeta;
+    const meta =
+      videoKey === "source"
+        ? projectStore.sourceVideoMeta
+        : projectStore.currentVideoMeta;
     if (!meta || meta.width <= 0 || meta.height <= 0) {
       return { left: 0, top: 0, width: cw, height: ch };
     }

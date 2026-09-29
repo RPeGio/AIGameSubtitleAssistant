@@ -14,6 +14,8 @@ predict——全程不产生临时文件，也天然规避 cv2 读图的非 ASCI
 模型只在首次需要时加载一次（内存常驻）。Rust 侧注入：
   - PADDLE_PDX_CACHE_HOME：模型缓存目录（runtime/models/paddleocr）
   - GSA_OCR_MODEL：模型档位 "mobile"（默认，快）| "server"（慢，更准）
+  - GSA_OCR_DEVICE：推理设备 "cpu" | "gpu:0"（见 _resolve_device；空 = 交给 paddlex 自动选）
+  - GSA_OCR_TF32：设 "1" 才允许 TF32（默认关闭，见下方 TF32 段）
 批量请求用一次 `ocr.predict(images列表)` 完成（真批处理）。
 """
 
@@ -24,6 +26,16 @@ import os
 import sys
 
 LANG = "ch"
+
+# ─── TF32：默认关闭，换取与 CPU 逐字节一致的产出 ──────────────
+# Ada（sm_89）及以上的 cuBLAS/cuDNN 默认用 TF32 张量核做 FP32 矩阵乘（尾数 23→10 位），
+# 会让形近字形（「」/】/] 之类）的 argmax 在 CPU/GPU 间翻转。实测 bench_corpus 三案例
+# 共 4 处单字符标点差异，评分/CER 不受影响（评分口径去标点）但产出 SRT 不再逐字节一致。
+# 关掉后产出与 CPU 完全一致，代价约 3.8%（端到端 174.3s → 180.9s）。
+# 需要那 3.8% 时设 GSA_OCR_TF32=1。用 setdefault：用户已显式设 NVIDIA_TF32_OVERRIDE 时尊重之。
+# 必须在 import paddle 之前写入——CUDA 上下文建立后再设无效。
+if os.environ.get("GSA_OCR_TF32", "").strip() != "1":
+    os.environ.setdefault("NVIDIA_TF32_OVERRIDE", "0")
 
 # base64 → ndarray 解码依赖（均为 paddleocr 的传递依赖，runtime/deps 内自带）
 import cv2
@@ -87,11 +99,75 @@ def _clean_text(text):
     return "\n".join(lines)
 
 
+def _resolve_device():
+    """把 GSA_OCR_DEVICE 解析成可用的设备串；空串表示不指定（交给 paddlex 自动选）。
+
+    空 = 不传 device：paddlex 的 get_default_device() 会在 paddle 编译了 CUDA 且有
+    设备时自动选 gpu:0，否则 cpu —— 未启用 GPU 时行为与改动前完全一致。
+
+    显式要 gpu 但 CUDA 不可用时回退 cpu：Rust 侧只在 deps_gpu 存在时才把它挂到
+    PYTHONPATH 首位，所以"配了 gpu:0 但没跑 bootstrap_ocr_gpu.ps1"是常见误配；
+    回退 + 一行 stderr 提示，好过整轮 OCR 直接报错。
+    """
+    want = os.environ.get("GSA_OCR_DEVICE", "").strip().lower()
+    if not want:
+        return ""
+    device_type = want.split(":")[0]
+    if device_type != "gpu":
+        return want  # cpu 原样；npu/xpu 等交给 paddle 自己报错，不臆测
+    try:
+        import paddle
+
+        if paddle.device.is_compiled_with_cuda() and paddle.device.cuda.device_count() > 0:
+            return want
+    except Exception as e:
+        sys.stderr.write(f"[ocr_worker] 探测 CUDA 失败（{e}），回退 cpu\n")
+        return "cpu"
+    sys.stderr.write(
+        f"[ocr_worker] 请求 {want} 但当前 paddle 无可用 CUDA，回退 cpu；"
+        "如需 GPU 请先运行 scripts/bootstrap_ocr_gpu.ps1\n"
+    )
+    return "cpu"
+
+
+# ─── det 分批：把"逐张跑 det"改成"一次 16 张" ──────────────
+# paddlex 的各子模型**总是**按自己的 batch_sampler 分块再逐块 process
+# （base_predictor.py:337 `for batch_data in batches: process(batch_data)`），而
+# paddlex 的 OCR.yaml 里 TextDetection 段没有 batch_size → 默认 1，也就是管线哪怕
+# 一次拿到 16 张，det 仍然逐张推理。实测（RTX 4060 + PP-OCRv5_mobile，886×124 语料帧）
+# 把 det 批设为 16 后 36.0 → 22.2 ms/帧（1.62×），且 16 已是平台（32/64 无进一步收益）。
+# 取值与 Rust 侧默认 IPC 批（OcrRunParams.batch_size = 16）对齐：det 实际批 =
+# min(IPC 批, 本值)，IPC 批更小时只是填不满，不会出错。
+# rec 侧不受影响：它逐输入图像调用（pipeline.py:446），子批上限就是单帧行数。
+DET_BATCH = 16
+
+
+def _paddlex_config():
+    """取官方 OCR 管线配置并把 det 批大小改成 DET_BATCH。
+
+    只能走 paddlex_config：paddleocr 的 PaddleOCR 包装层没有暴露
+    text_detection_batch_size（只有 ..._recognition_/_textline_orientation_ 两个）。
+    注意该参数会**整体替换**基线配置（_pipelines/base.py:95 把传入对象直接当基线），
+    所以必须先 load_pipeline_config("OCR") 取回官方配置再改，不能只传局部 dict，
+    否则 SubModules/PreProcess 等会全部缺失。
+    """
+    from paddlex.inference import load_pipeline_config
+
+    cfg = load_pipeline_config("OCR")
+    cfg["batch_size"] = DET_BATCH
+    cfg["SubModules"]["TextDetection"]["batch_size"] = DET_BATCH
+    return cfg
+
+
 def make_ocr():
     from paddleocr import PaddleOCR
 
     model = os.environ.get("GSA_OCR_MODEL", "mobile").strip().lower()
     det, rec = MODEL_MAP.get(model, MODEL_MAP["mobile"])
+    device = _resolve_device()
+    # 记录实际生效的设备：GPU 基准对比时靠这一行确认真的跑在 GPU 上
+    sys.stderr.write(f"[ocr_worker] paddle 设备: {device or 'auto'}（GSA_OCR_MODEL={model}）\n")
+    extra = {"device": device} if device else {}
     return PaddleOCR(
         lang=LANG,
         text_detection_model_name=det,
@@ -99,6 +175,8 @@ def make_ocr():
         use_doc_orientation_classify=False,
         use_doc_unwarping=False,
         use_textline_orientation=False,
+        paddlex_config=_paddlex_config(),
+        **extra,
     )
 
 

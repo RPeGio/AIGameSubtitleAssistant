@@ -7,22 +7,31 @@
 //! 单独报告、不计缺陷。文本相似度仅报告，不参与评分。
 //!
 //! 运行：cargo test --release --test bench_hardsub -- --ignored --nocapture --test-threads=1
-//! 容差可用环境变量 GSA_BENCH_TOLERANCE_SEC 覆盖（默认 0.3s——1s 级偏差对字幕
-//! 生产已是严重偏离，只应作为严重缺陷出现）。
+//! 容差可用环境变量 GSA_BENCH_TOLERANCE_SEC 覆盖（默认 0.6s，见 `tolerance_sec`）。
 //! 跑完把打印的 markdown 行粘到 benchmark/<案例>.md 的「嵌字时间轴」表。
+//! 参考时基换算来自 `examples/benchmark_examples/<key>_timebase.json`（带 SHA256 守卫，
+//! 素材一换立即报错——见 `common::load_timebase`）。
 
 mod common;
 
 use common::{
-    align_temporal, bench_data_dir, build_ocr_manager, hardsub_regions, print_md_row, run_ocr,
-    score_hardsub, require_file, CaseCfg, GLUPOV, MOON_SISTERS, PIERRO_QUESTIONS,
+    align_temporal, apply_ref_calibration, bench_data_dir, build_ocr_manager, hardsub_regions,
+    print_md_row, run_ocr_with_params, score_hardsub, require_file, CaseCfg, GLUPOV, MOON_SISTERS,
+    PIERRO_QUESTIONS,
 };
 
 fn tolerance_sec() -> f64 {
+    // 容差与采样量子自洽：帧网格 0.5s 的段边界量化误差天然为 ±0.25s，旧 0.3s 容差比量子
+    // 还小——把量化噪声当缺陷扣分。2026-09-18 先取 0.5s（=2×量化），后按用户决策提到
+    // **0.6s**（=2.4×量化，口径上更自洽）。
+    // 各案例分数**不写在这里**：它随时基换算与管线修复演进，写死必过期（此处曾写死
+    // 72.2/64.5/69.3，随 A4 逐案例 offset 与 P1/P2 修复失效）。权威记录 =
+    // `benchmark/OCR_PIPELINE_DEFECTS.md` 的 D10「A5 裁决」节 + `benchmark/<案例>.md` 追加表。
+    // env GSA_BENCH_TOLERANCE_SEC 可覆盖。
     std::env::var("GSA_BENCH_TOLERANCE_SEC")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(0.3)
+        .unwrap_or(0.6)
 }
 
 fn run_case(cfg: &CaseCfg) {
@@ -35,7 +44,7 @@ fn run_case(cfg: &CaseCfg) {
     }
     let Some(manager) = build_ocr_manager() else { return };
 
-    let refs = match common::parse_reference(&ref_path, cfg.ref_fps) {
+    let mut refs = match common::parse_reference(&ref_path, cfg.ref_fps) {
         Ok(r) if !r.is_empty() => r,
         Ok(_) => {
             eprintln!("[跳过] 参考文本解析为空：{}", ref_path.display());
@@ -46,6 +55,30 @@ fn run_case(cfg: &CaseCfg) {
             return;
         }
     };
+    // 时基换算：参考时间轴与 clip 时间轴差一个线性缩放（参考是素材字幕的中文翻译、
+    // 时码继承自外部字幕源）。换算值来自可审计产物 <key>_timebase.json，
+    // 加载时校验 clip/参考文件的 SHA256 与质量门——素材一换立即失败，不静默错算。
+    let tb = match common::load_timebase(cfg) {
+        Ok(tb) => tb,
+        Err(e) => panic!("时基产物校验失败：{e}"),
+    };
+    println!(
+        "时基换算（{}）：k={:+.6}（95%CI ±{:.6}） a={:+.3}s｜拟合 n={} R²={:.3} 残差中位 {:.3}s｜{}",
+        cfg.key,
+        tb.fit.k,
+        tb.fit.k_ci95,
+        tb.applied.a,
+        tb.fit.n_used,
+        tb.fit.r2,
+        tb.fit.resid_median_sec,
+        tb.applied.note
+    );
+    apply_ref_calibration(&mut refs, &tb);
+    // 排除计分条目（素材侧缺陷，如 pierro 的人工 transition——用户主观评审确认）
+    let dropped = common::drop_excluded_refs(&mut refs, cfg);
+    if !dropped.is_empty() {
+        println!("排除计分条目 {} 条（素材侧缺陷，不计缺陷）：{}", dropped.len(), dropped.join("、"));
+    }
     let regions = hardsub_regions(cfg.key);
 
     // 选区未覆盖的期望条目：与任何选区时间窗都不相交 → 单独报告，不计缺陷
@@ -58,13 +91,36 @@ fn run_case(cfg: &CaseCfg) {
         })
         .count();
 
-    let (segments, elapsed) = run_ocr(&manager, &video, &regions);
+    // 参数：嵌字基准按**素材实测的最小字幕时长**设 min_subtitle_sec（与语料基准分离，
+    // 见 CaseCfg::hardsub_min_subtitle_sec）——实况/录屏的字幕寿命天然长于剧情语料，
+    // 提高该门可让 D12 稳定态门槛造出的短碎片在 D14 pass 被并入后条。
+    let params = common::hardsub_ocr_params(cfg);
+    println!(
+        "min_subtitle_sec = {:.2}s（该素材实测值{}）",
+        params.min_subtitle_sec,
+        match std::env::var("GSA_BENCH_HARDSUB_MIN_SUBTITLE_SEC") {
+            Ok(_) => "，env 覆盖中",
+            Err(_) => "",
+        }
+    );
+    let (segments, elapsed) = run_ocr_with_params(&manager, &video, &regions, &params);
+
+    // 主观评估产物：把嵌字段写成 SRT（复用产品侧 format_srt + BOM），
+    // 供导入剪辑软件、对照实况切片视频逐条目视（分数之外的定性判断）
+    match common::write_bench_srt(cfg.key, "hardsub", &segments) {
+        Ok((path, n)) => println!("主观评估产物（SRT，可直接导入剪辑软件）：{path}（{n} 条）"),
+        Err(e) => eprintln!("[警告] SRT 导出失败：{e}"),
+    }
 
     let align = align_temporal(&refs, &segments);
     let tol = tolerance_sec();
     let sc = score_hardsub(&refs, &segments, &align, out_of_region, tol);
 
-    // ── 终端摘要 ──
+    // ── 终端摘要：结构轴 / 时间轴 / 复合评分 三轴并列 ──
+    // 读法：先看 ① 结构轴与 ② 时间轴，再看 ③ 复合评分。2026-09-15 口径变更后
+    // 碎片条目按并集首尾补算时间分（与 1:1 同公式），同一期望条目合并后扣分
+    // 必不高于碎片时（合并永不亏）；复合分历史数字不可跨口径对比（破坏性变更，
+    // 见 review-reports/BENCH_HARDSUB_SCORE_UNION_TIMING.md）。
     println!(
         "耗时 {:.1}s｜OCR 段 {}（参考 {} 条，选区外 {} 条，容差 {:.2}s）",
         elapsed,
@@ -73,18 +129,79 @@ fn run_case(cfg: &CaseCfg) {
         sc.n_out_of_region,
         tol
     );
+    println!("── ① 结构轴 ──");
     println!(
-        "评分 {:.1}/100｜1:1 {} 碎片 {} 合并 {} 缺失 {}｜噪音段 {}｜Δstart p95 {:.3}s Δend p95 {:.3}s｜≤容差 {:.0}%｜覆盖率 {:.0}%｜文本相似度均值 {:.3}",
-        sc.score, sc.one_to_one, sc.fragmented, sc.merged, sc.missed, sc.spurious,
-        sc.dstart_p95, sc.dend_p95,
+        "1:1 {}｜碎片 {} 条（多出 {} 段：2段 {} / 3段 {} / ≥4段 {}）｜被吞并 {}｜缺失 {}｜噪音段 {}",
+        sc.one_to_one,
+        sc.fragmented,
+        sc.extra_segments,
+        sc.frag_hist[0],
+        sc.frag_hist[1],
+        sc.frag_hist[2],
+        sc.merged,
+        sc.missed,
+        sc.spurious
+    );
+    println!(
+        "── ② 时间轴（仅 1:1 配对，n={}；Δ = 产出 − 参考，+ 表示偏晚/过伸）──",
+        sc.one_to_one
+    );
+    println!(
+        "Δstart：中位 {:+.3}s｜p95(|·|) {:.3}s｜最大(|·|) {:.3}s｜偏晚 {} / 偏早 {}｜容差内 {:.0}%",
+        sc.dstart_median_signed,
+        sc.dstart_p95,
+        sc.dstart_max,
+        sc.dstart_late,
+        sc.dstart_early,
+        sc.within_tol_start * 100.0
+    );
+    println!(
+        "Δend  ：中位 {:+.3}s｜p95(|·|) {:.3}s｜最大(|·|) {:.3}s｜过伸 {} / 欠伸 {}｜容差内 {:.0}%",
+        sc.dend_median_signed,
+        sc.dend_p95,
+        sc.dend_max,
+        sc.dend_over,
+        sc.dend_under,
+        sc.within_tol_end * 100.0
+    );
+    println!(
+        "复合 d=max(|Δstart|,|Δend|)：容差内 {:.0}%｜覆盖率 {:.0}%｜文本相似度均值 {:.3}",
         sc.within_tolerance * 100.0,
         sc.coverage * 100.0,
         sc.text_sim_mean
     );
+    println!("── ③ 复合评分（碎片并集计时口径，2026-09-15 破坏性变更）──");
+    println!("{:.1}/100", sc.score);
     if !align.missed.is_empty() {
         println!("── 缺失条目（时间轴）──");
         for &i in &align.missed {
             println!("  [{}] {:7.2} → {:7.2}  {}", i + 1, refs[i].start, refs[i].end, refs[i].text.replace('\n', " / "));
+        }
+    }
+    // 碎片明细：计数之外的定性信息（哪条参考被拆、拆成什么样），用于定位合并层缺口
+    // （D1/D12 类问题必须看"参考一行 vs 产出多行"的形态才能判定成因）
+    if !align.fragmented.is_empty() {
+        println!("── 碎片条目明细（1:N）──");
+        for (ei, parts) in &align.fragmented {
+            let e = &refs[*ei];
+            println!(
+                "  [{}] {:7.2} → {:7.2}  1→{} 段｜参考：{}",
+                ei + 1,
+                e.start,
+                e.end,
+                parts.len(),
+                e.text.replace('\n', " / ")
+            );
+            for &pi in parts {
+                let p = &segments[pi];
+                println!(
+                    "        产出 {:7.2} → {:7.2}  conf={:.2}  {}",
+                    p.start,
+                    p.end,
+                    p.confidence,
+                    p.text.replace('\n', " / ")
+                );
+            }
         }
     }
 

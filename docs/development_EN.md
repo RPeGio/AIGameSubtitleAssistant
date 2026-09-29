@@ -46,7 +46,7 @@ Constraint: **fully offline**. The Rust side has no HTTP client and makes no net
 | Module | Responsibility |
 |---|---|
 | `src-tauri/src/video/mod.rs` | ffprobe metadata (`get_video_metadata`); frame / audio extraction reused by OCR / ASR; FFmpeg located via system PATH → ffmpeg-sidecar dir, error `FFMPEG_NOT_FOUND` |
-| `src-tauri/src/ocr/mod.rs` | Full OCR pipeline `run_ocr` (background thread + `ocr-progress` events): extract → change detection → window refinement → OCR → merge; `run_ocr_images` for direct screenshots |
+| `src-tauri/src/ocr/` (`mod.rs` facade + `commands`/`correct`/`merge`/`params`/`pipeline`/`refine` submodules) | Full OCR pipeline `run_ocr` (background thread + `ocr-progress` events): extract → change detection → window refinement → OCR → merge; `run_ocr_images` for direct screenshots; `approve_corpus_diff` to approve a corpus correction (single implementation of the replace rule, shared with the benchmark) |
 | `src-tauri/src/ai_runtime/dhash.rs` | 64-bit dHash of cropped frames + Hamming-distance change decision |
 | `src-tauri/src/ai_runtime/mod.rs` | AI runtime skeleton: provider traits + managers for OCR/ASR/LLM + `NoneProvider` placeholder (keeps the build compiling when the environment is absent; providers report "not ready") |
 | `src-tauri/src/ai_runtime/paddle.rs` | PaddleOCR worker provider: resident subprocess, JSON lines over stdio (`{"id":1,"images":[...]}` / `ping` / `shutdown`) |
@@ -109,6 +109,7 @@ Project
 ├── video                    # clip video — the global timeline reference
 ├── source_video             # story recording — text source for corpus OCR
 ├── corpus: Vec<CorpusItem>  # reliable text corpus (independent of tracks; consumed by fusion)
+├── corpus_ocr_diffs: Vec<Diff>  # pending text corrections from corpus OCR (glossary; empty by default, legacy-compatible)
 └── tracks: Vec<Track>
      ├── track_type: "ocr_region" | "ocr_text" | "asr" | "manual" | "translation"
      ├── track_role:  "streamer" | "game"        # asr tracks only, defaults to game
@@ -153,6 +154,15 @@ extract frames (ffmpeg) ─► crop region ─► dHash change detection (skip i
 - Parameters (frontend defaults): frame interval 0.5s, dHash threshold 3, batch size 16, merge similarity 0.3.
 - **Merge rules** (`merge_frames`): adjacent similar texts join the same run; the run's final text is chosen by **majority vote** (instead of "longest wins" — a longer text polluted by noise scores low on total similarity and loses); empty frames tolerate a `(interval*1.5).max(0.8)` flicker window; typewriter-style progressive text (prefix supersets) merges into one event keeping the longest text.
 - Output destination is decided by the frontend: source mode → corpus (timing stripped); clip + page=asr → the embed_ocr (hardsub) track.
+- **Corrections only mark, never rewrite** (user decision, 2026-09-24/25): the last step runs punctuation
+  normalization (silent, targets configurable) and fuzzy glossary matching, but only **emits**
+  `Diff { old: Vec<String>, new: String }` (`old` is a set: one term may match several misread forms;
+  diffs are aggregated by `new`). `run_ocr` returns `(Vec<OcrSegment>, Vec<Diff>)`, leaving text
+  "normalized but unrefined"; the user approves each entry in the Corpus page. Approve = replace across
+  all corpus items and drop now-duplicate items; Discard = remove the entry only. Both are undoable.
+  The glossary is **corpus-OCR only** (no entry point in the hardsub panel). The approve rule exists in
+  two places and must stay in sync: `tests/common::apply_diffs_to_segments` ↔
+  `stores/project.ts::approveCorpusOcrDiff`.
 
 ### Fusion pipeline (`fuse/mod.rs`)
 
@@ -178,7 +188,7 @@ Frontend event-name constants live in `src/types/index.ts` and must stay in sync
 | project | `create_project` `open_project` `save_project` `set_project_video` `read_text_file` `list_recent_projects` `rename_project` `remove_recent_project` |
 | video | `get_video_metadata` |
 | ai_runtime | `check_ocr_runtime` `check_asr_runtime` `check_asr_engines` `check_llm_runtime` `asr_cancel` |
-| ocr | `run_ocr` `run_ocr_images` |
+| ocr | `run_ocr` `run_ocr_images` `approve_corpus_diff` |
 | asr | `run_asr` |
 | llm | `run_llm` |
 | fuse | `run_fuse` |
