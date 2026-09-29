@@ -471,7 +471,7 @@ fn vote_text_with(texts: &[(Arc<str>, f64)], progressive: bool) -> (Arc<str>, f6
             if cand.1 + PROGRESSIVE_COMPLETE_CONF_MARGIN < winner_conf {
                 continue;
             }
-            let longer = winner.map_or(true, |w| norm_chars(&w.0).len() < cn.len());
+            let longer = winner.is_none_or(|w| norm_chars(&w.0).len() < cn.len());
             if longer {
                 winner = Some(cand);
             }
@@ -894,7 +894,7 @@ fn short_fragment_related(frag: &str, next: &str) -> bool {
     // ——这类条必须独立留存，绝不能被并入下一条（否则语料出现"缺失"，长期硬门）。
     // 只有"长度恰为 1"的末行（如 moon 语料真实句尾 `了。`）不再由本门决定去留，
     // 改由时长门（`min_subtitle_sec`）与弱关联判据处理。
-    if fl.last().map_or(true, |l| l.is_empty()) {
+    if fl.last().is_none_or(|l| l.is_empty()) {
         return false; // D9：纯省略号/纯标点条 → 绝不并入
     }
     let Some(fidx) = (0..fl.len()).rev().find(|&i| fl[i].len() >= 2) else {
@@ -1051,6 +1051,10 @@ fn default_ellipsis() -> String {
 }
 fn default_true() -> bool {
     true
+}
+/// `OcrRunParams::min_subtitle_sec` 的 serde 缺省（与产品默认同源）
+fn default_min_subtitle_sec() -> f64 {
+    DEFAULT_MIN_SUBTITLE_SEC
 }
 
 impl Default for PunctuationNorm {
@@ -1760,6 +1764,8 @@ pub struct OcrRunParams {
     ///
     /// 该门是**素材相关**的：实况嵌字的字幕寿命天然长于剧情语料（基准实测参考条目最短
     /// 时长：嵌字 3.52/3.62/2.25s vs 语料 1.48s），故基准按素材分别标定。
+    /// serde default 与前端缺省同源（`DEFAULT_MIN_SUBTITLE_SEC`），防旧参数缺字段反序列化失败
+    #[serde(default = "default_min_subtitle_sec")]
     pub min_subtitle_sec: f64,
     /// 标点归一化配置（默认见 `PunctuationNorm::default`）；缺省时用默认值
     #[serde(default)]
@@ -2303,19 +2309,22 @@ pub async fn run_ocr_images(
             return Err("OCR 运行环境未就绪".into());
         }
 
-        let mut images = Vec::with_capacity(image_paths.len());
-        for src in &image_paths {
-            let bytes =
-                std::fs::read(src).map_err(|e| format!("读取图片失败（{}）: {}", src, e))?;
-            images.push(b64(&bytes));
-        }
-
+        // 逐批读取图片字节并 base64 编码：几十张高分辨率截图一次性读入会推高
+        // 峰值内存（base64 再放大 ~1.33×），按 IPC 批消费，单批用完即弃
         let bs = batch_size.max(1);
-        let total_batches = images.len().div_ceil(bs);
+        let total_batches = image_paths.len().div_ceil(bs);
         let mut results = Vec::new();
-        for (i, chunk) in images.chunks(bs).enumerate() {
+        for (i, paths) in image_paths.chunks(bs).enumerate() {
+            let images: Vec<String> = paths
+                .iter()
+                .map(|src| {
+                    std::fs::read(src)
+                        .map(|bytes| b64(&bytes))
+                        .map_err(|e| format!("读取图片失败（{}）: {}", src, e))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             let batch = manager
-                .with_provider(|p| p.recognize_batch(chunk))
+                .with_provider(|p| p.recognize_batch(&images))
                 .map_err(|e| format!("OCR 失败: {}", e))?;
             results.extend(batch);
             let _ = app_handle.emit(

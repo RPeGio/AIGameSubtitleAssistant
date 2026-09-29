@@ -4,6 +4,7 @@ import { useProjectStore } from "../stores/project";
 import SourceVideoPreview from "../components/SourceVideoPreview.vue";
 import SourceTimeline from "../components/SourceTimeline.vue";
 import type { AsrRunParams, AsrEngineStatus, OcrRunParams } from "../types";
+import { createDefaultOcrParams } from "../composables/ocrDefaults";
 import {
   NButton,
   NCollapse,
@@ -103,22 +104,9 @@ function setTrackRole(trackId: string, role: string) {
 // ── ② 内嵌字幕 OCR（画面获取时间轴）───────────────────
 /// 针对没有配音的游戏任务：OCR 切片视频画面里的游戏内嵌字幕，
 /// 产出带时间轴的 embed_ocr 轨（嵌字轴），作为"游戏内容"源供融合。
-const ocrParams = ref<OcrRunParams>({
-  frame_interval: 0.5,
-  dhash_threshold: 3,
-  batch_size: 16,
-  merge_similarity: 0.3,
-  min_subtitle_sec: 1.5,
-  punctuation: {
-    open_bracket: "「",
-    close_bracket: "」",
-    ellipsis: "…",
-    fix_misread_letters: true,
-  },
-  // 术语表是**语料 OCR 独有**功能：嵌字产物进 embed_ocr 轨（供融合做游戏内容段），
-  // 不落 corpus，也就没有"待审批纠正"的去处，故固定为空（后端 serde default 同义）
-  glossary: [],
-});
+// 术语表是**语料 OCR 独有**功能：嵌字产物进 embed_ocr 轨（供融合做游戏内容段），
+// 不落 corpus，也就没有"待审批纠正"的去处，故保持共享工厂的空数组缺省（后端 serde default 同义）
+const ocrParams = ref<OcrRunParams>(createDefaultOcrParams());
 
 const hasClipVideo = computed(() => projectStore.currentVideoMeta !== null);
 
@@ -368,8 +356,8 @@ async function startEmbedOcr() {
                   style="width: 100%"
                 />
                 <NText depth="3" style="font-size: 12px">
-                  短于此长度的产出段若与后一条同句（前缀/子序列），并入后一条。默认 0.7；
-                  实测 1.5 能收掉长打字机/遮挡造成的碎片，但会提高"误吞真实短句"的概率（0 关闭）
+                  短于此长度的产出段若与后一条同句（前缀/子序列），并入后一条。默认 1.5，
+                  能收掉长打字机/遮挡造成的碎片，但会提高"误吞真实短句"的概率（0 关闭）
                 </NText>
               </div>
             </div>

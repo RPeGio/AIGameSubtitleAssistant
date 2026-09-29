@@ -4,6 +4,7 @@ import { useProjectStore } from "../stores/project";
 import SourceVideoPreview from "../components/SourceVideoPreview.vue";
 import SourceTimeline from "../components/SourceTimeline.vue";
 import type { Diff, OcrRunParams } from "../types";
+import { createDefaultOcrParams } from "../composables/ocrDefaults";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -25,20 +26,7 @@ const message = useMessage();
 const activeKeys = ref<string[]>(["recordings"]);
 
 // ── "从剧情录屏中截取" ────────────────────────────────
-const ocrParams = ref<OcrRunParams>({
-  frame_interval: 0.5,
-  dhash_threshold: 3,
-  batch_size: 16,
-  merge_similarity: 0.3,
-  min_subtitle_sec: 1.5,
-  punctuation: {
-    open_bracket: "「",
-    close_bracket: "」",
-    ellipsis: "…",
-    fix_misread_letters: true,
-  },
-  glossary: [],
-});
+const ocrParams = ref<OcrRunParams>(createDefaultOcrParams());
 
 /// 术语表条目操作（可增删的 input-text 列表）
 function addGlossaryTerm() {
@@ -263,8 +251,8 @@ function discardDiff(d: Diff) {
                   style="width: 100%"
                 />
                 <NText depth="3" style="font-size: 12px">
-                  短于此长度的产出段若与后一条同句（前缀/子序列），并入后一条。默认 0.7；
-                  实测 1.5 能收掉长打字机/遮挡造成的碎片，但会提高"误吞真实短句"的概率（0 关闭）
+                  短于此长度的产出段若与后一条同句（前缀/子序列），并入后一条。默认 1.5，
+                  能收掉长打字机/遮挡造成的碎片，但会提高"误吞真实短句"的概率（0 关闭）
                 </NText>
               </div>
               <div class="cfg-field">
