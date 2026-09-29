@@ -64,6 +64,8 @@ pub fn run() {
             project::set_project_video,
             project::read_text_file,
             project::list_recent_projects,
+            project::rename_project,
+            project::remove_recent_project,
             // video 模块
             video::get_video_metadata,
             // ai_runtime 模块
@@ -73,8 +75,9 @@ pub fn run() {
             ai_runtime::check_llm_runtime,
             ai_runtime::asr_cancel,
             // ocr 模块
-            ocr::run_ocr,
-            ocr::run_ocr_images,
+            ocr::commands::run_ocr,
+            ocr::commands::run_ocr_images,
+            ocr::commands::approve_corpus_diff,
             // asr 模块
             asr::run_asr,
             // llm 模块

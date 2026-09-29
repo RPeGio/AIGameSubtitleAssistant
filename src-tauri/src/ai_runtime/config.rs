@@ -30,7 +30,8 @@ pub struct RuntimeConfig {
     /// OCR 模型档位："mobile"（快，默认）| "server"（慢，更准）
     #[serde(default = "default_ocr_model")]
     pub ocr_model: String,
-    /// 开发期调试：帧输出到仓库根 temp/ 并打印各环节日志（release 前关闭）
+    /// 开发期调试：帧输出到仓库根 temp/ 并打印各环节日志（默认关闭；
+    /// 调试时在 runtime/config.json 手动设 true，普通运行写入系统临时目录并自动清理）
     #[serde(default = "default_dev_debug")]
     pub dev_debug: bool,
     /// MOSS 推理可执行文件：相对 runtime（如 "bin/moss-transcribe.exe"，机器无关）或绝对路径；空 = 未配置
@@ -88,7 +89,7 @@ fn default_ocr_model() -> String {
 }
 
 fn default_dev_debug() -> bool {
-    true
+    false
 }
 
 fn default_funasr_device() -> String {

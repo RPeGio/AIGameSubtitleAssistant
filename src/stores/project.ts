@@ -9,6 +9,7 @@ import type {
   CorpusItem,
   OcrRunParams,
   OcrSegment,
+  Diff,
   OcrProgress,
   AsrRunParams,
   AsrSegment,
@@ -236,8 +237,13 @@ export const useProjectStore = defineStore("project", () => {
   // ── 撤销/重做：快照式操作记录 ─────────────────────────
   // 每次操作前把当前 tracks 深拷贝入 undo 栈（一个操作 = 一个撤销步骤）；
   // 高频写入（拖动改时/区域拖动/文字编辑）在操作开始点记录，写入中不重复记录
-  /// 快照结构：tracks 与 corpus 一起入栈——语料的增删也走撤销栈
-  type UndoSnapshot = { tracks: Track[]; corpus: CorpusItem[] };
+  /// 快照结构：tracks / corpus / 待审批纠正一起入栈——三者都是"可撤销的项目数据"，
+  /// 撤销/重做须同时恢复文字与审批条目（丢失条目会让已执行的纠正无法回退）
+  type UndoSnapshot = {
+    tracks: Track[];
+    corpus: CorpusItem[];
+    corpus_ocr_diffs: Diff[];
+  };
   const undoStack = ref<UndoSnapshot[]>([]);
   const redoStack = ref<UndoSnapshot[]>([]);
   const MAX_HISTORY = 60;
@@ -247,6 +253,9 @@ export const useProjectStore = defineStore("project", () => {
     return {
       tracks: JSON.parse(JSON.stringify(p?.tracks ?? [])) as Track[],
       corpus: JSON.parse(JSON.stringify(p?.corpus ?? [])) as CorpusItem[],
+      corpus_ocr_diffs: JSON.parse(
+        JSON.stringify(p?.corpus_ocr_diffs ?? [])
+      ) as Diff[],
     };
   }
 
@@ -264,6 +273,7 @@ export const useProjectStore = defineStore("project", () => {
     const snap = undoStack.value.pop()!;
     currentProject.value.tracks = snap.tracks;
     currentProject.value.corpus = snap.corpus;
+    currentProject.value.corpus_ocr_diffs = snap.corpus_ocr_diffs;
   }
 
   function redo() {
@@ -272,6 +282,7 @@ export const useProjectStore = defineStore("project", () => {
     const snap = redoStack.value.pop()!;
     currentProject.value.tracks = snap.tracks;
     currentProject.value.corpus = snap.corpus;
+    currentProject.value.corpus_ocr_diffs = snap.corpus_ocr_diffs;
   }
 
   function clearHistory() {
@@ -406,6 +417,22 @@ export const useProjectStore = defineStore("project", () => {
     } catch (e) {
       recentProjects.value = [];
     }
+  }
+
+  /// 重命名项目（后端重命名 .gsa 文件并同步最近项目列表），返回新条目
+  async function renameProject(oldPath: string, newName: string) {
+    const entry = await invoke<RecentProject>("rename_project", {
+      projectPath: oldPath,
+      newName,
+    });
+    await refreshRecentProjects();
+    return entry;
+  }
+
+  /// 从最近项目列表移除项目；deleteFile 为 true 时连带删除项目文件
+  async function removeRecentProject(path: string, deleteFile = false) {
+    await invoke("remove_recent_project", { projectPath: path, deleteFile });
+    await refreshRecentProjects();
   }
 
   /// 确保校对区基础产物轨存在（无 ocr_text 轨时补一个 mock 供校对总览展示）。
@@ -653,7 +680,10 @@ export const useProjectStore = defineStore("project", () => {
     ocrProgress.value = 0;
     ocrMessage.value = "准备中...";
     try {
-      const segments = await invoke<OcrSegment[]>("run_ocr", {
+      // run_ocr 返回 (segments, diffs) 两元组：Rust 侧只做标点归一化（静默），
+      // 术语表/一致性纠错只**标记**为待审批 Diff，不改写文本（R1 用户决策）；
+      // 产出文本保持"归一化后、未精化"形态，纠正由前端审批后执行。
+      const [segments, diffs] = await invoke<[OcrSegment[], Diff[]]>("run_ocr", {
         videoPath: meta.path,
         videoW: meta.width,
         videoH: meta.height,
@@ -662,10 +692,18 @@ export const useProjectStore = defineStore("project", () => {
         params,
       });
       if (videoKey === "source") {
-        // 语料页：产物提取进 corpus（去时间轴，作为可靠文本语料）
-        writeOcrToCorpus(segments);
+        // 语料页：产物提取进 corpus（去时间轴，作为可靠文本语料），
+        // 待审批纠正一并落 project.corpus_ocr_diffs（重跑覆盖，与产物轨同口径）。
+        // 一次 OCR = 一个撤销步骤：快照先于两处写入，writeOcrToCorpus 不再自行入栈。
+        // 项目可能在 OCR 期间被关闭（侧栏返回键无守卫），此时与 writeOcrToCorpus 同口径丢弃
+        const project = currentProject.value;
+        recordSnapshot();
+        if (project) project.corpus_ocr_diffs = diffs;
+        writeOcrToCorpus(segments, false);
       } else if (regionPage === "asr") {
-        // 转写页嵌字：产物写 embed_ocr 轨（clip 内嵌字轴，供融合作为游戏内容段）
+        // 转写页嵌字：产物写 embed_ocr 轨（clip 内嵌字轴，供融合作为游戏内容段）。
+        // 嵌字路径不消费 diffs：术语表是语料 OCR 独有功能（嵌字面板无术语表入口，
+        // 该路径恒不产出待审批条目），此处忽略属规则性不适用而非静默失效
         writeEmbedOcrSegments(segments);
       } else {
         writeOcrSegments(segments);
@@ -783,8 +821,13 @@ export const useProjectStore = defineStore("project", () => {
   // ── 文本语料（corpus）─────────────────────────────────
 
   /// 批量把文本加入 corpus：与现有语料及批内做精确去重，一次撤销快照。
-  /// 返回实际新增条数
-  function pushCorpusTexts(texts: string[], source: CorpusItem["source"]): number {
+  /// `record=false` 时调用方负责已记录快照（如 OCR 写入需与待审批条目合成一步），
+  /// 避免一次操作产生两个撤销步骤。返回实际新增条数
+  function pushCorpusTexts(
+    texts: string[],
+    source: CorpusItem["source"],
+    record = true
+  ): number {
     const project = currentProject.value;
     if (!project) return 0;
     const existing = new Set(project.corpus.map((c) => c.text));
@@ -797,15 +840,16 @@ export const useProjectStore = defineStore("project", () => {
       added.push({ id: generateId(), text, source, created_at: now });
     }
     if (added.length > 0) {
-      recordSnapshot();
+      if (record) recordSnapshot();
       project.corpus.push(...added);
     }
     return added.length;
   }
 
-  /// 把 OCR 段文本提取进 corpus（去时间轴，去重），供融合页消费
-  function writeOcrToCorpus(segments: OcrSegment[]) {
-    pushCorpusTexts(segments.map((s) => s.text), "ocr_track");
+  /// 把 OCR 段文本提取进 corpus（去时间轴，去重），供融合页消费。
+  /// `record=false` 由调用方统一记快照（OCR 写入还需同步落盘待审批纠正）
+  function writeOcrToCorpus(segments: OcrSegment[], record = true) {
+    pushCorpusTexts(segments.map((s) => s.text), "ocr_track", record);
   }
 
   /// 手动添加一条语料（粘贴文本）
@@ -825,6 +869,43 @@ export const useProjectStore = defineStore("project", () => {
     if (!currentProject.value) return;
     recordSnapshot();
     currentProject.value.corpus = currentProject.value.corpus.filter((c) => c.id !== id);
+  }
+
+  // ── 待审批纠正（语料 OCR 的术语表纠错）─────────────────
+  // Rust 侧只标记、不改写语料文本；此处由用户逐条决定。
+  // 条目按**对象身份**定位而非下标：连点两次也不会因数组已收缩而误改相邻条目。
+
+  /// 采纳一条纠正：调用后端命令对**全部**语料条目执行「误读形态 → 纠正文本」替换
+  /// 并按入库口径去重（全等、保留首现、保序），再移除该条目。
+  /// 跨条目、跨来源全局生效（用户决策：放弃逐块编辑能力）。
+  ///
+  /// 替换规则的**单一实现在 Rust**（`ocr::replace_diff_forms`）——产品命令
+  /// `approve_corpus_diff` 与基准 `tests/common::apply_diffs_to_segments` 共用
+  /// 同一函数（PR34 审查 P2-1 收敛：此前是前端 TS / 基准 Rust 两份实现靠注释同步）；
+  /// R3 对齐验证（`temp/probe/r3_approve_check.mjs`）已确认两侧语义逐位一致，
+  /// 现由后端单测钉住。
+  async function approveCorpusOcrDiff(diff: Diff) {
+    const project = currentProject.value;
+    const i = project?.corpus_ocr_diffs.indexOf(diff) ?? -1;
+    if (!project || i < 0) return;
+    // invoke 成功后才记快照：失败时不留空撤销步；期间项目被关闭则丢弃本次结果
+    const updated = await invoke<CorpusItem[]>("approve_corpus_diff", {
+      corpus: project.corpus,
+      diff,
+    });
+    if (!currentProject.value || currentProject.value !== project) return;
+    recordSnapshot();
+    project.corpus = updated;
+    project.corpus_ocr_diffs.splice(i, 1);
+  }
+
+  /// 放弃一条纠正：语料文本原样不动，仅移除该条目
+  function discardCorpusOcrDiff(diff: Diff) {
+    const project = currentProject.value;
+    const i = project?.corpus_ocr_diffs.indexOf(diff) ?? -1;
+    if (!project || i < 0) return;
+    recordSnapshot();
+    project.corpus_ocr_diffs.splice(i, 1);
   }
 
   /// 语料就绪：corpus 非空
@@ -1295,6 +1376,8 @@ export const useProjectStore = defineStore("project", () => {
     canUndo,
     canRedo,
     refreshRecentProjects,
+    renameProject,
+    removeRecentProject,
     saveNow,
     ocrRunning,
     ocrSource,
@@ -1306,6 +1389,8 @@ export const useProjectStore = defineStore("project", () => {
     addCorpusItem,
     pushCorpusTexts,
     removeCorpusItem,
+    approveCorpusOcrDiff,
+    discardCorpusOcrDiff,
     corpusReady,
     timelineReady,
     asrRunning,

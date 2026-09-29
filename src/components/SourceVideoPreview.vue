@@ -35,7 +35,7 @@ const isPlaying = ref(false);
 const isLoaded = ref(false);
 const loadError = ref<string | null>(null);
 
-const { containerRef, contentRect } = useVideoContentRect();
+const { containerRef, contentRect } = useVideoContentRect(props.videoKey);
 
 /// 对应视频源的文件路径：clip 用切片视频（项目主视频），source 用剧情录屏
 const src = computed(() => {
@@ -143,31 +143,40 @@ let drag: null | {
   y2: number;
 } = null;
 
-function pct(v: number) {
-  return v * 100 + "%";
-}
-
 const MIN = 0.02;
 
+/// 选区矩形按视频渲染矩形（contentRect）绝对像素定位：
+/// 存储的归一化坐标是相对视频画面的，直接用容器百分比会在
+/// object-fit: contain 的 letterbox 下系统性偏移（语料页 2.39:1 视频尤为明显）
 const rectStyle = computed(() => {
   const r = regionEvent.value;
   if (!r) return {};
+  const cr = contentRect.value;
   return {
-    left: pct(r.x1),
-    top: pct(r.y1),
-    width: pct(r.x2 - r.x1),
-    height: pct(r.y2 - r.y1),
+    left: cr.left + r.x1 * cr.width + "px",
+    top: cr.top + r.y1 * cr.height + "px",
+    width: (r.x2 - r.x1) * cr.width + "px",
+    height: (r.y2 - r.y1) * cr.height + "px",
   };
 });
 
 const dims = computed(() => {
   const r = regionEvent.value;
   if (!r) return [];
+  const cr = contentRect.value;
+  const bottomTop = cr.top + cr.height;
+  const rightLeft = cr.left + cr.width;
   return [
-    { key: "top", style: { left: "0%", top: "0%", width: "100%", height: pct(r.y1) } },
-    { key: "bottom", style: { left: "0%", top: pct(r.y2), width: "100%", height: pct(1 - r.y2) } },
-    { key: "left", style: { left: "0%", top: pct(r.y1), width: pct(r.x1), height: pct(r.y2 - r.y1) } },
-    { key: "right", style: { left: pct(r.x2), top: pct(r.y1), width: pct(1 - r.x2), height: pct(r.y2 - r.y1) } },
+    { key: "top", style: { left: "0px", top: "0px", width: "100%", height: cr.top + "px" } },
+    {
+      key: "bottom",
+      style: { left: "0px", top: bottomTop + "px", width: "100%", height: `calc(100% - ${bottomTop}px)` },
+    },
+    { key: "left", style: { left: "0px", top: cr.top + "px", width: cr.left + "px", height: cr.height + "px" } },
+    {
+      key: "right",
+      style: { left: rightLeft + "px", top: cr.top + "px", width: `calc(100% - ${rightLeft}px)`, height: cr.height + "px" },
+    },
   ];
 });
 

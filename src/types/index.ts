@@ -83,6 +83,7 @@ export interface CorpusItem {
 }
 
 export interface Project {
+  /// .gsa 项目文件的绝对路径（项目身份 = 文件，同一目录可有多个项目）
   path: string;
   /// 切片视频路径 —— 时间轴基准
   video: string;
@@ -91,6 +92,10 @@ export interface Project {
   name: string;
   /// 可靠文本语料集合（独立于轨道，供 LLM 融合消费）
   corpus: CorpusItem[];
+  /// 语料 OCR 的待审批文本纠正（术语表纠错）。Rust 侧只标记、**不改写**语料文本；
+  /// 采纳 = 对全部 corpus 条目执行 old→new 替换并移除该条目，放弃 = 仅移除条目。
+  /// 重跑语料 OCR 时整体覆盖；旧项目文件无此字段（后端 serde default 补空数组）
+  corpus_ocr_diffs: Diff[];
   tracks: Track[];
   created_at: string;
   updated_at: string;
@@ -126,6 +131,28 @@ export interface OcrRunParams {
   dhash_threshold: number;
   batch_size: number;
   merge_similarity: number;
+  /// 字幕预估最短长度（秒，默认 1.5，与后端 DEFAULT_MIN_SUBTITLE_SEC 同源）：短于此的
+  /// 产出段若与后一条弱关联则并入后一条（保留碎片起点 + 后条终点/文本）。调大能减少碎片，
+  /// 但会提高误吞真实短句的概率（实测 1.6s 时基准语料出现缺失）；≤0 关闭该合并。
+  min_subtitle_sec: number;
+  /// 标点归一化配置（精度策略统一前置层；目标字符可由用户个性化）
+  punctuation: PunctuationNorm;
+  /// 术语表（可选精度策略）：正确词条列表，产出文本在标点归一化后与之模糊匹配并纠正。
+  /// 空数组 = 关闭。前端为可增删的条目列表。
+  glossary: string[];
+}
+
+/// 标点归一化配置：把 OCR 产出的各类括号/省略号统一为用户偏好的形态。
+/// 归一化是术语表纠错与一致性纠错的前置条件（两侧词条需同形才能匹配）。
+export interface PunctuationNorm {
+  /// 左括号目标（默认「，可改 [）
+  open_bracket: string;
+  /// 右括号目标（默认」，可改 ]）
+  close_bracket: string;
+  /// 省略号目标（默认 …，可改 ……）
+  ellipsis: string;
+  /// 是否修复标点被识别成拉丁字母（如行尾 j → 右括号；默认开）
+  fix_misread_letters: boolean;
 }
 
 export interface OcrSegment {
@@ -133,6 +160,14 @@ export interface OcrSegment {
   end: number;
   text: string;
   confidence: number;
+}
+
+/// 一条待审批的文本纠正（Rust 侧 `ocr::Diff`，术语表/一致性纠错共用）。
+/// `old` 为集合语义：同一目标词条可对应多种误读形态，采纳时一并替换。
+/// Rust 侧只标记、不改写文本，纠正由前端审批后执行。
+export interface Diff {
+  old: string[];
+  new: string;
 }
 
 export interface OcrProgress {

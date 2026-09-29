@@ -39,6 +39,8 @@ impl Drop for PaddleProvider {
 #[derive(Serialize)]
 struct Request<'a> {
     id: u32,
+    /// 图像列表：每元素为 base64 编码的 JPEG 字节（worker 内存解码为 ndarray，
+    /// 全程不经磁盘，也规避 cv2 读图的非 ASCII 路径问题）
     images: &'a [String],
 }
 
@@ -80,6 +82,20 @@ impl PaddleProvider {
         let deps_dir = runtime_dir.join(&config.deps_dir);
         let model_dir = runtime_dir.join(&config.model_dir);
 
+        // GPU 加速（可选，见 scripts/bootstrap_ocr_gpu.ps1）：GSA_OCR_DEVICE 非空且
+        // runtime/deps_gpu 存在时，PYTHONPATH 拼成 "deps_gpu;deps"——GPU 版 paddle 优先，
+        // 其余依赖复用 CPU 版目录；未启用时与既有行为完全一致（仅 deps）
+        let device = std::env::var("GSA_OCR_DEVICE").unwrap_or_default();
+        let device = device.trim().to_string();
+        let gpu_deps = runtime_dir.join("deps_gpu");
+        let pythonpath = if !device.is_empty() && gpu_deps.is_dir() {
+            std::env::join_paths([gpu_deps.as_path(), deps_dir.as_path()])
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| deps_dir.to_string_lossy().into_owned())
+        } else {
+            deps_dir.to_string_lossy().into_owned()
+        };
+
         // python_path 支持相对 runtime 的写法（如 "python/python.exe"，机器无关）；
         // 绝对路径（老配置）原样使用
         let python = if Path::new(&config.python_path).is_absolute() {
@@ -90,11 +106,13 @@ impl PaddleProvider {
 
         let mut cmd = Command::new(&python);
         cmd.arg(&worker_script)
-            .env("PYTHONPATH", &deps_dir)
+            .env("PYTHONPATH", &pythonpath)
             // paddleocr 3.x 基于 paddlex，模型缓存目录走 PADDLE_PDX_CACHE_HOME
             .env("PADDLE_PDX_CACHE_HOME", &model_dir)
             // 模型档位：mobile（默认/快）| server（慢/准）
             .env("GSA_OCR_MODEL", &config.ocr_model)
+            // 推理设备：空=CPU/自动（默认）；如 "gpu:0" 走 CUDA 版 paddle
+            .env("GSA_OCR_DEVICE", &device)
             // 跳过启动时的模型源连通性检查，加速就绪
             .env("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
             .stdin(Stdio::piped())
@@ -200,7 +218,8 @@ impl OcrProvider for PaddleProvider {
             .unwrap_or_default()
     }
 
-    fn recognize_batch(&self, image_paths: &[String]) -> Result<Vec<OcrResult>, OcrError> {
+    /// 批量识别一批图像（`images` 元素为 base64 编码的 JPEG 字节）
+    fn recognize_batch(&self, images: &[String]) -> Result<Vec<OcrResult>, OcrError> {
         if !self.is_ready() {
             return Err(OcrError::NotReady);
         }
@@ -209,7 +228,7 @@ impl OcrProvider for PaddleProvider {
             .lock()
             .map_err(|_| OcrError::Worker("worker io 锁被污染".into()))?;
 
-        let req = build_request(1, image_paths);
+        let req = build_request(1, images);
         io.stdin.write_all(req.as_bytes())?;
         io.stdin.write_all(b"\n")?;
         io.stdin.flush()?;
@@ -241,11 +260,12 @@ mod tests {
 
     #[test]
     fn test_build_request_json() {
-        let req = build_request(1, &["a.jpg".into(), "b.jpg".into()]);
+        // images 元素语义 = base64 编码的 JPEG（此处只验证 JSON 结构）
+        let req = build_request(1, &["QQ==".into(), "Qg==".into()]);
         let v: serde_json::Value = serde_json::from_str(&req).unwrap();
         assert_eq!(v["id"], 1);
-        assert_eq!(v["images"][0], "a.jpg");
-        assert_eq!(v["images"][1], "b.jpg");
+        assert_eq!(v["images"][0], "QQ==");
+        assert_eq!(v["images"][1], "Qg==");
     }
 
     #[test]

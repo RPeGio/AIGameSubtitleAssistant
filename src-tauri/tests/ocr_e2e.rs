@@ -38,7 +38,7 @@ fn test_t3_end_to_end() {
         get_video_metadata(video.to_string_lossy().into_owned()).expect("读取视频元数据失败");
     assert_eq!(meta.width, 1920);
 
-    // 来自 t3 项目 project.json 语料区 OCR 选区轨（用户调整后的选区，已去除其它画面噪声）
+    // 来自 t3 项目语料区 OCR 选区轨（用户调整后的选区，已去除其它画面噪声）
     let clips = vec![
         OcrRegionInput { start: 36.373, end: 40.798, x1: 0.200, y1: 0.700, x2: 0.800, y2: 0.900 },
         OcrRegionInput { start: 43.330, end: 150.298, x1: 0.152, y1: 0.745, x2: 0.853, y2: 0.994 },
@@ -50,10 +50,14 @@ fn test_t3_end_to_end() {
         dhash_threshold: 3,
         batch_size: 16,
         merge_similarity: 0.3,
+        min_subtitle_sec: 0.7,
+        punctuation: Default::default(),
+        glossary: Vec::new(),
+        consistency_hints: false,
     };
 
     let start = Instant::now();
-    let segments = run_ocr_pipeline(
+    let (segments, _diffs) = run_ocr_pipeline(
         &manager,
         &video.to_string_lossy(),
         meta.width,

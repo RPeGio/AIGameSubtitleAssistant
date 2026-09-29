@@ -201,6 +201,29 @@ pub fn export_track_subtitle(
     Ok(lines.len())
 }
 
+/// 基准/诊断用：把 OCR 段直接写成 SRT（复用产品侧的 `format_srt` 与 BOM 约定，
+/// 保证与编辑器导入的观感一致）。返回写入的字幕条数。
+///
+/// 供 `tests/bench_hardsub.rs` 产出可导入剪辑软件的主观评估产物；
+/// 路径由调用方给定（基准写在 `temp/bench_output/` 下，不入库）。
+pub fn write_segments_srt(
+    segments: &[crate::ocr::OcrSegment],
+    dest_path: &str,
+) -> Result<usize, String> {
+    let lines: Vec<SubtitleLine> = segments
+        .iter()
+        .map(|s| SubtitleLine {
+            start_ms: ms(s.start),
+            end_ms: ms(s.end).max(ms(s.start)),
+            text: s.text.trim().to_string(),
+        })
+        .filter(|l| !l.text.is_empty())
+        .collect();
+    let content = with_bom(SubtitleFormat::Srt, format_srt(&lines));
+    fs::write(dest_path, content).map_err(|e| format!("写入文件失败: {e}"))?;
+    Ok(lines.len())
+}
+
 // ─── 单元测试（纯逻辑，不写文件）────────────────────────
 
 #[cfg(test)]

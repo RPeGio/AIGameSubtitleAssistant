@@ -40,3 +40,6 @@ examples/
 
 # Private agent session logs
 session-ses_*.md
+
+# GSA project files (machine-specific absolute paths)
+*.gsa

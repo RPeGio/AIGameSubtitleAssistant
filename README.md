@@ -23,7 +23,7 @@ GameSubtitleAssistant 面向游戏剧情实况翻译（烤肉）、切片和字�
 - **AI 融合**：本地 LLM（llama.cpp + Qwen2.5-3B）把可靠语料与游戏语音转写做**跨语言语义对齐**——只让模型输出对应关系，文本由代码逐字复制，避免小模型「复述」改字；角色名从语料前缀自动提取。
 - **时间轴编辑**：多轨时间轴（分割 / 合并 / 拖拽 / 吸附 / 分段互换）、视频预览联动、撤销重做、逐条校对列表。
 - **导出**：单轨导出 SRT / ASS / LRC / TXT。
-- **工程化**：项目数据（`project.json`）1 秒防抖自动保存 + Ctrl+S 手动保存，最近项目列表。
+- **工程化**：项目数据（`<项目名>.gsa` 单文件：魔数头 + JSON）1 秒防抖自动保存 + Ctrl+S 手动保存，最近项目列表。
 
 ## 工作流
 
@@ -83,7 +83,7 @@ pnpm tauri build   # 产出安装包（注：运行时资源打包尚未配置�
 
 ## 使用指南
 
-1. **创建项目**：欢迎页「创建新项目」，选择一个空文件夹（项目数据保存在其中的 `project.json`）。
+1. **创建项目**：欢迎页「创建新项目」，选择保存文件夹（项目数据保存在其中的 `<项目名>.gsa`；同一文件夹可共存多个项目）。
 2. **导入视频**：语料页导入剧情录屏（source）；转写页导入切片视频（clip）。
 3. **① 文本语料**：框选字幕区域 + 时间段，跑 OCR 收集可靠文本；或识别字幕截图 / 粘贴纯文本。
 4. **② 语音转写**：对切片视频跑 ASR（选引擎 / 说话人上限 / 语言），把含游戏语音的轨标记为「游戏内容」；无配音任务可额外框选内嵌字幕区域生成嵌字轴。
@@ -120,7 +120,7 @@ pnpm tauri build   # 产出安装包（注：运行时资源打包尚未配置�
 
 **已完成**：四页工作台全链路（语料 → 转写 → 融合 → 编辑导出）、OCR 流水线（区域框选 / 变化检测 / 多数投票 / 多帧合并）、FunASR + MOSS 双 ASR 引擎与说话人分离、嵌字轴、LLM 跨语言融合、多轨时间轴编辑与撤销重做、单轨多格式导出、自动保存。
 
-**进行中 / 待改进**：融合链路在真实长文本场景的实测与优化；运行时资源打包（安装包分发）；前端样式优化，工程存储配置重构等。
+**进行中 / 待改进**：融合链路在真实长文本场景的实测与优化；运行时资源打包（安装包分发）。
 
 **未来计划**：翻译辅助与双语字幕、更多导出格式（Premiere XML / DaVinci Resolve XML / Aegisub）、应用内模型管理、TTS 与声音克隆（见计划书 Phase 7）。
 
@@ -141,7 +141,7 @@ pnpm tauri build   # 产出安装包（注：运行时资源打包尚未配置�
 本项目的 AI 能力建立在以下优秀开源项目之上：
 - [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)
 - [FunASR](https://github.com/modelscope/FunASR)
-- [MOSS-Transcribe-Diarize](https://github.com/OpenMOSS) / [moss-transcribe.cpp](https://github.com/mudler/moss-transcribe.cpp)
+- [MOSS-Transcribe-Diarize](https://github.com/OpenMOSS/MOSS-Transcribe-Diarize) / [moss-transcribe.cpp](https://github.com/mudler/moss-transcribe.cpp)
 - [llama.cpp](https://github.com/ggml-org/llama.cpp)
 - [WeSpeaker](https://github.com/wenet-e2e/wespeaker)
 - [Silero VAD](https://github.com/snakers4/silero-vad)
