@@ -496,9 +496,11 @@ pub fn hardsub_ocr_params(cfg: &CaseCfg) -> OcrRunParams {
 
 fn ocr_params_with_min(min_subtitle_sec: f64) -> OcrRunParams {
     OcrRunParams {
-        // 2026-09-18：0.25s 试验后回退 0.5s。0.25s 的收益（嵌字 +2.3~+10）不足以抵消代价：
+        // 2026-09-19：0.25s 试验后回退 0.5s（回退提交 `1f05e7c`）。0.25s 的收益（嵌字 +2.3~+10）不足以抵消代价：
         // 语料回归（glupov 97.1→96.1，细网格更早采到打字机过渡帧）、耗时 +34%~+57%。
         // 合并层门限已改为绝对秒下限，与网格解耦，回退不改变合并语义。
+        // A5 补注（2026-09-29）：回退随 0.25s 一并保留的 `vote_text` 渐进补全偏好，在 0.5s 网格下
+        // 于语料侧完全惰性（三案例产出与关闭偏好时逐字节相同；glupov 25 个 run 全部 KEEP medoid）。
         frame_interval: 0.5,
         dhash_threshold: 3,
         batch_size: 16,

@@ -23,8 +23,10 @@ use common::{
 fn tolerance_sec() -> f64 {
     // 容差与采样量子自洽：帧网格 0.5s 的段边界量化误差天然为 ±0.25s，旧 0.3s 容差比量子
     // 还小——把量化噪声当缺陷扣分。2026-09-18 先取 0.5s（=2×量化），后按用户决策提到
-    // **0.6s**（=2.4×量化，口径上更自洽）。当前三案例实测 glupov 72.2 / moon 64.5 /
-    // pierro 69.3（2026-09-26，含 D17 与按素材标定的 min_subtitle_sec）。
+    // **0.6s**（=2.4×量化，口径上更自洽）。
+    // 各案例分数**不写在这里**：它随时基换算与管线修复演进，写死必过期（此处曾写死
+    // 72.2/64.5/69.3，随 A4 逐案例 offset 与 P1/P2 修复失效）。权威记录 =
+    // `benchmark/OCR_PIPELINE_DEFECTS.md` 的 D10「A5 裁决」节 + `benchmark/<案例>.md` 追加表。
     // env GSA_BENCH_TOLERANCE_SEC 可覆盖。
     std::env::var("GSA_BENCH_TOLERANCE_SEC")
         .ok()
