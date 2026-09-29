@@ -46,7 +46,7 @@
 | 模块 | 职责 |
 |---|---|
 | `src-tauri/src/video/mod.rs` | ffprobe 元数据（`get_video_metadata`）；帧提取 / 音频提取供 OCR / ASR 复用；FFmpeg 定位：系统 PATH → ffmpeg-sidecar 目录，找不到报 `FFMPEG_NOT_FOUND` |
-| `src-tauri/src/ocr/mod.rs` | 完整 OCR 流水线 `run_ocr`（后台线程 + `ocr-progress` 事件）：抽帧 → 变化检测 → 窗口精化 → OCR → 合并；`run_ocr_images` 直接识别截图 |
+| `src-tauri/src/ocr/mod.rs` | 完整 OCR 流水线 `run_ocr`（后台线程 + `ocr-progress` 事件）：抽帧 → 变化检测 → 窗口精化 → OCR → 合并；`run_ocr_images` 直接识别截图；`approve_corpus_diff` 采纳语料纠正（替换规则的单一实现，与基准共用） |
 | `src-tauri/src/ai_runtime/dhash.rs` | 帧裁切区域的 64-bit dHash + 汉明距离变化判定 |
 | `src-tauri/src/ai_runtime/mod.rs` | AI Runtime 骨架：OCR/ASR/LLM 的 provider trait + manager + NoneProvider 占位（环境未就绪时保证可编译、返回"未就绪"） |
 | `src-tauri/src/ai_runtime/paddle.rs` | PaddleOCR worker provider：常驻子进程，JSON lines over stdio（`{"id":1,"images":[...]}` / `ping` / `shutdown`） |
@@ -186,7 +186,7 @@ Project
 | project | `create_project` `open_project` `save_project` `set_project_video` `read_text_file` `list_recent_projects` `rename_project` `remove_recent_project` |
 | video | `get_video_metadata` |
 | ai_runtime | `check_ocr_runtime` `check_asr_runtime` `check_asr_engines` `check_llm_runtime` `asr_cancel` |
-| ocr | `run_ocr` `run_ocr_images` |
+| ocr | `run_ocr` `run_ocr_images` `approve_corpus_diff` |
 | asr | `run_asr` |
 | llm | `run_llm` |
 | fuse | `run_fuse` |

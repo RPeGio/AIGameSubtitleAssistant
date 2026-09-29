@@ -77,6 +77,7 @@ pub fn run() {
             // ocr 模块
             ocr::run_ocr,
             ocr::run_ocr_images,
+            ocr::approve_corpus_diff,
             // asr 模块
             asr::run_asr,
             // llm 模块

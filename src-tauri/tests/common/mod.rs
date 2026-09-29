@@ -613,17 +613,18 @@ pub fn run_ocr_with_params(
 
 /// 把一批待审批 `Diff` 应用到段文本（"全部采纳"）。
 ///
-/// ⚠️ 与前端 `src/stores/project.ts::approveCorpusOcrDiff` 是**同一规则的两份实现**
-/// （基准在 tests/ 内，无法复用前端代码）：采纳 = 对该次 OCR 的**全部**事件文本做
-/// `old → new` 替换，每个误读形态替换其**全部**出现（Rust `str::replace`
-/// ≡ JS `split/join`，见 R3 对齐验证 `temp/probe/r3_approve_check.mjs`）。
-/// **任一侧改动必须同步另一侧**，否则基准分数不再代表产品行为。
+/// 规则的**单一实现在 lib**（`ocr::replace_diff_forms`）——产品命令
+/// `approve_corpus_diff`（前端审批后调用）与本基准共用同一函数
+/// （PR34 审查 P2-1 收敛：此前是前端 TS / 基准 Rust 两份实现靠注释同步）。
+/// 采纳 = 对该次 OCR 的**全部**事件文本做 `old → new` 替换，每个误读形态替换其
+/// **全部**出现；R3 对齐验证（`temp/probe/r3_approve_check.mjs`）确认
+/// `str::replace` ≡ JS `split/join`，语义由此被 lib 单测钉住。
 pub fn apply_diffs_to_segments(segments: &mut [OcrSegment], diffs: &[Diff]) {
     for d in diffs {
         for seg in segments.iter_mut() {
-            for old in &d.old {
-                seg.text = seg.text.replace(old.as_str(), d.new.as_str());
-            }
+            seg.text = ai_game_subtitle_assistant_lib::ocr::replace_diff_forms(
+                &seg.text, &d.old, &d.new,
+            );
         }
     }
 }

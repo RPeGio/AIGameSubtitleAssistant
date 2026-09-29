@@ -52,6 +52,26 @@ pub struct Diff {
     pub new: String,
 }
 
+/// 采纳替换规则的**单一实现**（产品命令 `approve_corpus_diff` 与基准
+/// `tests/common::apply_diffs_to_segments` 共用，PR34 审查 P2-1 收敛：
+/// 此前是前端 TS / 基准 Rust 两份实现靠注释同步，现机制上同源）。
+///
+/// 逐个误读形态对全文替换（`str::replace` ≡ 前端此前的 `split(old).join(new)`，
+/// R3 已用真实数据逐位对齐验证）。
+///
+/// 防御：跳过空/单字符 `old`——空串 replace 会在每字符间插入 `new`（灾难性）。
+/// 两个 Diff 来源本就保证 ≥2 字符（`collect_glossary_hits` 与
+/// `find_consistency_hints` 均只收长度 ≥2 的词条/片段），此处按公共边界再守一道。
+pub fn replace_diff_forms(text: &str, old_forms: &[String], new: &str) -> String {
+    let mut out = text.to_string();
+    for old in old_forms {
+        if old.chars().count() >= 2 {
+            out = out.replace(old.as_str(), new);
+        }
+    }
+    out
+}
+
 /// 一帧的文本（顺延后的完整序列）。
 /// text 用 `Arc<str>` 共享，未变化帧只做引用计数递增，不逐帧拷贝字符串。
 /// `sample_time` = 该帧的网格采样时刻（图像的实际采样点）；帧级差分注入的
@@ -2344,6 +2364,30 @@ pub async fn run_ocr_images(
     .map_err(|e| format!("OCR 任务内部错误: {}", e))?
 }
 
+/// Tauri 命令：采纳一条语料纠正（前端逐条审批后调用）。
+///
+/// 对**全部**语料条目执行「误读形态 → 纠正文本」替换，并按入库口径去重
+/// ——替换可能与既有正确条目撞成同文（如语料里本就有「缟玛瑙…」），
+/// 去重规则：文本全等、保留首现、保序（原前端逻辑下沉至此，与 `pushCorpusTexts`
+/// 的入库去重同口径）。
+///
+/// 待审批列表（`Project.corpus_ocr_diffs`）仍由前端管理：采纳/放弃都由前端移除条目
+/// （放弃无文本变更，不需要命令），后端只负责文本替换这一步。
+/// 同步命令即可：纯 CPU、量级 = 条数 × old 数次 replace，微秒级。
+#[tauri::command]
+pub fn approve_corpus_diff(
+    corpus: Vec<crate::project::CorpusItem>,
+    diff: Diff,
+) -> Vec<crate::project::CorpusItem> {
+    let mut out = corpus;
+    for item in &mut out {
+        item.text = replace_diff_forms(&item.text, &diff.old, &diff.new);
+    }
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|item| seen.insert(item.text.clone()));
+    out
+}
+
 // ─── 单元测试 ─────────────────────────────────────────────
 
 #[cfg(test)]
@@ -3837,5 +3881,62 @@ mod tests {
         assert!(lines_from_results(&[]).is_empty());
         let blank = vec![OcrResult { text: "  \n\n".into(), confidence: 0.5 }];
         assert!(lines_from_results(&blank).is_empty());
+    }
+
+    // ── 采纳替换规则（replace_diff_forms / approve_corpus_diff）──
+
+    #[test]
+    fn test_replace_diff_forms_replaces_all_occurrences_of_all_forms() {
+        let olds = vec!["编玛瑙".to_string(), "编玛脑".to_string()];
+        // 每个形态替换其全部出现（与前端 split/join 等价，R3 语义）
+        assert_eq!(
+            replace_diff_forms("编玛瑙和编玛瑙", &olds, "缟玛瑙"),
+            "缟玛瑙和缟玛瑙"
+        );
+        assert_eq!(
+            replace_diff_forms("编玛瑙…编玛脑…编玛瑙", &olds, "缟玛瑙"),
+            "缟玛瑙…缟玛瑙…缟玛瑙"
+        );
+        // 无命中 → 原样返回
+        assert_eq!(replace_diff_forms("无关文本", &olds, "缟玛瑙"), "无关文本");
+    }
+
+    #[test]
+    fn test_replace_diff_forms_skips_short_old_forms() {
+        // 防御：空串 replace 会在每字符间插入 new（灾难性）；单字符同理过宽
+        assert_eq!(
+            replace_diff_forms("abc", &["".to_string(), "b".to_string()], "X"),
+            "abc"
+        );
+        // ≥2 字符正常生效
+        assert_eq!(replace_diff_forms("abc", &["bc".to_string()], "X"), "aX");
+    }
+
+    #[test]
+    fn test_approve_corpus_diff_replaces_and_dedups() {
+        use crate::project::CorpusItem;
+        let item = |id: &str, text: &str| CorpusItem {
+            id: id.to_string(),
+            text: text.to_string(),
+            source: "ocr_track".into(),
+            created_at: "1".into(),
+        };
+        // c1 替换后与 c2（本就正确的写法）撞成同文 → 全等去重保留首现；
+        // c3 独立替换。三进二出，保序。
+        let corpus = vec![
+            item("c1", "本就正确的编玛瑙"),
+            item("c2", "本就正确的缟玛瑙"),
+            item("c3", "编玛瑙"),
+        ];
+        let diff = Diff {
+            old: vec!["编玛瑙".into()],
+            new: "缟玛瑙".into(),
+        };
+        let out = approve_corpus_diff(corpus, diff);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].id, "c1");
+        assert_eq!(out[0].text, "本就正确的缟玛瑙");
+        assert_eq!(out[1].id, "c3");
+        assert_eq!(out[1].text, "缟玛瑙");
     }
 }

@@ -150,9 +150,13 @@ const pendingDiffs = computed(
   () => projectStore.currentProject?.corpus_ocr_diffs ?? []
 );
 
-function approveDiff(d: Diff) {
-  projectStore.approveCorpusOcrDiff(d);
-  message.success(`已采纳：${d.old.join(" / ")} → ${d.new}`);
+async function approveDiff(d: Diff) {
+  try {
+    await projectStore.approveCorpusOcrDiff(d);
+    message.success(`已采纳：${d.old.join(" / ")} → ${d.new}`);
+  } catch (e) {
+    message.error(`采纳失败：${e}`);
+  }
 }
 
 function discardDiff(d: Diff) {

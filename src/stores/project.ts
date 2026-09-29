@@ -875,38 +875,28 @@ export const useProjectStore = defineStore("project", () => {
   // Rust 侧只标记、不改写语料文本；此处由用户逐条决定。
   // 条目按**对象身份**定位而非下标：连点两次也不会因数组已收缩而误改相邻条目。
 
-  /// 采纳一条纠正：对**全部**语料条目执行「误读形态 → 纠正文本」替换，再移除该条目。
+  /// 采纳一条纠正：调用后端命令对**全部**语料条目执行「误读形态 → 纠正文本」替换
+  /// 并按入库口径去重（全等、保留首现、保序），再移除该条目。
   /// 跨条目、跨来源全局生效（用户决策：放弃逐块编辑能力）。
   ///
-  /// ⚠️ 与基准 `src-tauri/tests/common/mod.rs::apply_diffs_to_segments` 是同一规则的
-  /// 两份实现（基准在 tests/ 内，无法复用前端代码）：采纳 = 对该次 OCR 的**全部**
-  /// 条目文本做替换，每个误读形态替换其**全部**出现（JS `split/join` ≡ Rust
-  /// `str::replace`，R3 已用真实数据逐位对齐验证）。**任一侧改动必须同步另一侧**，
-  /// 否则基准分数不再代表产品行为
-  function approveCorpusOcrDiff(diff: Diff) {
+  /// 替换规则的**单一实现在 Rust**（`ocr::replace_diff_forms`）——产品命令
+  /// `approve_corpus_diff` 与基准 `tests/common::apply_diffs_to_segments` 共用
+  /// 同一函数（PR34 审查 P2-1 收敛：此前是前端 TS / 基准 Rust 两份实现靠注释同步）；
+  /// R3 对齐验证（`temp/probe/r3_approve_check.mjs`）已确认两侧语义逐位一致，
+  /// 现由后端单测钉住。
+  async function approveCorpusOcrDiff(diff: Diff) {
     const project = currentProject.value;
     const i = project?.corpus_ocr_diffs.indexOf(diff) ?? -1;
     if (!project || i < 0) return;
-    recordSnapshot();
-    for (const item of project.corpus) {
-      let text = item.text;
-      // old 由 Rust 匹配器保证 ≥2 字符（单字词条不参与匹配），无空串/单字替换风险
-      for (const old of diff.old) {
-        text = text.split(old).join(diff.new);
-      }
-      item.text = text;
-    }
-    project.corpus_ocr_diffs.splice(i, 1);
-    // 替换后可能与本已正确的条目撞成同文（如语料里本就有「缟玛瑙…」）→ 按入库时的
-    // 同一去重口径清理（全等、保留首现；入库两条路径均已 trim，故直接比较文本即可）：
-    // pushCorpusTexts 的去重只覆盖新增，覆盖不到"由替换产生的重复"，
-    // 不去重会让重复行进入融合语料
-    const seen = new Set<string>();
-    project.corpus = project.corpus.filter((c) => {
-      if (seen.has(c.text)) return false;
-      seen.add(c.text);
-      return true;
+    // invoke 成功后才记快照：失败时不留空撤销步；期间项目被关闭则丢弃本次结果
+    const updated = await invoke<CorpusItem[]>("approve_corpus_diff", {
+      corpus: project.corpus,
+      diff,
     });
+    if (!currentProject.value || currentProject.value !== project) return;
+    recordSnapshot();
+    project.corpus = updated;
+    project.corpus_ocr_diffs.splice(i, 1);
   }
 
   /// 放弃一条纠正：语料文本原样不动，仅移除该条目
