@@ -75,9 +75,9 @@ pub fn run() {
             ai_runtime::check_llm_runtime,
             ai_runtime::asr_cancel,
             // ocr 模块
-            ocr::run_ocr,
-            ocr::run_ocr_images,
-            ocr::approve_corpus_diff,
+            ocr::commands::run_ocr,
+            ocr::commands::run_ocr_images,
+            ocr::commands::approve_corpus_diff,
             // asr 模块
             asr::run_asr,
             // llm 模块

@@ -46,7 +46,7 @@ Constraint: **fully offline**. The Rust side has no HTTP client and makes no net
 | Module | Responsibility |
 |---|---|
 | `src-tauri/src/video/mod.rs` | ffprobe metadata (`get_video_metadata`); frame / audio extraction reused by OCR / ASR; FFmpeg located via system PATH → ffmpeg-sidecar dir, error `FFMPEG_NOT_FOUND` |
-| `src-tauri/src/ocr/mod.rs` | Full OCR pipeline `run_ocr` (background thread + `ocr-progress` events): extract → change detection → window refinement → OCR → merge; `run_ocr_images` for direct screenshots; `approve_corpus_diff` to approve a corpus correction (single implementation of the replace rule, shared with the benchmark) |
+| `src-tauri/src/ocr/` (`mod.rs` facade + `commands`/`correct`/`merge`/`params`/`pipeline`/`refine` submodules) | Full OCR pipeline `run_ocr` (background thread + `ocr-progress` events): extract → change detection → window refinement → OCR → merge; `run_ocr_images` for direct screenshots; `approve_corpus_diff` to approve a corpus correction (single implementation of the replace rule, shared with the benchmark) |
 | `src-tauri/src/ai_runtime/dhash.rs` | 64-bit dHash of cropped frames + Hamming-distance change decision |
 | `src-tauri/src/ai_runtime/mod.rs` | AI runtime skeleton: provider traits + managers for OCR/ASR/LLM + `NoneProvider` placeholder (keeps the build compiling when the environment is absent; providers report "not ready") |
 | `src-tauri/src/ai_runtime/paddle.rs` | PaddleOCR worker provider: resident subprocess, JSON lines over stdio (`{"id":1,"images":[...]}` / `ping` / `shutdown`) |
