@@ -17,7 +17,18 @@
 输出：`temp/probe/ref_calib_fine.tsv`（逐条：idx/ref_start/t_a/t_b/tau/halfwidth/before/after），
 不修改任何基准数据。
 
-用法：python scripts/bench_timebase_probe.py [--step 0.05] [--half-window 0.4] [--cases a,b]
+**`--anchor end`（终点侧，2026-09-29 增补）**：窗口改为以 `ref_end×(1+k)+a` 预居中，测"本条文本
+停止显示"的瞬间（`before` = 窗口起始仍显示的本条文本，`after` = 消失/换成下一条之后的文本；
+`τ` 语义与起点侧一致，仍是"实质文本变化"的中点）。产物写到**另一个文件**
+`temp/probe/ref_calib_fine_end.tsv`——起点侧的 TSV 是 `gen_timebase_from_probe.py` 的输入，
+**绝不能被覆盖**。两点差异：
+1. **只测时长 ≥ `END_MIN_DUR`（1.2s）的条目**：窗口起点 `ref_end−0.4s` 必须仍落在本条自己的
+   显示期内，否则基线文本可能是上一条（会把"上一条消失"误当本条终点）。过短条目写 `note` 记录。
+2. 有效性守卫（"窗口起点确实是本条文本"）**不在本脚本判定**：参考是中文、画面是英文，跨语言
+   不可比；只能拿**产出段文本**（英文）校验，故该守卫由消费端 `temp/probe/d5a_end_attribution.py`
+   用本脚本记录的 `before` 全文 + 基准日志的产出文本完成。
+
+用法：python scripts/bench_timebase_probe.py [--anchor start|end] [--step 0.05] [--half-window 0.4] [--cases a,b]
 环境：PYTHONPATH="<runtime>\\deps_gpu;<runtime>\\deps"、PADDLE_PDX_CACHE_HOME=<runtime>\\models\\paddleocr、
       PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True、GSA_OCR_DEVICE=gpu:0
 """
@@ -35,7 +46,10 @@ DATA = ROOT / "examples" / "benchmark_examples"
 TB = ROOT / "benchmark" / "timebase"
 OUT_DIR = ROOT / "temp" / "probe" / "tb_frames"
 TSV = ROOT / "temp" / "probe" / "ref_calib_fine.tsv"
+TSV_END = ROOT / "temp" / "probe" / "ref_calib_fine_end.tsv"
 BATCH = 16
+# 终点侧最短可测时长：窗口起点 ref_end−0.4s 必须仍在本条显示期内（+余量）
+END_MIN_DUR = 1.2
 os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 sys.path.insert(0, str(RUNTIME / "worker"))
 
@@ -175,7 +189,11 @@ def main():
     ap.add_argument("--step", type=float, default=0.05)
     ap.add_argument("--half-window", type=float, default=0.4)
     ap.add_argument("--cases", default=",".join(CASES))
+    ap.add_argument("--anchor", choices=("start", "end"), default="start",
+                    help="start=参考起点（默认）；end=参考终点（写独立 TSV）")
     args = ap.parse_args()
+    is_end = args.anchor == "end"
+    tsv_path = TSV_END if is_end else TSV
 
     ocr = w.make_ocr()
     rows = []
@@ -188,14 +206,22 @@ def main():
         regions = regions_from_bench(key)
         entries = parse_ref(ref, REF_FPS[key])
         print(f"\n########## {key}（{len(entries)} 条参考，视频 {wpx}x{hpx}，"
-              f"当前换算 k={k:+.6f} a={a:+.3f}）##########")
+              f"当前换算 k={k:+.6f} a={a:+.3f}，锚点={args.anchor}）##########")
         done = skipped = 0
         for ei, e in enumerate(entries, 1):
-            reg = next((r for r in regions if r[0] + 1.0 <= e["start"] <= r[1] - 1.0), None)
+            anchor_t = e["end"] if is_end else e["start"]
+            reg = next((r for r in regions if r[0] + 1.0 <= anchor_t <= r[1] - 1.0), None)
             if reg is None:
                 skipped += 1
                 continue
-            center = e["start"] * (1 + k) + a          # 预居中到视频时基
+            if is_end and e["end"] - e["start"] < END_MIN_DUR:
+                # 过短：窗口起点会落到上一条显示期内 → 基线不可信，记录但不测
+                rows.append({"case": key, "idx": ei, "ref": e["end"], "t_a": None, "t_b": None,
+                             "tau": None, "half": None, "before": "", "after": "",
+                             "note": f"条目过短（{e['end']-e['start']:.2f}s < {END_MIN_DUR}s），终点不可测"})
+                skipped += 1
+                continue
+            center = anchor_t * (1 + k) + a           # 预居中到视频时基
             box = crop_px(reg, wpx, hpx)
             half = args.half_window
             imgs = extract(clip, center - half, center + half, box, f"{key}_{ei}", args.step)
@@ -207,7 +233,7 @@ def main():
                 texts = ocr_batchs(ocr, imgs)
                 br = bracket(texts, args.step)
             if br is None:
-                rows.append({"case": key, "idx": ei, "ref": e["start"], "t_a": None, "t_b": None,
+                rows.append({"case": key, "idx": ei, "ref": anchor_t, "t_a": None, "t_b": None,
                              "tau": None, "half": None, "before": "", "after": "",
                              "note": "窗口内未测到变化"})
                 continue
@@ -216,7 +242,7 @@ def main():
             tau = base + (t_a + t_b) / 2
             # 存**全文**（换行折成空格，保持 TSV 单行）：生成器要用完整文本判定"是否实质变化"，
             # 截断会把姓名框+头衔之后真正变化的那一行切掉（glupov 曾因此误排除 10/20 条）。
-            rows.append({"case": key, "idx": ei, "ref": e["start"],
+            rows.append({"case": key, "idx": ei, "ref": anchor_t,
                          "t_a": round(base + t_a, 4), "t_b": round(base + t_b, 4),
                          "tau": round(tau, 4), "half": round((t_b - t_a) / 2, 4),
                          "before": " ".join(before.split()),
@@ -224,25 +250,25 @@ def main():
             done += 1
             if done % 20 == 0:
                 print(f"   … {done} 条（跳过 {skipped}）")
-        print(f"  完成 {done} 条，跳过 {skipped} 条（选区外）")
+        print(f"  完成 {done} 条，跳过 {skipped} 条（选区外/过短）")
 
-    TSV.parent.mkdir(parents=True, exist_ok=True)
+    tsv_path.parent.mkdir(parents=True, exist_ok=True)
     cols = ["case", "idx", "ref", "t_a", "t_b", "tau", "half", "before", "after", "note"]
     # 增量合并：只替换本次跑过的案例，其余案例的既有行保留（便于单案例重跑）
     ran = set(args.cases.split(","))
     old = []
-    if TSV.is_file():
-        for line in TSV.read_text(encoding="utf-8").splitlines()[1:]:
+    if tsv_path.is_file():
+        for line in tsv_path.read_text(encoding="utf-8").splitlines()[1:]:
             f = line.split("\t")
             if len(f) == len(cols) and f[0] not in ran and f[0] in CASES:
                 old.append(f)
     merged = old + [[("" if r[c] is None else str(r[c])) for c in cols] for r in rows]
     merged.sort(key=lambda f: (f[0], int(f[1])))
-    with TSV.open("w", encoding="utf-8") as f:
+    with tsv_path.open("w", encoding="utf-8") as f:
         f.write("\t".join(cols) + "\n")
         for row in merged:
             f.write("\t".join(row) + "\n")
-    print(f"\n逐条结果：{TSV}（本次 {len(rows)} 条，合并后共 {len(merged)} 条）")
+    print(f"\n逐条结果：{tsv_path}（本次 {len(rows)} 条，合并后共 {len(merged)} 条）")
     return 0
 
 
