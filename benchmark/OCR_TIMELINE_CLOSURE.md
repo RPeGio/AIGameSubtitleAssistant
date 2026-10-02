@@ -84,7 +84,30 @@
 
 （下文设计为已与用户确认的口径，其余为落地展开。）
 
-### 已定稿设计（不得改动，来自 benchmark/README.md）
+### 状态（2026-09-30：暂缓实施）
+
+用户调研后决定**继续暂缓**融合基准。不是执行层面受阻，而是**设计前提被推翻、需重新评审**：
+
+1. **输出契约强制要求说话人**，与现管线产出不兼容——无配音处嵌字段无姓名前缀、ASR 未分离出说话人等
+   情形下**没有说话人**，该分支未被设计覆盖（现行 `fuse` 契约 `{index, ocr_index, character}` 的
+   `character` 亦为可空，与「必须有说话人」的基准期望侧不对称）。
+2. **融合管线鲁棒性不足**，与现 OCR/ASR 工作流的真实产出形态（残缺态、碎片、跨语言、无说话人）不匹配。
+
+因此 §三 的「已定稿设计」**降级为待评审草案**——恢复实施前先重评审前提，不得按原文直接开工。
+
+**已完成且与融合基准解耦的可复用资产**（2026-09-30 实测，均在 `tests/benchmark`）：
+
+| 资产 | 状态 | 证据 |
+|---|---|---|
+| LLM 运行时 | llama.cpp b10333 + CUDA runtime（`runtime\bin\llm\`）+ Qwen2.5-3B-Instruct Q4_K_M 1.96GB | `llm_e2e` 通过（推理 2.0s，无 stdout 污染） |
+| 融合链路 | 现行 `fuse_pipeline` 可被测试直接驱动 | `fuse_e2e` 通过（2.2s、failed_batches=0、跨语言命中正确） |
+| ASR 运行时（canonical） | **MOSS** 自构建 CUDA 后端（`sm_89`，190/190 目标）+ q5_k GGUF 618MB | `asr_e2e`（`GSA_E2E_ENGINE=moss`）306s 视频 → 68 段 / 50.4s，S01–S06 清晰 |
+| ASR 备用引擎 | funasr 曾装备并验证（97 段 / 238s，碎片与幻觉明显劣于 MOSS），**2026-09-30 按用户决策清理其 7.2GB 运行时**（`deps_funasr` + `models/funasr` + `funasr_*` 配置字段）；仓库内脚本/worker 保留 | 需要 A/B 时按 `bootstrap_funasr.ps1` 重装 |
+
+**恢复前的待办（按序）**：① 重评审输出契约（说话人可缺失的表示法与判类口径）；② 评估融合管线鲁棒性改造；
+③ 用户完成预校对 `.gsa` 与姓名前缀→说话人解析后再进入素材/评分器轮。
+
+### 已定稿设计（来自 benchmark/README.md；**前提待重评审**，见上「状态」）
 - **逐段索引对齐**：LLM 只对输入段做文本/角色判定，**融合输出的时间轴恒等于输入段**——融合不改时间轴（时间轴质量已由嵌字基准单独考察，D5 已封盘）。
 - 按段判类：`correct_kept` / `correct_replaced` / `missed_replacement` / `wrong_line` / `character_error`。
 - 指标：**替换准确率 + 角色名准确率 + failed_batches**（不设复合总分；文本相似度对逐字改动不敏感，A5 已实测——判读看逐段判定表，勿只看分）。
@@ -109,4 +132,18 @@
 ### 环境备忘（新会话可能踩的坑）
 - Windows：`.ps1` 写中文注释会被 ANSI 误读 → 写 ASCII；`python` 控制台 GBK → `PYTHONUTF8=1`；`>` 重定向是 UTF-16LE；PowerShell 管道对成功命令也可能报 `[exit code: 1]`（stderr 噪音，以 cargo/python 自身输出为准）。
 - GPU：`PYTHONPATH=<runtime>\deps_gpu;<runtime>\deps`、`PADDLE_PDX_CACHE_HOME=<runtime>\models\paddleocr`、`PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True`、`GSA_OCR_DEVICE=gpu:0`，python 用 `runtime\python\python.exe`。
+- **`%TEMP%` 落盘在 C 盘**：pip 的 2.5GB wheel、llama.cpp zip、MOSS 构建树都写 `%TEMP%`；C 盘余量 <5GB 时
+  会 `Errno 28` / 展开失败。跑引导或源码构建前先把 `$env:TEMP`/`$env:TMP` 重定向到大容量盘
+  （如 `<repo>\runtime\_tmp_*`；本机 C 盘常年只剩 ~3.7GB）。
+- **PS 5.1 把 native stderr 当终止错误**：脚本内 `$ErrorActionPreference='Stop'` 时，pip / modelscope / curl
+  的进度与日志（stderr）会抛 `NativeCommandError` 直接中断（`bootstrap_funasr.ps1` 实测死在
+  `import torch` 自检与 modelscope 下载日志处）。绕法：改 `$env:TEMP` 换盘 + 用
+  `Start-Process -RedirectStandardError` 承接日志，或人工执行剩余步骤（以产物验证，不看退出码）。
+- **GitHub/HF 直连不可用**：`bootstrap_llm.ps1 -GitMirror https://gh-proxy.com/ -HfMirror https://hf-mirror.com`
+  实测可达（直连 20 分钟仅 30MB）；`build_moss.ps1` 源码 clone 同样加 `-GitMirror`。
+- **编辑 `.ps1` 会丢 UTF-8 BOM**：PS 5.1 按 GBK 解析无 BOM 的中文注释脚本 → 直接语法错误。用工具改完
+  须确认 BOM 仍在（前 3 字节 `239 187 191`），否则整个脚本无法解析。
+- **MOSS 自构建**：`build_moss.ps1 -Backend cuda` 依赖 MSVC Build Tools + nvcc + ninja，脚本硬编码
+  `CUDA_ARCHITECTURES=89`（本机 RTX 4060 Laptop 恰为 sm_89）；**DLL 拷贝必须含 Ninja 单配置布局
+  `build-cuda\bin\`**（缺失时 `info` 自检报 `0xC0000135`，修复见提交 `6076a54`）。
 - 提交：中文 conventional commit，可自动 commit 不自动 push。
