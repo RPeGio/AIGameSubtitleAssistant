@@ -1,0 +1,247 @@
+# 融合管线缺陷报告（与真实工作流对接暴露项汇总）
+
+- 日期：2026-10-02（首版；`e9889bb` 融合基准暂缓落档后的前提调研）
+- 触发：`e9889bb docs(bench): 融合基准暂缓落档（说话人契约与鲁棒性待重评审）` 记录了两条暂缓原因
+  （① 输出契约强制要求说话人、与现管线产出不兼容；② 融合管线鲁棒性不足），但**只有结论、没有条目化证据**。
+  本报告把两条原因落到可复现的具体缺陷、真实工程数据与实测数字上，作为"重评审设计前提"的输入。
+- 依据：
+  1. 交接文档 [OCR_TIMELINE_CLOSURE.md](OCR_TIMELINE_CLOSURE.md) §三（状态／可复用资产／恢复前待办／已定稿设计／落地展开／已知衔接点）与 [README.md](README.md) 「融合基准（下一个阶段）」；
+  2. 代码：`src-tauri/src/fuse/mod.rs`（管线本体）＋ 上下游对接面（`src/stores/project.ts`、`src-tauri/src/ai_runtime/llm.rs`、`src-tauri/src/export/mod.rs`、`src/views/FuseView.vue`、`src/components/SubtitleOverlay.vue`）；
+  3. **真实工程实测**：`examples/benchmark_examples/{glupov,moon_sisters,pierro_questions}.gsa`（本机留档的真实产物：语料轨／嵌字段／ASR 轨形态）＋ 真实 `llama-cli`（b10333 + Qwen2.5-3B-Instruct Q4_K_M）按 `run_complete` 的**同一 argv** 复跑。（探针脚本见文末「复现方式」）
+- 范围声明：仅收录**"融合管线 ↔ 实际工作流产出形态"对接暴露的缺陷**。已由设计决定且记录在案的项（融合不改时间轴、语料噪音行不判败、逐字复制代替让模型复述）列入 §6「非缺陷项」，不重复计缺陷。
+
+## 0. 结论速览
+
+`e9889bb` 的两条暂缓原因**成立且被量化**，但当前落档把它们写成"管线鲁棒性不足"过于笼统，掩盖了真实成因：
+
+| 暂缓原因（e9889bb 落档） | 本报告实测到的具体形态 | 编号 |
+|---|---|---|
+| ① 契约强制说话人、与产出不兼容 | 真实语料的角色前缀是 `名字\n正文`（33/33、15/17、141/148 条），而 `strip_prefix` 只认 `名字：`（冒号形态 0 条）→ 命中段**0/6** 被正确剥离；LLM 侧 `character` **5/6 判错**；`character` 在导出侧被完全丢弃 | F1、F2 |
+| ② 管线鲁棒性不足 | 真实 30 段批次 **4/4 次**解析失败（模型漏掉最外层 `}`）→ 整批 30 段降级为"保留外语原文"；同一批恒缺 `GC[1]`（静默）；越界 `ocr_index` 10~13 条/批；148 条语料规模下模型按 OCR 清单枚举出 148 条（编号体系失稳） | F3、F4、F5 |
+| （落档未提，但阻断基准） | 全批失败仍返回 `Ok` 并把外语原文写进产物 + 自动保存；`matched` 不进 `.gsa`、导出前无检查 → 基准跑出来会是"全片保留原文"的假数据 | F3 |
+
+**关键判断**：在 F3/F4（失败可见化）与 F1/F2（说话人契约与名字行形态）修掉之前，启动融合基准**得不到有意义的分数**——评分器会把"整批降级"读成"missed_replacement"，把"名字行没剥离"读成"文本错误"，指标不可解释。这正好支持"先重评审前提、不按原文开工"的决定。
+
+## 1. 链路现状与说话人信息的丢失点
+
+```
+corpus 语料（CorpusItem{text}，无说话人字段）
+        │  project.ts:1032  ocrTexts = corpus.map(c => c.text)
+        ▼
+ OCR[n] 全量入每批 prompt ──┐
+                            ├─► LLM（llm.rs run_complete：llama-cli 一次性子进程）
+ game-ASR 段 + embed_ocr 段 │        只输出 {index, ocr_index, character}
+        │  project.ts:71-98 collectGameContentSegments
+        │  → {index,start,end,text}（speaker/character 在此丢弃 ★F1）
+        ▼
+ GC[n] 每批 30 条 ──────────┘
+        │
+        ▼  fuse/mod.rs:184-224 merge_results
+ FusedSegment{start,end,text,character?,matched}
+        │  project.ts:112-121 fusedToEvent（matched 丢弃 ★F3）
+        ▼
+ fused 最终字幕轨（FusedEvent{id,start,end,text,character?}；无 speaker ★F1）
+        │  Editor.vue 人工校对 → export/mod.rs（character 不进 SRT/ASS ★F1）
+        ▼
+ SRT / ASS / LRC / TXT
+```
+
+说话人/角色信息在链路上有**四处**丢失或失效，四者叠加后最终产物必然无说话人：
+
+1. 前端 `collectGameContentSegments` 只取 `{index,start,end,text}`——把工作流里仅有的"说话人→角色"工序（ASR 轨重命名，见 F1 证据）整体丢弃；
+2. `FuseAsrInput` / `FusedSegment` 契约无 `speaker` 字段，`character` 只能由 LLM 从 OCR 前缀反推；
+3. `merge_results` 未命中段 `character: None`（ASR 说话人无法兜底）；
+4. 导出侧 `FusedEvent.character` 不参与渲染（ASS `Name` 恒空、SRT 无名字段）。
+
+## 2. 缺陷台账
+
+严重度：🔴 阻断基准/产生错误产物｜🟡 明显影响可用性｜🟢 一致性与提示。
+
+### F1 🔴 说话人信息在链路上四处丢失/失效，最终产物无说话人（对应暂缓原因①）
+
+- **证据**：
+  - 前端丢弃：`src/stores/project.ts:95-97` 把事件映射为 `{ index, start, end, text }`；而同一函数上游的 `asr` 事件**必有** `speaker`（`src/types/index.ts:29-35`），且用户重命名轨道后 `character` 会被写入每条事件（`src/stores/project.ts:1207-1218` 与 `src/components/TrackOverview.vue:204` 注释"提交后轨道内 asr/manual 事件 character 跟随"）——即工作流里唯一的"说话人 → 角色名"映射工序的成果被整段丢弃。
+  - 契约无法承载：`src-tauri/src/fuse/mod.rs:23-41` `FuseAsrInput` 与 `FusedSegment` 均无 `speaker`；prompt（`:64-88`）只要求"character 从该字幕开头的角色名前缀提取"。
+  - 无兜底：`src-tauri/src/fuse/mod.rs:200-213` 未命中段 `character: None`，上游已知的说话人不会回填。
+  - 产物无字段：`src-tauri/src/project/mod.rs:89-100` `FusedEvent` 只有 `character`（无 speaker）；对照 `AsrEvent`（`:72-87`）有 `speaker` + `character`。
+  - 导出丢弃：`src-tauri/src/export/mod.rs:107-120`（SRT 无名字段）与 `:146-153`（ASS `Dialogue: 0,...,Default,,0,0,0,,{text}` → `Name` 恒空）；而预览会显示前缀（`src/components/SubtitleOverlay.vue:19-29` + `:71-76` 渲染 `{{line.prefix}}：`）——**预览可见、导出丢失**。
+  - 基准侧要求说话人：`OCR_TIMELINE_CLOSURE.md:110-113`（判类含 `character_error`、指标含角色名准确率）与 `:116`（工程要求"转写轨带说话人"），而现行契约 `character` 可空 → 与 `e9889bb` 记录的不对称完全一致。
+- **影响**：
+  - 有配音路径：用户手工把 ASR 轨标成角色名（"派蒙"）的全部工作既不进融合输入、也不进最终产物；最终字幕的角色名完全取决于 3B 模型从 OCR 前缀的二次推断（实测很不可靠，见 F2 数据）。
+  - 无配音路径（`embed_ocr`）：GC 段没有任何说话人来源（画面里只有游戏自己的名字框才有名字），该分支在"必须有说话人"的基准期望侧**无法判类**——这就是暂缓原因①的实体。
+  - 下游 WYSIWYG 破缺：预览显示 `角色：文本`，导出后该前缀消失。
+- **修复方向**（择一，需产品决策）：
+  1. 契约补 `speaker`/`character_hint` 并透传：`FuseAsrInput` 增字段（前端从 asr 事件带 `character || speaker`）→ prompt 改为"输入已给出角色标签时**以此为准**，缺失时才从 OCR 前缀推断" → `FusedSegment`/`FusedEvent` 增 `speaker` → 导出把 `character` 写入 ASS `Name` 或文本前缀；
+  2. 若产品决定"最终字幕不带名字"，则反向清理：删掉 `character` 全链路（含预览前缀与编辑页角色列），并把基准期望侧改成"无说话人"口径。
+  两条路都能开工，**但要先定**——这正是"重评审输出契约"的实质内容。
+
+### F2 🔴 真实语料的角色名前缀是 `名字\n正文`，`strip_prefix` 只认 `名字：`
+
+- **证据（真实工程统计，三案例全部语料条目）**：
+
+  | 案例 | 语料条数 | 含换行（名字行在前） | 形如 `名字\n正文` | 形如 `名字：正文` |
+  |---|---|---|---|---|
+  | glupov | 33 | 33 | 33 | **0** |
+  | moon_sisters | 17 | 15 | 15 | **0** |
+  | pierro_questions | 148 | 146 | 141 | **0** |
+
+  样例（逐字取自 `.gsa`）：`'派蒙\n瞧你说的，哈哈，我们也没分开多久呀？'`、`'斯捷潘尼扬\n「编玛瑙」\n必须不断磨练自己的意志力…'`（双行前缀：名字 + 头衔）、`'NO.0217\n我很想你，派蒙。'`。
+- **代码**：`src-tauri/src/fuse/mod.rs:139-150` `strip_prefix` 只尝试 `format!("{name}{sep}")`，`sep ∈ {':', '：'}`；prompt 的示范同样只有冒号形态（`:69`、`:74-75`）。**契约（冒号）与实际形态（换行）零交集**。
+- **实测后果**（moon 真实 batch2，`GC[31-36]`，全部命中）：
+  - `strip_prefix` 生效 **0/6** 段——最终文本仍以名字行开头（如 `'卡侬\n桑娜妲。仔细想想，最近这些年…'`）；
+  - LLM 给出的 `character` 与文本首行**不一致**（`GC[32]` 语料首行 `卡侬`，`character` 报 `空月`；`GC[36]` 首行 `卡侬`，`character` 空）→ 预览渲染 `空月：卡侬 桑娜妲。…`，**名字重复且错**；
+  - 命中 6/6 中 `character` 有 5/6 是同一个 `空月`（该案例里"空月"是船名/地名，不是说话人）→ 角色名准确率实质为 0。
+- **影响**：① "文本由代码从 OCR 逐字复制"的设计保证了不丢字，但**保证不了去掉名字行**，最终字幕每段都带一行角色名，且与 `character` 字段双重显示；② 由于前缀形态与 prompt 示例不符，模型被引导去提取一个不存在的冒号前缀；glupov 的"名字 + 头衔两行"更无从处理；③ 基准的 `correct_replaced`/`character_error` 判类在这两种偏差下都不可解释。
+- **修复方向**：
+  1. 治本：`CorpusItem` 增加结构化 `speaker`（语料 OCR 落库时就把"名字行/头衔行"与正文分开），融合与判类都读结构化字段——顺带解决 F1 的语料侧说话人来源；
+  2. 治标：`strip_prefix` 扩展为多形态行首剥离（整行等于角色名、1~2 行前缀、`「」`/`【】` 包裹），并用三案例的真实语料形态补单测（当前单测只用 `派蒙：…`，`:389-395`，把错误形态固化成了"正确契约"）。
+
+### F3 🔴 整批降级把"未翻译的转写原文"当最终字幕写进产物，统计口径掩盖失败
+
+- **证据链（真实数据、可复现）**：moon 真实 batch1（GC 1–30）用 `run_complete` 的同一 argv 调用 **4 次**（1 次主跑 + 3 次复跑），**4/4 全部解析失败**：
+  - 模型输出**缺最外层 `}`**（`{`=30 / `}`=29，字符串以 `…"艾莉亚"}]` 结束，未闭合 `{"segments":[…]`）；
+  - `parse_fusion_output`（`fuse/mod.rs:159-178`）严格解析失败后做花括号截取（`find('{')..rfind('}')`），截取的仍是同一段残缺串 → 同样失败；
+  - 于是走 `fuse/mod.rs:275-279`：`failed_batches += 1`，并把 `merge_results(ocr_texts, chunk, Vec::new())` 的 30 段全部写成 `text = s.text`（**英文嵌字原文**）、`character=None`、`matched=false`；
+  - 输出长度 1179/1341/1341/1320 字符，远低于 `MAX_TOKENS=4096` → **不是被生成上限截断**，而是模型在该批规模下系统性不闭合外层对象。
+  - "重试一次"（`fuse/mod.rs:261-268`）对该失效模式**无效**：3 次复跑失败形态一致（temp=0.2 + 同 prompt，输出近乎确定）。对照：小批量（batch2，6 段）1/1 成功 → 失效与**批规模 30** 相关，而现有 `fuse_e2e` 只跑 2 段（`src-tauri/tests/fuse_e2e.rs:36-49`），从未覆盖该路径。
+- **放大缺陷**：
+  - 管线**无条件返回 `Ok`**（`fuse/mod.rs:283-291`）：`failed_batches` 只是计数，不做阈值判断；
+  - 前端**无条件写产物并自动保存**（`src/stores/project.ts:1079-1083` → 深监听 1 秒防抖自动保存）→ 用户点一次"开始融合"，最终字幕轨被整片外语原文覆盖；`FuseView.vue:140-146` 仅显示"匹配 X/Y 段 / N 批解析失败已保留原文本"，不阻断、不给段级清单；
+  - `matched` **不进产物**：`fusedToEvent`（`src/stores/project.ts:112-121`）丢弃 `matched`，`FusedEvent`（`src-tauri/src/project/mod.rs:89-100`）无该字段 → 重开工程后无法区分"已替换"与"保留外语原文"，编辑页没有过滤/高亮，导出时两者等权。设计文档 `docs/development.md:170` 也只把 `matched=false` 描述为"保留 ASR 原文本"，未说明下游如何处置。
+  - provider 错误与解析错误被合并成同一个 `failed_batches`（`fuse/mod.rs:261-268` 用 `.and_then` 串起 `complete()` 的 Err 与 parse 的 Err）→ 子进程崩溃、上下文溢出、超时等运行期失败一律显示为"解析失败已保留原文本"。
+- **影响**：这是"融合基准暂缓"里"鲁棒性不足"的**主项**——真实产物在当前实现下会得到一条混着未翻译原文的最终字幕，且用户从 UI 上看到的是"融合完成"。基准若在此状态启动，评分器读到的是大量"该替换没替换"，会得出"模型能力不足"的错误结论。
+- **修复方向**：
+  1. `failed_batches` 拆为 `parse_failed` / `inference_failed` 并保留首个错误摘要；
+  2. 失败率护栏：全部批次失败、或失败批占比超阈值时**整体返回 Err**，前端不写产物（保留旧 fused 轨）；
+  3. `FusedSegment` 增加 `index` 与来源标识，`FusedEvent` 持久化 `matched`（或把未命中段单独落一条"待校对"轨），编辑页按 `matched` 过滤/高亮，导出前给出未命中段计数确认；
+  4. 解析层加固：`parse_fusion_output` 增加"补全缺失外层结构"的修复式解析（模型缺尾 `}` 是**可确定性修复**的），并配以真实 30 段输出样本的单测。
+
+### F4 🔴 缺 index 的"部分成功"完全静默，且与基准口径不符
+
+- **证据**：
+  - `merge_results`（`fuse/mod.rs:193-224`）只消费 `by_index` 命中的输入；raw 中未出现的 index 直接走 `None => 保留原文, matched:false`——**不计数、不告警**。
+  - `fuse_pipeline` 不校验返回条目数与批内输入数（`:269-280`），`failed_batches` 只统计"整批解析失败"。
+  - 基准口径却明确要求："Rust 端校验 `failed_batches`（解析失败/**缺 index 的批**）"（`OCR_TIMELINE_CLOSURE.md:117`）——**该能力当前不存在**。
+  - 实测（moon 真实 batch1，4 次调用）：返回条目 26/29/29/29（应为 30），**每次都缺 `GC[1]`**（首段是最长的一句英文、无名字框），另有一次缺 `GC[18..20]`。修掉解析失败后，这些段依旧静默降级为外语原文。
+- **影响**：模型"少输出几条"是最常见的失败形态（尤其长批次），却在统计里与"模型判定无对应"完全同形，用户与基准都无法区分。基准的 `missed_replacement`（主考核点）会被系统性污染。
+- **修复方向**：每批校验 `returned_indexes ⊇ chunk_indexes`，缺失计入独立计数（`partial_batches` / `missing_indexes`）并附缺失编号；对该批可做一次"只补缺失 index"的小 prompt 重试；把缺 index 数作为基准的一等指标（与 `failed_batches` 并列）。
+
+### F5 🟡 一对多命中无约束：同一 OCR 行可被多条 GC 段命中 → 最终字幕重复行
+
+- **证据**：
+  - prompt 是"逐 GC 判定"（`fuse/mod.rs:64-88`），**没有任何"每个 OCR 编号至多使用一次"的约束**；`merge_results` 也不做占用校验（`:184-224`）。唯一的相关提示（"截断版与完整版选完整版"）是在 **OCR 侧**选择，不是一对一排他。
+  - 真实素材必然一对多：moon 嵌字轨 **36 条 GC 段 vs 17 条语料**（`collectGameContentSegments` 在无 ASR 时不做任何丢弃——本案例无 ASR，36/36 全保留），且嵌字段本身含大量同句碎片（`'Sonnet'`（名牌态，2.2s）、`'Sonnet\nhe big deal! …'`（截断态）、完整态、`'Sonnet.'` 变体；`'Aria\nmean. You're just like a villain…'` 有 4 份近似副本）。若这 36 段都被判为命中（实测模型强烈倾向位置对齐），鸽巢原理下**至少 19 条最终字幕互为同一句的重复副本**——且现行实现没有任何一处会拦下它们。
+  - 现行 prompt 也没有"名牌态/纯名字段不应独占一条字幕"的处置，`collectGameContentSegments` 只按"与 ASR 并集重叠 ≥50%"丢嵌字段（`:63-93`）——无配音场景（正是嵌字的主场）**一条都不丢**。
+- **影响**：最终字幕出现重复行 + 名牌碎片行（`'Canon'` → 要么复制成重复台词、要么保留英文名牌），用户需逐条删除；基准判类时同一期望条目会被多条产出命中，口径与嵌字基准的"碎片化罚"不同源，容易误判。
+- **修复方向**（需产品决策，因为涉及时间轴）：① Rust 侧加占用校验——同一 `ocr_index` 重复命中时保留一条（判据：时长/完整度/时间靠后），其余降级并标注；② 或对"同 OCR 的相邻多段"合并为一条（改时间轴，与"融合不改时间轴"的现行基准前提冲突，需重新评审）；③ 或在 GC 侧先做名牌态/碎片过滤（可与 OCR 台账 D1/D14 的既有判据复用），把问题挡在融合之前。
+
+### F6 🟡 融合重跑覆盖人工校对结果；运行中切换工程会把产物写进另一个工程
+
+- **证据**：
+  - 覆盖：`writeFusedSegments`（`src/stores/project.ts:1079-1083`）直接 `track.events = result.segments.map(...)` 重建整轨。编辑页的人工成果（文本/角色就地编辑、分割/合并/删除：`src/views/Editor.vue:63-121`）在重跑后全部丢失，只能靠 `recordSnapshot()` 的**一步撤销**找回（`src/stores/project.ts:263-268`，undo 栈有 `MAX_HISTORY` 上限）。融合按钮在编辑页与融合页均可用（`Editor.vue:151-153` 提供"前往 AI 融合"），UI 上没有"将覆盖 N 条人工修改"的确认。
+  - 跨工程竞态：`runFuse` 取输入时用捕获的 project（`:1025-1036`），但产物写入在 Promise resolve 时读 `currentProject.value`（`:1057-1083`）。融合期间打开另一个工程（`openProject` 直接替换 `currentProject` 并 `clearHistory()`，`:309-334`）→ 结果落进**新工程**的 fused 轨，并被 1 秒防抖自动保存。前端只用 `fuseRunning` 阻止重复点击，不阻止切项目。
+- **修复方向**：记录发起时的 `project.path`，完成时校验一致（不一致则丢弃结果并提示）；重跑前若 fused 轨已有事件，二次确认或改为"按 index/时间对齐合并"；把 `matched` 落盘（F3）后可只重建未命中段。
+
+### F7 🟡 进度事件与 LLM 测试台共用，且融合无法取消
+
+- **证据**：
+  - `llm-progress` 事件被 `run_llm`（`src-tauri/src/llm/mod.rs:37-42, 57`）与 `run_fuse`（`src-tauri/src/fuse/mod.rs:306`）共用；前端 `runFuse` 写 `llmProgress/llmMessage` 但不置 `llmRunning`（`src/stores/project.ts:1038-1053`），`runLlm` 置 `llmRunning` 并写同一组状态（`:982-997`）→ 面板同时操作会串进度与消息。
+  - 无取消/无重入守卫：ASR 侧有 `AsrManager::try_begin_transcribe`（`src-tauri/src/ai_runtime/mod.rs:604-610`）、`cancel`（`:653-655`）与 `asr_cancel` 命令（`:803-804`）；LLM/融合侧**两者皆无**。融合是"批数 × 一次 llama-cli 冷启动"（1.96GB 模型；`llm_e2e` 记录单次推理约 2.0s，`OCR_TIMELINE_CLOSURE.md:102`），48min 级素材批数更多，用户只能等或关窗。
+  - 并发安全尚可（**非缺陷**）：`LlmManager::with_provider` 持 `Mutex` 跨 `complete()` 调用（`:989-997`），两次融合/测试台会串行化，不会真并发抢 GPU。
+- **修复方向**：融合进度改用带 `source` 字段的专用事件（或复用但区分来源）；新增 `fuse_cancel`（provider 侧已有 kill 子进程的能力，见 `llm.rs:79-102` 探测逻辑）；前端把"融合中"接到独立运行态并禁用并发入口。
+
+### F8 🟢 错误文案与就绪口径把"无配音路径"误导向 ASR
+
+- **证据**：`fuse_pipeline` 空输入报"没有可用的游戏内容 ASR 段"（`fuse/mod.rs:245-247`），前端映射为"请先运行 ASR 并检查轨道属性"（`src/stores/project.ts:1090-1091`）；但无配音工作流的 GC **全部来自 `embed_ocr`**，与 ASR 无关。实测 `glupov.gsa`（11min 无配音案例）本地留档只有 `ocr_region`×2 + `ocr_text`(mock) 轨，没有 `embed_ocr` 产物轨 → 该案例当前无任何可融合输入，而提示指向 ASR。
+- **修复方向**：错误文案与就绪卡片按两个来源分别报（"无 game-ASR 段且无嵌字段"），并在无配音素材上给出"请对内嵌字幕做 OCR"的定向提示。
+
+### F9 🟢 就绪卡显示段数 ≠ 实际融合输入段数
+
+- **证据**：`FuseView.vue:25-34` `gameContentCount` 统计 asr + embed_ocr 的**全部事件数**；而 `collectGameContentSegments` 会丢弃与 ASR 并集重叠 ≥50% 的嵌字段（`src/stores/project.ts:63-93`）→ 显示值 ≥ 实际输入值。用户无法从 UI 预知会融合多少段、为什么变少（也会误判"输出段数对不上"是融合的 bug）。
+- **修复方向**：就绪卡直接复用 `collectGameContentSegments(...).length`（前端已有该纯函数），并把"丢弃的嵌字段数"作为副说明。
+
+### F10 🟢 长录播的规模上限（prompt 走 argv，32767 上限）无预检
+
+- **证据**：
+  - prompt 通过 `-p <prompt>` 作为**命令行参数**传给 `llama-cli`（`src-tauri/src/ai_runtime/llm.rs:112-129`），Windows `CreateProcess` 命令行上限 32767（UTF-16 单元），超限时 Rust 侧 `.output()` 直接 Err（os error 206）。
+  - 真实语料密度实测（`.gsa`）：pierro 48min → 148 条语料、OCR block 6589 units（**44.5 units/条、3.08 条/分钟**）。外推：约 **700 条**（≈3.8 小时剧情录屏）时 prompt 估算 32964 units 超限（未含 GC 段）。
+  - 上下文侧：`llama-cli` b10333 `-c` 默认 `0 = 取模型值`（Qwen2.5-3B 训练 32768），代码不显式传 `-c`、也不做 token 预算；实测压力 prompt（148 条语料 + 30 段 GC）为 9505 units，2 小时以内素材尚有余量，但超限后 llama-cli 的行为（截断/报错）没有任何前置校验。
+- **修复方向**：prompt 改走 `-f`/stdin（或常驻 `llama-server`）；融合前按"条目数 × 实测均长"做预算并在前端/后端给出明确报错，而不是让 spawn 失败降级成全批"解析失败"。
+
+### F11 🟢 未审批的语料纠错会被"逐字复制"固化进最终字幕
+
+- **证据**：语料 OCR 纠错是"Rust 只标记、不改写 + 前端逐条审批"（`docs/development.md:157-163`、`src-tauri/src/project/mod.rs:183-188`），而 `runFuse` 直接把 `project.corpus.map(c => c.text)` 当可靠文本（`src/stores/project.ts:1032`），**不检查 `corpus_ocr_diffs` 是否为空**。已知真实错误量级：glupov `缟→编` ×11（CER 0.033，`OCR_PIPELINE_DEFECTS.md` D4）。融合链路本身"不让模型改字"（`docs/development.md:169`）→ 最终文本会把未采纳的误读字**原样固化**，且没有二次纠错机会。
+- **修复方向**：融合前置检查——存在未审批 `corpus_ocr_diffs` 时在融合页给出显式提示（或阻断），并说明"融合会逐字复制当前语料文本"。
+
+### F12 🟢 大语料下编号体系失稳（压力实测）
+
+- **证据**：用 pierro 真实语料（148 条）+ moon 真实 GC（1–30 段）构造压力 prompt（9505 units）调用同一 argv 一次：模型返回 **148 条** 记录（`index` 1…148、`ocr_index` 与 `index` 恒等），即**按 OCR 清单枚举**，完全没有按 30 条 GC 段作答；同时外层 `}` 仍缺失 → 解析失败。即使做修复式解析，超出本批的 index（31–148）会被 `by_index` 忽略，本批命中纯属"1..30 恰好重合"的位置对齐，无语义依据。
+- **影响**：`e9889bb` 提到的"OCR 全量入批的上下文占用，需实测"（`OCR_TIMELINE_CLOSURE.md:117`）不只是占用问题——**语料规模一上来，两套编号的分辨能力就崩了**，"按 index 对齐"的判类前提随之失效。这正是"鲁棒性不足"的第二层含义。
+- **修复方向**：把"全量 OCR 入每批"改为可检索式（先按时间窗/关键词召回候选 OCR 行，每批只给相关候选）或分块多轮；prompt 增加"只允许输出 GC 段编号，条目数必须等于 GC 段数"的硬约束与示例；Rust 侧把"返回条目数 ≠ 批大小"视为批级失败（F4）。
+
+## 3. 实测数据汇总（真实工程 + 真实模型）
+
+素材：`examples/benchmark_examples/{glupov,moon_sisters,pierro_questions}.gsa`（本机留档的真实工作流产物）。
+模型/参数：`runtime/bin/llm/llama-cli.exe` + `qwen2.5-3b-instruct-q4_k_m.gguf`，argv 与 `run_complete` 完全一致（`-st -n 4096 --no-display-prompt --temp 0.2 --color on`），答案提取与 `parse_answer` 同规则。
+
+| 项 | 实测值 |
+|---|---|
+| 语料前缀形态 | 换行名字行：glupov 33/33、moon 15/17、pierro 146/148；冒号形态：**0/0/0** |
+| moon GC 段（嵌字轴） | 36 段（无 ASR → 36/36 全部进入融合），语料仅 17 条 → 一对多不可避免 |
+| moon batch1（GC 1–30）解析 | **4/4 次失败**（缺最外层 `}`，1179~1341 字符，非 `-n` 截断） |
+| moon batch1 返回条目数 | 26 / 29 / 29 / 29（应 30）；**每次必缺 `GC[1]`**，一次另缺 `GC[18..20]` |
+| moon batch1 越界 `ocr_index` | 10 / 13 / 13 / 13 条（语料仅 17 条，最大值报到 30） |
+| moon batch1 可用命中（修复解析后） | 16/30（其余为缺 index 或越界 → 静默保留英文原文） |
+| moon batch1 重试等价性 | 3 次复跑失败形态一致 → 管线"解析失败重试一次"对该模式无效 |
+| moon batch2（GC 31–36） | 解析成功、6/6 命中；但 `strip_prefix` 生效 **0/6**、`character` **5/6 错**（统一为"空月"） |
+| 压力（pierro 148 语料 + moon GC 1–30） | prompt 9505 units；解析失败；模型返回 148 条（按 OCR 清单枚举），编号体系失稳 |
+| 规模外推（argv 32767） | 44.5 units/条 × 3.08 条/min → 约 700 条（≈3.8h 录屏）越限 |
+| 小批量对照 | 现存 `fuse_e2e` 仅 2 段（通过）→ 批规模 30 的失效路径**零覆盖** |
+
+## 4. 与 `e9889bb` 落档信息的对照（需修订项）
+
+| 落档处 | 原文要点 | 本报告结论 |
+|---|---|---|
+| `README.md` 融合基准段 | "输出契约强制要求说话人……无说话人分支未被设计覆盖" | 成立；补上"具体丢失点四处"（F1）与"名字行形态不匹配"（F2） |
+| `README.md` 融合基准段 | "管线对真实产出的鲁棒性也未达基准门槛" | 成立但需条目化：主因是 F3/F4（批级解析失败 4/4、缺 index 静默），不是模型"能力不足" |
+| `OCR_TIMELINE_CLOSURE.md` §三 可复用资产 | "融合链路：现行 `fuse_pipeline` 可被测试直接驱动，`fuse_e2e` 通过（2.2s、failed_batches=0）" | **表述过强**：该测试仅 2 段，未覆盖 `BATCH_SIZE=30`、解析失败降级、缺 index、越界编号四条真实路径，应标注为"冒烟级" |
+| §三 恢复前待办 ① | "重评审输出契约（说话人可缺失的表示法与判类口径）" | 认可；另需同时定"名字行是否结构化进 `CorpusItem`"（F2 与 F1 的最省力解法） |
+| §三 恢复前待办 ② | "评估融合管线鲁棒性改造" | 本报告 F3–F5、F12 即为该评估的第一批条目 |
+| §三 落地展开 第 2 步 | "Rust 端校验 `failed_batches`（解析失败/**缺 index 的批**）" | **当前未实现**（F4）：缺 index 静默降级，基准指标算不出来 |
+| §三 落地展开 第 2 步 | "注意 OCR 全量入批的上下文占用，需实测" | 已实测：148 条语料 = 9505 units，且编号体系崩坏（F12），风险高于"占用" |
+| §三 已定稿设计 | "逐段索引对齐：融合输出时间轴恒等于输入段" | 前提可保留；但需先落地 F4（缺 index 可见）与 F5（一对多处置），否则"逐段"的段集合不闭合 |
+
+## 5. 非缺陷项（设计决定，勿误修）
+
+- **融合不改时间轴**：`FusedSegment` 沿用 GC 段起止，是 `OCR_TIMELINE_CLOSURE.md:111` 的既定设计（时间轴质量由嵌字基准单独考察，D5 已封盘）。
+- **语料噪音行不判败**：pierro 的 51 条噪音行是留给融合的容忍度素材（`OCR_TIMELINE_CLOSURE.md:128`）；本报告的实测也显示模型能在 148 条含噪语料下产出结构（虽然编号崩坏，那是 F12）。
+- **逐字复制而非让模型复述文本**：`docs/development.md:169` 的设计正确（小模型复述会改字），F2 的问题是"剥离规则与真实前缀形态不匹配"，不是"该让模型复述"。
+- **`LlmManager` 无并发问题**：`with_provider` 持锁跨越 `complete()`（`ai_runtime/mod.rs:989-997`），融合/测试台会串行化。
+- **`run_fuse` 参数命名**：前端 `{ocrTexts, asrSegments}` → Rust `ocr_texts, asr_segments`，Tauri v2 的 camelCase 映射下工作正常。
+
+## 6. 恢复融合基准前的最小修复集（建议顺序）
+
+1. **F3 + F4（失败可见化与产物护栏）**——不做这一步，基准跑出的任何分数都不可解释；先让"全批降级/缺 index/越界"变成显式错误与显式计数。
+2. **F1 + F2（说话人契约 + 名字行形态）**——基准期望侧判类（`character_error` / `correct_replaced`）的前提；同时定"最终字幕是否带角色名"这一产品决策（决定 F1 修复方向 1/2 走哪条）。
+3. **F5（一对多与名牌碎片）**——决定"逐段索引对齐"的段集合是否闭合；若选择"合并同 OCR 的多段"，则必须同步重评审"融合不改时间轴"前提。
+4. **F6 + F7（重跑覆盖、跨工程写入、取消）**——真实长素材上必然遇到（一次融合分钟级），属工程安全底线。
+5. **F10 + F8 + F9 + F11 + F12（规模、提示一致性与前置检查）**——可在基准跑通后随迭代收敛。
+
+## 7. 复现方式
+
+探针脚本（**未入库**，位于 `temp/fuse_probe/`，与既有 `temp/probe/` 习惯一致）：
+
+```powershell
+# ① 解析真实 .gsa 的语料/嵌字段形态，复刻 build_prompt，量化 prompt 规模
+$env:PYTHONUTF8=1; & runtime\python\python.exe temp\fuse_probe\probe.py
+# ② 用真实 prompt 调 llama-cli（argv 与 run_complete 一致），复刻 parse_fusion_output / strip_prefix
+$env:PYTHONUTF8=1; & runtime\python\python.exe temp\fuse_probe\probe2.py
+# ③ 诊断花括号失衡位置 + 量化"重试"与"大语料压力"两种失效
+$env:PYTHONUTF8=1; & runtime\python\python.exe temp\fuse_probe\probe3.py
+# ④⑤ 对已落盘的 raw 输出做精确统计（缺 index / 越界 ocr_index / 可用命中）
+$env:PYTHONUTF8=1; & runtime\python\python.exe temp\fuse_probe\probe4.py
+$env:PYTHONUTF8=1; & runtime\python\python.exe temp\fuse_probe\probe5.py
+```
+
+落盘的原始输出与统计：`temp/fuse_probe/*.raw.txt`、`probe3_result.json`、`moon_result.json`、`moon_sisters.gsa.prompt_b1.txt`。
+（`temp/`、`examples/` 均在 `.gitignore` 内，探针与素材不入库；如判定有价值，可将 ②③ 的脚本改写为 `src-tauri/tests/bench_fusion.rs` 的对照组。）
