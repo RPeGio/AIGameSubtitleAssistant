@@ -36,7 +36,12 @@ const gameContentCount = computed(() => {
 /// 双就绪才可融合
 const canFuse = computed(() => corpusReady.value && timelineReady.value);
 
-const fuseResult = ref<{ matched: number; total: number; failed: number } | null>(null);
+const fuseResult = ref<{
+  matched: number;
+  total: number;
+  failed: number;
+  missing: number;
+} | null>(null);
 
 function goCorpus() {
   const path = router.currentRoute.value.params.path as string | undefined;
@@ -55,6 +60,7 @@ async function startFuse() {
       matched: result.stats.matched,
       total: result.stats.total,
       failed: result.stats.failed_batches,
+      missing: result.stats.missing_segments,
     };
     message.success(
       `AI 融合完成：匹配 ${result.stats.matched}/${result.stats.total} 段`
@@ -140,6 +146,9 @@ async function startFuse() {
       <div v-if="fuseResult" class="fuse-result">
         <NText strong>
           匹配 {{ fuseResult.matched }}/{{ fuseResult.total }} 段
+        </NText>
+        <NText v-if="fuseResult.missing > 0" depth="3" style="font-size: 12px">
+          {{ fuseResult.missing }} 段未获模型判定，已保留转写原文
         </NText>
         <NText v-if="fuseResult.failed > 0" depth="3" style="font-size: 12px">
           {{ fuseResult.failed }} 批解析失败已保留原文本

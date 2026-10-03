@@ -62,6 +62,19 @@ function embedOcrToEvent(seg: OcrSegment): TimelineEvent {
 /// 合计已冗余时仍因单条都 <50% 而保留，产生重复段。
 const EMBED_OVERLAP_DROP = 0.5;
 
+/// ASR 段的说话人标签注入：写成文本首行（"Sonnet\n正文"），与语料/嵌字的
+/// "名字行 + 正文"形态对齐。融合管线已降格为纯文本（无说话人字段），标签只能
+/// 作为文本随原文透传；待说话人契约定稿后再恢复结构化传递。
+/// 只作用于返回给后端的副本，**绝不回写轨道事件**（否则重跑会二次注入）；
+/// `未标注` 是前端的假说话人，不注入。
+function withSpeakerLine(ev: Extract<TimelineEvent, { type: "asr" }>): string {
+  // 空文本不注入：否则会产出只剩名字行的空字幕
+  if (!ev.text.trim()) return ev.text;
+  const name = (ev.character ?? "").trim() || (ev.speaker ?? "").trim();
+  if (!name || name === UNKNOWN_SPEAKER) return ev.text;
+  return ev.text.startsWith(`${name}\n`) ? ev.text : `${name}\n${ev.text}`;
+}
+
 /// 收集融合的"游戏内容时间轴段"：game-ASR 段整段 + 无配音处嵌字段填空隙。
 /// 策略（混用场景：任务大多有配音，但主播会找无配音 NPC 对话）：
 /// - ASR 段（track_role=game）全部保留（有配音处占住时间轴）
@@ -94,7 +107,12 @@ function collectGameContentSegments(tracks: Track[]): FuseAsrInput[] {
 
   return [...asr, ...embeds]
     .sort((a, b) => a.start - b.start)
-    .map((e, i) => ({ index: i + 1, start: e.start, end: e.end, text: e.text }));
+    .map((e, i) => ({
+      index: i + 1,
+      start: e.start,
+      end: e.end,
+      text: e.type === "asr" ? withSpeakerLine(e) : e.text,
+    }));
 }
 
 function asrSegmentToEvent(seg: AsrSegment): TimelineEvent {
@@ -109,6 +127,8 @@ function asrSegmentToEvent(seg: AsrSegment): TimelineEvent {
   };
 }
 
+/// 融合产物事件：纯文本搬运，不再由融合写 character
+/// （`FusedEvent.character` 字段保留：仍可人工在编辑页填写、旧工程数据不丢）
 function fusedToEvent(seg: FusedSegment): TimelineEvent {
   return {
     id: generateId(),
@@ -116,7 +136,6 @@ function fusedToEvent(seg: FusedSegment): TimelineEvent {
     start: seg.start,
     end: seg.end,
     text: seg.text,
-    ...(seg.character ? { character: seg.character } : {}),
   };
 }
 
