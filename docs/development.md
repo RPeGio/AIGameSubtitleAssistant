@@ -197,10 +197,14 @@ Project
 
 ## 测试
 
-`src-tauri/tests/` 下五个集成测试：`ocr_e2e.rs`、`asr_e2e.rs`、`fuse_e2e.rs`、`llm_e2e.rs`、`ocr_bench_refinement.rs`。多数为端到端测试，**需要 runtime 环境就绪**（模型、二进制在位）才能通过；各模块内另有不依赖环境的单元测试（如"未就绪时报错且不触发回调"）。
+`src-tauri/tests/` 下六个集成测试：`ocr_e2e.rs`、`asr_e2e.rs`、`fuse_e2e.rs`、`llm_e2e.rs`、`ocr_bench_refinement.rs`、`bench_fusion.rs`。多数为端到端测试，**需要 runtime 环境就绪**（模型、二进制在位）才能通过；各模块内另有不依赖环境的单元测试（如"未就绪时报错且不触发回调"）。
+
+**融合能力基准**（`bench_fusion.rs`，`#[ignore]`）用自撰的干净用例判别"跨语言语义对齐"是否真的发生：语料顺序打成无不动点排列，使"照抄编号"的恒等映射每条皆错，故内容正确率可直接对比随机基线；另设对齐对照与"同语言逐字相同"能力隔离用例。它走**真实管线**（`fuse_pipeline`），并支持 `GSA_BENCH_LLM_MODEL` 临时换模型做能力梯度、结果落盘 `temp/bench_output/fusion_capability_<model>.json`。实测结论与缺陷台账见 [benchmark/FUSE_PIPELINE_DEFECTS.md](../benchmark/FUSE_PIPELINE_DEFECTS.md) F13。
 
 ```powershell
 cd src-tauri; cargo test
+# 融合能力基准（需 runtime LLM 就绪）
+cargo test --release --test bench_fusion -- --ignored --nocapture
 ```
 
 ## 打包与分发现状
