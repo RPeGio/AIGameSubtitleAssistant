@@ -207,6 +207,12 @@ cd src-tauri; cargo test
 cargo test --release --test bench_fusion -- --ignored --nocapture
 ```
 
+**融合对齐实验台**（`src-tauri/tests/fuse_lab/`，Python，非 `cargo test` 流程）是上表结论的可复现工具，
+供"融合管线重构"复用：LLM 判别器、**向量召回判别器**、**离线验证流水线**（预校对工程 → 召回 + 单调 DP → SRT）。
+依赖 `scripts/bootstrap_embed.ps1` 搭的 CPU 运行时（onnxruntime + E5-small qint8 113MB，不占 GPU）。
+详见 [src-tauri/tests/fuse_lab/README.md](../src-tauri/tests/fuse_lab/README.md)；
+路线结论见 [benchmark/FUSE_VECTOR_RECALL_VALIDATION.md](../benchmark/FUSE_VECTOR_RECALL_VALIDATION.md)。
+
 ## 打包与分发现状
 
 - `tauri.conf.json` 的 `bundle.resources` **尚未配置**：安装包不会携带 `runtime/`。分发方案（把 `runtime/**` 打进 bundle 并让 `config.rs` 识别安装后的资源目录布局）见 `config.rs` 内 TODO。
