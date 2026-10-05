@@ -229,7 +229,8 @@ export interface LlmProgress {
 /// LLM 进度事件名（Rust 侧 `LLM_PROGRESS_EVENT` 需保持一致）
 export const LLM_PROGRESS_EVENT = "llm-progress";
 
-/// AI 融合输入：一个游戏内容 ASR 段（index = 输入顺序，LLM 输出按此对应）
+/// AI 融合输入：一个游戏内容转写段（index = 输入顺序，LLM 输出按此对应）。
+/// text 原样进 prompt（含换行）：ASR 段的说话人由预处理写成首行
 export interface FuseAsrInput {
   index: number;
   start: number;
@@ -237,20 +238,23 @@ export interface FuseAsrInput {
   text: string;
 }
 
+/// 融合产物段（纯文本契约：无说话人字段，文本逐字搬运）
 export interface FusedSegment {
   start: number;
   end: number;
+  /// 命中段 = 语料原文（含换行/角色名行）；未命中段 = 转写原文
   text: string;
-  /// Rust Option<String> 序列化为 "派蒙"/null
-  character: string | null;
-  /// false = 未匹配 OCR 文本，保留 ASR 原文本
+  /// false = 未匹配 OCR 文本，保留转写原文本
   matched: boolean;
 }
 
 export interface FuseStats {
   total: number;
   matched: number;
+  /// JSON 解析失败的批数（该批全部段保留转写原文）
   failed_batches: number;
+  /// 模型未给出判定（缺 index）的段数，仅统计解析成功的批
+  missing_segments: number;
 }
 
 export interface FuseResult {

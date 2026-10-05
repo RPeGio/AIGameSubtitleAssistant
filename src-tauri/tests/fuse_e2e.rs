@@ -57,19 +57,17 @@ fn test_fuse_end_to_end() {
 
     println!("\n========== fuse 实测结果 ==========");
     println!(
-        "耗时: {:.1}s   匹配: {}/{}   失败批: {}",
+        "耗时: {:.1}s   匹配: {}/{}   未判定: {}   失败批: {}",
         elapsed.as_secs_f64(),
         result.stats.matched,
         result.stats.total,
+        result.stats.missing_segments,
         result.stats.failed_batches
     );
     for s in &result.segments {
         println!(
-            "  [{} → {}] <{}> \"{}\"",
-            s.start,
-            s.end,
-            s.character.as_deref().unwrap_or("-"),
-            s.text
+            "  [{} → {}] matched={} \"{}\"",
+            s.start, s.end, s.matched, s.text
         );
     }
     println!("=================================");

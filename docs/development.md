@@ -164,10 +164,11 @@ Project
 
 ### 融合流水线（`fuse/mod.rs`）
 
-- 输入约定（前端保证）：OCR 文本**只来自 corpus**（不回退 ocr_text 轨，防止把"待替换文本"当可靠语料）；ASR 段 = game 轨 + embed_ocr 嵌字段（与 ASR 重叠占比过高的嵌字段丢弃——有配音处不靠嵌字）。
-- 分批：OCR 文本**全量**入每批 prompt（语义匹配需要全局视野），ASR 段每批 30 条（`BATCH_SIZE`），`MAX_TOKENS=4096`。
-- Prompt 设计：OCR/GC 编号带前缀（`OCR[1]` / `GC[3]`，GC = 游戏内容时间轴段）——批内两套编号无前缀时小模型会混淆；LLM 只输出 `{"index", "ocr_index", "character"}` 对应关系，**最终文本由代码从 OCR 列表逐字复制**——实测小模型无法可靠"复制文本"，让它复述会改字。
-- 输出：时间轴沿用 ASR 段；`matched=false` 或整批 JSON 解析失败的段保留 ASR 原文本（`failed_batches` 统计）。
+- **纯文本契约**（2026-10-02 用户决策）：本管线只做"编号映射 + 文本搬运"，**不产出说话人/角色名**——命中段逐字复制语料原文（含换行与角色名行），未命中段保留转写原文；不改写、不剥离前缀、不做换行归一。说话人语义待设计重评审（缺陷台账 F1/F2）。
+- 输入约定（前端保证）：OCR 文本**只来自 corpus**（不回退 ocr_text 轨，防止把"待替换文本"当可靠语料）；转写段 = game 轨 ASR 段 + embed_ocr 嵌字段（与 ASR 重叠占比过高的嵌字段丢弃——有配音处不靠嵌字）。ASR 段的说话人由前端写成**文本首行**（`character` 优先、否则 `speaker`；`未标注` 不注入），与语料/嵌字形态对齐；只作用于发给后端的副本，不回写轨道。
+- 分批：OCR 文本**全量**入每批 prompt（语义匹配需要全局视野），转写段每批 30 条（`BATCH_SIZE`），`MAX_TOKENS=4096`。
+- Prompt 设计：OCR/GC 编号带前缀（`OCR[1]` / `GC[3]`，GC = 游戏内容时间轴段）——批内两套编号无前缀时小模型会混淆；LLM 只输出 `{"index", "ocr_index"}` 对应关系，**最终文本由代码从 OCR 列表逐字复制**——实测小模型无法可靠"复制文本"，让它复述会改字。文本原样入 prompt（保留换行），条目按行首编号标记划分；并给出**显式条数上限**（`本次 GC 共 N 条：最多只输出 N 条`）——保留换行会让条目跨多行、小模型丢失条数感，实测无上限时 2/3 批次跑飞成数百条编号。
+- 输出：时间轴沿用转写段。降级路径全部显式计数并展示到融合页：`failed_batches` = JSON 解析失败的批数（整批保留转写原文；解析含"补全缺失外层花括号"一级修复）；`missing_segments` = 解析成功但模型未给出判定的段数（此前完全静默）。
 
 ### 进度事件
 
@@ -196,11 +197,21 @@ Project
 
 ## 测试
 
-`src-tauri/tests/` 下五个集成测试：`ocr_e2e.rs`、`asr_e2e.rs`、`fuse_e2e.rs`、`llm_e2e.rs`、`ocr_bench_refinement.rs`。多数为端到端测试，**需要 runtime 环境就绪**（模型、二进制在位）才能通过；各模块内另有不依赖环境的单元测试（如"未就绪时报错且不触发回调"）。
+`src-tauri/tests/` 下六个集成测试：`ocr_e2e.rs`、`asr_e2e.rs`、`fuse_e2e.rs`、`llm_e2e.rs`、`ocr_bench_refinement.rs`、`bench_fusion.rs`。多数为端到端测试，**需要 runtime 环境就绪**（模型、二进制在位）才能通过；各模块内另有不依赖环境的单元测试（如"未就绪时报错且不触发回调"）。
+
+**融合能力基准**（`bench_fusion.rs`，`#[ignore]`）用自撰的干净用例判别"跨语言语义对齐"是否真的发生：语料顺序打成无不动点排列，使"照抄编号"的恒等映射每条皆错，故内容正确率可直接对比随机基线；另设对齐对照与"同语言逐字相同"能力隔离用例。它走**真实管线**（`fuse_pipeline`），并支持 `GSA_BENCH_LLM_MODEL` 临时换模型做能力梯度、结果落盘 `temp/bench_output/fusion_capability_<model>.json`。实测结论与缺陷台账见 [benchmark/FUSE_PIPELINE_DEFECTS.md](../benchmark/FUSE_PIPELINE_DEFECTS.md) F13。
 
 ```powershell
 cd src-tauri; cargo test
+# 融合能力基准（需 runtime LLM 就绪）
+cargo test --release --test bench_fusion -- --ignored --nocapture
 ```
+
+**融合对齐实验台**（`src-tauri/tests/fuse_lab/`，Python，非 `cargo test` 流程）是上表结论的可复现工具，
+供"融合管线重构"复用：LLM 判别器、**向量召回判别器**、**离线验证流水线**（预校对工程 → 召回 + 单调 DP → SRT）。
+依赖 `scripts/bootstrap_embed.ps1` 搭的 CPU 运行时（onnxruntime + E5-small qint8 113MB，不占 GPU）。
+详见 [src-tauri/tests/fuse_lab/README.md](../src-tauri/tests/fuse_lab/README.md)；
+路线结论见 [benchmark/FUSE_VECTOR_RECALL_VALIDATION.md](../benchmark/FUSE_VECTOR_RECALL_VALIDATION.md)。
 
 ## 打包与分发现状
 
