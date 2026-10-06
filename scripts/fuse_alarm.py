@@ -11,8 +11,12 @@
   3. 告警**区分度**：margin / score 在"对/错"两组上的分布差异，以及按 margin 升序
      排序时"复核预算 5%/10%/20% 能捞回多少错误"。
 
-注意：等价类口径评分（见 fuse_calib.equiv_classes）。错误样本很少（工作点合计 1 处），
-故精确率/召回的数字**置信度低**，脚本会显式标注样本量。
+注意：等价类口径评分（见 fuse_calib.equiv_classes）。错误样本很少，故精确率/召回的数字
+**置信度低**，脚本会显式标注样本量。
+
+**只有一种输入口径**（消费管线产出，不做输入卫生）——"互为前缀的相邻段"的合并属
+OCR 合并层的 raw 缺陷，应在管线层修；曾按文本判据合并，已被 benchmark/OCR_PIPELINE_DEFECTS.md
+**D12** 证否并删除。
 
 用法：python scripts/fuse_alarm.py
 """
@@ -25,19 +29,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np  # noqa: E402
 from fuse_lab import BENCH_OUT, load_embedder, similarity_matrix, split_header  # noqa: E402
-from fuse_calib import (DEFAULT, align_fast, dedup_prefix,  # noqa: E402
+from fuse_calib import (DEFAULT, align_fast,  # noqa: E402
                         equiv_classes, load_truth)
 
 THR_SCORE = 0.78
 THR_MARGIN = 0.02
 
 
-def analyze(key, proto, tok, sess, verbose=True):
+def analyze(key, tok, sess, verbose=True):
     T = load_truth(key)
     corpus, rows = T["corpus"], T["rows"]
     truth = [r["truth"] for r in rows]
     cls = equiv_classes(corpus)
-    idxs = list(range(len(rows))) if proto == "raw" else dedup_prefix(rows)
+    idxs = list(range(len(rows)))
     cb = [split_header(t)[1] for t in corpus]
     sb = [split_header(rows[k]["text"])[1] for k in idxs]
     S = similarity_matrix(tok, sess, cb, sb)
@@ -61,7 +65,7 @@ def analyze(key, proto, tok, sess, verbose=True):
             "flag_score": (float(row[pred - 1]) if pred > 0 else 0.0) < THR_SCORE,
             "flag_margin": margin < THR_MARGIN,
         })
-    return {"key": key, "proto": proto, "n": len(recs), "recs": recs}
+    return {"key": key, "n": len(recs), "recs": recs}
 
 
 def report(res, verbose=True):
@@ -71,7 +75,7 @@ def report(res, verbose=True):
     f_m = [r for r in recs if r["flag_margin"]]
     f_s = [r for r in recs if r["flag_score"]]
     f_any = [r for r in recs if r["flag_margin"] or r["flag_score"]]
-    print("  {:<8} {:<5} n={:3}  错误={:2}".format(res["key"], res["proto"], n, len(errs)))
+    print("  {:<8} n={:3}  错误={:2}".format(res["key"], n, len(errs)))
     print("      margin<{:.2f} 标记 {:3} 段（{:4.1f}%）其中真错 {:2} → 精确率 {:5.1f}% 召回 {:5.1f}%".format(
         THR_MARGIN, len(f_m), len(f_m) / n * 100,
         sum(1 for r in f_m if not r["correct"]),
@@ -105,7 +109,7 @@ def report(res, verbose=True):
             print("      按 margin 升序复核前 {:4.1f}%（{:3} 段）→ 捞回错误 {:2}/{:2} ({:5.1f}%)".format(
                 pct * 100, kk, got, len(errs), got / len(errs) * 100))
     return {
-        "key": res["key"], "proto": res["proto"], "n": n, "errors": len(errs),
+        "key": res["key"], "n": n, "errors": len(errs),
         "flag_margin": len(f_m), "flag_score": len(f_s), "flag_any": len(f_any),
         "flag_margin_hit": sum(1 for r in f_m if not r["correct"]),
         "flag_score_hit": sum(1 for r in f_s if not r["correct"]),
@@ -134,23 +138,20 @@ def main():
     print("阶段 C：告警口径实测（阈值 score<{:.2f} / margin<{:.2f}，均为未校准初值）".format(
         THR_SCORE, THR_MARGIN))
     out = {}
-    for proto in ("dedup", "raw"):
-        print()
-        print("── 口径 = {} ──".format(proto))
-        for key in keys:
-            res = analyze(key, proto, tok, sess)
-            out["{}|{}".format(key, proto)] = report(res)
-            if key == "pierro":
-                print()
-                sweep(res["recs"], "score", [0.70, 0.75, 0.78, 0.79, 0.80, 0.81, 0.82], "score")
-                sweep(res["recs"], "margin", [0.001, 0.005, 0.01, 0.02, 0.03, 0.05], "margin")
-    # 合计（工作点 = dedup）
+    for key in keys:
+        res = analyze(key, tok, sess)
+        out[key] = report(res)
+        if key == "pierro":
+            print()
+            sweep(res["recs"], "score", [0.70, 0.75, 0.78, 0.79, 0.80, 0.81, 0.82], "score")
+            sweep(res["recs"], "margin", [0.001, 0.005, 0.01, 0.02, 0.03, 0.05], "margin")
+    # 合计
     print()
-    print("── 合计（口径 dedup，即推荐工作点）──")
+    print("── 合计 ──")
     tot = {"n": 0, "errors": 0, "flag_margin": 0, "flag_margin_hit": 0,
            "flag_score": 0, "flag_score_hit": 0, "flag_any": 0}
     for key in keys:
-        r = out["{}|dedup".format(key)]
+        r = out[key]
         for f in tot:
             tot[f] += r[f]
     print("  段数 {}  错误 {}  margin 标记 {}（{:.1f}%）其中真错 {}  score 标记 {} 任一 {}（{:.1f}%）".format(

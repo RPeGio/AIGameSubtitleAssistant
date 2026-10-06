@@ -7,8 +7,13 @@
   · 相似度矩阵 S 只依赖编码，**与 DP 参数无关** ⇒ 每案例只算一次，网格内只跑 DP；
   · DP 用 O(n·m) 的前缀最大值形式（等价于 O(n·m²) 朴素式，脚本内自带等价性自检）；
   · 准确率同时给出**相对天花板**：严格递增 DP 无法表达真值里的一对多
-    （同一语料行被多段复用）⇒ 天花板 = n − Σ(组内段数−1)；
-  · 两种输入口径：raw（原样）与 dedup（去掉"互为前缀的相邻段"，即打字机首帧）。
+    （同一语料行被多段复用）⇒ 天花板 = n − Σ(组内段数−1)。
+
+**本脚本不做输入卫生**（"互为前缀的相邻段"的合并）。那类"同一条字幕被 OCR 拆成两段"
+属 **OCR 合并层的 raw 缺陷**，应在管线层修；曾在此处按文本判据合并，**已被证否并删除**
+——见 benchmark/OCR_PIPELINE_DEFECTS.md **D12**：正当用例与误伤用例在 (短态, 长态)
+文本上完全同形，**任何只依赖该文本对的判据不可能两全**。故本脚本只有一种口径：
+**消费管线产出**。管线修好后重新生成产物轨，即得到干净输入。
 
 用法：
     python scripts/fuse_calib.py                # 全案例网格搜索
@@ -186,24 +191,6 @@ def load_truth(key):
         return json.load(f)
 
 
-def dedup_prefix(segs):
-    """去掉"与相邻段互为前缀"的较短段（打字机首帧）；返回保留下标"""
-    def nz(s):
-        return "".join(s.split())
-    keep, i = [], 0
-    while i < len(segs):
-        j = i
-        while j + 1 < len(segs):
-            a, b = nz(segs[i]["text"]), nz(segs[j + 1]["text"])
-            if a.startswith(b) or b.startswith(a):
-                j += 1
-            else:
-                break
-        keep.append(max(range(i, j + 1), key=lambda k: len(nz(segs[k]["text"]))))
-        i = j + 1
-    return keep
-
-
 def ceiling_of_old(truth, idxs):
     """（保留供对照）下标精确口径的天花板：真值里同一语料行被多段复用时每组至少错 1 段"""
     groups = {}
@@ -222,7 +209,7 @@ def score_exact(match, truth, idxs):
 # ────────────────────────── 主流程 ──────────────────────────
 
 def build_matrices(keys, tok, sess):
-    """→ {key: {"raw": (S, idxs), "dedup": (S, idxs), truth, corpus}}"""
+    """→ {key: {"S": 相似度矩阵, "idxs": 段下标, truth, corpus}}"""
     out = {}
     for key in keys:
         T = load_truth(key)
@@ -232,14 +219,11 @@ def build_matrices(keys, tok, sess):
         cb = [split_header(t)[1] for t in corpus]
         cls = equiv_classes(corpus)
         ndup = len(corpus) - len(set(cls))
-        data = {"truth": truth, "corpus": corpus, "n_raw": len(rows),
-                "cls": cls, "ndup": ndup, "protocols": {}}
-        for proto in ("raw", "dedup"):
-            idxs = list(range(len(rows))) if proto == "raw" else dedup_prefix(rows)
-            sb = [split_header(rows[k]["text"])[1] for k in idxs]
-            S = similarity_matrix(tok, sess, cb, sb)
-            data["protocols"][proto] = (S, idxs)
-        out[key] = data
+        idxs = list(range(len(rows)))
+        sb = [split_header(rows[k]["text"])[1] for k in idxs]
+        S = similarity_matrix(tok, sess, cb, sb)
+        out[key] = {"truth": truth, "corpus": corpus, "n_raw": len(rows),
+                    "cls": cls, "ndup": ndup, "S": S, "idxs": idxs}
     return out
 
 
@@ -247,7 +231,6 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cases", nargs="*", default=None)
     ap.add_argument("--selfcheck", action="store_true")
-    ap.add_argument("--protocol", default="both", choices=["raw", "dedup", "both"])
     args = ap.parse_args()
 
     keys = args.cases or ["moon", "glupov", "pierro"]
@@ -259,15 +242,15 @@ def main():
     print("DP 等价性自检（O(n·m²) 朴素式 vs O(n·m) 前缀最大值式）")
     ok = True
     for key in keys:
-        for proto, (S, idxs) in data[key]["protocols"].items():
-            for (sp, up) in [(0.02, 0.25), (0.005, 0.1), (0.08, 0.5), (0.0, 0.02)]:
-                a = align_naive(S, sp, up)
-                b = align_fast(S, sp, up)
-                same = a == b
-                ok = ok and same
-                if not same:
-                    d = [(i, x, y) for i, (x, y) in enumerate(zip(a, b)) if x != y]
-                    print("  ✗ {} {} sp={} up={} 差异 {} 处 {}".format(key, proto, sp, up, len(d), d[:4]))
+        S, idxs = data[key]["S"], data[key]["idxs"]
+        for (sp, up) in [(0.02, 0.25), (0.005, 0.1), (0.08, 0.5), (0.0, 0.02)]:
+            a = align_naive(S, sp, up)
+            b = align_fast(S, sp, up)
+            same = a == b
+            ok = ok and same
+            if not same:
+                d = [(i, x, y) for i, (x, y) in enumerate(zip(a, b)) if x != y]
+                print("  ✗ {} sp={} up={} 差异 {} 处 {}".format(key, sp, up, len(d), d[:4]))
     print("  等价: {}".format("✓ 全部一致" if ok else "✗ 存在不一致"))
     if args.selfcheck or not ok:
         return 0 if ok else 1
@@ -281,71 +264,60 @@ def main():
             key, len(d["corpus"]), len(set(d["cls"])), d["ndup"]))
     print()
     print("── 现行初值基线（skip={}, unmatched={}）──".format(*DEFAULT))
-    protos = ["raw", "dedup"] if args.protocol == "both" else [args.protocol]
     for key in keys:
         d = data[key]
-        line = ["  {:<8}".format(key)]
-        for proto in protos:
-            S, idxs = d["protocols"][proto]
-            m = align_fast(S, *DEFAULT)
-            c = score(m, d["truth"], idxs, d["cls"])
-            cx = score_exact(m, d["truth"], idxs)
-            ceil, lost = ceiling_of(d["truth"], idxs, d["cls"])
-            line.append("{} 类口径{:3}/{:3} ({:5.1f}%) 下标口径{:3} 天花板{:3} ({:5.1f}%)".format(
-                proto, c, len(idxs), c / len(idxs) * 100, cx,
-                ceil, ceil / len(idxs) * 100))
-        print("  ".join(line))
+        S, idxs = d["S"], d["idxs"]
+        m = align_fast(S, *DEFAULT)
+        c = score(m, d["truth"], idxs, d["cls"])
+        cx = score_exact(m, d["truth"], idxs)
+        ceil, lost = ceiling_of(d["truth"], idxs, d["cls"])
+        print("  {:<8} 类口径{:3}/{:3} ({:5.1f}%)  下标口径{:3}  天花板{:3} ({:5.1f}%)".format(
+            key, c, len(idxs), c / len(idxs) * 100, cx, ceil, ceil / len(idxs) * 100))
 
     # ── 网格搜索 ──
     print()
     print("── 网格搜索：skip_penalty × unmatched_penalty（等价类口径）──")
-    results = {}
-    for proto in protos:
-        print()
-        print("  口径 = {}".format(proto))
-        best = None
-        table = {}
-        for sp in GRID_SKIP:
-            for up in GRID_UNMATCHED:
-                tot_c = tot_n = 0
-                per = {}
-                for key in keys:
-                    d = data[key]
-                    S, idxs = d["protocols"][proto]
-                    m = align_fast(S, sp, up)
-                    c = score(m, d["truth"], idxs, d["cls"])
-                    per[key] = (c, len(idxs))
-                    tot_c += c
-                    tot_n += len(idxs)
-                table[(sp, up)] = (tot_c, tot_n, per)
-                if best is None or tot_c / tot_n > best[0]:
-                    best = (tot_c / tot_n, sp, up, per, tot_c, tot_n)
-        results[proto] = table
-        acc, sp, up, per, tc, tn = best
-        print("    最优：skip={:<6} unmatched={:<5} 合计 {}/{} = {:.1f}%".format(
-            sp, up, tc, tn, acc * 100))
-        for key in keys:
-            c, n = per[key]
-            print("        {:<8} {:3}/{:3} ({:5.1f}%)".format(key, c, n, c / n * 100))
-        # 平台宽度：与最优同分的参数组合数
-        plateau = [(k, v) for k, v in table.items() if v[0] == tc]
-        print("    同分（合计 {} 段正确）的参数组合：{} 组 / 共 {} 组".format(
-            tc, len(plateau), len(table)))
-        sps = sorted({k[0] for k, _ in plateau})
-        ups = sorted({k[1] for k, _ in plateau})
-        print("      skip 取值范围 {} ; unmatched 取值范围 {}".format(sps, ups))
-        # 现行初值排名
-        cur = table[DEFAULT]
-        rank = sum(1 for v in table.values() if v[0] > cur[0]) + 1
-        print("    现行初值 {}：合计 {}/{} = {:.1f}%（并列第 {} 名）".format(
-            DEFAULT, cur[0], cur[1], cur[0] / cur[1] * 100, rank))
+    best = None
+    table = {}
+    for sp in GRID_SKIP:
+        for up in GRID_UNMATCHED:
+            tot_c = tot_n = 0
+            per = {}
+            for key in keys:
+                d = data[key]
+                S, idxs = d["S"], d["idxs"]
+                m = align_fast(S, sp, up)
+                c = score(m, d["truth"], idxs, d["cls"])
+                per[key] = (c, len(idxs))
+                tot_c += c
+                tot_n += len(idxs)
+            table[(sp, up)] = (tot_c, tot_n, per)
+            if best is None or tot_c / tot_n > best[0]:
+                best = (tot_c / tot_n, sp, up, per, tot_c, tot_n)
+    acc, sp, up, per, tc, tn = best
+    print("    最优：skip={:<6} unmatched={:<5} 合计 {}/{} = {:.1f}%".format(
+        sp, up, tc, tn, acc * 100))
+    for key in keys:
+        c, n = per[key]
+        print("        {:<8} {:3}/{:3} ({:5.1f}%)".format(key, c, n, c / n * 100))
+    # 平台宽度：与最优同分的参数组合数
+    plateau = [(k, v) for k, v in table.items() if v[0] == tc]
+    print("    同分（合计 {} 段正确）的参数组合：{} 组 / 共 {} 组".format(
+        tc, len(plateau), len(table)))
+    sps = sorted({k[0] for k, _ in plateau})
+    ups = sorted({k[1] for k, _ in plateau})
+    print("      skip 取值范围 {} ; unmatched 取值范围 {}".format(sps, ups))
+    # 现行初值排名
+    cur = table[DEFAULT]
+    rank = sum(1 for v in table.values() if v[0] > cur[0]) + 1
+    print("    现行初值 {}：合计 {}/{} = {:.1f}%（并列第 {} 名）".format(
+        DEFAULT, cur[0], cur[1], cur[0] / cur[1] * 100, rank))
 
     # ── 落盘 ──
     out = os.path.join(BENCH_OUT, "calib_grid.json")
-    ser = {proto: {"{:.4f}|{:.4f}".format(k[0], k[1]): {"correct": v[0], "total": v[1],
-                                                        "per": v[2]}
-                   for k, v in table.items()}
-           for proto, table in results.items()}
+    ser = {"{:.4f}|{:.4f}".format(k[0], k[1]): {"correct": v[0], "total": v[1],
+                                                "per": v[2]}
+           for k, v in table.items()}
     with io.open(out, "w", encoding="utf-8", newline="") as f:
         json.dump({"grid_skip": GRID_SKIP, "grid_unmatched": GRID_UNMATCHED,
                    "default": list(DEFAULT), "results": ser}, f, ensure_ascii=False, indent=1)
