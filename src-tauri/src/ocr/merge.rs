@@ -80,6 +80,31 @@ pub(crate) const LINE_BOUNDARY_STABLE_SEC: f64 = 2.0;
 /// `conf=0.64` 的乱码把已稳定 12.7s 的段落顶开成两段（1:1 18→15、碎片 1→4）。
 pub(crate) const LINE_BOUNDARY_MIN_CONF: f64 = 0.8;
 
+/// run 内文本是否仍在**净增长**（打字机链）：末帧的归一化长度严格大于首帧。
+///
+/// 用途（D12 收口）：`is_stable_line_boundary_cut` 只看 (短态, 长态) 这一文本对与短态时长，
+/// 而"打字机正打到一半"的短态同样满足它——实测 pierro 嵌字 `[1167.99 → 1170.50]`
+/// 的 run 归一化长度为 `23→38→55→65→65`（对话行仍在逐字补全），此时完整段
+/// （4 行 / 150 字符 / conf 0.954）出现即被误判为独立新字幕，同一条字幕产出两段
+/// （`[1167.77, 1170.67]` + `[1170.67, 1187.28]`），下游跨语言对齐因此整体错位。
+///
+/// 与 D12 正当用例的判别（本护栏唯一的判别依据）：glupov #17 的姓名框/头衔态在 run 内
+/// **逐帧同形**——实测归一化长度 `36×8`（OCR 把 `conf=0.000` 的「……」行丢弃后只剩姓名框），
+/// 净增长为 0 → 本护栏不生效，时长门照旧判独立（正确）。
+///
+/// 取"首帧 → 末帧**净**增长"而不取"存在长度不同的帧"：OCR 抖动会让个别帧多/少一两个字符，
+/// 只有真实打字机链才会在 run 首尾之间留下净增量。方向偏保守——返回 false 时行为与
+/// 引入本护栏之前**逐位相同**（门槛照旧生效）。
+///
+/// 仅 `merge_frames` 能用：它的 `Run.texts` 是 run 内全部帧文本；`merge_similar_adjacent`
+/// 手里只有已定型的事件序列，没有 run 内增长轨迹。
+pub(crate) fn run_text_growing(texts: &[(Arc<str>, f64)]) -> bool {
+    match (texts.first(), texts.last()) {
+        (Some((first, _)), Some((last, _))) => norm_chars(last).len() > norm_chars(first).len(),
+        _ => false,
+    }
+}
+
 /// 稳定时长门 + 置信度门 + 行边界切断：三者同时成立才判为独立新字幕。
 pub(crate) fn is_stable_line_boundary_cut(
     short: &str,
@@ -327,13 +352,15 @@ pub fn merge_frames(
         // 相似基准 = run 内最近一帧文本（渐进时是超集，比较稳定）
         let is_same = matches!(&run, Some(r) if {
             let base: &str = r.texts.last().map(|(t, _)| t.as_ref()).unwrap_or("");
-            // 稳定 ≥2.0s 的姓名框/头衔态之后出现整行新文本 = 独立新字幕（D11），run 在此断开
+            // 稳定 ≥2.0s 的姓名框/头衔态之后出现整行新文本 = 独立新字幕（D11），run 在此断开。
+            // 但 run 内文本仍在增长（打字机链）时短态**不是**稳定态：多出的行是同一句正被
+            // 逐字补全的后半段，不切断（D12 收口，判据见 `run_text_growing`）。
             let stable_boundary = is_stable_line_boundary_cut(
                 base,
                 f.text.as_ref(),
                 f.time - r.start,
                 f.confidence,
-            );
+            ) && !run_text_growing(&r.texts);
             !stable_boundary && similar_text(base, f.text.as_ref(), merge_similarity)
         });
         if is_same {
