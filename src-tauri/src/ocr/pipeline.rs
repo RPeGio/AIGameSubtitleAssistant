@@ -540,7 +540,9 @@ where
             refine_segment_ends(segments, &scan_stream, dhash_threshold, frame_interval, clip.end);
         // 第五遍：精化可能让 start 提前 → clamp 相邻段时间，保证单调不重叠
         let segments = clamp_segment_times(segments);
-        // 第六遍：短碎片激进合并（弱关联 + 时长/间隔门；保留碎片起点，见函数注释）
+        // 第六遍：短碎片激进合并（弱关联 + 时长/间隔门；保留碎片起点，见函数注释）。
+        // 2026-10-06 起含**两个方向**：弱关联碎片并后条；亚帧过渡帧（如 pierro `[4]`
+        // 0.084s `MurderofE/Mitya`——姓名框切换的那一帧）并**前**条，理由见函数注释。
         //
         // ⚠ **顺序要求（P2，2026-09-28）**：必须在**段尾精化与 clamp 之后**跑。本 pass 的时长门
         // `min_subtitle_sec` 语义是"字幕最短寿命"，而它的判据取 `last.end - last.start`：

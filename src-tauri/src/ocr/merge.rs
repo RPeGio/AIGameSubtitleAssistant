@@ -582,6 +582,18 @@ pub(crate) const SHORT_FRAGMENT_PREFIX_TOL: f64 = 0.3;
 /// 末行字符重叠率下限：覆盖乱序/替换型误读
 pub(crate) const SHORT_FRAGMENT_OVERLAP: f64 = 0.5;
 
+/// **亚帧**碎片时长上限（秒）：不足一个采样网格间隔的段物理上不可能是一条真实字幕
+/// （人眼读不完、产品口径下也不可能有 0.5s 的字幕寿命），必是**帧级精化**切出的过渡态
+/// ——`refine_segment_ends` 按源帧率密采（`pipeline.rs` 的
+/// `scan_interval = min(1/src_fps, frame_interval)`），故产出里会出现 0.08s（≈5 帧@60fps）
+/// 这种只跨一帧的短段。
+///
+/// 0.5s = 产品与基准的 `frame_interval`（`src/composables/ocrDefaults.ts`、
+/// `tests/common::ocr_params_with_min` 同为 0.5）。**故意取固定常量而不随 `frame_interval`
+/// 浮动**：若用户把网格调粗（1.0s），阈值跟着翻倍会连带放宽"无条件吸收"的范围，
+/// 而该范围没有任何实测覆盖；固定 0.5s 在更粗网格下只会更保守。
+pub(crate) const SHORT_FRAGMENT_SUBFRAME_SEC: f64 = 0.5;
+
 /// 字符多重集重叠率：`Σ min(count_a, count_b) / |a|`
 pub(crate) fn overlap_ratio(a: &[char], b: &[char]) -> f64 {
     if a.is_empty() {
@@ -598,7 +610,82 @@ pub(crate) fn overlap_ratio(a: &[char], b: &[char]) -> f64 {
     hit as f64 / a.len() as f64
 }
 
-/// 短碎片与后一条的**弱关联**判定（比较行层面，另加前置行护栏）。
+/// 行级弱关联：子序列（含空白/标点差异）、模糊前缀（OCR 误读 1~2 字符）、
+/// 字符重叠率 ≥ `SHORT_FRAGMENT_OVERLAP`（乱序/替换型误读）。
+///
+/// 这是"两行是否可能是**同一句的同一位置**"的单一判据实现：`short_fragment_related`
+/// 末行的比较与亚帧过渡帧的逐行比较共用它（避免同一判据在两个调用点各自演化）。
+pub(crate) fn line_weakly_related(f: &[char], n: &[char]) -> bool {
+    if f.is_empty() || n.is_empty() {
+        return false;
+    }
+    if is_subsequence(f, n) {
+        return true;
+    }
+    let fs: String = f.iter().collect();
+    let head: String = n.iter().copied().take(f.len()).collect();
+    if edit_distance_ratio(&fs, &head) <= SHORT_FRAGMENT_PREFIX_TOL {
+        return true;
+    }
+    overlap_ratio(f, n) >= SHORT_FRAGMENT_OVERLAP
+}
+
+/// 碎片的**比较行**下标：先过 D9 与"存在长度 ≥2 的行"两道门，过不了返回 `None`
+/// （碎片不可比较 ⇒ **任何**吸收路径都不得碰它）。
+///
+/// 抽成独立函数是因为本文件有**两条吸收路径**、方向不同，但这两道门必须同源同优先级：
+/// 方向 2 = 弱关联并**后**条（`short_fragment_related`）、方向 1 = 亚帧过渡帧并**前**条
+/// （`merge_short_fragments_into_next`）。
+///
+/// - **D9**：字面末行归一化为空串（纯标点条，如 `……`）→ 不可比较。glupov 语料 `[……]`
+///   条必须独立留存（否则语料出现"缺失"，六项基准的长期硬门）。
+/// - 尾部长度 <2 的行（OCR 把界面数字读成 `0`/`O`/`A`）不参与比较，取**最后一个长度 ≥2
+///   的行**作比较行、用它的**下标**定位后条对应行（P1，2026-09-28）；全为单字符/垃圾行
+///   （glupov 嵌字 `A` 0.384s）→ 不可比较。
+pub(crate) fn comparable_line(fl: &[Vec<char>], nl: &[Vec<char>]) -> Option<usize> {
+    if fl.is_empty() || nl.is_empty() {
+        return None;
+    }
+    if fl.last().is_none_or(|l| l.is_empty()) {
+        return None; // D9：纯省略号/纯标点条 → 绝不并入
+    }
+    (0..fl.len()).rev().find(|&i| fl[i].len() >= 2)
+}
+
+/// **亚帧过渡帧**判据：碎片头部是上一状态的残留（旧姓名框/旧对话行），其余行是**后一条渲染
+/// 的起始**——即丢掉头部后，与后条**同序号行**逐行弱关联（空归一化行视为通配）。
+///
+/// 依据（2026-10-06，D14 盲点；用户侧证据 = 用户在 GUI 里手动合并了这一条）：
+/// pierro 嵌字产出实测 `[4] 119.052 → 119.136`（**0.084s**）`MurderofE / Mitya`
+/// → `[5] 119.203 → 130.314`（11.11s）`Mitya / ies for leaving…`。帧级精化切出的正是
+/// **姓名框从 `MurderofBirds` 切到 `Mitya` 的那一帧**：头部 `MurderofE` 是旧名残留，
+/// 尾部 `Mitya` 恰是后条首行（新姓名框）。前置行一致性护栏按**同序号**比较头部
+/// （`murderofe` vs `mitya`）⇒ 判成"换了说话人"⇒ 拒绝合并（1.5 / 2.0 / 3.5 三个门限下
+/// 都保留），而 0.084s 的时长证明它不可能是独立字幕。
+///
+/// **为什么不是"亚帧就无条件并"**（本仓库实测否决）：语料侧存在 4 条**同为亚帧但不得并**
+/// 的碎片——pierro 语料产出 `啦我听`(0.066s)、`「五角」/严冬计划你们知道/是为`(0s)、
+/// `A派蒙/等等/我有点乱…`(0s)、`「丑角」/场问题…/行动的前提。`(0.467s)（见
+/// `temp/bench_output/pierro_questions_corpus.srt` 改前基线）——无条件并会改动**语料产出
+/// SRT**，而语料侧要求逐字节不变（长期硬门）。本判据只认"尾部对齐后条起始"的过渡帧形态：
+/// 上面前两条是尾随噪音（头部即正文，尾部对不齐后条首行）、后两条是打字机链/换行重排的
+/// 中间态（尾部同样对不齐），故全部不受影响。
+///
+/// **吸收方向**：命中本判据的碎片并入**前条**（碎片时间归前条，碎片起点与文本一并丢弃），
+/// 与方向 2"保留碎片起点 + 并后条"相反——三条实测理由（含基准打分口径）见
+/// `merge_short_fragments_into_next` 的方向 1 注释。
+pub(crate) fn is_subframe_transition_cut(fl: &[Vec<char>], nl: &[Vec<char>]) -> bool {
+    // 需要"残留头 + 至少一行起始内容"；且尾部行数不得超过后条行数（否则不可能是后条的起始）
+    if fl.len() < 2 || fl.len() - 1 > nl.len() {
+        return false;
+    }
+    fl[1..]
+        .iter()
+        .zip(nl.iter())
+        .all(|(f, n)| f.is_empty() || line_weakly_related(f, n))
+}
+
+/// 短碎片与后一条的**弱关联**判定（比较行层面，另加前置行护栏）；**方向：并入后条**。
 ///
 /// 三条任一成立即算关联：归一化子序列（含空白/标点差异）、模糊前缀（OCR 误读 1~2 字符）、
 /// 字符重叠率 ≥0.5（乱序/替换型误读）。比较行 = 碎片中**最后一个归一化长度 ≥2 的行**
@@ -610,13 +697,13 @@ pub(crate) fn overlap_ratio(a: &[char], b: &[char]) -> f64 {
 ///    否则"换了说话人"的两条无关短句会被比较行的字符重叠率误判为续写；
 /// 2. 碎片**字面末行**归一化为空串（纯标点条，如 `……`）→ 直接否决，且碎片至少要有一行
 ///    归一化长度 ≥2——这条保住 D9 的独立短条：glupov 语料 `[……]` 条绝不能被并入下一条
-///    （否则语料出现"缺失"，是六项基准的长期硬门）。
+///    （否则语料出现"缺失"，是六项基准的长期硬门）。两道门由 `comparable_line` 实施。
+///
+/// **亚帧过渡帧不走本函数**（它是"护栏判错"的另一形态，方向相反：并**前**条）——判据见
+/// `is_subframe_transition_cut`，调用点在 `merge_short_fragments_into_next` 的方向 1。
 pub(crate) fn short_fragment_related(frag: &str, next: &str) -> bool {
     let fl: Vec<Vec<char>> = frag.lines().map(norm_chars).collect();
     let nl: Vec<Vec<char>> = next.lines().map(norm_chars).collect();
-    if fl.is_empty() || nl.is_empty() {
-        return false;
-    }
     // ── 比较行选择（P1，2026-09-28）──
     // 旧实现取**字面末行**并要求其归一化长度 ≥2。问题是 OCR 会把界面数字/字母读成单字符
     // 行并落在末尾（实测 pierro `MurderofBirds`/`0`(0.484s)、`Paimon`/`Huh?`/`0`(0.383s)、
@@ -627,15 +714,13 @@ pub(crate) fn short_fragment_related(frag: &str, next: &str) -> bool {
     // 现改为：**尾部长度 <2 的行不参与比较**（它们不可能独立承载一条字幕），取**最后一个
     // 长度 ≥2 的行**作为比较行，并用**它在下标中的位置**定位后条的对应行。
     //
-    // **D9 护栏原意保持不变**：字面末行归一化为**空串**（纯标点条，如 `……`）时直接否决
-    // ——这类条必须独立留存，绝不能被并入下一条（否则语料出现"缺失"，长期硬门）。
+    // **D9 护栏原意保持不变**：字面末行归一化为**空串**（纯标点条，如 `……`）时仍然直接
+    // 否决——这类条必须独立留存，绝不能被并入下一条（否则语料出现"缺失"，长期硬门）。
     // 只有"长度恰为 1"的末行（如 moon 语料真实句尾 `了。`）不再由本门决定去留，
     // 改由时长门（`min_subtitle_sec`）与弱关联判据处理。
-    if fl.last().is_none_or(|l| l.is_empty()) {
-        return false; // D9：纯省略号/纯标点条 → 绝不并入
-    }
-    let Some(fidx) = (0..fl.len()).rev().find(|&i| fl[i].len() >= 2) else {
-        return false; // 碎片全为单字符/垃圾行，无从比较
+    // 上面两道门（D9 + "存在长度 ≥2 的行"）现抽到 `comparable_line`，与方向 1 共用。
+    let Some(fidx) = comparable_line(&fl, &nl) else {
+        return false;
     };
     let flast = &fl[fidx];
     // ── 前置行一致性护栏（关键）──
@@ -662,21 +747,14 @@ pub(crate) fn short_fragment_related(frag: &str, next: &str) -> bool {
     if nline.is_empty() {
         return false;
     }
-    if is_subsequence(flast, nline) {
-        return true;
-    }
-    let head: Vec<char> = nline.iter().copied().take(flast.len()).collect();
-    let hs: String = flast.iter().collect();
-    let hh: String = head.iter().collect();
-    if edit_distance_ratio(&hs, &hh) <= SHORT_FRAGMENT_PREFIX_TOL {
-        return true;
-    }
-    overlap_ratio(flast, nline) >= SHORT_FRAGMENT_OVERLAP
+    // 末行弱关联（三条判据的单一实现在 `line_weakly_related`，与亚帧过渡帧的逐行比较共用）
+    line_weakly_related(flast, nline)
 }
 
-/// 短碎片激进合并：时长 < `min_subtitle_sec` 的段若与其后一条弱关联，
-/// 并入后一条——**保留碎片起点**（该显示的真实起点，常比后条检测到的起点更准）
-/// 与后条终点/文本（用户 2026-09-18 主观评审提案）。
+/// 短碎片激进合并：时长 < `min_subtitle_sec` 的段按**两个方向**吸收——
+/// 方向 2（弱关联）：并入后一条，**保留碎片起点**（该显示的真实起点，常比后条检测到的起点
+/// 更准）与后条终点/文本（用户 2026-09-18 主观评审提案）；
+/// 方向 1（亚帧过渡帧，D14 盲点修复 2026-10-06）：并入前一条，碎片起点/文本丢弃。
 ///
 /// `min_subtitle_sec` 由 `OcrRunParams::min_subtitle_sec` 传入（**前端可调，产品默认
 /// 1.5s**，见 `DEFAULT_MIN_SUBTITLE_SEC`；≤0 关闭本 pass）。调大能减少碎片，但会提高
@@ -687,6 +765,12 @@ pub(crate) fn short_fragment_related(frag: &str, next: &str) -> bool {
 /// - `merge_contained_adjacent`：严格判据（子序列/行前缀）+ 1.25s 跨度门；
 /// - 本 pass：**放宽到弱关联** + `min_subtitle_sec` 时长门 + 2.0s 间隔门（跨检测空洞）；
 /// - D12 的稳定姓名框态（≥2.0s）不在本 pass 范围，仍保持独立（实测参考亦记为独立条目）。
+///
+/// **两个方向**（D14 盲点修复 2026-10-06 引入方向 1）：
+/// - 方向 2（弱关联）：并入**后条**，保留碎片起点；
+/// - 方向 1（亚帧过渡帧）：并入**前条**，碎片起点/文本丢弃（判据与理由见函数内注释）。
+///
+/// 注：函数名沿用历史名（现含两个方向）——重命名会牵动十余处调用点，收益低于噪声成本。
 pub(crate) fn merge_short_fragments_into_next(
     segments: Vec<OcrSegment>,
     min_subtitle_sec: f64,
@@ -696,6 +780,44 @@ pub(crate) fn merge_short_fragments_into_next(
     }
     let mut out: Vec<OcrSegment> = Vec::with_capacity(segments.len());
     for seg in segments {
+        // ── 方向 1：亚帧过渡帧 → 并入**前条**（D14 盲点修复，2026-10-06）──
+        // 此处只补时间门与"必须存在前条"；形态判据（含 D9 与"存在长度 ≥2 的行"两道门）
+        // 见 `comparable_line` + `is_subframe_transition_cut`。
+        //
+        // **为什么并前条而不是后条**（三条依据，针对 pierro 嵌字 `[4] 119.052 → 119.136`）：
+        // 1) **参考真值**：参考条目 `[3]`（109.79 → 119.25）**包含**碎片整段时间，即该碎片
+        //    属于**前条**的尾段（前条产出终点 118.669 偏早是 dhash 漏检）；基准对齐器按
+        //    "重叠 ≥0.5×较短段时长"把碎片判给了 `[3]`（产出 `[3]` 因此记为 1→2 碎片）。
+        //    若改并后条，`[3]` 失去尾段：Δend 由 −0.114s 变成 −0.58s（超 0.5×容差 0.6s）
+        //    ⇒ 按 `score_hardsub` 口径扣 ≈0.94，比碎片化的 0.5 更贵（净 −0.4 分，属回归）。
+        // 2) **用户侧**：用户在 GUI 里手动合并时正是并进前条（`[3]` 延伸到 119.20）。
+        // 3) **D17 已知缺口**：本 pass 原先只能向后并，"尾随噪音段"无人处理（D17 残余
+        //    `[55][96]` 与新增 `[3]` 即此类）——方向 1 正是这条缺口的补法。
+        // 代价：碎片起点被丢弃，后条保留自己检测到的起点（119.203，Δstart +0.02s 反而更准
+        // ——碎片起点是**过渡瞬间**，不是新条目的显示起点）。
+        let into_prev = out.len() >= 2
+            && out.last().is_some_and(|frag| {
+                let frag_sec = frag.end - frag.start;
+                frag_sec <= min_subtitle_sec
+                    && frag_sec < SHORT_FRAGMENT_SUBFRAME_SEC
+                    && seg.start - frag.end <= SHORT_FRAGMENT_GAP_MAX_SEC
+                    && {
+                        let fl: Vec<Vec<char>> = frag.text.lines().map(norm_chars).collect();
+                        let nl: Vec<Vec<char>> = seg.text.lines().map(norm_chars).collect();
+                        comparable_line(&fl, &nl).is_some() && is_subframe_transition_cut(&fl, &nl)
+                    }
+            });
+        if into_prev {
+            let frag = out.pop().expect("out.len() >= 2 已保证存在前条");
+            if let Some(prev) = out.last_mut() {
+                // 只把碎片**自身**的时间并给前条（不吞碎片与后条之间的缝隙）：
+                // 碎片确实显示过，而缝隙（此处 0.067s，< 一个网格间隔）无内容可归
+                prev.end = prev.end.max(frag.end);
+            }
+            out.push(seg);
+            continue;
+        }
+        // ── 方向 2：弱关联碎片 → 并入**后条**（保留碎片起点 + 后条终点/文本）──
         let merge = out.last().is_some_and(|last| {
             last.end - last.start <= min_subtitle_sec
                 && seg.start - last.end <= SHORT_FRAGMENT_GAP_MAX_SEC

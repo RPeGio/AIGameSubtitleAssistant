@@ -897,6 +897,245 @@ fn test_short_fragment_keeps_stable_namebox() {
     assert_eq!(out.len(), 2, "3.52s 姓名框态应保持独立");
 }
 
+// ── 亚帧过渡帧吸收（D14 盲点，2026-10-06）──
+
+#[test]
+fn test_short_fragment_subframe_transition_absorbed() {
+    // D14 盲点（2026-10-06；用户侧证据 = 用户在 GUI 里手动并掉了这一条，本 pass 欠账）。
+    // pierro 嵌字产出**改前基线**实测（`temp/bench_output/pierro_questions_hardsub.srt`）：
+    //   `[4] 119.052 → 119.136`（**0.084s**，只跨一帧）`MurderofE / Mitya`
+    //   `[5] 119.203 → 130.314`（11.111s）`Mitya / ies for leaving…`
+    // 碎片是**姓名框从 MurderofBirds 切到 Mitya 的那一帧**：头部 `MurderofE` 是旧名残留、
+    // 尾部 `Mitya` 正是后条首行（新姓名框）。前置行一致性护栏按同序号比较头部
+    // （`murderofe` vs `mitya`）⇒ 判成"换了说话人"⇒ 拒绝合并（1.5/2.0/3.5 三个门限都保留）。
+    // 吸收方向 = 并入**前条**（碎片时间归前条；理由见 `merge_short_fragments_into_next`）。
+    let segs = vec![
+        OcrSegment {
+            start: 109.693,
+            end: 118.669,
+            text: "MurderofBirds\nSo, Mitya helped too?".into(),
+            confidence: 0.98,
+        },
+        OcrSegment {
+            start: 119.052,
+            end: 119.136,
+            text: "MurderofE\nMitya".into(),
+            confidence: 0.94,
+        },
+        OcrSegment {
+            start: 119.203,
+            end: 130.314,
+            text: "Mitya\nies for leaving in such a hurry at the theater earlier. I was in a rush to verify\nsome theories.".into(),
+            confidence: 0.94,
+        },
+    ];
+    let out = merge_short_fragments_into_next(segs, 3.5);
+    assert_eq!(out.len(), 2, "0.084s 过渡帧必须被吸收（用户人工兜底的那一条）");
+    assert!((out[0].start - 109.693).abs() < 1e-9, "前条起点不变");
+    assert!(
+        (out[0].end - 119.136).abs() < 1e-9,
+        "碎片时间归前条：终点延伸到碎片终点"
+    );
+    assert!(
+        out[0].text.contains("So, Mitya helped"),
+        "前条文本保留（碎片文本丢弃）"
+    );
+    assert!(
+        (out[1].start - 119.203).abs() < 1e-9,
+        "后条保留自己检测到的起点（碎片起点是过渡瞬间，不夺来当显示起点）"
+    );
+    assert!((out[1].end - 130.314).abs() < 1e-9, "后条终点不变");
+}
+
+#[test]
+fn test_short_fragment_subframe_exemption_needs_subframe() {
+    // 亚帧豁免**只对亚帧生效**：同一形态（`MurderofE/Mitya` → `Mitya/ies for leaving…`）
+    // 若碎片时长 ≥ 一个网格间隔（此处 2.0s），前置行一致性护栏照旧拒绝。
+    // 该判定确由护栏把关：末行 `Mitya` 与后条比较行的字符重叠 = 0.8 ≥ SHORT_FRAGMENT_OVERLAP
+    // （下面先断言这一点）——去掉护栏、或去掉"亚帧"这个时长条件，本用例立刻变红。
+    let fl: Vec<Vec<char>> = "MurderofE\nMitya".lines().map(norm_chars).collect();
+    let nl: Vec<Vec<char>> = "Mitya\nies for leaving in such a hurry at the theater earlier."
+        .lines()
+        .map(norm_chars)
+        .collect();
+    assert!(
+        line_weakly_related(&fl[1], &nl[1]),
+        "单看弱关联为真 ⇒ 该判定确由前置行护栏把关（否则用例是假绿）"
+    );
+    let segs = vec![
+        OcrSegment {
+            start: 108.0,
+            end: 117.0,
+            text: "MurderofBirds\nSo, Mitya helped too?".into(),
+            confidence: 0.98,
+        },
+        OcrSegment {
+            start: 117.0,
+            end: 119.0,
+            text: "MurderofE\nMitya".into(),
+            confidence: 0.94,
+        },
+        OcrSegment {
+            start: 119.203,
+            end: 130.314,
+            text: "Mitya\nies for leaving in such a hurry at the theater earlier.".into(),
+            confidence: 0.94,
+        },
+    ];
+    let out = merge_short_fragments_into_next(segs, 3.5);
+    assert_eq!(out.len(), 3, "2.0s > 一个网格间隔：亚帧豁免不得外溢，护栏照旧拒绝");
+}
+
+#[test]
+fn test_short_fragment_subframe_ellipsis_kept() {
+    // D9 优先级：纯标点（省略号）末行的碎片**无论多短**都不得被吸收——参考侧该条必须独立
+    // 留存（glupov 语料 `[……]` 条，六项基准的长期硬门）。亚帧过渡帧（方向 1）与弱关联
+    // （方向 2）**共用同一道门** `comparable_line`，两个子形态各钉一条路径，时长都压到亚帧：
+    // ① 真实 glupov 语料形态（姓名/头衔/……）→ 钉方向 2（弱关联）不得碰它；
+    // ② **构造**形态：真实过渡帧 `MurderofE/Mitya` 末尾追加一行纯标点——该形态的尾部行是
+    //    空归一化（在过渡帧判据里按通配），空间关系上"像"后条的起始，故**只有 D9 先否决**
+    //    才留得住；不追加这一行时 D9 与方向 1 在真实素材里并不冲突，用例无法在回归时变红。
+    let d9_real = vec![
+        OcrSegment {
+            start: 516.0,
+            end: 531.0,
+            text: "安东\n原「第九连队」临时连长\n他们还在格鲁波夫休养。".into(),
+            confidence: 0.93,
+        },
+        OcrSegment {
+            start: 531.08,
+            end: 531.16,
+            text: "安东\n原「第九连队」临时连长\n……".into(),
+            confidence: 0.88,
+        },
+        OcrSegment {
+            start: 531.90,
+            end: 545.0,
+            text: "安东\n原「第九连队」临时连长\n没有消息。但也许……没有消息就是最好的消息。".into(),
+            confidence: 0.95,
+        },
+    ];
+    assert_eq!(
+        merge_short_fragments_into_next(d9_real, 3.5).len(),
+        3,
+        "① 亚帧豁免不得越过 D9（真实语料形态：纯省略号条独立留存）"
+    );
+
+    let d9_transition = vec![
+        OcrSegment {
+            start: 109.693,
+            end: 118.669,
+            text: "MurderofBirds\nSo, Mitya helped too?".into(),
+            confidence: 0.98,
+        },
+        OcrSegment {
+            start: 119.052,
+            end: 119.136,
+            text: "MurderofE\nMitya\n……".into(),
+            confidence: 0.94,
+        },
+        OcrSegment {
+            start: 119.203,
+            end: 130.314,
+            text: "Mitya\nies for leaving in such a hurry at the theater earlier.".into(),
+            confidence: 0.94,
+        },
+    ];
+    assert_eq!(
+        merge_short_fragments_into_next(d9_transition, 3.5).len(),
+        3,
+        "② 亚帧豁免不得越过 D9（过渡帧形态：末行纯标点 → 先否决再谈形态）"
+    );
+}
+
+#[test]
+fn test_short_fragment_keeps_speaker_switch_opponents() {
+    // D17 记录的三个"换了说话人"对手：修复后必须**仍然不被合并**。
+    // 三者的时长都 ≥ 一个网格间隔（2.83 / 2.80 / 3.40s），故完全不进亚帧豁免，
+    // 仍由前置行一致性护栏与弱关联把关。
+    //
+    // ① pierro 嵌字 `「丑角」/可以。`（实测 2.83s）→ `派蒙/欸！真的可以吗！…`（末行重叠 0.50）。
+    //    先断言"单看弱关联为真"：`可以` 是后条比较行的子序列 ⇒ 该对手**确由护栏把关**。
+    let fl: Vec<Vec<char>> = "「丑角」\n可以。".lines().map(norm_chars).collect();
+    let nl: Vec<Vec<char>> = "派蒙\n欸！真的可以吗！要不、要不还是算了，万一若娜瓦抓住机会，忽然冒出来…"
+        .lines()
+        .map(norm_chars)
+        .collect();
+    assert!(
+        line_weakly_related(&fl[1], &nl[1]),
+        "单看弱关联为真 ⇒ ①确由前置行护栏把关"
+    );
+    let jester = vec![
+        OcrSegment {
+            start: 100.0,
+            end: 102.83,
+            text: "「丑角」\n可以。".into(),
+            confidence: 0.9,
+        },
+        OcrSegment {
+            start: 102.83,
+            end: 110.0,
+            text: "派蒙\n欸！真的可以吗！要不、要不还是算了，万一若娜瓦抓住机会，忽然冒出来…"
+                .into(),
+            confidence: 0.9,
+        },
+    ];
+    assert_eq!(
+        merge_short_fragments_into_next(jester, 3.5).len(),
+        2,
+        "① 换了说话人的短条不得被误判为续写"
+    );
+
+    // ② moon 语料产出**改前基线**实测 `[9] 90.334 → 93.134`（2.80s）`卡侬/…艾莉亚。`
+    //    → `[10] 93.301 → 94.367`（1.066s）`艾莉亚/卡侬妹妹。`（末行重叠 1.00）。
+    //    语料基准门限 1.5s 下它因**时长门**根本不进本 pass；这里用嵌字门限 3.5s 把它拉进来，
+    //    专测护栏（= D17"安全阈值上限"的扫描口径）。
+    let canon = vec![
+        OcrSegment {
+            start: 90.334,
+            end: 93.134,
+            text: "卡侬\n…艾莉亚。".into(),
+            confidence: 0.9,
+        },
+        OcrSegment {
+            start: 93.301,
+            end: 94.367,
+            text: "艾莉亚\n卡侬妹妹。".into(),
+            confidence: 0.9,
+        },
+    ];
+    assert_eq!(
+        merge_short_fragments_into_next(canon, 3.5).len(),
+        2,
+        "② 姓名框错位（卡侬 vs 艾莉亚）不得被误判为续写"
+    );
+
+    // ③ glupov `斯捷潘尼扬/「缟玛瑙」/嗯？是你啊…`（D17 记为与"另一句"重叠 0.55）
+    //    → 下一条同姓名框的另一句（文本取 `examples/benchmark_examples/glupov.gsa` 里的
+    //    真实相邻条目）。注：D17 探针的原始配对未随仓库保留，故按 D17 记述的形态复现
+    //    （碎片 = 正文中途截断、后条 = 下一条目），实测重叠以本仓库产出为准。
+    let stepanyan = vec![
+        OcrSegment {
+            start: 60.0,
+            end: 63.40,
+            text: "斯捷潘尼扬\n「缟玛瑙」\n嗯？是你啊…".into(),
+            confidence: 0.9,
+        },
+        OcrSegment {
+            start: 63.40,
+            end: 72.0,
+            text: "斯捷潘尼扬\n「缟玛瑙」\n嗯，最近上头安排我主管一支连队的所有事务，任务瞬间复杂了起来。"
+                .into(),
+            confidence: 0.95,
+        },
+    ];
+    assert_eq!(
+        merge_short_fragments_into_next(stepanyan, 3.5).len(),
+        2,
+        "③ 姓名框相同但正文换了句：不得被误判为续写"
+    );
+}
+
 // ── 条带起点判据（检测层思路②）──
 
 #[test]
