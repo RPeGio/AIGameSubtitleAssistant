@@ -347,6 +347,83 @@ fn test_merge_similar_rejects_namebox_line_boundary() {
 }
 
 #[test]
+fn test_run_text_growing_net_growth_only() {
+    // 判据边界（真实素材实测的归一化长度序列）：
+    // - pierro 打字机链 23→38→55→65→65（对话行仍在逐字补全）→ 净增长
+    // - glupov #17 姓名框态 36×8（逐帧同形，OCR 省掉 conf=0.000 的「……」行）→ 未增长
+    let run = |lens: &[usize]| -> Vec<(Arc<str>, f64)> {
+        lens.iter()
+            .map(|&n| (Arc::<str>::from("x".repeat(n)), 0.96))
+            .collect()
+    };
+    assert!(run_text_growing(&run(&[23, 38, 55, 65, 65])));
+    assert!(!run_text_growing(&run(&[36, 36, 36, 36, 36, 36, 36, 36])));
+    // 抖动方向保守：首帧更长（乱码多认了字）与单帧 run 都不算增长，门槛照旧生效
+    assert!(!run_text_growing(&run(&[40, 36, 36, 36])));
+    assert!(!run_text_growing(&run(&[36])));
+}
+
+#[test]
+fn test_merge_frames_merges_growing_typewriter_line_boundary() {
+    // D12 收口回归：**打字机中途**采到的短态不是稳定姓名框态。run 内文本仍在逐帧增长
+    // （实测 pierro 嵌字归一化长度 23→38→55→65→65）时，整段出现不得切断 run——
+    // 否则同一条字幕产出两段（实测 `[1167.77, 1170.67]` + `[1170.67, 1187.28]`，
+    // conf 0.982/0.954，下游跨语言对齐因此整体错位一位）。
+    // 本例短态已稳定 3.4s（> LINE_BOUNDARY_STABLE_SEC 2.0s）且 conf 0.95（≥ 0.8），
+    // 时长门+置信度门+行边界切断三者原本全部成立。
+    let partial = "Paimon\nof the Gnoses, Paimon's been dying to ask this question since forever. Why";
+    let full = "Paimon\nof the Gnoses, Paimon's been dying to ask this question since forever. Why\ns the Tsaritsa wanna collect them? Is it something to do with the fight against\nthe Heavenly Principles?";
+    let frames = vec![
+        ft(0.0, "Paimon\nof the Gnoses, Paimon's", 0.97),
+        ft(1.0, "Paimon\nof the Gnoses, Paimon's been dying to ask this question since forever.", 0.98),
+        ft(2.5, partial, 0.98),
+        ft(3.4, full, 0.95),
+        ft(4.4, full, 0.95),
+    ];
+    let segs = merge_frames(frames, 0.5, 30.0, 0.3);
+    assert_eq!(segs.len(), 1, "打字机链内的短态不得被切分成独立新字幕");
+    assert_eq!(segs[0].text, full);
+}
+
+#[test]
+fn test_merge_frames_keeps_stable_namebox_run() {
+    // 反向守卫（D12 正当用例，glupov #17 实测形态）：姓名框/头衔态**逐帧同形**稳定 4.0s
+    // 后出现对话行 —— run 内无净增长，门槛必须照旧判独立（参考亦记为两条）。
+    // 本用例锁死"不得为了让打字机对合并而整体移除/无条件压掉这道门槛"——
+    // D12 的 A2 全量实测：门槛若被关掉，glupov 72.2 → 54.8（1:1 22→19、被吞并 0→3）。
+    let namebox = "Anton\nFormer Acting Captain,\"Ninth Company";
+    let full = "Anton\nFormer Acting Captain,\"Ninth Company\nNo news. But perhaps... no news is the best news.";
+    let mut frames: Vec<FrameText> = (0..8).map(|k| ft(k as f64 * 0.5, namebox, 0.96)).collect();
+    frames.push(ft(4.0, full, 0.93));
+    frames.push(ft(5.0, full, 0.94));
+    let segs = merge_frames(frames, 0.5, 30.0, 0.3);
+    assert_eq!(segs.len(), 2, "稳定姓名框态（run 内无增长）仍应是独立字幕");
+    assert_eq!(segs[0].text, namebox);
+    assert_eq!(segs[1].text, full);
+}
+
+#[test]
+fn test_merge_frames_keeps_ellipsis_short_state() {
+    // 反向守卫（用户 2026-10 明确的第二对，pierro 嵌字 「丑角」）：短态 `The Jester / …`
+    // 只活 1.50s，且语料里 17/18 两条是**独立条目**（真值单调，不该合并）。
+    // 两道保险各自独立成立：① 时长 1.50s < 2.0s；② 「……」行归一化为空串，其与长态
+    // 对应行距离比 1.0 > LINE_PREFIX_EDIT_TOLERANCE，`is_line_boundary_cut` 直接否决。
+    // 本用例锁死"不得为了修打字机对而把这类省略号短态并掉"。
+    let short = "The Jester\n…";
+    let long = "The Jester\nour judgement. We shall put the project on hold... until the Ruler of Death has\nbeen eliminated.";
+    let frames = vec![
+        ft(0.0, short, 0.95),
+        ft(1.0, short, 0.95),
+        ft(1.5, long, 0.94),
+        ft(2.5, long, 0.94),
+    ];
+    let segs = merge_frames(frames, 0.5, 30.0, 0.3);
+    assert_eq!(segs.len(), 2, "省略号短态是独立条目，不得并入后继对话行");
+    assert_eq!(segs[0].text, short);
+    assert_eq!(segs[1].text, long);
+}
+
+#[test]
 fn test_merge_similar_keeps_wrapped_tail_line() {
     // 反向守卫：多出的行是**换行余尾**（远短于短态末行）→ 不判行边界切断，保持同一条目。
     // 实测形态（moon 嵌字 #16）：`runaway princess back to the` → 补出 `moon.`（4 字符）
