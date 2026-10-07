@@ -40,15 +40,23 @@ CASES = {
                      "quality_bench_test(voiced)_5min_reference.txt"),
     "pierro_questions": ("quality_bench_test(voiced)_48min.mp4",
                          "quality_bench_test(voiced)_48min_reference.txt"),
+    "vesna": ("pv_reaction_vesna(voiced)_12min.mp4",
+              "pv_reaction_vesna(voiced)_12min_reference.txt"),
 }
 # 首次生成（产物不存在）时的 applied 兜底：现行生效值
 APPLIED_FALLBACK = {
     "glupov": (0.007092, -0.021),
     "moon_sisters": (0.0, 0.0),
     "pierro_questions": (0.000645, -0.121),
+    # vesna 参考时间码是**直接按嵌字片手打**的（非外部字幕源翻译），构造上 k=a=0；
+    # 首次生成时以 (0,0) 为 applied 起点，再由探针 fit 决定是否 --apply。
+    "vesna": (0.0, 0.0),
 }
 NOTE = {
     "moon_sisters": "刻意不校准：参考经复核无漂移（k≈0）；拟合返回的 a 与估计量在真值 (0,0) 上的偏差地板同量级",
+    "vesna": ("参考时间码按嵌字片**手打**（非外部字幕源翻译），构造上 k=a=0；细网格探针实测逐条散布 ±0.5s、"
+              "R²=0.08（Theil–Sen 抗差 k=+0.0002%），k 被散布噪声主导。首发无历史基线，"
+              "按「以探测拟合为准」施加 fit；resid_median 与 k_ci95 均在质量门内"),
 }
 GATE = {"max_resid_median_sec": 0.15, "max_k_ci95": 0.001}
 PROBE_DOC = ("细网格夹逼探针 scripts/bench_timebase_probe.py（0.05s 网格；"

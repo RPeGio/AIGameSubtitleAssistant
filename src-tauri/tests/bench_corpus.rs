@@ -15,7 +15,7 @@ mod common;
 
 use common::{
     align_sequences, bench_data_dir, build_ocr_manager, corpus_regions, print_md_row, run_ocr,
-    score_corpus, require_file, CaseCfg, GLUPOV, MOON_SISTERS, PIERRO_QUESTIONS,
+    score_corpus, require_file, CaseCfg, GLUPOV, MOON_SISTERS, PIERRO_QUESTIONS, VESNA,
 };
 
 fn run_case(cfg: &CaseCfg) {
@@ -39,19 +39,42 @@ fn run_case(cfg: &CaseCfg) {
             return;
         }
     };
+    // ── 语料轴专用排除（`CaseCfg::corpus_excluded_refs`）──
+    // 语料片**结构上产不出**的期望条目（如 vesna 里只在英文嵌字轨存在的语气词 `Ohh!`/`Huh?`…）：
+    // 它们留在期望集里就是必然缺失，只会压低分数并掩盖真实缺陷。**嵌字轴不受影响**
+    // （那些块确实是画面上的嵌字，必须照常计分）。
+    let mut refs = refs;
+    let dropped = common::drop_refs_by_list(&mut refs, cfg.corpus_excluded_refs);
+    if !dropped.is_empty() {
+        println!(
+            "语料轴排除 {} 条（语料片结构上不可能产出，见 corpus_excluded_refs）：{}",
+            dropped.len(),
+            dropped.join("、")
+        );
+    }
     // 期望侧去重（方案 A，review-reports/BENCH_SCORING_DUPLICATE_EXPECTED.md）：
     // 参考按实况片校对，主播切页回放会产生同文双时间轴；产物侧按设计去重，
     // 期望侧也按 trim 后全等文本去重（保留首现），折叠数单列统计。
+    //
+    // 另：参考块内 `---` 分隔**多条语料行**（中英非 1:1，见 `common::split_ref_parts`）
+    // ⇒ 先拆成多条期望再参与去重。**本轴必须逐行比**（语料片按显示行产出）。
     let mut expected: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut folded = 0usize;
+    let mut split_extra = 0usize;
     for r in &refs {
-        let t = r.text.trim();
-        if t.is_empty() || !seen.insert(t.to_string()) {
-            folded += 1;
-            continue;
+        let parts = common::split_ref_parts(&r.text);
+        split_extra += parts.len().saturating_sub(1);
+        for t in parts {
+            if t.is_empty() || !seen.insert(t.clone()) {
+                folded += 1;
+                continue;
+            }
+            expected.push(t);
         }
-        expected.push(t.to_string());
+    }
+    if split_extra > 0 {
+        println!("参考块内 `---` 拆分：多出 {split_extra} 条期望（一个显示块覆盖多条语料行）");
     }
 
     let (segments, elapsed) = run_ocr(&manager, &video, &corpus_regions(cfg.key));
@@ -143,4 +166,10 @@ fn bench_corpus_glupov() {
 #[ignore]
 fn bench_corpus_pierro_questions() {
     run_case(&PIERRO_QUESTIONS);
+}
+
+#[test]
+#[ignore]
+fn bench_corpus_vesna() {
+    run_case(&VESNA);
 }

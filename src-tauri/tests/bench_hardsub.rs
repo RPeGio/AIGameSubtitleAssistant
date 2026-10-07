@@ -11,13 +11,16 @@
 //! 跑完把打印的 markdown 行粘到 benchmark/<案例>.md 的「嵌字时间轴」表。
 //! 参考时基换算来自 `examples/benchmark_examples/<key>_timebase.json`（带 SHA256 守卫，
 //! 素材一换立即报错——见 `common::load_timebase`）。
+//!
+//! 案例清单：moon_sisters（5min）/ glupov（11min）/ pierro_questions（48min）/
+//! vesna（12min 主播 PV reaction，2560x1440）。
 
 mod common;
 
 use common::{
     align_temporal, apply_ref_calibration, bench_data_dir, build_ocr_manager, hardsub_regions,
     print_md_row, run_ocr_with_params, score_hardsub, require_file, CaseCfg, GLUPOV, MOON_SISTERS,
-    PIERRO_QUESTIONS,
+    PIERRO_QUESTIONS, VESNA,
 };
 
 fn tolerance_sec() -> f64 {
@@ -236,4 +239,10 @@ fn bench_hardsub_glupov() {
 #[ignore]
 fn bench_hardsub_pierro_questions() {
     run_case(&PIERRO_QUESTIONS);
+}
+
+#[test]
+#[ignore]
+fn bench_hardsub_vesna() {
+    run_case(&VESNA);
 }

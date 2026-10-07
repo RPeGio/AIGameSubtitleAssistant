@@ -65,9 +65,11 @@ CASES = {
                      "quality_bench_test(voiced)_5min_reference.txt"),
     "pierro_questions": ("quality_bench_test(voiced)_48min.mp4",
                          "quality_bench_test(voiced)_48min_reference.txt"),
+    "vesna": ("pv_reaction_vesna(voiced)_12min.mp4",
+              "pv_reaction_vesna(voiced)_12min_reference.txt"),
 }
 REF_FPS = {"glupov": 60000.0 / 1001.0, "moon_sisters": 60.0,
-           "pierro_questions": 60000.0 / 1001.0}
+           "pierro_questions": 60000.0 / 1001.0, "vesna": 60000.0 / 1001.0}
 TC = re.compile(r"^(\d{2}):(\d{2}):(\d{2}):(\d{2}) - (\d{2}):(\d{2}):(\d{2}):(\d{2})$")
 
 

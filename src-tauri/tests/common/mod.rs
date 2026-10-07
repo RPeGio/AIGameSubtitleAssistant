@@ -81,6 +81,17 @@ pub struct CaseCfg {
     /// 不再触碰语料硬门。该门只作用于 D14 短碎片合并 pass
     /// （`merge_short_fragments_into_next`）的时长条件，且仍需"末行与后条对应行弱关联"
     /// 才吞并，故提高它不会盲目并掉无关短句。
+    /// **语料基准专用**排除条目（1-based 参考块下标 + 原因）：语料轴**结构上不可能产出**
+    /// 的期望条目。
+    ///
+    /// 为什么与 `excluded_refs` 分开：两者作用的轴不同。`excluded_refs` 是"素材侧缺陷"，
+    /// 嵌字轴与语料轴都该剔；本字段只剔**语料轴**。典型是 vesna 案例里"中文 PV 没有、
+    /// 只存在于英文嵌字轨的语气词"（`Ohh!`/`Huh?`/`Ugh!`…）：嵌字轴必须照常计分
+    /// （它们确实是画面上真实显示的嵌字），但中文语料片永远产不出它们，留在期望集里
+    /// 就是**必然缺失**，只会压低分数、掩盖真实缺陷。
+    ///
+    /// 与 `excluded_refs` 一样按**下标**索引 ⇒ **参考文本一旦重打轴/改块序必须同步更新**。
+    pub corpus_excluded_refs: &'static [(usize, &'static str)],
     pub hardsub_min_subtitle_sec: f64,
 }
 
@@ -103,6 +114,7 @@ pub const MOON_SISTERS: CaseCfg = CaseCfg {
     corpus_video: "quality_bench_test_corpus(voiced)_5min.mp4",
     clip_video: "quality_bench_test(voiced)_5min.mp4",
     excluded_refs: &[],
+    corpus_excluded_refs: &[],
     // 实测最短 3.62s（p5 3.75s）
     hardsub_min_subtitle_sec: 3.6,
 };
@@ -114,6 +126,7 @@ pub const GLUPOV: CaseCfg = CaseCfg {
     corpus_video: "quality_bench_test_corpus(non-voiced)_11min.mp4",
     clip_video: "quality_bench_test(non-voiced)_11min.mp4",
     excluded_refs: &[],
+    corpus_excluded_refs: &[],
     // 实测最短 3.52s（第 17 条姓名框态，p5 4.48s）——**必须低于 3.52**，
     // 否则 D12 保护的姓名框档案会被本 pass 吞并（glupov 会回归）
     hardsub_min_subtitle_sec: 3.4,
@@ -127,6 +140,7 @@ pub const PIERRO_QUESTIONS: CaseCfg = CaseCfg {
     clip_video: "quality_bench_test(voiced)_48min.mp4",
     // 两处人工剪辑 transition（用户 2026-09-18 主观评审确认，仅此两处）→ 不计错
     excluded_refs: PIERRO_TRANSITION_REFS,
+    corpus_excluded_refs: &[],
     // 实测最短 2.25s（另有 0.60s 的异常条目，疑似参考笔误）。取 3.5s 的目标：
     // 盖住 D12 门槛造出的 6 条碎片短态（2.55~3.38s），使它们在 D14 pass 被并入后条。
     // 是否误吞合法的 2.25~2.83s 短条（如「丑角」/可以。）取决于"弱关联"判据，
@@ -134,13 +148,56 @@ pub const PIERRO_QUESTIONS: CaseCfg = CaseCfg {
     hardsub_min_subtitle_sec: 3.5,
 };
 
-/// 剔除**排除计分**的参考条目（见 `CaseCfg::excluded_refs`），返回 (保留条数, 剔除明细)。
+/// vesna 参考文本里"**只存在于英文嵌字轨、中文 PV 没有**"的语气/感叹词块（1-based 下标）。
 ///
-/// 调用方（嵌字基准）在计分前调用；被剔除条目的产出段自然成为"多余段"（仅统计不扣分）。
-pub fn drop_excluded_refs(refs: &mut Vec<RefEntry>, cfg: &CaseCfg) -> Vec<String> {
+/// 判据是"块内文本**不含任何中日韩字符**"，即"中文语料片结构上产不出它"——
+/// **不是**"这段是不是英文"（那样将来加日语/其他语种样例会失效）。
+///
+/// 实测影响：这 16 块在语料轴是**必然缺失**，把语料分从 ~90 压到 71.4，
+/// 并掩盖真实缺陷（如 `薇斯纳` 被识别成 `薇斯纳大人`）。**嵌字轴照常计分**。
+///
+/// 块序与文本一一对应（`parse_reference` 按时间排序）；**重打轴改块序必须同步更新**。
+const VESNA_ENGLISH_ONLY_REFS: &[(usize, &str)] = &[
+    (4, "英文语气词 Ohh!（中文 PV 无对应）"),
+    (6, "英文语气词 …Mm-hmm!（中文 PV 无对应）"),
+    (7, "英文语气词 *hum*（中文 PV 无对应）"),
+    (13, "英文语气词 Huh?（中文 PV 无对应）"),
+    (14, "英文语气词 Ah…（中文 PV 无对应）"),
+    (17, "英文语气词 …Huh?（中文 PV 无对应）"),
+    (23, "英文语气词 Ugh!（中文 PV 无对应）"),
+    (34, "英文语气词 ...What?（中文 PV 无对应）"),
+    (44, "英文语气词 Ohh!（第二遍播放，中文 PV 无对应）"),
+    (46, "英文语气词 …Mm-hmm!（第二遍播放，中文 PV 无对应）"),
+    (47, "英文语气词 *hum*（第二遍播放，中文 PV 无对应）"),
+    (53, "英文语气词 Huh?（第二遍播放，中文 PV 无对应）"),
+    (54, "英文语气词 Ah…（第二遍播放，中文 PV 无对应）"),
+    (58, "英文语气词 …Huh?（第二遍播放，中文 PV 无对应）"),
+    (64, "英文语气词 Ugh!（第二遍播放，中文 PV 无对应）"),
+    (75, "英文语气词 ...What?（第二遍播放，中文 PV 无对应）"),
+];
+
+pub const VESNA: CaseCfg = CaseCfg {
+    key: "vesna",
+    ref_file: "pv_reaction_vesna(voiced)_12min_reference.txt",
+    // 素材实测 r_frame_rate=60000/1001（ffprobe）——参考时间码按该帧率手打（帧号最大 59）
+    ref_fps: 60000.0 / 1001.0,
+    corpus_video: "pv_reaction_vesna_corpus(voiced)_12min.mp4",
+    clip_video: "pv_reaction_vesna(voiced)_12min.mp4",
+    excluded_refs: &[],
+    corpus_excluded_refs: VESNA_ENGLISH_ONLY_REFS,
+    // 参考 83 块时长实测（temp/probe 统计）：
+    // min 0.35 / p5 0.43 / p10 0.48 / 中位 1.10 / 均值 1.38 / max 20.72s。
+    // **该素材字幕寿命远短于其他案例**（3.4~3.6s）：PV 对白字幕一句话一闪而过，
+    // 若沿用产品默认 1.5s，合法短条会被 D14 pass 吞并（中位才 1.10s）→ 取 p5 = 0.43s。
+    hardsub_min_subtitle_sec: 0.43,
+};
+
+/// 按**下标表**剔除参考条目（1-based 下标 + 原因），返回剔除明细。
+///
+/// 按下标**降序**删除，避免删除后后续序号左移导致错删。
+pub fn drop_refs_by_list(refs: &mut Vec<RefEntry>, list: &[(usize, &str)]) -> Vec<String> {
     let mut dropped = Vec::new();
-    // 按下标**降序**删除，避免删除后后续序号左移导致错删
-    let mut items: Vec<&(usize, &str)> = cfg.excluded_refs.iter().collect();
+    let mut items: Vec<&(usize, &str)> = list.iter().collect();
     items.sort_by_key(|(i, _)| std::cmp::Reverse(*i));
     for (idx, reason) in items {
         let i = idx.saturating_sub(1);
@@ -150,6 +207,39 @@ pub fn drop_excluded_refs(refs: &mut Vec<RefEntry>, cfg: &CaseCfg) -> Vec<String
         }
     }
     dropped
+}
+
+/// 剔除**排除计分**的参考条目（见 `CaseCfg::excluded_refs`），返回剔除明细。
+///
+/// 调用方（嵌字基准）在计分前调用；被剔除条目的产出段自然成为"多余段"（仅统计不扣分）。
+pub fn drop_excluded_refs(refs: &mut Vec<RefEntry>, cfg: &CaseCfg) -> Vec<String> {
+    drop_refs_by_list(refs, cfg.excluded_refs)
+}
+
+/// 把一个参考块的文本按**块内 `---` 分隔符**拆成多条期望（1 条 → N 条）。
+///
+/// 背景：中英本地化不是 1:1——一个英文显示块可能覆盖**多条**中文语料行
+/// （如 `Good morning, Snezhnograd!` ↔ `向你问候` + `至冬堡`）。参考文本用一个块 + 块内
+/// `---` 表达这种情形（与 `scripts/fuse_truth.py` 的 `PART_SEP` 同一约定）。
+///
+/// **只给语料轴用**：语料片是**按显示行**产出的，本轴必须逐行比；嵌字轴仍按
+/// "一个显示块 = 一条参考"（否则一个合并显示会被判成两条缺失，反而冤枉 OCR）。
+pub fn split_ref_parts(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur: Vec<&str> = Vec::new();
+    for l in text.lines() {
+        if l.trim() == "---" {
+            out.push(cur.join("\n"));
+            cur.clear();
+        } else {
+            cur.push(l);
+        }
+    }
+    out.push(cur.join("\n"));
+    out.into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 // ─── 参考时基产物（A4）────────────────────────────────────
@@ -427,7 +517,7 @@ fn test_timebase_guard_rejects_replaced_media() {
 /// 注意会哈希真实素材（约 2GB，十秒内），这是该守卫的固有代价。
 #[test]
 fn test_shipped_timebase_artifacts_match_media() {
-    for cfg in [MOON_SISTERS, GLUPOV, PIERRO_QUESTIONS] {
+    for cfg in [MOON_SISTERS, GLUPOV, PIERRO_QUESTIONS, VESNA] {
         let data = bench_data_dir();
         if !data.join(cfg.clip_video).is_file() || !data.join(cfg.ref_file).is_file() {
             eprintln!("[跳过] {} 缺少本地素材", cfg.key);
@@ -453,6 +543,15 @@ pub fn corpus_regions(key: &str) -> Vec<OcrRegionInput> {
         "pierro_questions" => vec![
             OcrRegionInput { start: 0.0, end: 1272.3, x1: 0.16484375, y1: 0.7601340682, x2: 0.8326450892857143, y2: 0.9522546738 },
         ],
+        // vesna 语料片（中文 PV 单集，1920x1080 / 30fps / 191.0s）：**无主播摄像头**，
+        // 中文嵌字为白字无底框、底部居中单行。
+        // 选区**取自用户工程 `vesna_trailer.gsa` 的语料页控制轨**（1 段：
+        // x[0.2, 0.739732142857143] × y[0.85625, 0.9848214285714286]，时间窗全片）——
+        // 代表真实用户"大致框住字幕带"的**粗略选区**场景，而非管线自探的紧框。
+        // 本片无"逛 YouTube"段落，整片即 PV（含中文字幕），故用户框了整片。
+        "vesna" => vec![
+            OcrRegionInput { start: 0.0, end: 190.997333, x1: 0.2, y1: 0.85625, x2: 0.739732142857143, y2: 0.9848214285714286 },
+        ],
         _ => unreachable!("未知案例: {key}"),
     }
 }
@@ -473,6 +572,21 @@ pub fn hardsub_regions(key: &str) -> Vec<OcrRegionInput> {
         ],
         "pierro_questions" => vec![
             OcrRegionInput { start: 49.566388194397724, end: 2946.326729, x1: 0.2602678571, y1: 0.7401785714, x2: 0.8426897321, y2: 0.9267857143 },
+        ],
+        // vesna 测试片（主播 PV reaction，2560x1440 / 59.94fps / 743.5s）：4 段选区
+        // **取自用户工程 `vesna_trailer.gsa` 的嵌字页控制轨的实际选区，代表真实粗略选区场景**
+        // （坐标逐字抄自该 .gsa 的 ocr_region 事件，未做任何自探收紧）：
+        //   x 约 [0.1975, 0.80]，**y 下边一律框到 1.0000**（含画面最底边），
+        //   y 上边 0.83125~0.853571（随段落略有出入）。
+        // 与"管线自探紧框"（y[0.915,0.992]）的关键差别：粗框把黑底框之外的画面底边/边缘
+        // 元素一并纳入 OCR，会引入紧框下不复现的单字符垃圾段——这正是要复现的真实场景。
+        // 时间窗：154.545~691.165s；中间 430.589~453.938s **留空**（用户未框选该段，
+        // 对应逛页/无嵌字段），不是遗漏。
+        "vesna" => vec![
+            OcrRegionInput { start: 154.54503344111032, end: 195.6155314942367, x1: 0.2100446428571429, y1: 0.8535714285714285, x2: 0.7623325892857143, y2: 1.0 },
+            OcrRegionInput { start: 195.6155314942367, end: 218.1371192797065, x1: 0.2100446428571429, y1: 0.8535714285714285, x2: 0.7221540178571428, y2: 1.0 },
+            OcrRegionInput { start: 218.1371192797065, end: 430.58866915972294, x1: 0.2, y1: 0.8312499999999998, x2: 0.8, y2: 1.0 },
+            OcrRegionInput { start: 453.93756381631937, end: 691.1647551251244, x1: 0.19748883928571428, y1: 0.83125, x2: 0.7974888392857143, y2: 1.0 },
         ],
         _ => unreachable!("未知案例: {key}"),
     }
