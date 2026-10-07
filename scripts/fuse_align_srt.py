@@ -57,7 +57,7 @@ import numpy as np  # noqa: E402
 from fuse_lab import (BENCH_OUT, collect_game_content, load_embedder,  # noqa: E402
                       load_project, similarity_matrix, split_header, write_srt)
 from fuse_calib import (DEFAULT, REPEAT_DEFAULT, RESET_DEFAULT,  # noqa: E402
-                        align_v2)
+                        align_v2, mask_empty_body)
 
 # 案例 → 工程（转写侧由 collect_game_content 按产品口径收集：game 轨 ASR + 嵌字）
 CASES = ["moon", "glupov", "pierro"]
@@ -97,6 +97,8 @@ def run(case, tok, sess, out_dir):
     cb = [split_header(t)[1] for t in corpus]
     sb = [split_header(g["text"])[1] for g in gc]
     S = similarity_matrix(tok, sess, cb, sb)
+    # 吸引子防护：空正文语料条目不得被有正文的段命中（与 fuse_calib 同源实现）
+    mask_empty_body(S, corpus, [g["text"] for g in gc])
 
     # ③ 单调 DP
     match = align_v2(S, *DEFAULT, repeat_penalty=REPEAT_DEFAULT,

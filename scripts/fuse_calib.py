@@ -218,13 +218,95 @@ def align_v2(S, skip_penalty, unmatched_penalty,
 # 故评分改用等价类：预测落在真值所属类内即算对。
 
 DUP_THR = 0.95
+# 正文归一化要去掉的字符（空白 + 各类括号 + 中英标点）
+_BODY_STRIP = r"[\s「」\[\]【】（）()〈〉《》『』、。，！？…~·．,\.!\?\"'’‘“”—\-]"
+
+
+def body_norm(text):
+    """**正文**归一化：剥表头 + 去空白与标点。空串 ⇒ 该条没有可匹配的正文。"""
+    import re
+    return re.sub(_BODY_STRIP, "", split_header(text)[1])
+
+
+# 判"有无**判别性内容**"用的句末标点、纯标点集与长行门。
+# 长行门 40：英文"姓名框+长头衔"实测 35 字符（glupov `Former Acting Captain,"Ninth Company`）
+# 且无句末标点 ⇒ 必须落在"无判别性内容"一侧，否则会把名牌段误判成台词段。
+CONTENT_LINE_MAX = 40
+_SENT_END = "。！？…!?."
+_PUNCT_ONLY = set("…~·．,，。！？!?、；;:：-—「」[]【】（）()\"'’‘“” \t")
+
+
+def content_free(text):
+    """该文本（除首行外）是否**没有判别性内容**——各行为"纯标点"或"无句末标点的短行"。
+
+    **术语澄清（重要）**：省略号**是正文台词**（用户 2026-10 明确），但它在嵌入空间里
+    **没有判别力**（`body_norm` 后为空）。本函数判的是"**有没有可用于区分的内容**"，
+    **不是**"是不是正文"——故命名为 content_free，不用"名牌态/无正文"那类词。
+
+    首行通常是姓名框，不参与判定（它天然无判别力）；单行文本则连它一起判，
+    否则单行台词段会被误判为无内容。
+    """
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    if not lines:
+        return True
+    rest = lines[1:] if len(lines) > 1 else lines
+    for l in rest:
+        if all(c in _PUNCT_ONLY for c in l):
+            continue                     # 纯标点行（省略号等）无判别力
+        if any(c in l for c in _SENT_END):
+            return False
+        if len(l) > CONTENT_LINE_MAX:
+            return False
+    return True
+
+
+def mask_empty_body(S, corpus, seg_texts):
+    """吸引子防护（2026-10-06）：**没有判别性内容的语料条目，不得被有内容的段命中**。
+
+    成因：无内容条目在句向量空间里对**几乎所有**查询都给高余弦（短文本模长小、方向趋同），
+    与"语义相关"无关。实测 top-1 占比：pierro `语料[17]「丑角」···`（正文归一化 **0 字符**）
+    **54/121 (44.6%)**、glupov `语料[30]安东/头衔/…` **10/22 (45.5%)**。
+
+    **为什么不能用相似度/裕度判据**（实测否决）：吸引子的相似度分布是**平的**——
+    glupov `[30]` 全列 max 0.841 / 中位 0.817 / min 0.798（极差 0.043），而**合法匹配**
+    （段18，真值就是它）只有 0.826，**根本不是该列最大值**（段1 是 0.841）。
+    ⇒ 没有任何阈值能把"合法匹配"与"误命中"分开。唯一可用信号是**段自身有没有内容**。
+
+    两侧判据**故意不同源**（实测教训）：
+    - **语料侧**用 `body_norm(t) == ""`——即"正文剥掉标点后为空"。这条**精确命中**两个已知
+      吸引子（[17]、[30]），且不会误伤"正文短但真实"的条目。
+      曾改用 `content_free` 判语料侧 ⇒ 把 22 条**正文短但合法**的条目（如 `「丑角」可以。`
+      剥标点后仍非空，但短且无句末标点）判成无内容 ⇒ pierro 20/120、glupov 11/22（实测）。
+    - **段侧**用 `content_free`——因为语料是中文、转写是英文，`split_header` 的 16 字符表头门
+      对英文长头衔失效（`Former Acting Captain,"Ninth Company` 35 字符被当正文），
+      于是**同一显示**在语料侧"无正文"、在段侧"有正文"。`content_free` 用句末标点 + 40 字符
+      长行门把这个不对称抹平。
+
+    规则（单方向）：`语料 body_norm 为空 且 段 !content_free` → 置 NEG。
+    反向（段 content_free、语料有内容）**不 mask**——那是 OCR 把正文行丢了
+    （如省略号行 `conf=0.000` 被 `CONF_THRESHOLD` 丢弃），此时把该段配到有内容的条目反而对。
+
+    合法匹配因此保留：glupov 段18（`Anton / 头衔 / …`）与 pierro 用户轨段13
+    （`The Jester / …`）本身都 `content_free` ⇒ 不受影响。
+    """
+    empty_corpus = np.array([body_norm(t) == "" for t in corpus])
+    if not empty_corpus.any():
+        return 0
+    cols = np.nonzero(empty_corpus)[0]
+    masked = 0
+    for i, t in enumerate(seg_texts):
+        if content_free(t):
+            continue
+        for j in cols:
+            if S[i, j] > NEG / 2:
+                S[i, j] = NEG
+                masked += 1
+    return masked
 
 
 def equiv_classes(corpus):
     """→ 每个语料下标（0-based）所属的等价类 id"""
-    import re
-    bodies = [re.sub(r"[\s「」\[\]【】（）()〈〉《》『』、。，！？…~·．,\.!\?\"'’‘“”—\-]", "",
-                     split_header(t)[1]) for t in corpus]
+    bodies = [body_norm(t) for t in corpus]
     n = len(corpus)
     parent = list(range(n))
 
@@ -319,8 +401,13 @@ def build_matrices(keys, tok, sess):
         idxs = list(range(len(rows)))
         sb = [split_header(rows[k]["text"])[1] for k in idxs]
         S = similarity_matrix(tok, sess, cb, sb)
+        # 吸引子防护：空正文语料条目不得被有正文的段命中（见 mask_empty_body）
+        masked = mask_empty_body(S, corpus, [rows[k]["text"] for k in idxs])
+        # 计分集合：排除"亚帧残留碎片"（参与对齐但不计分，见 fuse_truth 的 artifact）
+        scored = [k for k in idxs if not rows[k].get("artifact")]
         out[key] = {"truth": truth, "corpus": corpus, "n_raw": len(rows),
-                    "cls": cls, "ndup": ndup, "S": S, "idxs": idxs}
+                    "cls": cls, "ndup": ndup, "S": S, "idxs": idxs,
+                    "scored": scored, "masked": masked}
     return out
 
 
@@ -385,9 +472,11 @@ def main():
         m = align_fast(S, *DEFAULT)
         c = score(m, d["truth"], idxs, d["cls"])
         cx = score_exact(m, d["truth"], idxs)
-        ceil, lost = ceiling_of(d["truth"], idxs, d["cls"])
-        print("  {:<8} 类口径{:3}/{:3} ({:5.1f}%)  下标口径{:3}  天花板{:3} ({:5.1f}%)".format(
-            key, c, len(idxs), c / len(idxs) * 100, cx, ceil, ceil / len(idxs) * 100))
+        sc = d["scored"]
+        ceil, lost = ceiling_of(d["truth"], sc, d["cls"])
+        print("  {:<8} 类口径{:3}/{:3} ({:5.1f}%)  下标口径{:3}  天花板{:3} ({:5.1f}%)  mask{:3} 不计分{:2}".format(
+            key, c, len(sc), c / len(sc) * 100, cx, ceil, ceil / len(sc) * 100,
+            d["masked"], len(idxs) - len(sc)))
 
     # ── 统一转移模型：B（有界一对多）实测 ──
     print()
@@ -401,9 +490,10 @@ def main():
             diag = {}
             m = align_v2(S, *DEFAULT, repeat_penalty=rp, diag=diag)
             c = score(m, d["truth"], idxs, d["cls"])
-            ceil, lost = ceiling_of(d["truth"], idxs, d["cls"])
+            sc = d["scored"]
+            ceil, lost = ceiling_of(d["truth"], sc, d["cls"])
             print("   {:>8}  {:<8} {:>4}/{:<4} {:>7} {:>8} {:>6}".format(
-                "inf" if not np.isfinite(rp) else rp, key, c, len(idxs), ceil,
+                "inf" if not np.isfinite(rp) else rp, key, c, len(sc), ceil,
                 diag["repeat"], diag["forward"]))
         # 三案例合计
         tot_c = tot_n = tot_r = 0
@@ -413,7 +503,7 @@ def main():
             diag = {}
             m = align_v2(S, *DEFAULT, repeat_penalty=rp, diag=diag)
             tot_c += score(m, d["truth"], idxs, d["cls"])
-            tot_n += len(idxs)
+            tot_n += len(d["scored"])
             tot_r += diag["repeat"]
         print("   {:>8}  {:<8} {:>4}/{:<4} {:>7} {:>8}".format(
             "inf" if not np.isfinite(rp) else rp, "合计", tot_c, tot_n, "-", tot_r))
@@ -432,9 +522,9 @@ def main():
                 S, idxs = d["S"], d["idxs"]
                 m = align_v2(S, sp, up, repeat_penalty=REPEAT_DEFAULT, reset_penalty=RESET_DEFAULT)
                 c = score(m, d["truth"], idxs, d["cls"])
-                per[key] = (c, len(idxs))
+                per[key] = (c, len(d["scored"]))
                 tot_c += c
-                tot_n += len(idxs)
+                tot_n += len(d["scored"])
             table[(sp, up)] = (tot_c, tot_n, per)
             if best is None or tot_c / tot_n > best[0]:
                 best = (tot_c / tot_n, sp, up, per, tot_c, tot_n)

@@ -41,6 +41,10 @@ CASES = [
 ]
 
 WEAK = 0.72
+# 亚帧残留碎片阈值（秒）：与 OCR 侧 `SHORT_FRAGMENT_SUBFRAME_SEC = 0.5`（= frame_interval）
+# 同一物理依据——不足一个采样网格间隔的产出段不可能是真实字幕，属过渡态残留。
+# 这类段**参与对齐但不计分**（见 build_truth 末尾）。
+SUBFRAME_SEC = 0.5
 SENT_END = "。！？…!?."
 _ONLY_PUNCT = set("…~·．,，。！？!?、；;:：-—「」[]【】（）()\"'’‘“” \n\t")
 
@@ -245,6 +249,25 @@ def build_truth(case, verbose=True):
             r["truth"] = j
             r["namebox_fixed"] = True
 
+    # ── 亚帧残留碎片：**不参与评分**（2026-10-06）──
+    # 时长 < SUBFRAME_SEC 的产出段物理上不可能是一条真实字幕（人眼读不完），必是帧级
+    # 精化/姓名框切换切出的**过渡态**。它**仍留在序列里参与对齐**（产品确实会输出它），
+    # 但**不计入真值、不计入分母**——与嵌字基准的"噪音段（仅统计）"同口径。
+    #
+    # 为什么必须处理（实测）：pierro `段26 [549.52→549.65] (0.13s)` 的转写是
+    # `Mitya / Ronova's Curse of Death persists, we won't be able to advance the experiment…`，
+    # 即**前一条字幕的残留文本**；而按时间重叠它落在 `[549.36, 560.52]` 的参考块里
+    # ⇒ 真值被算成 `语料[42]`（严冬计划…）。**但语料[41] 才是它文本对应的行**，
+    # 而 `语料[41]` **不在参考覆盖范围内**（146 条里 28 条未被任何参考块覆盖）
+    # ⇒ 参考中介这条路径**原理上到不了它**。于是真值错、DP 对，还凭空造出
+    # 一组"一对多"（`语料[42] ← 段[26,27]`）污染评分口径。
+    artifacts = [r for r in rows if r["dur"] < SUBFRAME_SEC]
+    for r in artifacts:
+        r["artifact"] = True
+        r["truth"] = 0
+    for r in rows:
+        r.setdefault("artifact", False)
+
     weak = [x for x in ref_to_corpus if x["score"] < WEAK]
     no_ref = [r for r in rows if not r["ref_text"]]
     groups = {}
@@ -277,6 +300,12 @@ def build_truth(case, verbose=True):
             len(groups), len(corpus), len(multi), sum(len(v) for v in multi.values())))
         for k in sorted(multi):
             print("    语料[{:3}] ← 段 {}".format(k, multi[k]))
+        if artifacts:
+            print("  亚帧残留碎片（**参与对齐但不计分**）{} 处：".format(len(artifacts)))
+            for r in artifacts:
+                print("    段{:3} [{:8.2f}→{:8.2f}] ({:.2f}s) 原真值[{}] | {}".format(
+                    r["index"], r["start"], r["end"], r["dur"], r["truth"],
+                    r["text"].replace("\n", " / ")[:52]))
 
     return {
         "key": case["key"], "project": case["project"], "reference": case["reference"],
@@ -290,6 +319,8 @@ def build_truth(case, verbose=True):
             "corpus_covered": len(groups),
             "multi_groups": len(multi), "multi_segments": sum(len(v) for v in multi.values()),
             "namebox_fixed": len(fixed),
+            "artifacts": len(artifacts),
+            "scored_segments": len(rows) - len(artifacts),
         },
         "rows": rows,
         "ref_to_corpus": [{"t0": x["ref"]["t0"], "t1": x["ref"]["t1"],
