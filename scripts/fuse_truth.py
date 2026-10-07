@@ -46,6 +46,8 @@ WEAK = 0.72
 # 这类段**参与对齐但不计分**（见 build_truth 末尾）。
 SUBFRAME_SEC = 0.5
 SENT_END = "。！？…!?."
+# 纯标点行（省略号、间隔号等）——用于识别"名牌块的空正文"
+PUNCT_ONLY = set("…~·．,，。！？!?、；;:：-—「」[]【】（）()\"'’‘“” \t")
 _ONLY_PUNCT = set("…~·．,，。！？!?、；;:：-—「」[]【】（）()\"'’‘“” \n\t")
 
 
@@ -102,10 +104,41 @@ def overlap(a0, a1, b0, b1):
 
 # ────────────────────────── 参考文本 ──────────────────────────
 
-def parse_reference(path):
-    """→ [{t0,t1,speaker,head,text,raw}]
+# 参考块内分隔**多条语料行**的标记（单独一行）。用于"一个显示块覆盖多条语料"的情形：
+# 英文 `Good morning, Snezhnograd!` 对应中文 `向你问候` + `至冬堡` ⇒ 块内写
+# `---` 把两行语料分开。块内**没有文本**表示该显示在中英之间无对应（语气/感叹词）。
+PART_SEP = "---"
 
-    首行为时间码；其后**前导的短行且结尾非句末标点**视为说话人/头衔（可多行，
+
+def _split_head(body):
+    """从若干文本行中剥出前导说话人/头衔行 → (head, 其余行)
+
+    **只剩一行时的判定必须限定为"纯标点行"**（实测缺陷）：旧规则是"短且结尾非句末标点
+    就当成说话人"，本意是处理**纯名牌块**（`「丑角」/ ···` ⇒ 正文为空）。但它会**误吃短台词**：
+    PV 案例里 `派蒙 / 向你问候`（4 字、无句末标点）整条被吃成说话人 ⇒ `text` 变空、
+    匹配得分 0。现有三案例的台词都长或带句末标点，所以一直没暴露。
+    """
+    body = list(body)
+    head = []
+    while len(body) > 1:
+        h = body[0]
+        if len(h) <= 16 and not h.endswith(tuple(SENT_END)):
+            head.append(body.pop(0))
+        else:
+            break
+    # 只剩一行：仅当它是**纯标点**（如 `···`）才视为名牌块的"空正文"
+    if len(body) == 1 and body[0] and all(c in PUNCT_ONLY for c in body[0]):
+        head.append(body.pop(0))
+    return head, body
+
+
+def parse_reference(path):
+    """→ [{t0,t1,speaker,head,text,raw,parts}]
+
+    块格式：首行时间码；其后为文本。文本里若出现**单独一行 `---`**，则把本块切成多个
+    `part`——**每个 part 对应一条语料行**。块**可以没有文本**（中英无对应的显示）。
+
+    每个 part 内：**前导的短行且结尾非句末标点**视为说话人/头衔（可多行，
     如 glupov 的「名字 + 头衔」两行），其余为台词。
     不能简单假定 body[0] 就是说话人：moon 的开场/收场旁白只有一行正文、没有说话人，
     按旧规则会把正文当说话人吃掉 ⇒ text 变空、匹配得分 0（实测两处）。
@@ -113,7 +146,7 @@ def parse_reference(path):
     raw = io.open(path, encoding="utf-8-sig").read().replace("\r\n", "\n")
     out = []
     for b in [x.strip() for x in raw.split("\n\n") if x.strip()]:
-        lines = [l for l in b.split("\n") if l.strip()]
+        lines = [l.strip() for l in b.split("\n") if l.strip()]
         if not lines:
             continue
         m = re.match(r"(\d+):(\d+):(\d+):(\d+)\s*-\s*(\d+):(\d+):(\d+):(\d+)", lines[0])
@@ -124,22 +157,27 @@ def parse_reference(path):
         def sec(v):
             return v[0] * 3600 + v[1] * 60 + v[2] + v[3] / 100.0
 
-        body = lines[1:]
-        head = []
-        while len(body) > 1:
-            h = body[0]
-            if len(h) <= 16 and not h.endswith(tuple(SENT_END)):
-                head.append(body.pop(0))
+        # 按 `---` 切成多个 part（无分隔符时只有一个）
+        groups, cur = [], []
+        for l in lines[1:]:
+            if l == PART_SEP:
+                groups.append(cur)
+                cur = []
             else:
-                break
-        # 只剩一行时：短且结尾非句末标点 ⇒ 是说话人（台词为空，如纯名牌块）
-        if len(body) == 1 and len(body[0]) <= 16 and not body[0].endswith(tuple(SENT_END)):
-            head.append(body.pop(0))
+                cur.append(l)
+        groups.append(cur)
+
+        parts = []
+        for gl in groups:
+            head, body = _split_head(gl)
+            parts.append({"speaker": head[0] if head else "", "head": head,
+                          "text": " ".join(body), "raw": " ".join(gl)})
         out.append({"t0": sec(g[:4]), "t1": sec(g[4:]),
-                    "speaker": head[0] if head else "",
-                    "head": head,
-                    "text": " ".join(body),
-                    "raw": " ".join(lines[1:])})
+                    "speaker": parts[0]["speaker"] if parts else "",
+                    "head": parts[0]["head"] if parts else [],
+                    "text": "\n".join(p["text"] for p in parts if p["text"]),
+                    "raw": " ".join(lines[1:]),
+                    "parts": parts})
     return sorted(out, key=lambda r: r["t0"])
 
 
@@ -152,16 +190,17 @@ def build_truth(case, verbose=True):
     gc = collect_game_content(proj)
     refs = parse_reference(os.path.join(EXAMPLES, case["reference"]))
 
-    # 参考块 → 语料行（文本匹配）
+    # 参考块 → 语料行（文本匹配），**逐 part 匹配**（一个块可覆盖多条语料行）
     # 主判据：**正文 vs 正文**（两侧都按同一规则剥掉名字行/头衔行），避免同形表头
     # 干扰匹配。仅当主判据弱时才回退到「整条原文 vs 整条原文」——用于正文退化的
     # 情形（正文只剩省略号、或标题被当作正文，如 glupov 的 `安东 / 原「第九连队」
     # 临时连长 / ……`）。
     raw_corpus = [norm(t) for t in corpus]
-    ref_to_corpus = []
-    for r in refs:
-        rb = norm(r["text"])
-        best_j, best_score = -1, 0.0
+
+    def match_one(rt, rr):
+        """把一段文本匹配到语料行 → (j, score)"""
+        rb = norm(rt)
+        bj, bs = -1, 0.0
         for j, cb in enumerate(cbody):
             if not cb or not rb:
                 continue
@@ -170,21 +209,32 @@ def build_truth(case, verbose=True):
                 score = max(score, 0.97)
             elif len(cb) >= 6 and cb in rb:
                 score = max(score, 0.95)
-            if score > best_score:
-                best_j, best_score = j, score
-        if best_score < WEAK:
-            rr = norm(r["raw"])
+            if score > bs:
+                bj, bs = j, score
+        if bs < WEAK:
+            rrn = norm(rr)
             for j, cr in enumerate(raw_corpus):
-                if not cr or not rr:
+                if not cr or not rrn:
                     continue
-                score = difflib.SequenceMatcher(None, rr, cr).ratio()
-                if len(rr) >= 6 and rr in cr:
+                score = difflib.SequenceMatcher(None, rrn, cr).ratio()
+                if len(rrn) >= 6 and rrn in cr:
                     score = max(score, 0.97)
-                elif len(cr) >= 6 and cr in rr:
+                elif len(cr) >= 6 and cr in rrn:
                     score = max(score, 0.95)
-                if score > best_score:
-                    best_j, best_score = j, score
-        ref_to_corpus.append({"ref": r, "j": best_j, "score": round(best_score, 3)})
+                if score > bs:
+                    bj, bs = j, score
+        return bj, round(bs, 3)
+
+    ref_to_corpus = []
+    for r in refs:
+        if not r["parts"]:                 # 块内无文本 ⇒ 该显示在中英间无对应
+            ref_to_corpus.append({"ref": r, "j": -1, "score": 0.0, "parts": []})
+            continue
+        matched = [match_one(p["text"], p["raw"]) for p in r["parts"]]
+        bi = max(range(len(matched)), key=lambda i: matched[i][1])
+        ref_to_corpus.append({
+            "ref": r, "j": matched[bi][0], "score": matched[bi][1],
+            "parts": [{"j": j, "score": s} for j, s in matched]})
 
     # 转写段 → 参考块：**时长比 + λ·重叠比**（λ=0.3）
     #
@@ -195,6 +245,10 @@ def build_truth(case, verbose=True):
     # 合并后两个信号互补：时长定位"哪一条字幕"，重叠在时长接近时打破平局。
     # λ 的可行区间由这 5 例夹出：(0.0084, 0.558)，取 0.3。
     LAMBDA_OVERLAP = 0.3
+    # 段**实质重叠**参考块的重叠比下限：达到此比例的块都进入该段的**可接受集合**。
+    # 0.25 的取法：一个显示块覆盖两条语料时，段对两块的 overlap/dur 各约 0.5 ⇒ 两块都进；
+    # 而边界处的轻微搭接（通常 <10%）不会误进。空集合 ⇒ 该段**应当不配**。
+    OV_MIN = 0.25
     rows = []
     for i, g in enumerate(gc):
         dur = g["end"] - g["start"]
@@ -215,6 +269,27 @@ def build_truth(case, verbose=True):
                 ov = overlap(g["start"], g["end"], r["t0"], r["t1"])
                 if ov > best_ov:
                     best, best_ov = x, ov
+        # ── 可接受集合（T4c：对应关系是"关系"而非"函数"）──
+        # 段实质重叠的**所有**参考块所映语料行取并集。集合为空 ⇒ 该显示在中英之间
+        # 无对应（语气/感叹词等）⇒ **正确行为是"不配"**（输出转写原文），不是缺陷。
+        #
+        # **必须始终包含"最佳参考块"**（即旧单值口径的 truth）：否则会引入回归——
+        # 实测 glupov 22/22 → 20/22（天花板 22 → 21）：名牌段的最佳块是按**时长接近**
+        # 选出的"……"块，它与该段的**重叠比可能 < OV_MIN**，于是被集合漏掉。
+        # 有了这条，集合恒为旧真值的**超集**，分数只可能升、不可能降。
+        ok = set()
+        if best:
+            for p in best["parts"]:
+                if p["j"] >= 0 and p["score"] >= WEAK:
+                    ok.add(p["j"] + 1)
+        for x in ref_to_corpus:
+            r = x["ref"]
+            ov = overlap(g["start"], g["end"], r["t0"], r["t1"])
+            if ov / max(dur, 1e-9) < OV_MIN:
+                continue
+            for p in x["parts"]:
+                if p["j"] >= 0 and p["score"] >= WEAK:
+                    ok.add(p["j"] + 1)
         rows.append({
             "index": i + 1, "kind": g["kind"],
             "start": g["start"], "end": g["end"], "dur": round(dur, 2),
@@ -227,6 +302,7 @@ def build_truth(case, verbose=True):
             "ref_dur_ratio": round(best_score, 3),
             "time_cov": round(best_ov / max(dur, 1e-9), 3),
             "truth": (best["j"] + 1) if best else 0,
+            "truth_ok": sorted(ok),
             "weak_ref": bool(best and best["score"] < WEAK),
             "namebox_fixed": False,
         })
@@ -247,6 +323,8 @@ def build_truth(case, verbose=True):
         if j and j != r["truth"]:
             fixed.append((r["index"], r["truth"], j, r["text"], r["ref_speaker"]))
             r["truth"] = j
+            # 归位结果并入可接受集合（原集合保留：两种都可能对）
+            r["truth_ok"] = sorted(set(r["truth_ok"]) | {j})
             r["namebox_fixed"] = True
 
     # ── 亚帧残留碎片：**不参与评分**（2026-10-06）──
@@ -265,11 +343,16 @@ def build_truth(case, verbose=True):
     for r in artifacts:
         r["artifact"] = True
         r["truth"] = 0
+        r["truth_ok"] = []
     for r in rows:
         r.setdefault("artifact", False)
 
     weak = [x for x in ref_to_corpus if x["score"] < WEAK]
     no_ref = [r for r in rows if not r["ref_text"]]
+    # 可接受集合统计
+    scored_rows = [r for r in rows if not r["artifact"]]
+    empty_ok = [r for r in scored_rows if not r["truth_ok"]]
+    multi_ok = [r for r in scored_rows if len(r["truth_ok"]) > 1]
     groups = {}
     for r in rows:
         if r["truth"] > 0:
@@ -306,6 +389,25 @@ def build_truth(case, verbose=True):
                 print("    段{:3} [{:8.2f}→{:8.2f}] ({:.2f}s) 原真值[{}] | {}".format(
                     r["index"], r["start"], r["end"], r["dur"], r["truth"],
                     r["text"].replace("\n", " / ")[:52]))
+        # 可接受集合（T4c：对应关系是"关系"而非"函数"）
+        sizes = {}
+        for r in scored_rows:
+            sizes[len(r["truth_ok"])] = sizes.get(len(r["truth_ok"]), 0) + 1
+        print("  可接受集合（计分段 {} 段）：{}".format(
+            len(scored_rows),
+            "  ".join("|集合|={} : {} 段".format(k, sizes[k]) for k in sorted(sizes))))
+        if empty_ok:
+            print("  **空集合（正确行为 = 不配）{} 段**：".format(len(empty_ok)))
+            for r in empty_ok:
+                print("    段{:3} [{:8.2f}→{:8.2f}] ({:.2f}s) | {}".format(
+                    r["index"], r["start"], r["end"], r["dur"],
+                    r["text"].replace("\n", " / ")[:56]))
+        if multi_ok:
+            print("  多元素集合 {} 段（中英切分不一致，两种都算对）：".format(len(multi_ok)))
+            for r in multi_ok[:10]:
+                print("    段{:3} [{:8.2f}] 可接受 {} | {}".format(
+                    r["index"], r["start"], r["truth_ok"],
+                    r["text"].replace("\n", " / ")[:44]))
 
     return {
         "key": case["key"], "project": case["project"], "reference": case["reference"],
@@ -321,11 +423,15 @@ def build_truth(case, verbose=True):
             "namebox_fixed": len(fixed),
             "artifacts": len(artifacts),
             "scored_segments": len(rows) - len(artifacts),
+            "empty_sets": len(empty_ok),
+            "multi_sets": len(multi_ok),
         },
         "rows": rows,
         "ref_to_corpus": [{"t0": x["ref"]["t0"], "t1": x["ref"]["t1"],
                            "speaker": x["ref"]["speaker"], "text": x["ref"]["text"],
-                           "corpus_index": x["j"] + 1, "score": x["score"]}
+                           "corpus_index": x["j"] + 1, "score": x["score"],
+                           "parts": [{"corpus_index": p["j"] + 1, "score": p["score"]}
+                                     for p in x["parts"]]}
                           for x in ref_to_corpus],
     }
 

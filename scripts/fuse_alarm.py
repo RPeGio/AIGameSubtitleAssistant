@@ -40,6 +40,7 @@ def analyze(key, tok, sess, verbose=True):
     T = load_truth(key)
     corpus, rows = T["corpus"], T["rows"]
     truth = [r["truth"] for r in rows]
+    truth_ok = [r.get("truth_ok") or ([r["truth"]] if r["truth"] > 0 else []) for r in rows]
     cls = equiv_classes(corpus)
     idxs = list(range(len(rows)))
     cb = [split_header(t)[1] for t in corpus]
@@ -51,7 +52,12 @@ def analyze(key, tok, sess, verbose=True):
     for n, k in enumerate(idxs):
         pred = m[n] + 1
         t = truth[k]
-        correct = pred > 0 and t > 0 and cls[pred - 1] == cls[t - 1]
+        ok = truth_ok[k]
+        # 集合感知：集合为空 ⇒ 正确行为是不配（pred <= 0）
+        if not ok:
+            correct = pred <= 0
+        else:
+            correct = pred > 0 and any(cls[pred - 1] == cls[x - 1] for x in ok)
         row = S[n]
         order = np.argsort(-row)
         top1 = float(row[order[0]])
@@ -59,7 +65,7 @@ def analyze(key, tok, sess, verbose=True):
         margin = top1 - top2
         recs.append({
             "index": rows[k]["index"], "correct": bool(correct),
-            "pred": pred, "truth": t,
+            "pred": pred, "truth": t, "truth_ok": ok,
             "score": float(row[pred - 1]) if pred > 0 else 0.0,
             "top1": top1, "margin": margin,
             "flag_score": (float(row[pred - 1]) if pred > 0 else 0.0) < THR_SCORE,

@@ -325,39 +325,50 @@ def equiv_classes(corpus):
     return [find(i) for i in range(n)]
 
 
-def score(match, truth, idxs, cls):
-    """等价类感知评分：预测与真值同属一类即算对"""
+def score(match, truth_ok, scored, cls, idxs=None):
+    """等价类感知 + **集合感知**评分。
+
+    - 段的**可接受集合**非空：预测落在集合内任一元素所属的等价类即算对
+      （中英切分不一致时一个显示块可能覆盖多条语料行，两种都算对）；
+    - 集合为**空**：正确行为是**不配**（输出转写原文，如英文多出的语气词）
+      ⇒ 只有预测为 unmatched 才算对。**这不是缺陷**。
+    """
+    pos = {k: n for n, k in enumerate(idxs)} if idxs is not None else None
     ok = 0
-    for n, k in enumerate(idxs):
+    for k in scored:
+        n = pos[k] if pos is not None else k
         pred = match[n] + 1
-        t = truth[k]
-        if pred <= 0 or t <= 0:
-            continue
-        if cls[pred - 1] == cls[t - 1]:
+        s = truth_ok[k]
+        if not s:
+            if pred <= 0:
+                ok += 1
+        elif pred > 0 and any(cls[pred - 1] == cls[t - 1] for t in s):
             ok += 1
     return ok
 
 
-def ceiling_of(truth, idxs, cls):
-    """严格递增 DP 的**等价类天花板**：可被同时满足的最大段数。
+def ceiling_of(truth_ok, scored, cls):
+    """严格递增 DP 的**等价类天花板（集合感知）**：可被同时满足的最大段数。
 
-    每段可接受集合 = 真值所属等价类的全部语料下标；在"严格递增选择"下用贪心
-    取每段可用的最小下标（留最大余量），贪心对本问题是最大基数最优。
+    每段的可接受集合 = 其 `truth_ok` 各元素所属等价类的全部下标；在"严格递增选择"下
+    贪心取每段可用的**最小**下标（留最大余量），贪心对本问题是最大基数最优。
+    **空集合的段总是可满足**（选"不配"即可，不改变已用下标）⇒ 不构成约束。
     """
     members = {}
     for j, c in enumerate(cls):
         members.setdefault(c, []).append(j + 1)
     last = 0
     cnt = 0
-    for k in idxs:
-        t = truth[k]
-        if t <= 0:
+    for k in scored:
+        s = truth_ok[k]
+        if not s:
+            cnt += 1
             continue
-        cand = [x for x in members[cls[t - 1]] if x > last]
+        cand = [x for t in s for x in members[cls[t - 1]] if x > last]
         if cand:
             last = min(cand)
             cnt += 1
-    return cnt, len(idxs) - cnt
+    return cnt, len(scored) - cnt
 
 
 # ────────────────────────── 案例与输入口径 ──────────────────────────
@@ -388,13 +399,16 @@ def score_exact(match, truth, idxs):
 # ────────────────────────── 主流程 ──────────────────────────
 
 def build_matrices(keys, tok, sess):
-    """→ {key: {"S": 相似度矩阵, "idxs": 段下标, truth, corpus}}"""
+    """→ {key: {"S", "idxs", "scored", "truth", "truth_ok", "corpus", ...}}"""
     out = {}
     for key in keys:
         T = load_truth(key)
         corpus = T["corpus"]
         rows = T["rows"]
         truth = [r["truth"] for r in rows]
+        # 可接受集合：旧真值文件没有 truth_ok ⇒ 退化为单元素集合（向后兼容）
+        truth_ok = [r.get("truth_ok") or ([r["truth"]] if r["truth"] > 0 else [])
+                    for r in rows]
         cb = [split_header(t)[1] for t in corpus]
         cls = equiv_classes(corpus)
         ndup = len(corpus) - len(set(cls))
@@ -405,7 +419,7 @@ def build_matrices(keys, tok, sess):
         masked = mask_empty_body(S, corpus, [rows[k]["text"] for k in idxs])
         # 计分集合：排除"亚帧残留碎片"（参与对齐但不计分，见 fuse_truth 的 artifact）
         scored = [k for k in idxs if not rows[k].get("artifact")]
-        out[key] = {"truth": truth, "corpus": corpus, "n_raw": len(rows),
+        out[key] = {"truth": truth, "truth_ok": truth_ok, "corpus": corpus, "n_raw": len(rows),
                     "cls": cls, "ndup": ndup, "S": S, "idxs": idxs,
                     "scored": scored, "masked": masked}
     return out
@@ -470,10 +484,10 @@ def main():
         d = data[key]
         S, idxs = d["S"], d["idxs"]
         m = align_fast(S, *DEFAULT)
-        c = score(m, d["truth"], idxs, d["cls"])
-        cx = score_exact(m, d["truth"], idxs)
         sc = d["scored"]
-        ceil, lost = ceiling_of(d["truth"], sc, d["cls"])
+        c = score(m, d["truth_ok"], sc, d["cls"], idxs)
+        cx = score_exact(m, d["truth"], idxs)
+        ceil, lost = ceiling_of(d["truth_ok"], sc, d["cls"])
         print("  {:<8} 类口径{:3}/{:3} ({:5.1f}%)  下标口径{:3}  天花板{:3} ({:5.1f}%)  mask{:3} 不计分{:2}".format(
             key, c, len(sc), c / len(sc) * 100, cx, ceil, ceil / len(sc) * 100,
             d["masked"], len(idxs) - len(sc)))
@@ -489,9 +503,9 @@ def main():
             S, idxs = d["S"], d["idxs"]
             diag = {}
             m = align_v2(S, *DEFAULT, repeat_penalty=rp, diag=diag)
-            c = score(m, d["truth"], idxs, d["cls"])
             sc = d["scored"]
-            ceil, lost = ceiling_of(d["truth"], sc, d["cls"])
+            c = score(m, d["truth_ok"], sc, d["cls"], idxs)
+            ceil, lost = ceiling_of(d["truth_ok"], sc, d["cls"])
             print("   {:>8}  {:<8} {:>4}/{:<4} {:>7} {:>8} {:>6}".format(
                 "inf" if not np.isfinite(rp) else rp, key, c, len(sc), ceil,
                 diag["repeat"], diag["forward"]))
@@ -502,7 +516,7 @@ def main():
             S, idxs = d["S"], d["idxs"]
             diag = {}
             m = align_v2(S, *DEFAULT, repeat_penalty=rp, diag=diag)
-            tot_c += score(m, d["truth"], idxs, d["cls"])
+            tot_c += score(m, d["truth_ok"], d["scored"], d["cls"], idxs)
             tot_n += len(d["scored"])
             tot_r += diag["repeat"]
         print("   {:>8}  {:<8} {:>4}/{:<4} {:>7} {:>8}".format(
@@ -521,7 +535,7 @@ def main():
                 d = data[key]
                 S, idxs = d["S"], d["idxs"]
                 m = align_v2(S, sp, up, repeat_penalty=REPEAT_DEFAULT, reset_penalty=RESET_DEFAULT)
-                c = score(m, d["truth"], idxs, d["cls"])
+                c = score(m, d["truth_ok"], d["scored"], d["cls"], idxs)
                 per[key] = (c, len(d["scored"]))
                 tot_c += c
                 tot_n += len(d["scored"])
