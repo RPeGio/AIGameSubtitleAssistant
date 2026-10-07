@@ -37,6 +37,15 @@ NEG = -1e9
 GRID_SKIP = [0.0, 0.002, 0.005, 0.01, 0.02, 0.04, 0.08, 0.16]
 GRID_UNMATCHED = [0.02, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5]
 DEFAULT = (0.02, 0.25)   # 现行未校准初值
+# 统一转移模型 B（有界一对多）的复用罚分。实测安全窗口 **[0.2, 0.3]**：
+#   ≥0.4 组解不开（pierro 107/121）；≤0.18 glupov 出现**误复用**（22/22 → 21/22）；
+#   [0.2, 0.3] 内三案例：moon 15/15、glupov 22/22、pierro **119/121**（复用 2 次）。
+# 取窗口中值 0.25（与 unmatched_penalty 同量级，纯属巧合，两者语义无关）。
+REPEAT_DEFAULT = 0.25
+# 统一转移模型 C（回退 / 拖进度条）的罚分：**保持禁用**（选项 i）。
+# 现有三案例真值里**没有任何真实顺序回退**（glupov 的 5 处是语料近重复行的下标假象），
+# 故该路径无素材可验；待新增"PV reaction（主播反复拖进度条）"案例后再放开。
+RESET_DEFAULT = float("inf")
 
 
 # ────────────────────────── DP：朴素式（参考实现）──────────────────────────
@@ -108,8 +117,96 @@ def _backtrack(dp, bk, n, m):
     match = [-1] * n
     for i in range(n, 0, -1):
         pj, kind = bk[i, j]
-        match[i - 1] = (j - 1) if kind == 1 else -1
+        match[i - 1] = (j - 1) if kind != 0 else -1
         j = int(pj)
+    return match
+
+
+# ────────────────── DP：统一转移模型（前进 / 复用 / 回退 / 不配）──────────────────
+# T4c：把"序"与"重数"两个假设分开，四种转移并列——
+#
+#   A 前进   k > j'   dp[i-1][j'] + S[i-1][k-1] - skip_penalty*(k-1-j')
+#   B 复用   k == j'  dp[i-1][k]   + S[i-1][k-1] - repeat_penalty      ← 有界一对多
+#   C 回退   k < j'   dp[i-1][j'] + S[i-1][k-1] - reset_penalty       ← 拖进度条重看
+#   D 不配   —        dp[i-1][j]  - unmatched_penalty
+#
+# 为什么需要 B：一段字幕被 OCR 切成 N 段时，严格递增 DP 无法让多段复用同一语料行 ⇒
+# 后段被挤到下一行 ⇒ **此后整条链顺移**。pierro 实测：2 组一对多造成 21 个百分点的损失
+# （78.5% vs 天花板 97.5%），远大于 OCR 残留碎片本身的代价。
+#
+# 为什么需要 C：实况里主播会**反复拖进度条重看** PV/剧情，此时语料下标顺序会**回退**
+# （`1-2-3-4-1-2`）甚至跳进（`1-3-4-2`）——严格递增 DP 原理上无法表达。
+#
+# **安全性质（本函数的存在意义）**：`repeat_penalty = reset_penalty = inf` 时，
+# 本函数与 `align_fast`（现行严格递增 DP）**逐段等价**，由 `--selfcheck` 断言。
+# 故新结构可先在"回退禁用"下上线（选项 i），待有素材再放开 C。
+#
+# 复杂度仍是 O(n·m)：A 用**前缀**最大（k 递增一趟）、C 用**后缀**最大（k 递减一趟）、
+# B/D 各 O(1)。
+#
+# B 的"有界"由**线性累积罚分**实现（连续复用 r 次即付 r×repeat_penalty），无需额外状态；
+# 若将来实测出现长链复用，再考虑加硬上限。
+
+KIND_UNMATCHED, KIND_FORWARD, KIND_REPEAT, KIND_RESET = 0, 1, 2, 3
+
+
+def align_v2(S, skip_penalty, unmatched_penalty,
+             repeat_penalty=float("inf"), reset_penalty=float("inf"),
+             diag=None):
+    n, m = S.shape
+    dp = np.full((n + 1, m + 1), NEG)
+    bk = np.zeros((n + 1, m + 1, 2), dtype=np.int32)
+    dp[0, 0] = 0.0
+    rep_on = np.isfinite(repeat_penalty)
+    res_on = np.isfinite(reset_penalty)
+    for i in range(1, n + 1):
+        prev = dp[i - 1]
+        # ── D 不配 ──
+        v_un = prev - unmatched_penalty
+        better = v_un > dp[i]
+        dp[i][better] = v_un[better]
+        for j in np.nonzero(better)[0]:
+            bk[i, j] = (j, KIND_UNMATCHED)
+        # ── C 回退：max_{j' > k} dp_prev[j']，k 递减一趟 ──
+        if res_on:
+            suf_max, suf_arg = NEG, -1
+            for k in range(m, 0, -1):
+                if suf_max > NEG / 2:
+                    v = S[i - 1, k - 1] - reset_penalty + suf_max
+                    if v > dp[i, k]:
+                        dp[i, k] = v
+                        bk[i, k] = (suf_arg, KIND_RESET)
+                if prev[k] > suf_max:      # 纳入 j' = k，供下一轮（k-1）使用
+                    suf_max, suf_arg = prev[k], k
+        # ── A 前进（前缀最大）+ B 复用，k 递增一趟 ──
+        P = np.where(prev > NEG / 2, prev + skip_penalty * np.arange(m + 1), NEG)
+        run_max, run_arg = NEG, -1
+        for k in range(1, m + 1):
+            cand = P[k - 1]
+            if cand > run_max:
+                run_max, run_arg = cand, k - 1
+            if run_max > NEG / 2:
+                v = S[i - 1, k - 1] - skip_penalty * (k - 1) + run_max
+                if v > dp[i, k]:
+                    dp[i, k] = v
+                    bk[i, k] = (run_arg, KIND_FORWARD)
+            if rep_on and prev[k] > NEG / 2:
+                vb = prev[k] + S[i - 1, k - 1] - repeat_penalty
+                if vb > dp[i, k]:
+                    dp[i, k] = vb
+                    bk[i, k] = (k, KIND_REPEAT)
+    match = _backtrack(dp, bk, n, m)
+    if diag is not None:
+        j = int(np.argmax(dp[n]))
+        kinds = {}
+        for i in range(n, 0, -1):
+            pj, kind = bk[i, j]
+            kinds[kind] = kinds.get(kind, 0) + 1
+            j = int(pj)
+        diag.update({"repeat": kinds.get(KIND_REPEAT, 0),
+                     "reset": kinds.get(KIND_RESET, 0),
+                     "forward": kinds.get(KIND_FORWARD, 0),
+                     "unmatched": kinds.get(KIND_UNMATCHED, 0)})
     return match
 
 
@@ -252,6 +349,24 @@ def main():
                 d = [(i, x, y) for i, (x, y) in enumerate(zip(a, b)) if x != y]
                 print("  ✗ {} sp={} up={} 差异 {} 处 {}".format(key, sp, up, len(d), d[:4]))
     print("  等价: {}".format("✓ 全部一致" if ok else "✗ 存在不一致"))
+
+    # ── 统一转移模型：B/C 关闭时必须与现行严格递增 DP 逐段等价 ──
+    # 这是"新结构零风险上线"的证明：结构换了、行为没换。
+    print()
+    print("统一转移模型自检（repeat=inf 且 reset=inf ⇒ 应与 align_fast 逐段相同）")
+    ok2 = True
+    for key in keys:
+        S, idxs = data[key]["S"], data[key]["idxs"]
+        for (sp, up) in [(0.02, 0.25), (0.005, 0.1), (0.08, 0.5), (0.0, 0.02)]:
+            a = align_fast(S, sp, up)
+            b = align_v2(S, sp, up)
+            same = a == b
+            ok2 = ok2 and same
+            if not same:
+                d = [(i, x, y) for i, (x, y) in enumerate(zip(a, b)) if x != y]
+                print("  ✗ {} sp={} up={} 差异 {} 处 {}".format(key, sp, up, len(d), d[:4]))
+    print("  等价: {}".format("✓ 全部一致" if ok2 else "✗ 存在不一致"))
+    ok = ok and ok2
     if args.selfcheck or not ok:
         return 0 if ok else 1
 
@@ -274,9 +389,38 @@ def main():
         print("  {:<8} 类口径{:3}/{:3} ({:5.1f}%)  下标口径{:3}  天花板{:3} ({:5.1f}%)".format(
             key, c, len(idxs), c / len(idxs) * 100, cx, ceil, ceil / len(idxs) * 100))
 
+    # ── 统一转移模型：B（有界一对多）实测 ──
+    print()
+    print("── 统一转移模型 B：有界一对多（repeat_penalty 扫描；reset 保持禁用 = 选项 i）──")
+    print("   {:>8}  {:<8} {:>9} {:>7} {:>7} {:>6}".format(
+        "repeat", "案例", "类口径", "天花板", "复用次数", "前进"))
+    for rp in [float("inf"), 0.5, 0.4, 0.35, 0.3, 0.28, 0.25, 0.22, 0.2, 0.18, 0.15]:
+        for key in keys:
+            d = data[key]
+            S, idxs = d["S"], d["idxs"]
+            diag = {}
+            m = align_v2(S, *DEFAULT, repeat_penalty=rp, diag=diag)
+            c = score(m, d["truth"], idxs, d["cls"])
+            ceil, lost = ceiling_of(d["truth"], idxs, d["cls"])
+            print("   {:>8}  {:<8} {:>4}/{:<4} {:>7} {:>8} {:>6}".format(
+                "inf" if not np.isfinite(rp) else rp, key, c, len(idxs), ceil,
+                diag["repeat"], diag["forward"]))
+        # 三案例合计
+        tot_c = tot_n = tot_r = 0
+        for key in keys:
+            d = data[key]
+            S, idxs = d["S"], d["idxs"]
+            diag = {}
+            m = align_v2(S, *DEFAULT, repeat_penalty=rp, diag=diag)
+            tot_c += score(m, d["truth"], idxs, d["cls"])
+            tot_n += len(idxs)
+            tot_r += diag["repeat"]
+        print("   {:>8}  {:<8} {:>4}/{:<4} {:>7} {:>8}".format(
+            "inf" if not np.isfinite(rp) else rp, "合计", tot_c, tot_n, "-", tot_r))
+
     # ── 网格搜索 ──
     print()
-    print("── 网格搜索：skip_penalty × unmatched_penalty（等价类口径）──")
+    print("── 网格搜索：skip × unmatched（等价类口径；模型 = 统一转移，repeat={}, reset=禁用）──".format(REPEAT_DEFAULT))
     best = None
     table = {}
     for sp in GRID_SKIP:
@@ -286,7 +430,7 @@ def main():
             for key in keys:
                 d = data[key]
                 S, idxs = d["S"], d["idxs"]
-                m = align_fast(S, sp, up)
+                m = align_v2(S, sp, up, repeat_penalty=REPEAT_DEFAULT, reset_penalty=RESET_DEFAULT)
                 c = score(m, d["truth"], idxs, d["cls"])
                 per[key] = (c, len(idxs))
                 tot_c += c

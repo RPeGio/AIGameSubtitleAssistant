@@ -9,10 +9,17 @@
 
     ① 语料 corpus → **剥表头（仅编码用）** → E5 编码
     ② 转写侧段 → 剥表头 → 编码 → 召回
-    ③ 单调 DP 修正（语料与转写同序 ⇒ 匹配下标严格递增；skip=0.02 / unmatched=0.25）
-    ④ 一对多：同一语料行被多段命中 = 同句的多次显示，语义正确，不合并时间轴
+    ③ 统一转移 DP（前进 / 复用 / 回退 / 不配；skip=0.02 / unmatched=0.25 /
+       repeat=0.25 / reset=**禁用**）
+    ④ 一对多：同一语料行被多段命中 = 同句的多次显示，由**复用转移**表达（不再靠输入侧合并）
     ⑤ 低置信（score<0.78）或未命中 → 待人工确认清单
     ⑥ 产物：命中段 = **语料原文逐字（含名字行）**；未命中段 = 转写原文；时间轴沿用转写侧
+
+**转移模型（T4c 选项 i）**：把"序"与"重数"两个假设分开——
+`前进`（严格递增，现行）、`复用`（同一下标，有界一对多，`repeat_penalty`）、
+`回退`（下标回退，拖进度条重看，**罚分设为 ∞ 即禁用**）、`不配`。
+`repeat=0.25` 实测把 pierro 从 **95/121 → 119/121**，而 moon/glupov **零回归**；
+`reset` 禁用是因为现有三案例真值里**没有任何真实顺序回退**，该路径无素材可验。
 
 **本脚本不做输入卫生**（"同一条字幕被 OCR 拆成两段"的合并）——那属 OCR 合并层的
 raw 缺陷，在管线层修（见下方常量区的长注释与 benchmark/OCR_PIPELINE_DEFECTS.md D12）。
@@ -49,7 +56,8 @@ sys.path.insert(0, _HERE)
 import numpy as np  # noqa: E402
 from fuse_lab import (BENCH_OUT, collect_game_content, load_embedder,  # noqa: E402
                       load_project, similarity_matrix, split_header, write_srt)
-from fuse_calib import DEFAULT, align_fast  # noqa: E402
+from fuse_calib import (DEFAULT, REPEAT_DEFAULT, RESET_DEFAULT,  # noqa: E402
+                        align_v2)
 
 # 案例 → 工程（转写侧由 collect_game_content 按产品口径收集：game 轨 ASR + 嵌字）
 CASES = ["moon", "glupov", "pierro"]
@@ -91,7 +99,8 @@ def run(case, tok, sess, out_dir):
     S = similarity_matrix(tok, sess, cb, sb)
 
     # ③ 单调 DP
-    match = align_fast(S, *DEFAULT)
+    match = align_v2(S, *DEFAULT, repeat_penalty=REPEAT_DEFAULT,
+                     reset_penalty=RESET_DEFAULT)
 
     # ④⑤⑥ 组装产物
     rows, todo = [], []
