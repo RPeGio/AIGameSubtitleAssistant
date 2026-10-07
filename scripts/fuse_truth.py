@@ -38,6 +38,11 @@ CASES = [
      "reference": "quality_bench_test(non-voiced)_11min_reference.txt"},
     {"key": "pierro", "project": "pierro_questions.gsa",
      "reference": "quality_bench_test(voiced)_48min_reference.txt"},
+    # T4c 新案例：主播 PV reaction。中英本地化**非 1:1**（英文合并/增补），参考文本按嵌字侧切，
+    # 块内用 `---` 分隔多条语料行；英文多出（中文没有）的语气词保留英文原文——跨语言字符
+    # 重合极低 ⇒ 匹配得分必然 < WEAK ⇒ 不入集合 ⇒ 该段期望"不配"。
+    {"key": "vesna", "project": "vesna_trailer.gsa",
+     "reference": "pv_reaction_vesna(voiced)_12min_reference.txt"},
 ]
 
 WEAK = 0.72
