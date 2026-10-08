@@ -5,41 +5,9 @@
     "source": "temp/probe/ref_calib_fine.tsv",
     "date": "2026-09-28",
     "method": "细网格夹逼探针 scripts/bench_timebase_probe.py（0.05s 网格；t_a=末个未变帧、t_b=首个已变帧，取中点 τ，不确定度 ±(t_b−t_a)/2；窗口按当前换算预居中到 ±0.4s）。跨语言、不依赖参考文本内容。",
-    "n_total": 79,
-    "failed": [
-      {
-        "idx": 40,
-        "ref_start": 342.78411666666665,
-        "reason": "窗口内未测到变化"
-      },
-      {
-        "idx": 81,
-        "ref_start": 671.0667333333333,
-        "reason": "窗口内未测到变化"
-      },
-      {
-        "idx": 82,
-        "ref_start": 672.15015,
-        "reason": "窗口内未测到变化"
-      },
-      {
-        "idx": 83,
-        "ref_start": 672.5672333333333,
-        "reason": "窗口内未测到变化"
-      }
-    ],
+    "n_total": 83,
+    "failed": [],
     "excluded": [
-      {
-        "idx": 40,
-        "ref_start": 342.78411666666665,
-        "bracket": [
-          null,
-          null
-        ],
-        "reason": "窗口内未测到变化",
-        "before": "",
-        "after": ""
-      },
       {
         "idx": 41,
         "ref_start": 402.18351666666666,
@@ -70,7 +38,7 @@
           411.3506
         ],
         "reason": "变化后文本为空（窗内被清空而非换句）",
-        "before": "This is all the way from Natlan!",
+        "before": ".This is all the way from Natlan!",
         "after": ""
       },
       {
@@ -88,22 +56,22 @@
         "idx": 49,
         "ref_start": 499.2002,
         "bracket": [
-          499.3002,
-          499.3502
+          499.3502,
+          499.4002
         ],
         "reason": "变化后文本为空（窗内被清空而非换句）",
-        "before": "Natlanese gems..",
+        "before": "Natlanese gems...",
         "after": ""
       },
       {
         "idx": 50,
         "ref_start": 500.1001,
         "bracket": [
-          499.3001,
-          499.3501
+          499.3501,
+          499.4001
         ],
         "reason": "变化后文本为空（窗内被清空而非换句）",
-        "before": "Natlanese gems..",
+        "before": "Natlanese gems...",
         "after": ""
       },
       {
@@ -132,8 +100,8 @@
         "idx": 55,
         "ref_start": 524.6006,
         "bracket": [
-          525.0506,
-          525.1006
+          524.9006,
+          524.9506
         ],
         "reason": "变化后文本为空（窗内被清空而非换句）",
         "before": "",
@@ -169,7 +137,7 @@
           586.1668
         ],
         "reason": "变化后文本为空（窗内被清空而非换句）",
-        "before": "Such a lively ball",
+        "before": "Such a lively ball.",
         "after": ""
       },
       {
@@ -187,11 +155,11 @@
         "idx": 63,
         "ref_start": 592.4004,
         "bracket": [
-          591.9504,
-          592.0004
+          592.0004,
+          592.0504
         ],
         "reason": "变化后文本为空（窗内被清空而非换句）",
-        "before": "Well, I'm sorry...",
+        "before": "W",
         "after": ""
       },
       {
@@ -206,17 +174,6 @@
         "after": ""
       },
       {
-        "idx": 65,
-        "ref_start": 608.9009,
-        "bracket": [
-          608.6509,
-          608.7009
-        ],
-        "reason": "变化后文本为空（窗内被清空而非换句）",
-        "before": "AT",
-        "after": ""
-      },
-      {
         "idx": 66,
         "ref_start": 610.6673333333333,
         "bracket": [
@@ -224,7 +181,7 @@
           610.6173
         ],
         "reason": "变化后文本为空（窗内被清空而非换句）",
-        "before": "For the : Tsaritsa!",
+        "before": "For the Tsaritsa!",
         "after": ""
       },
       {
@@ -290,17 +247,17 @@
           666.3335
         ],
         "reason": "变化后文本为空（窗内被清空而非换句）",
-        "before": "So, Ihope had night. you a good",
+        "before": "So, I hope you had a good night...",
         "after": ""
       },
       {
         "idx": 81,
         "ref_start": 671.0667333333333,
         "bracket": [
-          null,
-          null
+          671.6667,
+          671.7167
         ],
-        "reason": "窗口内未测到变化",
+        "reason": "变化后文本为空（窗内被清空而非换句）",
         "before": "",
         "after": ""
       },
@@ -308,47 +265,36 @@
         "idx": 82,
         "ref_start": 672.15015,
         "bracket": [
-          null,
-          null
+          672.1502,
+          672.2002
         ],
-        "reason": "窗口内未测到变化",
-        "before": "",
-        "after": ""
-      },
-      {
-        "idx": 83,
-        "ref_start": 672.5672333333333,
-        "bracket": [
-          null,
-          null
-        ],
-        "reason": "窗口内未测到变化",
-        "before": "",
+        "reason": "变化后文本为空（窗内被清空而非换句）",
+        "before": "But the afterparty's gonna a be in p prison",
         "after": ""
       }
     ]
   },
   "fit": {
     "estimator": "最小二乘（有效点全量，**不做残差剔除**）＋ 95% CI；另附 Theil–Sen 抗差复核。有效性由先验规则判定：探针必须测到实质文本变化（归一化差异 > 0.35）",
-    "k": -0.00076722,
-    "a": 0.2676,
-    "k_ci95": 0.00068358,
-    "a_ci95": 0.2624,
-    "r2": 0.0795,
-    "rmse_sec": 0.4118,
-    "resid_median_sec": 0.0684,
-    "n_used": 56,
+    "k": -0.00095998,
+    "a": 0.3059,
+    "k_ci95": 0.00072398,
+    "a_ci95": 0.2858,
+    "r2": 0.1027,
+    "rmse_sec": 0.4613,
+    "resid_median_sec": 0.0706,
+    "n_used": 59,
     "point_halfwidth_sec": 0.025,
     "robust_check": {
-      "theil_sen_k_valid_points": 2.08e-06,
-      "theil_sen_k_all_rows": 7.2e-07,
+      "theil_sen_k_valid_points": 0.0,
+      "theil_sen_k_all_rows": 2.73e-06,
       "note": "Theil–Sen（点对斜率中位数）不做任何剔除；与拟合值接近即说明 k 稳健"
     }
   },
   "applied": {
     "k": 0.0,
     "a": 0.0,
-    "note": "**结论：不施加任何换算（k=a=0）**。依据：用户确认本案例参考时间码是直接按嵌字片**手打**的（不是外部字幕源的翻译），构造上就是 k=0、a=0；细网格探针 56 个有效点逐条散布 ±0.5s、R²=0.0795（Theil–Sen 抗差 k=+0.0002%），说明先前由 fit 得到的 k=-0.0767%/a=+0.268s 完全被散布噪声主导，是**拟合伪影**而非真实时基偏移。施加它会把参考整体推后 0.268s，制造「产出系统性偏早」的假象——用户实测到的正是这个伪影，故回退为 0。fit 字段**保留**（那是探针的客观探测结果，供审计与复核），质量门检查的是 fit.resid_median_sec（0.068s ≤ 0.15s）与 fit.k_ci95（0.000684 ≤ 0.001），二者均不受 applied 影响。⚠ 若再跑 scripts/gen_timebase_from_probe.py --apply 会用 fit 覆盖本字段，须手工改回。"
+    "note": "**结论：不施加任何换算（k=a=0）**。依据：用户确认本案例参考时间码是直接按嵌字片**手打**的（不是外部字幕源的翻译），构造上就是 k=0、a=0；参考补 `---` 分隔行后重跑探针，fit 为 59 个有效点逐条散布 ±0.5s、R²=0.1027（Theil–Sen 抗差 k=+0.0000%），k 被手打的逐条散布噪声主导——由 fit 得到的换算（如 k=-0.0767%/a=+0.268s 一类）是**拟合伪影**而非真实时基偏移，施加它会把参考整体推后约 0.3s，制造「产出系统性偏早」的假象（用户已在 GUI 独立观察到）。fit 字段**保留**（探针的客观探测结果，供审计与复核），质量门检查 fit.resid_median_sec（0.071s ≤ 0.15s）与 fit.k_ci95（0.000724 ≤ 0.001），二者均不受 applied 影响。⚠ 若再跑 scripts/gen_timebase_from_probe.py --apply 会用 fit 覆盖本字段，须手工改回。"
   },
   "quality_gate": {
     "max_resid_median_sec": 0.15,
@@ -363,8 +309,8 @@
     },
     "reference": {
       "file": "pv_reaction_vesna(voiced)_12min_reference.txt",
-      "bytes": 4056,
-      "sha256": "952d6fe51ac30c24d8063c03e0ded0340381901192b167f34ad97c64b5316138"
+      "bytes": 4066,
+      "sha256": "6efef8325813e9fbc385513ab6421939f3a817737914171bbcec699fbf739f58"
     }
   },
   "onsets": [
@@ -455,7 +401,7 @@
     {
       "idx": 15,
       "ref_start": 236.951,
-      "t_onset": 237.176,
+      "t_onset": 236.976,
       "halfwidth": 0.025
     },
     {
@@ -603,6 +549,12 @@
       "halfwidth": 0.025
     },
     {
+      "idx": 40,
+      "ref_start": 342.784,
+      "t_onset": 343.1091,
+      "halfwidth": 0.025
+    },
+    {
       "idx": 41,
       "ref_start": 402.184,
       "t_onset": 402.5585,
@@ -653,19 +605,19 @@
     {
       "idx": 49,
       "ref_start": 499.2,
-      "t_onset": 499.3252,
+      "t_onset": 499.3752,
       "halfwidth": 0.025
     },
     {
       "idx": 50,
       "ref_start": 500.1,
-      "t_onset": 499.3251,
+      "t_onset": 499.3751,
       "halfwidth": 0.025
     },
     {
       "idx": 51,
       "ref_start": 501.901,
-      "t_onset": 502.3759,
+      "t_onset": 500.4759,
       "halfwidth": 0.025
     },
     {
@@ -689,7 +641,7 @@
     {
       "idx": 55,
       "ref_start": 524.601,
-      "t_onset": 525.0756,
+      "t_onset": 524.9256,
       "halfwidth": 0.025
     },
     {
@@ -737,7 +689,7 @@
     {
       "idx": 63,
       "ref_start": 592.4,
-      "t_onset": 591.9754,
+      "t_onset": 592.0254,
       "halfwidth": 0.025
     },
     {
@@ -749,7 +701,7 @@
     {
       "idx": 65,
       "ref_start": 608.901,
-      "t_onset": 608.6759,
+      "t_onset": 609.4759,
       "halfwidth": 0.025
     },
     {
@@ -785,7 +737,7 @@
     {
       "idx": 71,
       "ref_start": 649.667,
-      "t_onset": 648.9923,
+      "t_onset": 648.2923,
       "halfwidth": 0.025
     },
     {
@@ -840,6 +792,24 @@
       "idx": 80,
       "ref_start": 666.184,
       "t_onset": 666.3085,
+      "halfwidth": 0.025
+    },
+    {
+      "idx": 81,
+      "ref_start": 671.067,
+      "t_onset": 671.6917,
+      "halfwidth": 0.025
+    },
+    {
+      "idx": 82,
+      "ref_start": 672.15,
+      "t_onset": 672.1752,
+      "halfwidth": 0.025
+    },
+    {
+      "idx": 83,
+      "ref_start": 672.567,
+      "t_onset": 672.1922,
       "halfwidth": 0.025
     }
   ]
