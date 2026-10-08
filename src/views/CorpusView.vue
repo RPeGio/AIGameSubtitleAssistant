@@ -3,8 +3,8 @@ import { computed, ref } from "vue";
 import { useProjectStore } from "../stores/project";
 import SourceVideoPreview from "../components/SourceVideoPreview.vue";
 import SourceTimeline from "../components/SourceTimeline.vue";
-import type { Diff, OcrRunParams } from "../types";
-import { createDefaultOcrParams } from "../composables/ocrDefaults";
+import type { Diff } from "../types";
+import { usePersistedOcrParams } from "../composables/ocrDefaults";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -26,7 +26,8 @@ const message = useMessage();
 const activeKeys = ref<string[]>(["recordings"]);
 
 // ── "从剧情录屏中截取" ────────────────────────────────
-const ocrParams = ref<OcrRunParams>(createDefaultOcrParams());
+// 跨栏目切换保留（此前是组件局部 ref ⇒ 切栏目即静默回到默认，见 ocrDefaults.ts）
+const ocrParams = usePersistedOcrParams("corpus");
 
 /// 术语表条目操作（可增删的 input-text 列表）
 function addGlossaryTerm() {
