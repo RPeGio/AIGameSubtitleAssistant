@@ -980,19 +980,25 @@ pub fn align_sequences(expected: &[String], produced: &[String]) -> (Vec<Pairing
 /// "姓名+头衔" → 恰好成为后段（姓名+头衔+对话）的前缀而被激进合并吞掉
 /// （glupov 语料 `00:08:47:41` 条即此）。这类单列报告、**不计满分缺失**。
 ///
-/// 要求归一化文本 ≥4 字符，避免极短条目被平凡匹配。
+/// 要求归一化文本 ≥2 字符，避免极短条目被平凡匹配；**子序列**这一弱判据额外要求 ≥4 字符。
 pub fn absorbed_indices(expected: &[String], produced: &[String], missed: &[usize]) -> Vec<usize> {
     missed
         .iter()
         .copied()
         .filter(|&ei| {
             let ne: Vec<char> = normalize_lenient(&expected[ei]).chars().collect();
-            if ne.len() < 4 {
+            if ne.len() < 2 {
+                // 1 字符太短：任何前缀/子序列判据都会满盘误命中
                 return false;
             }
             produced.iter().any(|p| {
                 let np: Vec<char> = normalize_lenient(p).chars().collect();
-                np.starts_with(&ne) || is_subsequence_chars(&ne, &np)
+                // 前缀匹配是**强条件** ⇒ 2 字符起即可。
+                // 实测（vesna）：3 字的 `薇斯纳` 被读成 `薇斯纳大人`，旧规则要求 ≥4 字符
+                // ⇒ 被判成"缺失"（管线丢失），实际是**识别精度**问题（多读了字，没丢内容）。
+                np.starts_with(&ne)
+                    // 子序列匹配是**弱条件** ⇒ 仍要求 ≥4 字符，避免短条目误命中
+                    || (ne.len() >= 4 && is_subsequence_chars(&ne, &np))
             })
         })
         .collect()
