@@ -253,8 +253,13 @@ def main():
         else:
             ap_k, ap_a = APPLIED_FALLBACK[case]
             note = NOTE.get(case, "")
+        # ⚠校验的两侧精度必须一致：applied.a 的写入精度是 4 位（--apply 路径
+        # round(f["a"], 4)），旧代码左侧却用 round(f["a"], 3) 去比——a 第 4 位小数有效时
+        # （如 fit a=-0.0651 → round3=-0.065 ≠ -0.0651）applied==fit 也会误报"与 fit 不同"。
+        # 统一成 round(x, 4)（ap_a 侧先取整到它实际写入的精度再比）。
         if (set_a is None and not apply_pooled
-                and (abs(round(f["k"], 6) - ap_k) > 1e-9 or abs(round(f["a"], 3) - ap_a) > 1e-6)):
+                and (abs(round(f["k"], 6) - ap_k) > 1e-9
+                     or abs(round(f["a"], 4) - round(ap_a, 4)) > 1e-9)):
             note = (note + "；" if note else "") + (
                 f"⚠ 当前 fit（k={f['k']:+.6f} a={f['a']:+.3f}）与 applied 不同——"
                 f"切换需显式运行 --apply 并重记基线")
@@ -311,7 +316,9 @@ def main():
               f"  a={f['a']:+.3f}s ±{f['a_ci95']:.3f}"
               f"  R²={f['r2']:.4f} rmse={f['rmse']:.3f}s"
               f"  TheilSen={theil_sen(valid) * 100:+.4f}%")
-        same_as_fit = (abs(round(f["k"], 6) - ap_k) <= 1e-9 and abs(round(f["a"], 3) - ap_a) <= 1e-6)
+        # 与上面的 ⚠ 校验同源：两侧统一 round(x, 4)，applied==fit 时不误打"与 fit 不同"
+        same_as_fit = (abs(round(f["k"], 6) - ap_k) <= 1e-9
+                       and abs(round(f["a"], 4) - round(ap_a, 4)) <= 1e-9)
         tag = ("  （与 fit 一致）" if same_as_fit else
                "  （统一口径：a 取三案例合并估计，与各案例 fit 允许不同）"
                if apply_pooled else "  ⚠ 与 fit 不同（切换需 --apply）")
