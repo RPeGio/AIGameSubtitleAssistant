@@ -3,7 +3,8 @@
 
 这是 [benchmark/FUSE_ALIGNMENT_SCALE_VALIDATION.md](../benchmark/FUSE_ALIGNMENT_SCALE_VALIDATION.md)
 与 [benchmark/FUSE_THRESHOLD_CALIBRATION.md](../benchmark/FUSE_THRESHOLD_CALIBRATION.md) 所验证路线的
-**可执行产品形态**：多语言向量召回 + 单调 DP 做跨语言对齐，把语料文本替换到转写侧的时间轴上。
+**可执行产品形态**：多语言向量召回 + 统一转移 DP 做跨语言对齐，把语料文本替换到转写侧的时间轴上。
+（转移含**前进 / 复用 / 回退 / 不配**四种；回退自 2026-10-08 启用，见 `fuse_calib.RESET_DEFAULT`。）
 
 流程（对应 FUSE_VECTOR_RECALL_VALIDATION.md §三 的产品形态）：
 
@@ -29,7 +30,8 @@ raw 缺陷，在管线层修（见下方常量区的长注释与 benchmark/OCR_P
 
   · **表头剥离只用于模型输入**：产物文本必须是语料原文逐字（含名字行）。
     表头在段间完全同形会淹没正文语义——glupov 带表头时召回 3/22，剥离后 22/22。
-  · **单调性必须真正强制**：曾因"无对应"分支沿用 argmax 前驱导致下标回退/回绕。
+  · **回退只能由显式 C 转移表达**：曾因"无对应"分支沿用 argmax 前驱导致**非预期**的下标回退/回绕；
+  现在向后的移动一律走 `KIND_RESET`（按次计费），"不配"分支不再改变下标。
 
 阈值说明（T2 实测结论）：`skip_penalty=0.02` / `unmatched_penalty=0.25` 已在最优平台上，**不需调整**；
 告警只用 `score<0.78`（`margin<0.02` 已实测无区分度，标记率 63.5% 而精确率 ≤12%，故**不采用**）。
@@ -60,11 +62,12 @@ from fuse_calib import (DEFAULT, REPEAT_DEFAULT, RESET_DEFAULT,  # noqa: E402
                         align_v2, mask_empty_body)
 
 # 案例 → 工程（转写侧由 collect_game_content 按产品口径收集：game 轨 ASR + 嵌字）
-CASES = ["moon", "glupov", "pierro"]
+CASES = ["moon", "glupov", "pierro", "vesna"]
 PROJECTS = {
     "moon": "moon_sisters.gsa",
     "glupov": "glupov.gsa",
     "pierro": "pierro_questions.gsa",
+    "vesna": "vesna_trailer.gsa",
 }
 # 告警阈值：只保留 score（T2 实测 margin 无区分度，故不使用）
 THR_SCORE = 0.78
@@ -165,7 +168,7 @@ def main():
     out_dir = os.environ.get("GSA_BENCH_OUT_DIR", BENCH_OUT)
     tok, sess = load_embedder(os.environ.get("GSA_EMBED_MODEL", "multilingual-e5-small"))
     print("=" * 100)
-    print("融合对齐 → SRT（向量召回 + 单调 DP；表头剥离仅用于编码，产物用语料原文）")
+    print("融合对齐 → SRT（向量召回 + 统一转移 DP：前进/复用/回退/不配；表头剥离仅用于编码，产物用语料原文）")
     res = []
     for case in want:
         r = run(case, tok, sess, out_dir)

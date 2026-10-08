@@ -41,11 +41,31 @@ DEFAULT = (0.02, 0.25)   # 现行未校准初值
 #   ≥0.4 组解不开（pierro 107/121）；≤0.18 glupov 出现**误复用**（22/22 → 21/22）；
 #   [0.2, 0.3] 内三案例：moon 15/15、glupov 22/22、pierro **119/121**（复用 2 次）。
 # 取窗口中值 0.25（与 unmatched_penalty 同量级，纯属巧合，两者语义无关）。
+#
+# **2026-10-08 起 B 实际上休眠**：C（回退）放开后，DP 在本批素材上**一次都不用 B**
+# （复用计数 0），且 repeat ∈ {inf, 0.25~0.5} 分数完全相同（206/236）——回退把"一对多"
+# 的活也干了（碎片所在的第二遍播放被回退整段吃下）。保留 0.25 而非设为 inf：B 是
+# 为"OCR 把一条字幕切成 N 段"设计的能力，本批素材上它被 C 遮蔽，但换素材可能重新需要，
+# 而保留它是**零代价**的（分数逐位相同）。
 REPEAT_DEFAULT = 0.25
-# 统一转移模型 C（回退 / 拖进度条）的罚分：**保持禁用**（选项 i）。
-# 现有三案例真值里**没有任何真实顺序回退**（glupov 的 5 处是语料近重复行的下标假象），
-# 故该路径无素材可验；待新增"PV reaction（主播反复拖进度条）"案例后再放开。
-RESET_DEFAULT = float("inf")
+# 统一转移模型 C（回退 / 拖进度条）的罚分。**2026-10-08 已落地启用**（原为 inf / 选项 i）。
+#
+# 启用依据（vesna「主播反复拖进度条重看 PV」案例到位后实测，四案例 236 计分段）：
+#   · 平台极宽：reset ∈ **[0.01, 0.08]** 全为 **206/236 (87.3%)**；0.1→201、0.12→196、
+#     0.15→194、0.2→185、inf→183。取平台中段 **0.05**（对素材波动留余量）。
+#   · 相对"回退禁用"净 **+23**（183→206）：pierro **107→119**、vesna **39→51**。
+#   · **代价 glupov 22→21（−1）**：细扫 0.01~0.2 全区间都是 21 ⇒ 该损失**不是阈值问题、
+#     是结构性的**（启用回退后 DP 全局改走另一条路径，其中一处判错）。净收益 +23 远大于它。
+#   · repeat 与本项**互相遮蔽**：只开 B 时 pierro 119 / vesna 23；只开 C 时 119 / 51
+#     ⇒ C 严格优于 B（详见 REPEAT_DEFAULT 注释）。
+#
+# **已知的语义边界**：C 用"罚分"表达回退，而 DP 最大化的是「ΣS − 罚分」这个**代理目标**，
+# 与评分口径（段落在可接受集合内）**不等价**。故大但有限的罚分反而危险：reset=1.0 时
+# DP 会做少数几次"赚得回罚分"的回退，把后续一大段对齐带偏 ⇒ 3/79（比 inf 的 39/79 还差）。
+# 更稳的做法是**显式重播分段**（先切出两遍播放、各自内部单调对齐），已记入
+# `benchmark/FUSE_THRESHOLD_CALIBRATION.md` §7.5 待后续实施。
+RESET_DEFAULT = 0.05
+
 
 
 # ────────────────────────── DP：朴素式（参考实现）──────────────────────────
@@ -138,14 +158,19 @@ def _backtrack(dp, bk, n, m):
 # （`1-2-3-4-1-2`）甚至跳进（`1-3-4-2`）——严格递增 DP 原理上无法表达。
 #
 # **安全性质（本函数的存在意义）**：`repeat_penalty = reset_penalty = inf` 时，
-# 本函数与 `align_fast`（现行严格递增 DP）**逐段等价**，由 `--selfcheck` 断言。
-# 故新结构可先在"回退禁用"下上线（选项 i），待有素材再放开 C。
+# 本函数与 `align_fast`（严格递增 DP）**逐段等价**，由 `--selfcheck` 断言。
+# 新结构当时先在"回退禁用"下上线（选项 i）；**2026-10-08 C 已放开**（`RESET_DEFAULT = 0.05`，
+# 依据与代价见该常量注释）。自检断言保留——它是"新结构不破坏旧行为"的长期护栏。
 #
 # 复杂度仍是 O(n·m)：A 用**前缀**最大（k 递增一趟）、C 用**后缀**最大（k 递减一趟）、
 # B/D 各 O(1)。
 #
 # B 的"有界"由**线性累积罚分**实现（连续复用 r 次即付 r×repeat_penalty），无需额外状态；
 # 若将来实测出现长链复用，再考虑加硬上限。
+#
+# C 的代价同样按次线性累加。但要注意 C 与 B 的**语义层级不同**：B 描述"同一行的重数"，
+# C 描述"序列整体后退"——后者用局部罚分表达，只在本批素材的实测平台内可靠
+# （见 RESET_DEFAULT 注释的"已知语义边界"与 §7.5 的显式重播分段方案）。
 
 KIND_UNMATCHED, KIND_FORWARD, KIND_REPEAT, KIND_RESET = 0, 1, 2, 3
 
@@ -479,7 +504,7 @@ def main():
         print("  {:<8} 语料 {:3} 条 → 等价类 {:3} 个（合并 {} 条重复）".format(
             key, len(d["corpus"]), len(set(d["cls"])), d["ndup"]))
     print()
-    print("── 现行初值基线（skip={}, unmatched={}）──".format(*DEFAULT))
+    print("── 严格递增 DP 基线（skip={}, unmatched={}；回退/复用均禁用，供对照）──".format(*DEFAULT))
     for key in keys:
         d = data[key]
         S, idxs = d["S"], d["idxs"]
@@ -493,10 +518,13 @@ def main():
             d["masked"], len(idxs) - len(sc)))
 
     # ── 统一转移模型：B（有界一对多）实测 ──
+    # 注意：自 2026-10-08 C（回退）已落地（RESET_DEFAULT = 0.05），故本表**在 C 开启下**扫 B。
+    # 实测结论：C 开启后 B 完全休眠（复用次数恒为 0），repeat 取 inf 与 0.25~0.5 分数相同。
     print()
-    print("── 统一转移模型 B：有界一对多（repeat_penalty 扫描；reset 保持禁用 = 选项 i）──")
-    print("   {:>8}  {:<8} {:>9} {:>7} {:>7} {:>6}".format(
-        "repeat", "案例", "类口径", "天花板", "复用次数", "前进"))
+    print("── 统一转移模型 B：有界一对多（repeat_penalty 扫描；C 已启用 = reset {}）──".format(
+        RESET_DEFAULT))
+    print("   {:>8}  {:<8} {:>9} {:>7} {:>7} {:>6} {:>6}".format(
+        "repeat", "案例", "类口径", "天花板", "复用次数", "前进", "回退"))
     for rp in [float("inf"), 0.5, 0.4, 0.35, 0.3, 0.28, 0.25, 0.22, 0.2, 0.18, 0.15]:
         for key in keys:
             d = data[key]
@@ -506,10 +534,10 @@ def main():
             sc = d["scored"]
             c = score(m, d["truth_ok"], sc, d["cls"], idxs)
             ceil, lost = ceiling_of(d["truth_ok"], sc, d["cls"])
-            print("   {:>8}  {:<8} {:>4}/{:<4} {:>7} {:>8} {:>6}".format(
+            print("   {:>8}  {:<8} {:>4}/{:<4} {:>7} {:>8} {:>6} {:>6}".format(
                 "inf" if not np.isfinite(rp) else rp, key, c, len(sc), ceil,
-                diag["repeat"], diag["forward"]))
-        # 三案例合计
+                diag["repeat"], diag["forward"], diag["reset"]))
+        # 全案例合计
         tot_c = tot_n = tot_r = 0
         for key in keys:
             d = data[key]
@@ -521,6 +549,32 @@ def main():
             tot_r += diag["repeat"]
         print("   {:>8}  {:<8} {:>4}/{:<4} {:>7} {:>8}".format(
             "inf" if not np.isfinite(rp) else rp, "合计", tot_c, tot_n, "-", tot_r))
+
+    # ── 统一转移模型：C（回退）落地标定 ──
+    # 落地依据的可复现扫描：平台 [0.01, 0.08] 全为最优，0.1 起单调下降，inf = 回退禁用。
+    print()
+    print("── 统一转移模型 C：回退标定（repeat = {}）──".format(REPEAT_DEFAULT))
+    print("   {:>8}  {:<8} {:>9} {:>7} {:>6}".format("reset", "案例", "类口径", "回退次数", "前进"))
+    for rs in [float("inf"), 0.01, 0.02, 0.03, 0.05, 0.08, 0.1, 0.12, 0.15, 0.2]:
+        for key in keys:
+            d = data[key]
+            S, idxs = d["S"], d["idxs"]
+            diag = {}
+            m = align_v2(S, *DEFAULT, reset_penalty=rs, diag=diag)
+            c = score(m, d["truth_ok"], d["scored"], d["cls"], idxs)
+            print("   {:>8}  {:<8} {:>4}/{:<4} {:>8} {:>6}".format(
+                "inf" if not np.isfinite(rs) else rs, key, c, len(d["scored"]),
+                diag["reset"], diag["forward"]))
+        tot_c = tot_n = tot_r = 0
+        for key in keys:
+            d = data[key]
+            diag = {}
+            m = align_v2(d["S"], *DEFAULT, reset_penalty=rs, diag=diag)
+            tot_c += score(m, d["truth_ok"], d["scored"], d["cls"], d["idxs"])
+            tot_n += len(d["scored"])
+            tot_r += diag["reset"]
+        print("   {:>8}  {:<8} {:>4}/{:<4} {:>8}".format(
+            "inf" if not np.isfinite(rs) else rs, "合计", tot_c, tot_n, tot_r, "-"))
 
     # ── 网格搜索 ──
     print()
