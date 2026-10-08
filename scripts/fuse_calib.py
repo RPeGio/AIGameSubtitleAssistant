@@ -66,6 +66,23 @@ REPEAT_DEFAULT = 0.25
 # `benchmark/FUSE_THRESHOLD_CALIBRATION.md` §7.5 待后续实施。
 RESET_DEFAULT = 0.05
 
+# ── 「该不配」判据（§7.6 标定，**默认关闭**）──
+# 问题：`truth_ok == []` 的段（转写多出来的英文语气词等）在语料里**根本没有对应行**，
+# 正确行为是输出转写原文（DP 走 D 不配）；但 DP 只会选相似度最大的那条 ⇒ 必然硬塞一行。
+#
+# **实测结论：嵌入相似度矩阵不携带"有没有对应"这个信息**——原始 max-S 阈值、行/列/双向
+# 中心化、裕度(max−2nd)、限定短段后的 max-S 全部被否（详见 §7.6 与 fuse_unmatch_calib.py）。
+# 唯一可用的信号是**内容量**：`len_sub`（段剥标点/空白后的实质字符数）与 `best_len_sub`
+# （最佳匹配语料行的实质字符数）的相对关系。
+#
+# 规则（语言无关：只比较两个整数字符数，不检查字符集）：一段**有实质内容**（len_sub ≥ 1）
+# 却**不比它最佳匹配的那一行更有内容**（len_sub ≤ alpha · best_len_sub）时，判"该不配"。
+# alpha = 1.05 取实测平台 [1.00, 1.14] 中段；alpha = 1.0 的整数等价形式同分。
+# 当前四案例实测：vesna 空集段命中 12/15、四案例假阳性 0（上限即 12/15，见 §7.6 的
+# "复现对不可达"证明）。**注意**：该平台依赖"显示语言比语料语言单位内容更省"这一素材
+# 事实（本批为 英文显示 ← 中文语料），换语言对必须重标。
+UNMATCH_FILTER = False
+UNMATCH_ALPHA = 1.05
 
 
 # ────────────────────────── DP：朴素式（参考实现）──────────────────────────
@@ -329,6 +346,42 @@ def mask_empty_body(S, corpus, seg_texts):
     return masked
 
 
+def mask_should_unmatched(S, seg_texts, corpus, alpha=UNMATCH_ALPHA):
+    """「该不配」判据（§7.6）：**行掩码**——命中的段整行置 `NEG`，DP 随即只能走 D 不配。
+
+    与既有 `mask_empty_body` 的**列掩码**对称：那条防的是"语料里没有内容的行被硬配"，
+    这条防的是"语料里根本没有对应行的段被硬塞一行"。两者都是**单方向**、都不改 S 的其它部分。
+
+    判据（语言无关，只比整数）：
+        `len_sub >= 1` 且 `len_sub <= alpha · best_len_sub`
+    其中 `len_sub` = 段剥表头/标点/空白后的实质字符数，`best_len_sub` = 掩列之后
+    **最佳匹配那一行**的实质字符数（故本函数必须在 `mask_empty_body` **之后**调用）。
+
+    `len_sub >= 1` 这道门是必需的、不是补丁：`len_sub == 0` 的段（如 pierro
+    `The Jester / …`）**没有可用于判别的内容**，它配到同样无内容的语料行是**正确**的
+    ——那正是 `mask_empty_body` 要保护的合法用例，不能在这里误伤。
+
+    实测（alpha = 1.05）：vesna 15 个空集段命中 12；moon/glupov/pierro 与 vesna 其余
+    220 个非空集段**零误伤**。剩下 3 段**原理上不可达**（同一文本在别处被正确匹配，
+    `S` 行逐位相同 ⇒ 任何只依赖 S 行与文本的掩码都不可能区分它们），见 §7.6。
+    """
+    clen = np.array([len(body_norm(t)) for t in corpus])
+    masked = 0
+    for i, t in enumerate(seg_texts):
+        ls = len(body_norm(t))
+        if ls < 1:
+            continue                      # 无实质内容 ⇒ 不判（见上）
+        row = S[i]
+        valid = row > NEG / 2
+        if not valid.any():
+            continue
+        j = int(np.argmax(np.where(valid, row, NEG)))
+        if ls <= alpha * clen[j]:
+            S[i][valid] = NEG             # 整行封死 ⇒ DP 只能选"不配"
+            masked += 1
+    return masked
+
+
 def equiv_classes(corpus):
     """→ 每个语料下标（0-based）所属的等价类 id"""
     bodies = [body_norm(t) for t in corpus]
@@ -438,14 +491,15 @@ def build_matrices(keys, tok, sess):
         cls = equiv_classes(corpus)
         ndup = len(corpus) - len(set(cls))
         idxs = list(range(len(rows)))
+        seg_texts = [rows[k]["text"] for k in idxs]
         sb = [split_header(rows[k]["text"])[1] for k in idxs]
         S = similarity_matrix(tok, sess, cb, sb)
         # 吸引子防护：空正文语料条目不得被有正文的段命中（见 mask_empty_body）
-        masked = mask_empty_body(S, corpus, [rows[k]["text"] for k in idxs])
+        masked = mask_empty_body(S, corpus, seg_texts)
         # 计分集合：排除"亚帧残留碎片"（参与对齐但不计分，见 fuse_truth 的 artifact）
         scored = [k for k in idxs if not rows[k].get("artifact")]
         out[key] = {"truth": truth, "truth_ok": truth_ok, "corpus": corpus, "n_raw": len(rows),
-                    "cls": cls, "ndup": ndup, "S": S, "idxs": idxs,
+                    "cls": cls, "ndup": ndup, "S": S, "idxs": idxs, "seg_texts": seg_texts,
                     "scored": scored, "masked": masked}
     return out
 
@@ -454,9 +508,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cases", nargs="*", default=None)
     ap.add_argument("--selfcheck", action="store_true")
+    ap.add_argument("--unmatch-filter", action="store_true",
+                    help="启用「该不配」行掩码（§7.6；默认关闭，标定阶段不改默认行为）")
     args = ap.parse_args()
 
-    keys = args.cases or ["moon", "glupov", "pierro"]
+    # 默认案例集与 fuse_truth.CASES / fuse_align_srt.CASES 保持一致（vesna 已是一等案例；
+    # 此前本行硬编码三个案例，导致 vesna 从未进入本校准台的任何输出段）
+    keys = args.cases or ["moon", "glupov", "pierro", "vesna"]
     tok, sess = load_embedder(os.environ.get("GSA_EMBED_MODEL", "multilingual-e5-small"))
     data = build_matrices(keys, tok, sess)
 
@@ -495,6 +553,37 @@ def main():
     ok = ok and ok2
     if args.selfcheck or not ok:
         return 0 if ok else 1
+
+    # ── 「该不配」判据（§7.6）：**默认关闭**；--unmatch-filter 才真正改变后续结果 ──
+    # 两种状态都打印，便于对照；关闭时 data[key]["S"] 保持原样（不改默认行为）。
+    print()
+    print("── 「该不配」行掩码（§7.6；alpha={}，{}）──".format(
+        UNMATCH_ALPHA, "**已启用**" if args.unmatch_filter else "默认关闭（仅对照）"))
+    print("   {:<8} {:>6}  {:<22} {:<22} {:>6}".format(
+        "案例", "掩行", "before 类口径/D", "after 类口径/D", "空集对错"))
+    for key in keys:
+        d = data[key]
+        S = d["S"].copy()
+        pos = {k: n for n, k in enumerate(d["idxs"])}
+        empt = [k for k in d["scored"] if not d["truth_ok"][k]]
+
+        def run(mat):
+            dg = {}
+            mm = align_v2(mat, *DEFAULT, repeat_penalty=REPEAT_DEFAULT,
+                          reset_penalty=RESET_DEFAULT, diag=dg)
+            cc = score(mm, d["truth_ok"], d["scored"], d["cls"], d["idxs"])
+            ne = sum(1 for k in empt if mm[pos[k]] < 0)
+            return cc, dg, ne
+
+        c0, dg0, e0 = run(S)
+        nmask = mask_should_unmatched(S, d["seg_texts"], d["corpus"])
+        c1, dg1, e1 = run(S)
+        print("   {:<8} {:>6}  {:>4}/{:<4} (D {:>3})       {:>4}/{:<4} (D {:>3})       {}/{}{} -> {}/{}".format(
+            key, nmask, c0, len(d["scored"]), dg0["unmatched"],
+            c1, len(d["scored"]), dg1["unmatched"], e0, len(empt),
+            "  " if c1 >= c0 else " ↓", e1, len(empt)))
+        if args.unmatch_filter:
+            data[key]["S"] = S
 
     # ── 基线（现行初值）──
     print()
