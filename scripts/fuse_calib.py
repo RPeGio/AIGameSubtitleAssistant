@@ -84,6 +84,40 @@ RESET_DEFAULT = 0.05
 UNMATCH_FILTER = False
 UNMATCH_ALPHA = 1.05
 
+# ── 显式重播分段（§7.7 **重评**，2026-10-08；**默认关闭**，与 UNMATCH_FILTER 同风格）──
+# 动机：C（回退）用**局部罚分**表达"序列整体后退"，而 DP 最大化的是「ΣS − 罚分」这个
+# **代理目标**，与评分口径不等价 ⇒ 大但有限的罚分反而危险（reset=1.0 → vesna 3/79）。
+# 分段方案把"重播"这一**全局结构**从逐步罚分里拿出来：先检测重播边界，再按边界切块、
+# **块内独立对齐**（块间不传递语料下标约束）。
+#
+# 检测器（**参考无关**：只用产出段自身文本 + 段间相似度 + 时间间隙）沿用 §7.7 末尾记的
+# "唯一有希望方向"——重播的本质是**整段内容被重新覆盖**，落到可算量上就是**孪生段 onset**：
+#   ① 对每段 i，在 `i − SEG_MIN_LAG` 之前找最相似的另一段（段×段余弦，只用产出段文本）；
+#   ② 相似度 ≥ SEG_TAU ⇒ 记"该段有孪生"（= 这个显示之前出现过）；
+#   ③ 切点 c 的分数 `P5 = [c, c+W)` 内有孪生的占比 − `[c−W, c)` 内同占比 ——
+#      **onset** 是关键：重播区**内部**两侧都接近 1 ⇒ 差值 0（上一轮 B 只统计后缀侧，
+#      故 `c=47` 的 `B.dp = 1.000` 压过主边界；加了 onset 后它自然归零）；
+#   ④ 再过一道时间间隙门 `gap(c) ≥ SEG_MIN_GAP`，滤掉零间隙的"同一行显示两次"。
+#
+# 实测（`scripts/fuse_seg_calib2.py`，四案例 236 切点）：vesna 检测点 = **c=39、40**
+# （主边界 + 它的擦边小回退），moon/glupov/pierro **零判定**；(W, τ) 参数平台上
+# **9/16 格可行**（τ ∈ [0.90, 0.95] × W ∈ {3,5,8,10}）⇒ 不是单点巧合。
+# **已知分辨率边界**：重播长度 < 5 段的"小程序回退"（vesna 尾部 c=80/81，落差 4/3 行）
+# 检测不到 —— 它们由 `reset` 在**块内**承担（分段不接管小回退）。
+SEGMENTED_FILTER = False
+SEG_WIN = 5               # P5 窗口（段）
+SEG_TAU = 0.90            # 孪生相似度门
+SEG_MIN_LAG = 3           # 孪生最小间隔（排除相邻重复显示）
+SEG_MIN_GAP = 5.0         # 时间间隙门（秒）
+SEG_P5_MIN = 0.4          # P5 阈值
+# 最小块长：**短块没有上下文**——块内独立对齐从语料头起步，1~2 段的块必然配错。
+# 实测（vesna，2026-10-08）：检测器原始输出 {39, 40} 会切出一个 **1 段的块**（段40
+# `And using/forbidden alchemy…`），它独立对齐后配到 `语料[5]` 而不是 `语料[30]`
+# ⇒ 端到端 **53 → 52（−1）**；丢弃造成短块的切点后（{40}）回到 **53（持平）**。
+# 相邻检测点（间隔 < SEG_MIN_BLOCK）视为**同一次 onset**：取靠后者——靠前者的窗口只是
+# 跨进了重播区（P5 的窗口模糊），故它往往提前 1 段；独立信号 S6 在 vesna 也判 39→1 / 40→5。
+SEG_MIN_BLOCK = 3
+
 
 # ────────────────────────── DP：朴素式（参考实现）──────────────────────────
 
@@ -250,6 +284,97 @@ def align_v2(S, skip_penalty, unmatched_penalty,
                      "forward": kinds.get(KIND_FORWARD, 0),
                      "unmatched": kinds.get(KIND_UNMATCHED, 0)})
     return match
+
+
+# ────────────────────────── 显式重播分段（§7.7 重评，默认关闭）──────────────────────────
+
+def seg_pair_sim(tok, sess, seg_texts):
+    """→ (SS, sb)：产出段 × 产出段 余弦相似度 + 段正文列表（**只用产出段自身文本**）。
+
+    产品侧不必重算：`S = Q @ C.T` 里的 `Q` 就是段向量 ⇒ `Q @ Q.T` 即得 SS；
+    本台为口径一致走 `similarity_matrix`（同一编码路径）。
+    """
+    sb = [split_header(t)[1] for t in seg_texts]
+    return similarity_matrix(tok, sess, sb, sb), sb
+
+
+def seg_twins(SS, tau=SEG_TAU, min_lag=SEG_MIN_LAG):
+    """→ twin[i] = "i 之前（lag ≥ min_lag）最相似的那一段"的下标（-1 = 无孪生）。
+
+    "孪生"= 该显示之前出现过 ⇒ 重播区的每一段都该有孪生段，重播区之外不该有。
+    """
+    n = SS.shape[0]
+    twin = [-1] * n
+    for i in range(n):
+        bj, bs = -1, -1.0
+        for j in range(0, i - min_lag + 1):
+            v = SS[i, j]
+            if v > bs:
+                bj, bs = j, v
+        if bj >= 0 and bs >= tau:
+            twin[i] = bj
+    return twin
+
+
+def seg_p5(twin, c, win=SEG_WIN):
+    """P5（孪生 onset）= 窗口后侧"有孪生"占比 − 前侧同占比。"""
+    n = len(twin)
+    aft = list(range(c, min(n, c + win)))
+    bef = list(range(max(0, c - win), c))
+    if not aft:
+        return float("nan")
+    fa = sum(1 for i in aft if twin[i] >= 0) / float(len(aft))
+    fb = (sum(1 for i in bef if twin[i] >= 0) / float(len(bef))) if bef else 0.0
+    return fa - fb
+
+
+def replay_boundaries(rows, tok, sess, seg_texts, tau=SEG_TAU, win=SEG_WIN,
+                      min_lag=SEG_MIN_LAG, min_gap=SEG_MIN_GAP, p5_min=SEG_P5_MIN,
+                      min_block=SEG_MIN_BLOCK):
+    """→ 重播边界切点列表（**参考无关**；切点 c = 后一块的第一段下标）。
+
+    只消费「产出段文本 + 时间」。SS 的编码是本函数唯一的额外开销（产品侧已有 Q ⇒ 免费）。
+    末尾再过一道**最小块长**守卫：丢弃会造成 < `min_block` 段的块的切点（相邻检测点视为
+    同一次 onset，**取靠后者**，理由见 SEG_MIN_BLOCK 注释）。
+    """
+    SS, _ = seg_pair_sim(tok, sess, seg_texts)
+    twin = seg_twins(SS, tau, min_lag)
+    n = len(rows)
+    raw = []
+    for c in range(1, n):
+        gap = rows[c]["start"] - rows[c - 1]["end"]
+        if gap < min_gap:
+            continue
+        if seg_p5(twin, c, win) >= p5_min:
+            raw.append(c)
+    out = []
+    for c in reversed(raw):                       # 从右往左 ⇒ 相邻时保留靠后者
+        if c < min_block or n - c < min_block:
+            continue
+        if out and out[-1] - c < min_block:
+            continue
+        out.append(c)
+    return sorted(out)
+
+
+def align_segmented(S, cuts, skip_penalty, unmatched_penalty,
+                    repeat_penalty=REPEAT_DEFAULT, reset_penalty=RESET_DEFAULT):
+    """按 `cuts` 把 S 切成块，**块内独立对齐**（块间不传递语料下标约束）→ (match, diag)。
+
+    块内仍走现行统一转移 DP（前进/复用/回退/不配）：分段要拿掉的只是**跨块**的下标约束，
+    不是块内的局部能力（小回退 c=80/81 就该由块内 `reset` 承担，见 §7.7 重评）。
+    """
+    n = S.shape[0]
+    bnds = [0] + [c for c in sorted(set(cuts)) if 0 < c < n] + [n]
+    match = []
+    diag = {"repeat": 0, "reset": 0, "forward": 0, "unmatched": 0, "blocks": len(bnds) - 1}
+    for a, b in zip(bnds[:-1], bnds[1:]):
+        d = {}
+        match += align_v2(S[a:b], skip_penalty, unmatched_penalty,
+                          repeat_penalty=repeat_penalty, reset_penalty=reset_penalty, diag=d)
+        for k in ("repeat", "reset", "forward", "unmatched"):
+            diag[k] += d.get(k, 0)
+    return match, diag
 
 
 # ────────────────────────── 语料近重复等价类（评分必须容忍）──────────────────────────
@@ -474,6 +599,56 @@ def score_exact(match, truth, idxs):
     return sum(1 for n, k in enumerate(idxs) if match[n] + 1 == truth[k])
 
 
+# ────────────────────────── 显式重播分段的端到端测量（默认关闭）──────────────────────────
+
+def measure_segmented(keys, tok, sess, data, reset_list=(RESET_DEFAULT, 0.2, 1.0),
+                      use_unmatch=False):
+    """四案例 before/after + reset 罚分敏感性（`--segmented` 才跑；不改默认行为）。
+
+    before = 现行统一转移 DP（整条序列一次对齐）；
+    after  = 同一 DP，但先按参考无关检测器切块、块内独立对齐。
+    """
+    print()
+    print("=" * 100)
+    print("── 显式重播分段（§7.7 重评；{}）──".format(
+        "**已启用**" if SEGMENTED_FILTER else "默认关闭（仅对照）"))
+    cuts_all = {}
+    for key in keys:
+        d = data[key]
+        cuts = replay_boundaries(d["rows"], tok, sess, d["seg_texts"])
+        cuts_all[key] = cuts
+        print("   {:<8} 检测边界 {:<16} 时间 {}".format(
+            key, str(cuts), ["%.1f" % d["rows"][c]["start"] for c in cuts]))
+    print()
+    print("   {:<8} {:>8} {:>12} {:>12} {:>10} {:>10}".format(
+        "案例", "reset", "before", "after", "回退次数", "分块"))
+    for rs in reset_list:
+        tot_b = tot_a = tot_n = 0
+        for key in keys:
+            d = data[key]
+            S = d["S"].copy()
+            if use_unmatch:
+                mask_should_unmatched(S, d["seg_texts"], d["corpus"])
+            db, da = {}, {}
+            mb = align_v2(S, *DEFAULT, repeat_penalty=REPEAT_DEFAULT,
+                          reset_penalty=rs, diag=db)
+            ma, da = align_segmented(S, cuts_all[key], *DEFAULT,
+                                     repeat_penalty=REPEAT_DEFAULT, reset_penalty=rs)
+            cb = score(mb, d["truth_ok"], d["scored"], d["cls"], d["idxs"])
+            ca = score(ma, d["truth_ok"], d["scored"], d["cls"], d["idxs"])
+            nb = len(d["scored"])
+            tot_b += cb
+            tot_a += ca
+            tot_n += nb
+            print("   {:<8} {:>8} {:>7}/{:<4} {:>7}/{:<4} {:>10} {:>10}  {}".format(
+                key, "inf" if not np.isfinite(rs) else rs, cb, nb, ca, nb,
+                "{}→{}".format(db["reset"], da["reset"]), da["blocks"],
+                "" if ca >= cb else " ↓"))
+        print("   {:<8} {:>8} {:>7}/{:<4} {:>7}/{:<4}".format(
+            "合计", "inf" if not np.isfinite(rs) else rs, tot_b, tot_n, tot_a, tot_n))
+    return cuts_all
+
+
 # ────────────────────────── 主流程 ──────────────────────────
 
 def build_matrices(keys, tok, sess):
@@ -510,6 +685,8 @@ def main():
     ap.add_argument("--selfcheck", action="store_true")
     ap.add_argument("--unmatch-filter", action="store_true",
                     help="启用「该不配」行掩码（§7.6；默认关闭，标定阶段不改默认行为）")
+    ap.add_argument("--segmented", action="store_true",
+                    help="启用显式重播分段的 before/after 测量（§7.7 重评；默认关闭）")
     args = ap.parse_args()
 
     # 默认案例集与 fuse_truth.CASES / fuse_align_srt.CASES 保持一致（vesna 已是一等案例；
@@ -517,6 +694,21 @@ def main():
     keys = args.cases or ["moon", "glupov", "pierro", "vesna"]
     tok, sess = load_embedder(os.environ.get("GSA_EMBED_MODEL", "multilingual-e5-small"))
     data = build_matrices(keys, tok, sess)
+
+    # ── 显式重播分段（§7.7 重评）：默认关闭，--segmented 才测 ──
+    if args.segmented:
+        for k in keys:
+            with io.open(os.path.join(BENCH_OUT, "truth_{}.json".format(k)),
+                         encoding="utf-8") as f:
+                data[k]["rows"] = json.load(f)["rows"]
+        for um in (False, True):
+            print()
+            print("### 「该不配」掩码：{}".format("开" if um else "关"))
+            measure_segmented(keys, tok, sess, data, use_unmatch=um)
+        if not SEGMENTED_FILTER:
+            print()
+            print("   （SEGMENTED_FILTER = False ⇒ 上述 after 列只是对照，默认行为未改）")
+        return 0
 
     # ── DP 等价性自检（校准不能悄悄换算法）──
     print("=" * 100)
