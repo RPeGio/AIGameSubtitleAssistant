@@ -46,6 +46,10 @@ CASES = [
 ]
 
 WEAK = 0.72
+# 段与参考块**零重叠**时的回退容差（秒）：取时间上最近的块，超过此距离则不指派。
+# 取 1.5s：手打轴散布 ±0.5s + OCR 段界误差远小于它；而两遍播放之间的真实空档约 57s，
+# 语气词段落也各有自己的参考块（走「弱匹配」路径而非本回退）⇒ 不会误指派。
+NEAR_REF_SEC = 1.5
 # 亚帧残留碎片阈值（秒）：与 OCR 侧 `SHORT_FRAGMENT_SUBFRAME_SEC = 0.5`（= frame_interval）
 # 同一物理依据——不足一个采样网格间隔的产出段不可能是真实字幕，属过渡态残留。
 # 这类段**参与对齐但不计分**（见 build_truth 末尾）。
@@ -268,12 +272,26 @@ def build_truth(case, verbose=True):
             score = dr + LAMBDA_OVERLAP * (ov / max(dur, 1e-9))
             if score > best_score:
                 best, best_ov, best_score = x, ov, score
-        if best is None:   # 无任何重叠：退回最大重叠（含 0）
+        if best is None:
+            # 无任何重叠：退回**时间上最近**的参考块（限容差内）。
+            #
+            # 旧实现是"退回最大重叠（含 0）"，但比较写的是 `ov > best_ov`，而 `best_ov`
+            # 初值就是 0.0 ⇒ 全为 0 时永不成立 ⇒ `best` 保持 None ⇒ 该段被记成
+            # `ref_text=""`、可接受集合为空 ⇒ **真值判它"语料里没有对应行"**。
+            #
+            # 实测后果（vesna，2026-10-08）：段56 [570.95→571.76] 与段83 [673.26→673.91]
+            # 落在参考块之间的**小空隙**里（参考块 `570.14→570.59` / `672.34→673.10`，
+            # 手打轴 ±0.5s 散布 + OCR 段界误差所致），于是被误判"该不配"——
+            # **这是推导缺陷，不是素材缺块**（参考文件里一个空块都没有）。
+            near, nd = None, float("inf")
             for x in ref_to_corpus:
                 r = x["ref"]
-                ov = overlap(g["start"], g["end"], r["t0"], r["t1"])
-                if ov > best_ov:
-                    best, best_ov = x, ov
+                # 时间距离：重叠时为 0，否则为间隙长度
+                d = max(r["t0"] - g["end"], g["start"] - r["t1"], 0.0)
+                if d < nd:
+                    near, nd = x, d
+            if near is not None and nd <= NEAR_REF_SEC:
+                best, best_ov = near, 0.0
         # ── 可接受集合（T4c：对应关系是"关系"而非"函数"）──
         # 段实质重叠的**所有**参考块所映语料行取并集。集合为空 ⇒ 该显示在中英之间
         # 无对应（语气/感叹词等）⇒ **正确行为是"不配"**（输出转写原文），不是缺陷。
