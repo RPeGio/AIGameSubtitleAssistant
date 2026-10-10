@@ -37,9 +37,10 @@ pub fn bench_data_dir() -> PathBuf {
 }
 
 // ── 案例配置 ──
-// 选区坐标逐字取自 examples/benchmark_examples/ 下同名 .gsa 工程的
-// ocr_region 控制轨（归一化 0..1）。.gsa 工程不入库（本地素材，仅作留档），
-// 故本文件的硬编码即基准选区的受控副本——调整坐标须同步更新此处。
+// 选区真值 = 各案例 `.gsa` 工程（**已入库**，见 .gitignore 例外与理由）内
+// `type=ocr_region` 且 page 匹配的控制轨事件——单一来源，不再有硬编码副本
+// （PR31 时代"硬编码为受控副本"的方案随 `.gsa` 入库而退役，见 PR37）。
+// 入库版的素材路径字段（video/source_video/path）已清空，选区字段不受影响。
 
 pub struct CaseCfg {
     pub key: &'static str,
@@ -51,6 +52,8 @@ pub struct CaseCfg {
     pub corpus_video: &'static str,
     /// 测试片（主播实况切片，嵌字基准输入）
     pub clip_video: &'static str,
+    /// 该案例的 `.gsa` 工程文件（已入库；选区真值来源，见上方说明）
+    pub gsa_file: &'static str,
     /// 参考时间轴的线性换算（`t_video ≈ t_ref × (1 + k) + a`）**不再写在这里**：
     /// 它已搬到可审计产物 `examples/benchmark_examples/<key>_timebase.json`
     /// （`load_timebase` 加载，并断言 clip/参考文件的 SHA256 与质量门）。
@@ -108,6 +111,7 @@ const PIERRO_TRANSITION_REFS: &[(usize, &str)] = &[
 
 pub const MOON_SISTERS: CaseCfg = CaseCfg {
     key: "moon_sisters",
+    gsa_file: "moon_sisters.gsa",
     ref_file: "quality_bench_test(voiced)_5min_reference.txt",
     // 素材实测 r_frame_rate=60/1（ffprobe）——参考时间码按 60fps 帧号书写（帧号最大 57）
     ref_fps: 60.0,
@@ -121,6 +125,7 @@ pub const MOON_SISTERS: CaseCfg = CaseCfg {
 
 pub const GLUPOV: CaseCfg = CaseCfg {
     key: "glupov",
+    gsa_file: "glupov.gsa",
     ref_file: "quality_bench_test(non-voiced)_11min_reference.txt",
     ref_fps: 60000.0 / 1001.0,
     corpus_video: "quality_bench_test_corpus(non-voiced)_11min.mp4",
@@ -134,6 +139,7 @@ pub const GLUPOV: CaseCfg = CaseCfg {
 
 pub const PIERRO_QUESTIONS: CaseCfg = CaseCfg {
     key: "pierro_questions",
+    gsa_file: "pierro_questions.gsa",
     ref_file: "quality_bench_test(voiced)_48min_reference.txt",
     ref_fps: 60000.0 / 1001.0,
     corpus_video: "quality_bench_test_corpus(voiced)_48min.mp4",
@@ -178,6 +184,7 @@ const VESNA_ENGLISH_ONLY_REFS: &[(usize, &str)] = &[
 
 pub const VESNA: CaseCfg = CaseCfg {
     key: "vesna",
+    gsa_file: "vesna_trailer.gsa",
     ref_file: "pv_reaction_vesna(voiced)_12min_reference.txt",
     // 素材实测 r_frame_rate=60000/1001（ffprobe）——参考时间码按该帧率手打（帧号最大 59）
     ref_fps: 60000.0 / 1001.0,
@@ -529,67 +536,46 @@ fn test_shipped_timebase_artifacts_match_media() {
 }
 
 /// 语料页选区（page=corpus, video=source）
-pub fn corpus_regions(key: &str) -> Vec<OcrRegionInput> {
-    match key {
-        "moon_sisters" => vec![
-            OcrRegionInput { start: 37.53445753177658, end: 41.23095359134309, x1: 0.2, y1: 0.3964285714285714, x2: 0.8, y2: 0.5964285714285715 },
-            OcrRegionInput { start: 43.23414776576048, end: 150.36933797398578, x1: 0.15479910714285716, y1: 0.7669642857142857, x2: 0.8477120535714286, y2: 0.9625 },
-            OcrRegionInput { start: 153.4213611285289, end: 156.6089174844994, x1: 0.20502232142857144, y1: 0.3875, x2: 0.8050223214285714, y2: 0.5875 },
-        ],
-        "glupov" => vec![
-            OcrRegionInput { start: 2.244384779128154, end: 30.971196990244636, x1: 0.1924665178571429, y1: 0.6784708057, x2: 0.792466517857143, y2: 0.8738084614 },
-            OcrRegionInput { start: 46.19806263843079, end: 76.41020246274422, x1: 0.20251116071428577, y1: 0.6833312086, x2: 0.8025111607142857, y2: 0.8786688643 },
-        ],
-        "pierro_questions" => vec![
-            OcrRegionInput { start: 0.0, end: 1272.3, x1: 0.16484375, y1: 0.7601340682, x2: 0.8326450892857143, y2: 0.9522546738 },
-        ],
-        // vesna 语料片（中文 PV 单集，1920x1080 / 30fps / 191.0s）：**无主播摄像头**，
-        // 中文嵌字为白字无底框、底部居中单行。
-        // 选区**取自用户工程 `vesna_trailer.gsa` 的语料页控制轨**（1 段：
-        // x[0.2, 0.739732142857143] × y[0.85625, 0.9848214285714286]，时间窗全片）——
-        // 代表真实用户"大致框住字幕带"的**粗略选区**场景，而非管线自探的紧框。
-        // 本片无"逛 YouTube"段落，整片即 PV（含中文字幕），故用户框了整片。
-        "vesna" => vec![
-            OcrRegionInput { start: 0.0, end: 190.997333, x1: 0.2, y1: 0.85625, x2: 0.739732142857143, y2: 0.9848214285714286 },
-        ],
-        _ => unreachable!("未知案例: {key}"),
+/// 从案例的 `.gsa` 工程抽取 OCR 选区（按 page 过滤控制轨，跨同页多轨合并）。
+///
+/// 收集口径与产品 `runOcr` 一致：所有 `type=ocr_region` 且 `page=目标页` 的控制轨事件
+/// 都参与，事件按 start 升序。`.gsa` 已入库（素材路径字段清空不影响选区），
+/// 文件缺失/损坏属仓库损坏 → 直接 panic（不属于"本地素材缺失"的跳过场景）。
+pub fn regions_from_gsa(cfg: &CaseCfg, page: &str) -> Vec<OcrRegionInput> {
+    let path = bench_data_dir().join(cfg.gsa_file);
+    let raw = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("读取基准工程失败（{}）: {e}", path.display()));
+    let json = raw.split_once('\n').map(|(_, b)| b).unwrap_or(&raw);
+    let proj: serde_json::Value =
+        serde_json::from_str(json).unwrap_or_else(|e| panic!("基准工程 JSON 解析失败: {e}"));
+    let mut out: Vec<OcrRegionInput> = Vec::new();
+    for t in proj["tracks"].as_array().unwrap_or(&Vec::new()) {
+        if t["type"] != "ocr_region" || t["page"].as_str().unwrap_or("") != page {
+            continue;
+        }
+        for e in t["events"].as_array().unwrap_or(&Vec::new()) {
+            out.push(OcrRegionInput {
+                start: e["start"].as_f64().unwrap_or(0.0),
+                end: e["end"].as_f64().unwrap_or(0.0),
+                x1: e["x1"].as_f64().unwrap_or(0.0),
+                y1: e["y1"].as_f64().unwrap_or(0.0),
+                x2: e["x2"].as_f64().unwrap_or(0.0),
+                y2: e["y2"].as_f64().unwrap_or(0.0),
+            });
+        }
     }
+    out.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
+    out
 }
 
-/// 嵌字选区（page=asr, video=clip）
-pub fn hardsub_regions(key: &str) -> Vec<OcrRegionInput> {
-    match key {
-        "moon_sisters" => vec![
-            OcrRegionInput { start: 1.6250005275973716, end: 6.498949253557576, x1: 0.2627790179, y1: 0.38303571428571426, x2: 0.8301339286, y2: 0.5830357142857143 },
-            OcrRegionInput { start: 7.984131234376179, end: 147.97936019415172, x1: 0.2577566964, y1: 0.7446428571, x2: 0.8326450893, y2: 0.9357142857142856 },
-            OcrRegionInput { start: 150.36933797398578, end: 185.13431614757792, x1: 0.2577566964, y1: 0.7446428571, x2: 0.8401785714, y2: 0.9178571429 },
-            OcrRegionInput { start: 214.6356887998845, end: 262.4167854574098, x1: 0.2552455357, y1: 0.7401785714, x2: 0.8200892857, y2: 0.9401785714 },
-            OcrRegionInput { start: 263.8815155779389, end: 270.4365261181527, x1: 0.2627790179, y1: 0.3875, x2: 0.8025111607142857, y2: 0.5875 },
-        ],
-        "glupov" => vec![
-            OcrRegionInput { start: 69.19615992506358, end: 232.6610104886491, x1: 0.2627790179, y1: 0.7267857143, x2: 0.8301339286, y2: 0.9 },
-            OcrRegionInput { start: 290.58328455542073, end: 588.3363037178857, x1: 0.2577566964, y1: 0.7401785714, x2: 0.8226004464, y2: 0.9178571429 },
-        ],
-        "pierro_questions" => vec![
-            OcrRegionInput { start: 49.566388194397724, end: 2946.326729, x1: 0.2602678571, y1: 0.7401785714, x2: 0.8426897321, y2: 0.9267857143 },
-        ],
-        // vesna 测试片（主播 PV reaction，2560x1440 / 59.94fps / 743.5s）：4 段选区
-        // **取自用户工程 `vesna_trailer.gsa` 的嵌字页控制轨的实际选区，代表真实粗略选区场景**
-        // （坐标逐字抄自该 .gsa 的 ocr_region 事件，未做任何自探收紧）：
-        //   x 约 [0.1975, 0.80]，**y 下边一律框到 1.0000**（含画面最底边），
-        //   y 上边 0.83125~0.853571（随段落略有出入）。
-        // 与"管线自探紧框"（y[0.915,0.992]）的关键差别：粗框把黑底框之外的画面底边/边缘
-        // 元素一并纳入 OCR，会引入紧框下不复现的单字符垃圾段——这正是要复现的真实场景。
-        // 时间窗：154.545~691.165s；中间 430.589~453.938s **留空**（用户未框选该段，
-        // 对应逛页/无嵌字段），不是遗漏。
-        "vesna" => vec![
-            OcrRegionInput { start: 154.54503344111032, end: 195.6155314942367, x1: 0.2100446428571429, y1: 0.8535714285714285, x2: 0.7623325892857143, y2: 1.0 },
-            OcrRegionInput { start: 195.6155314942367, end: 218.1371192797065, x1: 0.2100446428571429, y1: 0.8535714285714285, x2: 0.7221540178571428, y2: 1.0 },
-            OcrRegionInput { start: 218.1371192797065, end: 430.58866915972294, x1: 0.2, y1: 0.8312499999999998, x2: 0.8, y2: 1.0 },
-            OcrRegionInput { start: 453.93756381631937, end: 691.1647551251244, x1: 0.19748883928571428, y1: 0.83125, x2: 0.7974888392857143, y2: 1.0 },
-        ],
-        _ => unreachable!("未知案例: {key}"),
-    }
+/// 语料轴选区：`.gsa` 的语料页（page=corpus）控制轨
+pub fn corpus_regions(cfg: &CaseCfg) -> Vec<OcrRegionInput> {
+    regions_from_gsa(cfg, "corpus")
+}
+
+/// 嵌字轴选区：`.gsa` 的转写页（page=asr）控制轨
+pub fn hardsub_regions(cfg: &CaseCfg) -> Vec<OcrRegionInput> {
+    regions_from_gsa(cfg, "asr")
 }
 
 pub fn default_ocr_params() -> OcrRunParams {
@@ -1401,6 +1387,35 @@ pub fn print_md_row(cells: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn regions_loaded_from_gsa_match_case_config() {
+        // 选区真值 = 入库 .gsa（单一来源）：4 案例 × 2 轴全部可加载、
+        // 非空、按 start 升序、坐标在 [0,1] 内、时间区间有效
+        for cfg in [MOON_SISTERS, GLUPOV, PIERRO_QUESTIONS, VESNA] {
+            for (label, regs) in [
+                ("corpus", corpus_regions(&cfg)),
+                ("hardsub", hardsub_regions(&cfg)),
+            ] {
+                assert!(!regs.is_empty(), "{} {label} 选区为空", cfg.key);
+                for r in &regs {
+                    assert!(r.end > r.start, "{} {label} 时间段无效: {}", cfg.key, r.end - r.start);
+                    for (name, v) in [("x1", r.x1), ("y1", r.y1), ("x2", r.x2), ("y2", r.y2)] {
+                        assert!(
+                            (0.0..=1.0).contains(&v),
+                            "{} {label} 坐标 {name}={v} 越界",
+                            cfg.key
+                        );
+                    }
+                }
+                assert!(
+                    regs.windows(2).all(|w| w[0].start <= w[1].start),
+                    "{} {label} 选区未按 start 升序",
+                    cfg.key
+                );
+            }
+        }
+    }
 
     #[test]
     fn parse_timecode_frames() {

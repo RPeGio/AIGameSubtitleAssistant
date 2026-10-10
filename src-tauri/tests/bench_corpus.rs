@@ -77,7 +77,7 @@ fn run_case(cfg: &CaseCfg) {
         println!("参考块内 `---` 拆分：多出 {split_extra} 条期望（一个显示块覆盖多条语料行）");
     }
 
-    let (segments, elapsed) = run_ocr(&manager, &video, &corpus_regions(cfg.key));
+    let (segments, elapsed) = run_ocr(&manager, &video, &corpus_regions(cfg));
 
     // 主观评估产物：语料段写成 SRT（时间轴相对语料录屏），供对照录屏逐条目视
     match common::write_bench_srt(cfg.key, "corpus", &segments) {

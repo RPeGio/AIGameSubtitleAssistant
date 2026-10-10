@@ -82,7 +82,7 @@ fn run_case(cfg: &CaseCfg) {
     if !dropped.is_empty() {
         println!("排除计分条目 {} 条（素材侧缺陷，不计缺陷）：{}", dropped.len(), dropped.join("、"));
     }
-    let regions = hardsub_regions(cfg.key);
+    let regions = hardsub_regions(cfg);
 
     // 选区未覆盖的期望条目：与任何选区时间窗都不相交 → 单独报告，不计缺陷
     let out_of_region = refs
