@@ -8,15 +8,18 @@
 |---|---|---|---|
 | ① 语料收集 | `bench_corpus` | 语料片（剧情/游戏录屏） | 参考文本全部条目**去重后**的文本 |
 | ② 嵌字时间轴 | `bench_hardsub` | 测试片（实况切片）内嵌字幕 | 参考文本内的**时间轴** |
-| ③ LLM 融合 | 待实施（下一阶段） | 预校对工程 | 见 [OCR_TIMELINE_CLOSURE.md §三](OCR_TIMELINE_CLOSURE.md) |
+| ③ 嵌字补跑 | `bench_pierro_embed_ocr` | pierro 工程切片（`page=asr` 选区） | 补出 `embed_ocr` 转写侧（供融合验证消费） |
+| ④ 融合对齐 | `fuse_lab`（Python，非 cargo） | 预校对工程的 `.gsa` + 参考文本 | 跨语言对齐正确率，见 [FUSE_THRESHOLD_CALIBRATION.md](FUSE_THRESHOLD_CALIBRATION.md) |
 
 ```powershell
 cargo test --release --test bench_corpus  -- --ignored --nocapture --test-threads=1
 cargo test --release --test bench_hardsub -- --ignored --nocapture --test-threads=1
+cargo test --release --test bench_pierro_embed_ocr -- --ignored --nocapture
 ```
 
-环境变量：`GSA_BENCH_TOLERANCE_SEC`（嵌字基准时间容差，默认 0.3s——1s 级偏差对字幕生产已是严重偏离）。
-数据在 `examples/benchmark_examples/`（**视频与 `.gsa` 工程不入库**——二者均为本地素材；仅参考文本 `*_reference.txt` 随 git 分发）。案例选区坐标已硬编码在 `src-tauri/tests/common/mod.rs`，以该文件为受控副本，`.gsa` 仅作本地留档。
+环境变量：`GSA_BENCH_TOLERANCE_SEC`（嵌字基准时间容差，默认 0.3s——1s 级偏差对字幕生产已是严重偏离）；`GSA_PIERRO_VIDEO`（pierro 切片视频路径，未设时回退约定素材名）。
+数据在 `examples/benchmark_examples/`：**`.gsa` 工程与参考文本 `*_reference.txt` 随 git 分发**（`.gsa` 已清洗本机绝对路径，顶层 `path`/`video`/`source_video` 置空串）；**视频不入库**（合计约 2.9 GB），用 `powershell -ExecutionPolicy Bypass -File scripts/fetch_bench_materials.ps1` 从 release 资产下载并按 `benchmark/materials.sha256` 校验。案例选区坐标已硬编码在 `src-tauri/tests/common/mod.rs`，以该文件为受控副本。
+**融合基准不需要视频**——它只读 `.gsa` 的 tracks 与参考文本，故 clone 即可复现（见 `src-tauri/tests/fuse_lab/README.md`）。
 
 素材或 OCR 环境缺失时测试打印 `[跳过]` 并正常结束；**素材与环境齐备后流水线自身报错则测试失败**（不再以 `[跳过]` 掩盖真实回归）；参考文本的时间码若非法（帧号越界 / 分隔或段数有误）会带行号直接报错。
 
