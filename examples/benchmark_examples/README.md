@@ -40,8 +40,20 @@ $env:PYTHONPATH="<repo>\runtime\deps_embed"
 | `quality_bench_test_corpus(voiced)_5min.mp4` | 43 MB |
 | `quality_bench_test_corpus(non-voiced)_11min.mp4` | 6 MB |
 
-体积原因**不入 git**（GitHub LFS 免费额度 1 GiB 也不够）。
-获取方式：**GitHub Release 资产 + 抓取脚本**（计划中，脚本落地后在此补下载命令与 SHA256 校验说明）。
+体积原因**不入 git**（GitHub LFS 免费额度 1 GiB 也不够），改由 **GitHub Release 资产**分发。
+
+```
+powershell -ExecutionPolicy Bypass -File scripts/fetch_bench_materials.ps1
+powershell -ExecutionPolicy Bypass -File scripts/fetch_bench_materials.ps1 -Force
+powershell -ExecutionPolicy Bypass -File scripts/fetch_bench_materials.ps1 -Only "*vesna*"
+```
+
+脚本按 `benchmark/materials.sha256` 校验 SHA256 与字节数，落到本目录；下载走 `*.part` 临时名，
+中断不会留下被误认为完整的文件。**注意**：GitHub 会改写 release 资产名（实测括号 `()` 被替换为 `.`），
+故清单同时记录「资产名」与「落地文件名」，按前者拼 URL、按后者保存。
+下载走 `*.part` 临时名，中断不会留下被误认为完整的文件。
+
+Release 页：<https://github.com/RPeGio/AIGameSubtitleAssistant/releases/tag/bench-materials-v1>
 
 ## 已知事项
 

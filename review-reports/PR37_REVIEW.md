@@ -12,6 +12,10 @@
 - 严重程度映射：🔴 严重 → P0｜🟡 建议 → P1｜🟢 优化 → P2
 - 自动验证：`cargo test --lib` **257 通过**；bench 自测 14×2、e2e 按设计 ignored；`vue-tsc --noEmit` 干净
 
+> **状态同步说明（2026-10-10 补）**：本文档初次发布时各项状态行未随修复同步，
+> 一度显示 P1-1「未修复」，造成误解——实际修复发生在合并之后、由另一会话完成。
+> 现全部状态行已按实际提交（`d9da992` / PR #40 `2bcff4e`）核对更新。
+
 ---
 
 ## P0（必须修复）
@@ -38,7 +42,7 @@
   assert!(PathBuf::from(&video).is_file(), "切片视频不存在: {video}（可设 GSA_PIERRO_VIDEO 指定）");
   ```
   并在头部用法注释补 `GSA_PIERRO_VIDEO`。
-- **状态**：⬜ 未修复
+- **状态**：✅ **已修复**（`d9da992`，另一会话）——新增 `GSA_PIERRO_VIDEO` 环境变量覆盖 + 未设时回退约定素材名 `quality_bench_test(voiced)_48min.mp4`，并在文件头用法注释里写明该变量。本项由本审查发现、修复于合并后（当时状态行未同步，故一度显示未修复）。
 
 ---
 
@@ -49,28 +53,28 @@
 - **位置**：`benchmark/README.md:19`
 - **问题**：① "**视频与 `.gsa` 工程不入库**……以该文件为受控副本，`.gsa` 仅作本地留档"——`6626bdf` 已把 4 份 `.gsa` 入库（`.gitignore` 加了 `!examples/benchmark_examples/*.gsa` negation 并带理由注释，另显式忽略已弃用的 `pierro_fixed.gsa`）；"硬编码坐标为受控副本"的表述也未涵盖新入口 `bench_pierro_embed_ocr`（它从 `.gsa` 读选区）。② README 的"基准与跑法"表未列 `bench_pierro_embed_ocr` / `fuse_lab` 三个入口（后者有自己的 README，可链接说明）。
 - **建议**：README 该段改写为现状——".gsa 工程入库（素材路径字段清空；视频仍本地）；语料/嵌字两轴选区坐标硬编码于 `tests/common/mod.rs`，pierro 嵌字补跑基准从 `.gsa` 读选区"；补一行新基准的运行方式。
-- **状态**：⬜ 未修复
+- **状态**：✅ **已修复**（`2bcff4e`，PR #40）——`benchmark/README.md` 该段改写为现状：`.gsa` 工程与参考文本随 git 分发（并注明已清洗本机绝对路径）、视频走 release 资产 + 抓取脚本（`scripts/fetch_bench_materials.ps1`，含 `GSA_PIERRO_VIDEO` 说明）；基准表补 `bench_pierro_embed_ocr` 与融合对齐（`fuse_lab`）两行。
 
 ### P2-2 `usePersistedOcrParams` 的持久化键不含项目维度（参数跨项目共享）
 
 - **位置**：`src/composables/ocrDefaults.ts`（`gsa.ocrParams.corpus` / `gsa.ocrParams.asr` 两个全局键）
 - **问题**：所有项目共享同一份 OCR 参数。设计取向本身合理（同一用户的工作流参数跨项目延续，vesna 的教训是"参数考据不出来"，持久化已根治）；但切换到素材差异大的项目时，用户可能忘了 `min_subtitle_sec` 是上个项目调的。
 - **建议**：可保持现状；若要更稳，可按项目路径做键（或仅在状态栏显示当前生效值）。记录备查。
-- **状态**：🟢 保持现状
+- **状态**：🟢 保持现状（设计取向合理，记录备查）
 
 ### P2-3 标定脚本的迭代版本并存（`fuse_seg_calib.py` 577 行 + `fuse_seg_calib2.py` 745 行）
 
 - **位置**：`scripts/`
 - **问题**：§7.7 的两代标定脚本并存，功能高度重叠；后续读者不知以哪个为准。
 - **建议**：在文件头 docstring 相互标注（"已被 fuse_seg_calib2 取代/保留作历史对照"），或在 `benchmark/FUSE_THRESHOLD_CALIBRATION.md` 里写明两份的关系。
-- **状态**：⬜ 未修复（低成本文档项）
+- **状态**：✅ **已修复**（`2bcff4e` 及前序）——`fuse_seg_calib2.py` 头部反向指向 `fuse_seg_calib.py` 与 §7.7；本次给 `fuse_seg_calib.py` 补正向指针（注明已被取代、保留作历史对照）；`benchmark/FUSE_THRESHOLD_CALIBRATION.md` §7.7 按两轮顺序叙述两份的关系。
 
 ### P2-4 素材命名与实际时长不符（vesna 语料片）
 
 - **位置**：`tests/common/mod.rs` 的 `VESNA` 配置注释 vs 文件名
 - **问题**：`corpus_video = "pv_reaction_vesna_corpus(voiced)_12min.mp4"`，但注释写"语料片 191.0s"（≈3.2min）且选区 end=190.997——文件名"12min"疑似沿用了切片（clip）的命名口径，易误导。
 - **建议**：素材文件重命名或注释里写明"文件名为 12min 系沿用切片命名，语料片实际 191s"。
-- **状态**：🟢 记录备查
+- **状态**：🟢 记录备查（素材命名沿用切片口径，未重命名）
 
 ---
 
@@ -90,6 +94,6 @@
 
 ## 结论
 
-**建议合并（P1-1 修复后合并更佳，也可合并后立即修）**。产品代码改动小而扎实（两个 OCR 合并判据修复 + 316 行新单测），主体是融合召回的判据工具链与基准数据工程化。27 个提交延续了 PR34 的实验纪律：判据默认关闭 + 标定依据 + selfcheck 等价护栏 + 反例论证。验证：`cargo test --lib` 257 通过、bench 自测 14×2、`vue-tsc` 干净。
+**已合并（#37）。全部审查项已处理**：P1-1 修复于 `d9da992`（另一会话）、P2-1/P2-3 修复于 PR #40（`2bcff4e`）、P2-2/P2-4 记录备查（无需改动）。产品代码改动小而扎实（两个 OCR 合并判据修复 + 316 行新单测），主体是融合召回的判据工具链与基准数据工程化。27 个提交延续了 PR34 的实验纪律：判据默认关闭 + 标定依据 + selfcheck 等价护栏 + 反例论证。验证：`cargo test --lib` 257 通过、bench 自测 14×2、`vue-tsc` 干净。
 
-待办优先级：P1-1（bench_pierro_embed_ocr 视频回退，约 5 行）→ P2-1（README 现状化）→ P2-3（标定脚本互标）→ P2-2/P2-4 记录备查。
+**待办**：无遗留。~~P1-1~~（`d9da992`）→ ~~P2-1~~（PR #40）→ ~~P2-3~~（PR #40）→ P2-2/P2-4 记录备查。
