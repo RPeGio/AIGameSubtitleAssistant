@@ -16,6 +16,8 @@
 //! 环境变量：
 //!   GSA_PIERRO_MAX_SEC  截断处理的时间跨度（秒；未设 = 全量 ~49min），用于先小段试跑
 //!   GSA_PIERRO_REGION   "asr"（默认，嵌字）| "corpus"（剧情录屏选区）
+//!   GSA_PIERRO_VIDEO    切片视频本地路径（入库 `.gsa` 的素材路径已清空；
+//!                       未设时回退基准素材约定名，本机 `.gsa` 有记录值时也可直接用）
 //!   GSA_BENCH_OUT_DIR   产物目录（默认 <repo>/temp/bench_output）
 
 use ai_game_subtitle_assistant_lib::ai_runtime::config::RuntimeConfig;
@@ -63,8 +65,25 @@ fn run_pierro_embed_ocr() {
     let proj = load_gsa(&gsa);
 
     let want_page = std::env::var("GSA_PIERRO_REGION").unwrap_or_else(|_| "asr".to_string());
-    let video = proj["video"].as_str().expect("顶层 video 字段缺失").to_string();
-    assert!(PathBuf::from(&video).is_file(), "切片视频不存在: {video}");
+    // 切片视频定位（P1-1 修复）：入库 `.gsa` 已把素材路径字段清空（避免提交本机绝对路径），
+    // 故优先级 = 环境变量 `GSA_PIERRO_VIDEO` > `.gsa` 记录值（本机未清空时仍可用）>
+    // 基准素材约定名（bench_data_dir 下的 CaseCfg 命名）。
+    let video = {
+        let from_gsa = proj["video"].as_str().unwrap_or("").trim().to_string();
+        std::env::var("GSA_PIERRO_VIDEO")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| (!from_gsa.is_empty()).then_some(from_gsa))
+            .unwrap_or_else(|| {
+                root.join("examples/benchmark_examples/quality_bench_test(voiced)_48min.mp4")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+    };
+    assert!(
+        PathBuf::from(&video).is_file(),
+        "切片视频不存在: {video}（可设环境变量 GSA_PIERRO_VIDEO 指定本地素材）"
+    );
 
     // 选区：仅取目标 page 的 ocr_region（片段内嵌字用 page=asr）
     let mut clips: Vec<OcrRegionInput> = Vec::new();
