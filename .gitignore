@@ -23,7 +23,15 @@ runtime/
 temp/
 
 # Local tests
-examples/
+# 素材 mp4 体积达 GB 级，不入库；但基准的**工程与参考文本**是小文件（合计约 0.2 MB），
+# 必须入库——否则**融合基准无法被他人复现**（融合侧只读 .gsa 的 tracks 与参考文本，不读视频）。
+# git 规则：父目录被排除后无法重新包含子文件，故须**逐级放行再逐级排除**。
+examples/*
+!examples/benchmark_examples/
+examples/benchmark_examples/*
+!examples/benchmark_examples/*_reference.txt
+!examples/benchmark_examples/README.md
+# 注：`*.gsa` 的例外必须写在文件末尾的 `*.gsa` 规则**之后**才生效（见该处）
 
 # Editor directories and files
 .vscode/*
@@ -43,3 +51,9 @@ session-ses_*.md
 
 # GSA project files (machine-specific absolute paths)
 *.gsa
+# 例外：基准工程**已清洗掉本机绝对路径**（顶层 path/video/source_video 置空串），
+# 故可入库——否则融合基准无法被他人复现（融合侧只读 tracks 与参考文本，不读视频）。
+# 必须写在本行之后才生效（gitignore 后出现的规则优先）。
+!examples/benchmark_examples/*.gsa
+# 历史中间产物，无代码/文档引用（见该目录 README「已知事项」）
+examples/benchmark_examples/pierro_fixed.gsa
