@@ -40,23 +40,15 @@ CASES = {
                      "quality_bench_test(voiced)_5min_reference.txt"),
     "pierro_questions": ("quality_bench_test(voiced)_48min.mp4",
                          "quality_bench_test(voiced)_48min_reference.txt"),
-    "vesna": ("pv_reaction_vesna(voiced)_12min.mp4",
-              "pv_reaction_vesna(voiced)_12min_reference.txt"),
 }
 # 首次生成（产物不存在）时的 applied 兜底：现行生效值
 APPLIED_FALLBACK = {
     "glupov": (0.007092, -0.021),
     "moon_sisters": (0.0, 0.0),
     "pierro_questions": (0.000645, -0.121),
-    # vesna 参考时间码是**直接按嵌字片手打**的（非外部字幕源翻译），构造上 k=a=0；
-    # 首次生成时以 (0,0) 为 applied 起点，再由探针 fit 决定是否 --apply。
-    "vesna": (0.0, 0.0),
 }
 NOTE = {
     "moon_sisters": "刻意不校准：参考经复核无漂移（k≈0）；拟合返回的 a 与估计量在真值 (0,0) 上的偏差地板同量级",
-    "vesna": ("参考时间码按嵌字片**手打**（非外部字幕源翻译），构造上 k=a=0；细网格探针实测逐条散布 ±0.5s、"
-              "R²=0.08（Theil–Sen 抗差 k=+0.0002%），k 被散布噪声主导。首发无历史基线，"
-              "按「以探测拟合为准」施加 fit；resid_median 与 k_ci95 均在质量门内"),
 }
 GATE = {"max_resid_median_sec": 0.15, "max_k_ci95": 0.001}
 PROBE_DOC = ("细网格夹逼探针 scripts/bench_timebase_probe.py（0.05s 网格；"
@@ -253,13 +245,8 @@ def main():
         else:
             ap_k, ap_a = APPLIED_FALLBACK[case]
             note = NOTE.get(case, "")
-        # ⚠校验的两侧精度必须一致：applied.a 的写入精度是 4 位（--apply 路径
-        # round(f["a"], 4)），旧代码左侧却用 round(f["a"], 3) 去比——a 第 4 位小数有效时
-        # （如 fit a=-0.0651 → round3=-0.065 ≠ -0.0651）applied==fit 也会误报"与 fit 不同"。
-        # 统一成 round(x, 4)（ap_a 侧先取整到它实际写入的精度再比）。
         if (set_a is None and not apply_pooled
-                and (abs(round(f["k"], 6) - ap_k) > 1e-9
-                     or abs(round(f["a"], 4) - round(ap_a, 4)) > 1e-9)):
+                and (abs(round(f["k"], 6) - ap_k) > 1e-9 or abs(round(f["a"], 3) - ap_a) > 1e-6)):
             note = (note + "；" if note else "") + (
                 f"⚠ 当前 fit（k={f['k']:+.6f} a={f['a']:+.3f}）与 applied 不同——"
                 f"切换需显式运行 --apply 并重记基线")
@@ -316,9 +303,7 @@ def main():
               f"  a={f['a']:+.3f}s ±{f['a_ci95']:.3f}"
               f"  R²={f['r2']:.4f} rmse={f['rmse']:.3f}s"
               f"  TheilSen={theil_sen(valid) * 100:+.4f}%")
-        # 与上面的 ⚠ 校验同源：两侧统一 round(x, 4)，applied==fit 时不误打"与 fit 不同"
-        same_as_fit = (abs(round(f["k"], 6) - ap_k) <= 1e-9
-                       and abs(round(f["a"], 4) - round(ap_a, 4)) <= 1e-9)
+        same_as_fit = (abs(round(f["k"], 6) - ap_k) <= 1e-9 and abs(round(f["a"], 3) - ap_a) <= 1e-6)
         tag = ("  （与 fit 一致）" if same_as_fit else
                "  （统一口径：a 取三案例合并估计，与各案例 fit 允许不同）"
                if apply_pooled else "  ⚠ 与 fit 不同（切换需 --apply）")

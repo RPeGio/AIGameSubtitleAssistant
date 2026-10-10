@@ -37,10 +37,9 @@ pub fn bench_data_dir() -> PathBuf {
 }
 
 // ── 案例配置 ──
-// 选区真值 = 各案例 `.gsa` 工程（**已入库**，见 .gitignore 例外与理由）内
-// `type=ocr_region` 且 page 匹配的控制轨事件——单一来源，不再有硬编码副本
-// （PR31 时代"硬编码为受控副本"的方案随 `.gsa` 入库而退役，见 PR37）。
-// 入库版的素材路径字段（video/source_video/path）已清空，选区字段不受影响。
+// 选区坐标逐字取自 examples/benchmark_examples/ 下同名 .gsa 工程的
+// ocr_region 控制轨（归一化 0..1）。.gsa 工程不入库（本地素材，仅作留档），
+// 故本文件的硬编码即基准选区的受控副本——调整坐标须同步更新此处。
 
 pub struct CaseCfg {
     pub key: &'static str,
@@ -52,8 +51,6 @@ pub struct CaseCfg {
     pub corpus_video: &'static str,
     /// 测试片（主播实况切片，嵌字基准输入）
     pub clip_video: &'static str,
-    /// 该案例的 `.gsa` 工程文件（已入库；选区真值来源，见上方说明）
-    pub gsa_file: &'static str,
     /// 参考时间轴的线性换算（`t_video ≈ t_ref × (1 + k) + a`）**不再写在这里**：
     /// 它已搬到可审计产物 `examples/benchmark_examples/<key>_timebase.json`
     /// （`load_timebase` 加载，并断言 clip/参考文件的 SHA256 与质量门）。
@@ -84,17 +81,6 @@ pub struct CaseCfg {
     /// 不再触碰语料硬门。该门只作用于 D14 短碎片合并 pass
     /// （`merge_short_fragments_into_next`）的时长条件，且仍需"末行与后条对应行弱关联"
     /// 才吞并，故提高它不会盲目并掉无关短句。
-    /// **语料基准专用**排除条目（1-based 参考块下标 + 原因）：语料轴**结构上不可能产出**
-    /// 的期望条目。
-    ///
-    /// 为什么与 `excluded_refs` 分开：两者作用的轴不同。`excluded_refs` 是"素材侧缺陷"，
-    /// 嵌字轴与语料轴都该剔；本字段只剔**语料轴**。典型是 vesna 案例里"中文 PV 没有、
-    /// 只存在于英文嵌字轨的语气词"（`Ohh!`/`Huh?`/`Ugh!`…）：嵌字轴必须照常计分
-    /// （它们确实是画面上真实显示的嵌字），但中文语料片永远产不出它们，留在期望集里
-    /// 就是**必然缺失**，只会压低分数、掩盖真实缺陷。
-    ///
-    /// 与 `excluded_refs` 一样按**下标**索引 ⇒ **参考文本一旦重打轴/改块序必须同步更新**。
-    pub corpus_excluded_refs: &'static [(usize, &'static str)],
     pub hardsub_min_subtitle_sec: f64,
 }
 
@@ -111,27 +97,23 @@ const PIERRO_TRANSITION_REFS: &[(usize, &str)] = &[
 
 pub const MOON_SISTERS: CaseCfg = CaseCfg {
     key: "moon_sisters",
-    gsa_file: "moon_sisters.gsa",
     ref_file: "quality_bench_test(voiced)_5min_reference.txt",
     // 素材实测 r_frame_rate=60/1（ffprobe）——参考时间码按 60fps 帧号书写（帧号最大 57）
     ref_fps: 60.0,
     corpus_video: "quality_bench_test_corpus(voiced)_5min.mp4",
     clip_video: "quality_bench_test(voiced)_5min.mp4",
     excluded_refs: &[],
-    corpus_excluded_refs: &[],
     // 实测最短 3.62s（p5 3.75s）
     hardsub_min_subtitle_sec: 3.6,
 };
 
 pub const GLUPOV: CaseCfg = CaseCfg {
     key: "glupov",
-    gsa_file: "glupov.gsa",
     ref_file: "quality_bench_test(non-voiced)_11min_reference.txt",
     ref_fps: 60000.0 / 1001.0,
     corpus_video: "quality_bench_test_corpus(non-voiced)_11min.mp4",
     clip_video: "quality_bench_test(non-voiced)_11min.mp4",
     excluded_refs: &[],
-    corpus_excluded_refs: &[],
     // 实测最短 3.52s（第 17 条姓名框态，p5 4.48s）——**必须低于 3.52**，
     // 否则 D12 保护的姓名框档案会被本 pass 吞并（glupov 会回归）
     hardsub_min_subtitle_sec: 3.4,
@@ -139,14 +121,12 @@ pub const GLUPOV: CaseCfg = CaseCfg {
 
 pub const PIERRO_QUESTIONS: CaseCfg = CaseCfg {
     key: "pierro_questions",
-    gsa_file: "pierro_questions.gsa",
     ref_file: "quality_bench_test(voiced)_48min_reference.txt",
     ref_fps: 60000.0 / 1001.0,
     corpus_video: "quality_bench_test_corpus(voiced)_48min.mp4",
     clip_video: "quality_bench_test(voiced)_48min.mp4",
     // 两处人工剪辑 transition（用户 2026-09-18 主观评审确认，仅此两处）→ 不计错
     excluded_refs: PIERRO_TRANSITION_REFS,
-    corpus_excluded_refs: &[],
     // 实测最短 2.25s（另有 0.60s 的异常条目，疑似参考笔误）。取 3.5s 的目标：
     // 盖住 D12 门槛造出的 6 条碎片短态（2.55~3.38s），使它们在 D14 pass 被并入后条。
     // 是否误吞合法的 2.25~2.83s 短条（如「丑角」/可以。）取决于"弱关联"判据，
@@ -154,57 +134,13 @@ pub const PIERRO_QUESTIONS: CaseCfg = CaseCfg {
     hardsub_min_subtitle_sec: 3.5,
 };
 
-/// vesna 参考文本里"**只存在于英文嵌字轨、中文 PV 没有**"的语气/感叹词块（1-based 下标）。
+/// 剔除**排除计分**的参考条目（见 `CaseCfg::excluded_refs`），返回 (保留条数, 剔除明细)。
 ///
-/// 判据是"块内文本**不含任何中日韩字符**"，即"中文语料片结构上产不出它"——
-/// **不是**"这段是不是英文"（那样将来加日语/其他语种样例会失效）。
-///
-/// 实测影响：这 16 块在语料轴是**必然缺失**，把语料分从 ~90 压到 71.4，
-/// 并掩盖真实缺陷（如 `薇斯纳` 被识别成 `薇斯纳大人`）。**嵌字轴照常计分**。
-///
-/// 块序与文本一一对应（`parse_reference` 按时间排序）；**重打轴改块序必须同步更新**。
-const VESNA_ENGLISH_ONLY_REFS: &[(usize, &str)] = &[
-    (4, "英文语气词 Ohh!（中文 PV 无对应）"),
-    (6, "英文语气词 …Mm-hmm!（中文 PV 无对应）"),
-    (7, "英文语气词 *hum*（中文 PV 无对应）"),
-    (13, "英文语气词 Huh?（中文 PV 无对应）"),
-    (14, "英文语气词 Ah…（中文 PV 无对应）"),
-    (17, "英文语气词 …Huh?（中文 PV 无对应）"),
-    (23, "英文语气词 Ugh!（中文 PV 无对应）"),
-    (34, "英文语气词 ...What?（中文 PV 无对应）"),
-    (44, "英文语气词 Ohh!（第二遍播放，中文 PV 无对应）"),
-    (46, "英文语气词 …Mm-hmm!（第二遍播放，中文 PV 无对应）"),
-    (47, "英文语气词 *hum*（第二遍播放，中文 PV 无对应）"),
-    (53, "英文语气词 Huh?（第二遍播放，中文 PV 无对应）"),
-    (54, "英文语气词 Ah…（第二遍播放，中文 PV 无对应）"),
-    (58, "英文语气词 …Huh?（第二遍播放，中文 PV 无对应）"),
-    (64, "英文语气词 Ugh!（第二遍播放，中文 PV 无对应）"),
-    (75, "英文语气词 ...What?（第二遍播放，中文 PV 无对应）"),
-];
-
-pub const VESNA: CaseCfg = CaseCfg {
-    key: "vesna",
-    gsa_file: "vesna_trailer.gsa",
-    ref_file: "pv_reaction_vesna(voiced)_12min_reference.txt",
-    // 素材实测 r_frame_rate=60000/1001（ffprobe）——参考时间码按该帧率手打（帧号最大 59）
-    ref_fps: 60000.0 / 1001.0,
-    corpus_video: "pv_reaction_vesna_corpus(voiced)_12min.mp4",
-    clip_video: "pv_reaction_vesna(voiced)_12min.mp4",
-    excluded_refs: &[],
-    corpus_excluded_refs: VESNA_ENGLISH_ONLY_REFS,
-    // 参考 83 块时长实测（temp/probe 统计）：
-    // min 0.35 / p5 0.43 / p10 0.48 / 中位 1.10 / 均值 1.38 / max 20.72s。
-    // **该素材字幕寿命远短于其他案例**（3.4~3.6s）：PV 对白字幕一句话一闪而过，
-    // 若沿用产品默认 1.5s，合法短条会被 D14 pass 吞并（中位才 1.10s）→ 取 p5 = 0.43s。
-    hardsub_min_subtitle_sec: 0.43,
-};
-
-/// 按**下标表**剔除参考条目（1-based 下标 + 原因），返回剔除明细。
-///
-/// 按下标**降序**删除，避免删除后后续序号左移导致错删。
-pub fn drop_refs_by_list(refs: &mut Vec<RefEntry>, list: &[(usize, &str)]) -> Vec<String> {
+/// 调用方（嵌字基准）在计分前调用；被剔除条目的产出段自然成为"多余段"（仅统计不扣分）。
+pub fn drop_excluded_refs(refs: &mut Vec<RefEntry>, cfg: &CaseCfg) -> Vec<String> {
     let mut dropped = Vec::new();
-    let mut items: Vec<&(usize, &str)> = list.iter().collect();
+    // 按下标**降序**删除，避免删除后后续序号左移导致错删
+    let mut items: Vec<&(usize, &str)> = cfg.excluded_refs.iter().collect();
     items.sort_by_key(|(i, _)| std::cmp::Reverse(*i));
     for (idx, reason) in items {
         let i = idx.saturating_sub(1);
@@ -214,39 +150,6 @@ pub fn drop_refs_by_list(refs: &mut Vec<RefEntry>, list: &[(usize, &str)]) -> Ve
         }
     }
     dropped
-}
-
-/// 剔除**排除计分**的参考条目（见 `CaseCfg::excluded_refs`），返回剔除明细。
-///
-/// 调用方（嵌字基准）在计分前调用；被剔除条目的产出段自然成为"多余段"（仅统计不扣分）。
-pub fn drop_excluded_refs(refs: &mut Vec<RefEntry>, cfg: &CaseCfg) -> Vec<String> {
-    drop_refs_by_list(refs, cfg.excluded_refs)
-}
-
-/// 把一个参考块的文本按**块内 `---` 分隔符**拆成多条期望（1 条 → N 条）。
-///
-/// 背景：中英本地化不是 1:1——一个英文显示块可能覆盖**多条**中文语料行
-/// （如 `Good morning, Snezhnograd!` ↔ `向你问候` + `至冬堡`）。参考文本用一个块 + 块内
-/// `---` 表达这种情形（与 `scripts/fuse_truth.py` 的 `PART_SEP` 同一约定）。
-///
-/// **只给语料轴用**：语料片是**按显示行**产出的，本轴必须逐行比；嵌字轴仍按
-/// "一个显示块 = 一条参考"（否则一个合并显示会被判成两条缺失，反而冤枉 OCR）。
-pub fn split_ref_parts(text: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut cur: Vec<&str> = Vec::new();
-    for l in text.lines() {
-        if l.trim() == "---" {
-            out.push(cur.join("\n"));
-            cur.clear();
-        } else {
-            cur.push(l);
-        }
-    }
-    out.push(cur.join("\n"));
-    out.into_iter()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
 }
 
 // ─── 参考时基产物（A4）────────────────────────────────────
@@ -524,7 +427,7 @@ fn test_timebase_guard_rejects_replaced_media() {
 /// 注意会哈希真实素材（约 2GB，十秒内），这是该守卫的固有代价。
 #[test]
 fn test_shipped_timebase_artifacts_match_media() {
-    for cfg in [MOON_SISTERS, GLUPOV, PIERRO_QUESTIONS, VESNA] {
+    for cfg in [MOON_SISTERS, GLUPOV, PIERRO_QUESTIONS] {
         let data = bench_data_dir();
         if !data.join(cfg.clip_video).is_file() || !data.join(cfg.ref_file).is_file() {
             eprintln!("[跳过] {} 缺少本地素材", cfg.key);
@@ -536,46 +439,43 @@ fn test_shipped_timebase_artifacts_match_media() {
 }
 
 /// 语料页选区（page=corpus, video=source）
-/// 从案例的 `.gsa` 工程抽取 OCR 选区（按 page 过滤控制轨，跨同页多轨合并）。
-///
-/// 收集口径与产品 `runOcr` 一致：所有 `type=ocr_region` 且 `page=目标页` 的控制轨事件
-/// 都参与，事件按 start 升序。`.gsa` 已入库（素材路径字段清空不影响选区），
-/// 文件缺失/损坏属仓库损坏 → 直接 panic（不属于"本地素材缺失"的跳过场景）。
-pub fn regions_from_gsa(cfg: &CaseCfg, page: &str) -> Vec<OcrRegionInput> {
-    let path = bench_data_dir().join(cfg.gsa_file);
-    let raw = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("读取基准工程失败（{}）: {e}", path.display()));
-    let json = raw.split_once('\n').map(|(_, b)| b).unwrap_or(&raw);
-    let proj: serde_json::Value =
-        serde_json::from_str(json).unwrap_or_else(|e| panic!("基准工程 JSON 解析失败: {e}"));
-    let mut out: Vec<OcrRegionInput> = Vec::new();
-    for t in proj["tracks"].as_array().unwrap_or(&Vec::new()) {
-        if t["type"] != "ocr_region" || t["page"].as_str().unwrap_or("") != page {
-            continue;
-        }
-        for e in t["events"].as_array().unwrap_or(&Vec::new()) {
-            out.push(OcrRegionInput {
-                start: e["start"].as_f64().unwrap_or(0.0),
-                end: e["end"].as_f64().unwrap_or(0.0),
-                x1: e["x1"].as_f64().unwrap_or(0.0),
-                y1: e["y1"].as_f64().unwrap_or(0.0),
-                x2: e["x2"].as_f64().unwrap_or(0.0),
-                y2: e["y2"].as_f64().unwrap_or(0.0),
-            });
-        }
+pub fn corpus_regions(key: &str) -> Vec<OcrRegionInput> {
+    match key {
+        "moon_sisters" => vec![
+            OcrRegionInput { start: 37.53445753177658, end: 41.23095359134309, x1: 0.2, y1: 0.3964285714285714, x2: 0.8, y2: 0.5964285714285715 },
+            OcrRegionInput { start: 43.23414776576048, end: 150.36933797398578, x1: 0.15479910714285716, y1: 0.7669642857142857, x2: 0.8477120535714286, y2: 0.9625 },
+            OcrRegionInput { start: 153.4213611285289, end: 156.6089174844994, x1: 0.20502232142857144, y1: 0.3875, x2: 0.8050223214285714, y2: 0.5875 },
+        ],
+        "glupov" => vec![
+            OcrRegionInput { start: 2.244384779128154, end: 30.971196990244636, x1: 0.1924665178571429, y1: 0.6784708057, x2: 0.792466517857143, y2: 0.8738084614 },
+            OcrRegionInput { start: 46.19806263843079, end: 76.41020246274422, x1: 0.20251116071428577, y1: 0.6833312086, x2: 0.8025111607142857, y2: 0.8786688643 },
+        ],
+        "pierro_questions" => vec![
+            OcrRegionInput { start: 0.0, end: 1272.3, x1: 0.16484375, y1: 0.7601340682, x2: 0.8326450892857143, y2: 0.9522546738 },
+        ],
+        _ => unreachable!("未知案例: {key}"),
     }
-    out.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
-    out
 }
 
-/// 语料轴选区：`.gsa` 的语料页（page=corpus）控制轨
-pub fn corpus_regions(cfg: &CaseCfg) -> Vec<OcrRegionInput> {
-    regions_from_gsa(cfg, "corpus")
-}
-
-/// 嵌字轴选区：`.gsa` 的转写页（page=asr）控制轨
-pub fn hardsub_regions(cfg: &CaseCfg) -> Vec<OcrRegionInput> {
-    regions_from_gsa(cfg, "asr")
+/// 嵌字选区（page=asr, video=clip）
+pub fn hardsub_regions(key: &str) -> Vec<OcrRegionInput> {
+    match key {
+        "moon_sisters" => vec![
+            OcrRegionInput { start: 1.6250005275973716, end: 6.498949253557576, x1: 0.2627790179, y1: 0.38303571428571426, x2: 0.8301339286, y2: 0.5830357142857143 },
+            OcrRegionInput { start: 7.984131234376179, end: 147.97936019415172, x1: 0.2577566964, y1: 0.7446428571, x2: 0.8326450893, y2: 0.9357142857142856 },
+            OcrRegionInput { start: 150.36933797398578, end: 185.13431614757792, x1: 0.2577566964, y1: 0.7446428571, x2: 0.8401785714, y2: 0.9178571429 },
+            OcrRegionInput { start: 214.6356887998845, end: 262.4167854574098, x1: 0.2552455357, y1: 0.7401785714, x2: 0.8200892857, y2: 0.9401785714 },
+            OcrRegionInput { start: 263.8815155779389, end: 270.4365261181527, x1: 0.2627790179, y1: 0.3875, x2: 0.8025111607142857, y2: 0.5875 },
+        ],
+        "glupov" => vec![
+            OcrRegionInput { start: 69.19615992506358, end: 232.6610104886491, x1: 0.2627790179, y1: 0.7267857143, x2: 0.8301339286, y2: 0.9 },
+            OcrRegionInput { start: 290.58328455542073, end: 588.3363037178857, x1: 0.2577566964, y1: 0.7401785714, x2: 0.8226004464, y2: 0.9178571429 },
+        ],
+        "pierro_questions" => vec![
+            OcrRegionInput { start: 49.566388194397724, end: 2946.326729, x1: 0.2602678571, y1: 0.7401785714, x2: 0.8426897321, y2: 0.9267857143 },
+        ],
+        _ => unreachable!("未知案例: {key}"),
+    }
 }
 
 pub fn default_ocr_params() -> OcrRunParams {
@@ -966,25 +866,19 @@ pub fn align_sequences(expected: &[String], produced: &[String]) -> (Vec<Pairing
 /// "姓名+头衔" → 恰好成为后段（姓名+头衔+对话）的前缀而被激进合并吞掉
 /// （glupov 语料 `00:08:47:41` 条即此）。这类单列报告、**不计满分缺失**。
 ///
-/// 要求归一化文本 ≥2 字符，避免极短条目被平凡匹配；**子序列**这一弱判据额外要求 ≥4 字符。
+/// 要求归一化文本 ≥4 字符，避免极短条目被平凡匹配。
 pub fn absorbed_indices(expected: &[String], produced: &[String], missed: &[usize]) -> Vec<usize> {
     missed
         .iter()
         .copied()
         .filter(|&ei| {
             let ne: Vec<char> = normalize_lenient(&expected[ei]).chars().collect();
-            if ne.len() < 2 {
-                // 1 字符太短：任何前缀/子序列判据都会满盘误命中
+            if ne.len() < 4 {
                 return false;
             }
             produced.iter().any(|p| {
                 let np: Vec<char> = normalize_lenient(p).chars().collect();
-                // 前缀匹配是**强条件** ⇒ 2 字符起即可。
-                // 实测（vesna）：3 字的 `薇斯纳` 被读成 `薇斯纳大人`，旧规则要求 ≥4 字符
-                // ⇒ 被判成"缺失"（管线丢失），实际是**识别精度**问题（多读了字，没丢内容）。
-                np.starts_with(&ne)
-                    // 子序列匹配是**弱条件** ⇒ 仍要求 ≥4 字符，避免短条目误命中
-                    || (ne.len() >= 4 && is_subsequence_chars(&ne, &np))
+                np.starts_with(&ne) || is_subsequence_chars(&ne, &np)
             })
         })
         .collect()
@@ -1387,35 +1281,6 @@ pub fn print_md_row(cells: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn regions_loaded_from_gsa_match_case_config() {
-        // 选区真值 = 入库 .gsa（单一来源）：4 案例 × 2 轴全部可加载、
-        // 非空、按 start 升序、坐标在 [0,1] 内、时间区间有效
-        for cfg in [MOON_SISTERS, GLUPOV, PIERRO_QUESTIONS, VESNA] {
-            for (label, regs) in [
-                ("corpus", corpus_regions(&cfg)),
-                ("hardsub", hardsub_regions(&cfg)),
-            ] {
-                assert!(!regs.is_empty(), "{} {label} 选区为空", cfg.key);
-                for r in &regs {
-                    assert!(r.end > r.start, "{} {label} 时间段无效: {}", cfg.key, r.end - r.start);
-                    for (name, v) in [("x1", r.x1), ("y1", r.y1), ("x2", r.x2), ("y2", r.y2)] {
-                        assert!(
-                            (0.0..=1.0).contains(&v),
-                            "{} {label} 坐标 {name}={v} 越界",
-                            cfg.key
-                        );
-                    }
-                }
-                assert!(
-                    regs.windows(2).all(|w| w[0].start <= w[1].start),
-                    "{} {label} 选区未按 start 升序",
-                    cfg.key
-                );
-            }
-        }
-    }
 
     #[test]
     fn parse_timecode_frames() {

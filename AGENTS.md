@@ -80,28 +80,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - **One task per conversation round** — do not batch multiple tasks in one response
 - Before coding each task, present the plan and let the user confirm
 
-### 素材责任边界与异常上报（重要）
-
-本项目的输入素材分两类，**归属不同，绝不能混淆**：
-
-| 素材 | 谁负责正确 | 出现异常时 |
-|---|---|---|
-| **管线 raw 产出**（未经人工干预：OCR / ASR / 融合的原始产物） | **管线自己** | 噪音、碎片、不合理分段都是**管线缺陷**——就地定位根因、**在管线层修**，并登记缺陷台账 |
-| **人工预校对后的素材**（用户逐条核对过） | **用户** | 发现异常就**直接、明确地告知用户**，不要自己绕开 |
-
-**不要默认"用户做过的一定是对的"，然后自己瞎摸索绕路。** 判据只有一句话：
-
-> **这段内容本应由谁保证正确？** 该由管线保证（raw 产出）→ 修管线；该由用户保证（校对后）→ 告知用户。
-
-反面案例（本项目真实发生过）：在**人工预校对过**的素材里发现"同一句台词被拆成两段"，
-直接当成既有事实、准备在**下游（融合侧）加一层合并**绕过——既没指出这其实是
-**OCR 合并层的 raw 缺陷**，也没告知用户这是**校对时的遗漏**。
-
-沉默绕过的代价是双重的：**掩盖管线缺陷**（真实根因没人修）＋**把用户的遗漏固化进后续结论**
-（错误的前提被当作事实继续使用）。发现异常却犹豫"这算不算问题"时，宁可直说。
-
 ### Git Policy
-
 - **Do NOT auto-commit** after completing a task
 - After coding, output a **conventional commit message** (title + body) that the user can copy for manual commit
 - The user is responsible for committing and pushing

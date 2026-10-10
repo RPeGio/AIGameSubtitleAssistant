@@ -96,14 +96,3 @@ LLM 融合基准已定稿的设计：在预校对工程（.gsa，语料准确、
 **逐段索引对齐**（融合输出时间轴恒等于输入段）、按段判类 correct_replaced / correct_kept /
 missed_replacement / wrong_line / character_error，指标为替换准确率 + 角色名准确率 + failed_batches；
 展开成可执行步骤的分步计划见 closure 文档 §三）。
-
-### 重评审进展（2026-10-05）
-
-上述暂缓的两条前提已被量化复核，替代路线亦已验证：
-
-- [FUSE_PIPELINE_DEFECTS.md](FUSE_PIPELINE_DEFECTS.md) — F1–F13 缺陷台账（含真实 `.gsa` + 真实 llama-cli 实测）；F13 证明 3B 主行为是「按下标对齐」，跨语言语义对齐未发生。
-- [FUSE_VECTOR_RECALL_VALIDATION.md](FUSE_VECTOR_RECALL_VALIDATION.md) — 向量召回（E5-small，CPU）+ 单调 DP 替代 LLM 的离线验证（moon 15/15、glupov 22/22）。
-- [FUSE_ALIGNMENT_SCALE_VALIDATION.md](FUSE_ALIGNMENT_SCALE_VALIDATION.md) — **规模化验证**（pierro 48min/148 语料/120 段）：88.3% → **99.2%**，主因是输入卫生（打字机前缀重复段引发 13 段漂移链），而非对齐算法。
-- [FUSE_THRESHOLD_CALIBRATION.md](FUSE_THRESHOLD_CALIBRATION.md) — **阈值校准**（三案例独立真值）：DP 参数**无需改**（现行值已在最优平台）；`margin<0.02` 告警建议**删除**（标记率 63.5%、精确率 ≤12%）；`score<0.78` 保留；护栏应移到输入侧。另发现语料近重复行（glupov 12 对）⇒ 评分须用等价类口径。
-
-判据与工具：`src-tauri/tests/fuse_lab/`（判别器 + 离线验证流水线）；含「内部句点名字」缺陷的回归素材见 `src-tauri/tests/fuse_lab/fixtures/`。
