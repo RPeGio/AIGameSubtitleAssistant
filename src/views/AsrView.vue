@@ -3,8 +3,8 @@ import { computed, ref, watch } from "vue";
 import { useProjectStore } from "../stores/project";
 import SourceVideoPreview from "../components/SourceVideoPreview.vue";
 import SourceTimeline from "../components/SourceTimeline.vue";
-import type { AsrRunParams, AsrEngineStatus, OcrRunParams } from "../types";
-import { createDefaultOcrParams } from "../composables/ocrDefaults";
+import type { AsrRunParams, AsrEngineStatus } from "../types";
+import { usePersistedOcrParams } from "../composables/ocrDefaults";
 import {
   NButton,
   NCollapse,
@@ -106,7 +106,8 @@ function setTrackRole(trackId: string, role: string) {
 /// 产出带时间轴的 embed_ocr 轨（嵌字轴），作为"游戏内容"源供融合。
 // 术语表是**语料 OCR 独有**功能：嵌字产物进 embed_ocr 轨（供融合做游戏内容段），
 // 不落 corpus，也就没有"待审批纠正"的去处，故保持共享工厂的空数组缺省（后端 serde default 同义）
-const ocrParams = ref<OcrRunParams>(createDefaultOcrParams());
+// 跨栏目切换保留（此前是组件局部 ref ⇒ 切栏目即静默回到默认，见 ocrDefaults.ts）
+const ocrParams = usePersistedOcrParams("asr");
 
 const hasClipVideo = computed(() => projectStore.currentVideoMeta !== null);
 

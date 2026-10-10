@@ -383,7 +383,7 @@ export const useProjectStore = defineStore("project", () => {
           projectPath: currentProject.value.path,
           videoPath,
         });
-        // 只合并字段，不整体替换 —— 防止并发写入的轨道（ensureDefaultTrack 等在
+        // 只合并字段，不整体替换 —— 防止并发写入的轨道（选区控制轨等在
         // loadedmetadata 后添加）被 set_project_video 返回的旧对象覆盖丢失
         currentProject.value.video = updated.video;
         currentProject.value.updated_at = updated.updated_at;
@@ -452,45 +452,6 @@ export const useProjectStore = defineStore("project", () => {
   async function removeRecentProject(path: string, deleteFile = false) {
     await invoke("remove_recent_project", { projectPath: path, deleteFile });
     await refreshRecentProjects();
-  }
-
-  /// 确保校对区基础产物轨存在（无 ocr_text 轨时补一个 mock 供校对总览展示）。
-  /// 不再创建 page=editor 的 OCR 选区控制轨：OCR 生产已迁至语料页（source）
-  /// 与转写页嵌字（clip，page="asr"，见 ensureAsrRegionTrack），避免重复建轨。
-  function ensureDefaultTrack(duration: number) {
-    if (!currentProject.value) return;
-    const tracks = currentProject.value.tracks;
-
-    if (!tracks.some((t) => t.type === "ocr_text")) {
-      tracks.push({
-        id: generateId(),
-        name: "剧情文本 (mock)",
-        type: "ocr_text",
-        track_role: "game",
-        scope: "output",
-        page: "",
-        video: "clip",
-        preview_visible: true,
-        events: [
-          {
-            id: generateId(),
-            type: "ocr_text",
-            start: 0.5,
-            end: duration * 0.1,
-            text: "旅行者，你来了",
-            confidence: 0.88,
-          },
-          {
-            id: generateId(),
-            type: "ocr_text",
-            start: duration * 0.45,
-            end: duration * 0.55,
-            text: "前方似乎有什么东西在等待",
-            confidence: 0.9,
-          },
-        ],
-      });
-    }
   }
 
   /// 语料页：确保剧情录屏（视频 A）的 OCR 选区控制轨存在。
@@ -1038,9 +999,9 @@ export const useProjectStore = defineStore("project", () => {
     if (!currentVideoMeta.value) throw new Error("请先导入视频");
 
     // 可靠文本：只来自 corpus 语料（剧情录屏 OCR / 截图 / 手动）。
-    // 不回退 ocr_text 轨：它只可能是 mock 占位文本，或旧编辑页对"切片视频"的
-    // OCR 结果——那是"待替换的转写文本"，不是"可靠剧情文本"（可靠文本必须来自
-    // source 视频的语料，见 plan 6.1 ①步）。混作可靠文本会导致错误替换。
+    // 不回退 ocr_text 轨：它是旧编辑页对"切片视频"的 OCR 结果——那是"待替换的
+    // 转写文本"，不是"可靠剧情文本"（可靠文本必须来自 source 视频的语料，
+    // 见 plan 6.1 ①步）。混作可靠文本会导致错误替换。
     const project = currentProject.value;
     if (project.corpus.length === 0) {
       throw new Error(
@@ -1364,7 +1325,6 @@ export const useProjectStore = defineStore("project", () => {
     openProject,
     importVideo,
     importSourceVideo,
-    ensureDefaultTrack,
     ensureCorpusRegionTrack,
     ensureAsrRegionTrack,
     ensureEmbedOcrTrack,

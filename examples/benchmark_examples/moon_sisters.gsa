@@ -1,0 +1,1008 @@
+GSA-PROJECT v1
+{
+  "path": "",
+  "video": "",
+  "source_video": "",
+  "name": "moon_sisters",
+  "corpus": [
+    {
+      "id": "mu2ru29e25rzp7",
+      "text": "空月的航船中，浮现出了遥远过去的回忆…",
+      "source": "ocr_track",
+      "created_at": "2026-09-15T14:32:44.783Z"
+    },
+    {
+      "id": "mu2ru29eo2t6pd",
+      "text": "卡侬\n桑娜妲。仔细想想，最近这些年，你丢下工作，偷偷跑出去找人类玩的次数，好像越来越多\n了。",
+      "source": "ocr_track",
+      "created_at": "2026-09-15T14:32:44.783Z"
+    },
+    {
+      "id": "mu2ru29enanehv",
+      "text": "桑娜妲\n有、有什么关系嘛！工作丢给那些月使处理就可以了吧？",
+      "source": "ocr_track",
+      "created_at": "2026-09-15T14:32:44.783Z"
+    },
+    {
+      "id": "mu2ru29eo3dtli",
+      "text": "桑娜妲\n既然姐姐们看上的新主人愿意派手下分担我们的工作，那我也只好勉为其难地接受了！",
+      "source": "ocr_track",
+      "created_at": "2026-09-15T14:32:44.783Z"
+    },
+    {
+      "id": "mu2ru29e40s3je",
+      "text": "桑娜妲\n更何况，卡侬姐姐不是也玩得很开心嘛！甚至都去参加人类的庆典了！",
+      "source": "ocr_track",
+      "created_at": "2026-09-15T14:32:44.783Z"
+    },
+    {
+      "id": "mu2ru29e41dvs9",
+      "text": "卡侬\n那是我本职工作的一部分。他们的主祭呼唤我的名字，我当然要回应他们的声音。",
+      "source": "ocr_track",
+      "created_at": "2026-09-15T14:32:44.783Z"
+    },
+    {
+      "id": "mu2ru29ef9sj5q",
+      "text": "艾莉亚\n嗯？假扮成普通人类少女，对着自己的神像跳舞也算是本职工作吗？",
+      "source": "ocr_track",
+      "created_at": "2026-09-15T14:32:44.783Z"
+    },
+    {
+      "id": "mu2ru29ex9hdx0",
+      "text": "卡侬\n…艾莉亚。",
+      "source": "ocr_track",
+      "created_at": "2026-09-15T14:32:44.783Z"
+    },
+    {
+      "id": "mu2ru29etdlpwt",
+      "text": "艾莉亚\n卡侬妹妹。",
+      "source": "ocr_track",
+      "created_at": "2026-09-15T14:32:44.783Z"
+    },
+    {
+      "id": "mu2ru29equc98v",
+      "text": "卡侬\n…不是让你互叫名字算了。既然那位新来的月使对于帮桑娜妲处理工作这件事也没什么意\n见…",
+      "source": "ocr_track",
+      "created_at": "2026-09-15T14:32:44.783Z"
+    },
+    {
+      "id": "mu2ru29e1isnz8",
+      "text": "艾莉亚\n兹白。她的名字是兹白。要好好记住别人的名字啦。",
+      "source": "ocr_track",
+      "created_at": "2026-09-15T14:32:44.783Z"
+    },
+    {
+      "id": "mu2ru29e6l87j1",
+      "text": "卡侬\n·既然兹白没有意见，那我也不多说什么了。不过，桑娜妲，作为月之意志，维系世界运转的\n术式基础是不能忘的。",
+      "source": "ocr_track",
+      "created_at": "2026-09-15T14:32:44.783Z"
+    },
+    {
+      "id": "mu2ru29emjuvx1",
+      "text": "卡侬\n做好心理准备。我要给你出些验证态射同构的基础题目。直到全部算完为止，不许再到地上去",
+      "source": "ocr_track",
+      "created_at": "2026-09-15T14:32:44.783Z"
+    },
+    {
+      "id": "mu2ru29ed5z4q5",
+      "text": "艾莉亚\n呵呵，真是坏心眼呢。简直就像是地上人的小说里，要把逃亡的公主抓回月亮上的反派一样。",
+      "source": "ocr_track",
+      "created_at": "2026-09-15T14:32:44.783Z"
+    },
+    {
+      "id": "mu2ru29eqx2gm9",
+      "text": "桑娜妲\n就是就是！",
+      "source": "ocr_track",
+      "created_at": "2026-09-15T14:32:44.783Z"
+    },
+    {
+      "id": "mu2ru29ew24vrc",
+      "text": "卡侬\n你自己就是月亮，不要说这种话。",
+      "source": "ocr_track",
+      "created_at": "2026-09-15T14:32:44.783Z"
+    },
+    {
+      "id": "mu2ru29enn9z69",
+      "text": "属于遥远过去的回忆消散了…",
+      "source": "ocr_track",
+      "created_at": "2026-09-15T14:32:44.783Z"
+    }
+  ],
+  "corpus_ocr_diffs": [],
+  "tracks": [
+    {
+      "id": "mtu7v40ed0d42j",
+      "name": "OCR 选区（剧情录屏）",
+      "type": "ocr_region",
+      "track_role": "game",
+      "scope": "control",
+      "page": "corpus",
+      "video": "source",
+      "preview_visible": true,
+      "events": [
+        {
+          "type": "ocr_region",
+          "id": "mtu7v40e07vun0",
+          "start": 37.53445753177658,
+          "end": 41.23095359134309,
+          "x1": 0.2,
+          "y1": 0.3964285714285714,
+          "x2": 0.8,
+          "y2": 0.5964285714285715
+        },
+        {
+          "type": "ocr_region",
+          "id": "mtu7xe9we6kc8b",
+          "start": 43.23414776576048,
+          "end": 150.36933797398578,
+          "x1": 0.15479910714285716,
+          "y1": 0.7669642857142857,
+          "x2": 0.8477120535714286,
+          "y2": 0.9625
+        },
+        {
+          "type": "ocr_region",
+          "id": "mtu7y5l02dpwcc",
+          "start": 153.4213611285289,
+          "end": 156.6089174844994,
+          "x1": 0.20502232142857144,
+          "y1": 0.3875,
+          "x2": 0.8050223214285714,
+          "y2": 0.5875
+        }
+      ]
+    },
+    {
+      "id": "mtu81ezlvx7j9d",
+      "name": "嵌字选区（内嵌字幕）",
+      "type": "ocr_region",
+      "track_role": "game",
+      "scope": "control",
+      "page": "asr",
+      "video": "clip",
+      "preview_visible": true,
+      "events": [
+        {
+          "type": "ocr_region",
+          "id": "mtu82g18mow9zo",
+          "start": 1.6250005275973716,
+          "end": 6.498949253557576,
+          "x1": 0.26277901785714286,
+          "y1": 0.38303571428571426,
+          "x2": 0.8301339285714286,
+          "y2": 0.5830357142857143
+        },
+        {
+          "type": "ocr_region",
+          "id": "mtu83finh7ih44",
+          "start": 7.984131234376179,
+          "end": 147.97936019415172,
+          "x1": 0.2577566964285714,
+          "y1": 0.744642857142857,
+          "x2": 0.8326450892857143,
+          "y2": 0.9357142857142856
+        },
+        {
+          "type": "ocr_region",
+          "id": "mtuw2w8odanurz",
+          "start": 150.36933797398578,
+          "end": 185.13431614757792,
+          "x1": 0.25775669642857146,
+          "y1": 0.744642857142857,
+          "x2": 0.8401785714285714,
+          "y2": 0.9178571428571428
+        },
+        {
+          "type": "ocr_region",
+          "id": "mtuw3qnx2k339m",
+          "start": 214.6356887998845,
+          "end": 262.4167854574098,
+          "x1": 0.2552455357142857,
+          "y1": 0.7401785714285714,
+          "x2": 0.8200892857142857,
+          "y2": 0.9401785714285714
+        },
+        {
+          "type": "ocr_region",
+          "id": "mtu84b4gf0r635",
+          "start": 263.8815155779389,
+          "end": 270.4365261181527,
+          "x1": 0.2627790178571429,
+          "y1": 0.3875,
+          "x2": 0.8025111607142857,
+          "y2": 0.5875
+        }
+      ]
+    },
+    {
+      "id": "muu1w081xbmpor",
+      "name": "mob",
+      "type": "asr",
+      "track_role": "streamer",
+      "scope": "output",
+      "page": "",
+      "video": "clip",
+      "preview_visible": false,
+      "events": [
+        {
+          "type": "asr",
+          "id": "muu1w081tcq46e",
+          "start": 2.12,
+          "end": 3.88,
+          "text": "Holy moly. Alright, here we go.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081d2ij86",
+          "start": 4.68,
+          "end": 9.84,
+          "text": "Aboard the vessel of the welcome moon distant memories of the distant past.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081hrbknb",
+          "start": 16.84,
+          "end": 19.64,
+          "text": "Oh dear. Past few years? Holy...",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081mg24c2",
+          "start": 29.56,
+          "end": 33.32,
+          "text": "Yeah, Zabai, get to work, okay? I gotta go play with these humans, alright?",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081egvjta",
+          "start": 43.16,
+          "end": 49.16,
+          "text": "God damn. Yeah, Zabai and Thoth are pissed off. They're like, \"Man, why are they giving me all this extra work for?\"",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081q1vbou",
+          "start": 51.32,
+          "end": 56.16,
+          "text": "\"You've taken a shine to our new master?\" Yeah, the Heavenly Principals is in charge, buddy.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w08120owwk",
+          "start": 64.56,
+          "end": 65.68,
+          "text": "Ooh.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081gd9z9y",
+          "start": 66.88,
+          "end": 68.59,
+          "text": "I wonder what festival that was?",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081ulmsxq",
+          "start": 70.31,
+          "end": 70.84,
+          "text": "Lanternite?",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081lawx0d",
+          "start": 76.16,
+          "end": 77.52,
+          "text": "High priest?",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w0817nb4f1",
+          "start": 80.95,
+          "end": 82.08,
+          "text": "Uh...",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081lwrtn8",
+          "start": 83.56,
+          "end": 86.88,
+          "text": "High priest? Is that, um, is that Hyperborea?",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081cht7ez",
+          "start": 87.4,
+          "end": 89.32,
+          "text": "A Hyperborean festival?",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w0813we2dn",
+          "start": 90.4,
+          "end": 94.56,
+          "text": "I'm thinking, I'm wondering if that's like the exalted saint, right? The Voyager?",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081uxyjhf",
+          "start": 104.64,
+          "end": 105.48,
+          "text": "Oh, that's funny.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081ikugwf",
+          "start": 108.6,
+          "end": 109.88,
+          "text": "Holy moly.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081jn76gi",
+          "start": 110.68,
+          "end": 113.64,
+          "text": "Dancing in front of one of your own statues.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w0816jy1wq",
+          "start": 116.12,
+          "end": 117.88,
+          "text": "I love how playful Aria is.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081pwlcfx",
+          "start": 119.72,
+          "end": 120.22,
+          "text": "Uh!",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081215piz",
+          "start": 120.6,
+          "end": 121.2,
+          "text": "Sonnet!",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081l2e1up",
+          "start": 129.36,
+          "end": 134.28,
+          "text": "That's, that's, that's, I don't know if anyone realized, that's a SpongeBob moment right there. Yeah, it's like SpongeBob.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081farss9",
+          "start": 140.96,
+          "end": 141.63,
+          "text": "Oh my god.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w0816rso76",
+          "start": 145.68,
+          "end": 152.19,
+          "text": "\"Since the new moon envoy doesn't mind helping Sa-\" Oh, it was Zabai, actually.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081cz54u5",
+          "start": 153.19,
+          "end": 157.88,
+          "text": "Zabai's just the first moon envoy that came to mind when I said that. I didn't know it was actually Zabai.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081isvw69",
+          "start": 157.96,
+          "end": 159.63,
+          "text": "I mean, Zabai is, uh...",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w08162cnga",
+          "start": 160.16,
+          "end": 167.6,
+          "text": "She loves, like, learning and like, math and studies and stuff like that, so I wonder if she wouldn't mind, actually.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081ijf3jf",
+          "start": 180.16,
+          "end": 184.2,
+          "text": "Oh, oh, the chariot? It's like, yo, we gotta baton pass every 30 days.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w08189o0b3",
+          "start": 184.48,
+          "end": 185.36,
+          "text": "Also, chat!",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081hfse7y",
+          "start": 186.76,
+          "end": 187.96,
+          "text": "They spelled Zabai wrong.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081a7ma7h",
+          "start": 189.56,
+          "end": 192.44,
+          "text": "They put Z-B-A-I.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081z8i1cx",
+          "start": 194.44,
+          "end": 199.52,
+          "text": "\"Hoyoverse, I expect 1,600 Apollo gems for breaking my immersion, alright?",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081xls1x8",
+          "start": 200.0,
+          "end": 205.0,
+          "text": "This is the second time it's happened in the stream. Third time, three strikes and you're out.\"",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081t7t7k0",
+          "start": 206.08,
+          "end": 209.32,
+          "text": "Alright, I really don't want to have to be the one to do this, but...",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081qbwpjt",
+          "start": 210.76,
+          "end": 216.6,
+          "text": "How can I, how can I enjoy the dialogue and reading the subtitles if there's spelling errors?",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081dttr7f",
+          "start": 216.84,
+          "end": 217.92,
+          "text": "I can't do this, man.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081h2x65e",
+          "start": 230.12,
+          "end": 234.56,
+          "text": "You're not allowed to leave this room, your room, until you do your homework. You hear me, young lady?",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081z12kk0",
+          "start": 245.6,
+          "end": 247.88,
+          "text": "Uh, there's kind of a story almost like that",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081fx8nwa",
+          "start": 248.44,
+          "end": 251.76,
+          "text": "in, uh, in Natlan, actually, so you're not far off.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081pb54xx",
+          "start": 254.44,
+          "end": 254.94,
+          "text": "Uh!",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081sriy8r",
+          "start": 255.36,
+          "end": 255.86,
+          "text": "Damn.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081zmpe4a",
+          "start": 259.6,
+          "end": 261.0,
+          "text": "We are the moon.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081fthfxv",
+          "start": 262.8,
+          "end": 263.44,
+          "text": "Aw.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081t1yej0",
+          "start": 264.56,
+          "end": 267.27,
+          "text": "Sisters being sisters, I love their energy.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081y1j2bu",
+          "start": 267.76,
+          "end": 270.76,
+          "text": "They were so like, formal and like...",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w0819ik67q",
+          "start": 271.88,
+          "end": 274.52,
+          "text": "Official and proper when we first met them.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w0814s0fw8",
+          "start": 274.8,
+          "end": 278.2,
+          "text": "So this is them just like bantering. They're like sisters bantering, so...",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081g07o8k",
+          "start": 278.88,
+          "end": 279.6,
+          "text": "I love that.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w0812144w5",
+          "start": 283.88,
+          "end": 284.52,
+          "text": "Hell yeah.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081ce75ul",
+          "start": 286.12,
+          "end": 287.92,
+          "text": "Oh my god, oh, the Kohenke are here now!",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081vq63fq",
+          "start": 288.27,
+          "end": 289.16,
+          "text": "Nice!",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081590sq3",
+          "start": 289.88,
+          "end": 292.64,
+          "text": "Oh, this god ray, holy moly.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081q7nkq9",
+          "start": 295.2,
+          "end": 296.48,
+          "text": "What a vibe, dude.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081gjj1yo",
+          "start": 297.64,
+          "end": 299.0,
+          "text": "We're all the way over here.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w0811kgyjn",
+          "start": 299.36,
+          "end": 299.92,
+          "text": "Chat!",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w0819pg806",
+          "start": 301.06,
+          "end": 302.43,
+          "text": "I 100%ed it.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w0818czj2m",
+          "start": 303.15,
+          "end": 307.23,
+          "text": "We 100, we 100%ed the lunar highlands.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081z7crlc",
+          "start": 308.43,
+          "end": 310.62,
+          "text": "The moon is officially finished.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w08167b33f",
+          "start": 311.7,
+          "end": 312.93,
+          "text": "Absolute cinema.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081hv0sg9",
+          "start": 313.41,
+          "end": 314.85,
+          "text": "Massive W's.",
+          "speaker": "S01",
+          "character": "mob",
+          "confidence": 0.0
+        }
+      ]
+    },
+    {
+      "id": "muu1w0811ed23u",
+      "name": "Canon",
+      "type": "asr",
+      "track_role": "game",
+      "scope": "output",
+      "page": "",
+      "video": "clip",
+      "preview_visible": true,
+      "events": [
+        {
+          "type": "asr",
+          "id": "muu1w0815tgxdr",
+          "start": 8.788927456365375,
+          "end": 16.28,
+          "text": "You've been ditching work and sneaking out to play with humans more and more often these past few years, haven't you?",
+          "speaker": "S02",
+          "character": "Canon",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081n8u6jw",
+          "start": 68.88,
+          "end": 75.64,
+          "text": "That was part of my duty.\nTheir high priest called my name.\nIt was only natural that I had to respond to their voices.",
+          "speaker": "S02",
+          "character": "Canon",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w0813ra54h",
+          "start": 113.88,
+          "end": 114.56,
+          "text": "Aria.",
+          "speaker": "S02",
+          "character": "Canon",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081mm3b5z",
+          "start": 121.8,
+          "end": 129.24,
+          "text": "I wasn't asking you to call my name.\nOh, forget it.\nSince the new moon envoy doesn't mind helping Sonnet with her work.",
+          "speaker": "S02",
+          "character": "Canon",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081e5nqg4",
+          "start": 167.92,
+          "end": 178.92,
+          "text": "Since Zabai has no objections, I have nothing more to say.\nHowever, Sonnet, as the will of the moon, you must not forget the basic formula that keeps the world running.",
+          "speaker": "S02",
+          "character": "Canon",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081knw7ye",
+          "start": 218.84,
+          "end": 228.52,
+          "text": "Prepare yourself.\nI will set you some foundational problems on verifying morphological isomorphisms.\nYou are not to go back to the surface until you have solved them all.",
+          "speaker": "S02",
+          "character": "Canon",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081laon3a",
+          "start": 256.08,
+          "end": 259.16,
+          "text": "You are the moon. Don't say things like that.",
+          "speaker": "S02",
+          "character": "Canon",
+          "confidence": 0.0
+        }
+      ]
+    },
+    {
+      "id": "muu1w082dmldqv",
+      "name": "Sonnet",
+      "type": "asr",
+      "track_role": "game",
+      "scope": "output",
+      "page": "",
+      "video": "clip",
+      "preview_visible": true,
+      "events": [
+        {
+          "type": "asr",
+          "id": "muu1w081jsu0wo",
+          "start": 20.64,
+          "end": 27.12,
+          "text": "What's the big deal? We can just leave the work to those moon envoys anyway, right?",
+          "speaker": "S03",
+          "character": "Sonnet",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081q37oa0",
+          "start": 34.15,
+          "end": 42.76,
+          "text": "You've taken a shine to our new master's sisters.\nAnd they're willing to send subordinates to share our work.\nSo what choice do I have but to accept?",
+          "speaker": "S03",
+          "character": "Sonnet",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w0818dd2iz",
+          "start": 56.76,
+          "end": 64.48,
+          "text": "Besides, you've been having a great time playing around too, Canon.\nYou even participated in a human festival.",
+          "speaker": "S03",
+          "character": "Sonnet",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w0819t9z0r",
+          "start": 252.32,
+          "end": 253.52,
+          "text": "What she said.",
+          "speaker": "S03",
+          "character": "Sonnet",
+          "confidence": 0.0
+        }
+      ]
+    },
+    {
+      "id": "muu1w082vrg8a4",
+      "name": "Aria",
+      "type": "asr",
+      "track_role": "game",
+      "scope": "output",
+      "page": "",
+      "video": "clip",
+      "preview_visible": true,
+      "events": [
+        {
+          "type": "asr",
+          "id": "muu1w0817u9tde",
+          "start": 96.32,
+          "end": 104.6,
+          "text": "Is pretending to be an ordinary human girl and dancing in front of your own statue also one of your duties?\nThat's news to me.",
+          "speaker": "S04",
+          "character": "Aria",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w0811uo1km",
+          "start": 118.08,
+          "end": 118.68,
+          "text": "Canon.",
+          "speaker": "S02",
+          "character": "Aria",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081yy1plw",
+          "start": 135.56,
+          "end": 140.91,
+          "text": "Zabai.\nHer name is Zabai.\nYou really should remember people's names.",
+          "speaker": "S04",
+          "character": "Aria",
+          "confidence": 0.0
+        },
+        {
+          "type": "asr",
+          "id": "muu1w081cse76l",
+          "start": 236.96,
+          "end": 243.52,
+          "text": "How mean.\nYou're just like a villain from an earthbound novel, trying to drag the runaway princess back to the moon.",
+          "speaker": "S04",
+          "character": "Aria",
+          "confidence": 0.0
+        }
+      ]
+    }
+  ],
+  "created_at": "1788965429",
+  "updated_at": "1791132507"
+}
