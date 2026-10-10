@@ -13,7 +13,7 @@
     ③ 统一转移 DP（前进 / 复用 / 回退 / 不配；skip=0.02 / unmatched=0.25 /
        repeat=0.25 / reset=**禁用**）
     ④ 一对多：同一语料行被多段命中 = 同句的多次显示，由**复用转移**表达（不再靠输入侧合并）
-    ⑤ 低置信（score<0.78）或未命中 → 待人工确认清单
+    ⑤ 低置信（score<`THR_SCORE`，§7.9 ② 重标为 **0.86**）或未命中 → 待人工确认清单
     ⑥ 产物：命中段 = **语料原文逐字（含名字行）**；未命中段 = 转写原文；时间轴沿用转写侧
 
 **转移模型（T4c 选项 i）**：把"序"与"重数"两个假设分开——
@@ -34,7 +34,9 @@ raw 缺陷，在管线层修（见下方常量区的长注释与 benchmark/OCR_P
   现在向后的移动一律走 `KIND_RESET`（按次计费），"不配"分支不再改变下标。
 
 阈值说明（T2 实测结论）：`skip_penalty=0.02` / `unmatched_penalty=0.25` 已在最优平台上，**不需调整**；
-告警只用 `score<0.78`（`margin<0.02` 已实测无区分度，标记率 63.5% 而精确率 ≤12%，故**不采用**）。
+告警只用 `score<THR_SCORE`（`margin<0.02` 已实测无区分度：§4.2 标记率 63.5% 而精确率 ≤12%，
+§7.9 复检仍是"比随机还差"——按 margin 升序复核前 10% 捞回 0 个错误，故**不采用**）。
+`score` 阈值本身也**不是正确性信号**（精确率 ≈ 基准率），0.86 只买到"不漏"，见常量区注释与 §7.9 ②。
 
 用法：
     $env:PYTHONPATH = "<repo>\\runtime\\deps_embed"
@@ -69,8 +71,20 @@ PROJECTS = {
     "pierro": "pierro_questions.gsa",
     "vesna": "vesna_trailer.gsa",
 }
-# 告警阈值：只保留 score（T2 实测 margin 无区分度，故不使用）
-THR_SCORE = 0.78
+# 「该不配」行掩码（§7.6）**按素材开关**：判据依赖"显示语言比语料语言单位内容更省"
+# 的素材事实，换语言对必须重标 alpha ⇒ 不能全局默认开（同 D17 参数分离思路）。
+# 当前仅 vesna（校验：空集段命中 12/13、四案例假阳性 0、老三案例掩行 0）。
+UNMATCH_PER_CASE = {"moon": False, "glupov": False, "pierro": False, "vesna": True}
+
+# 告警阈值：只保留 score（T2 实测 margin 无区分度，§4.2 结论在 §7.9 复检后仍成立）。
+# **§7.9 ② 重标**：0.78 → 0.86。依据（四案例 236 计分段、产品口径）：
+#   0.78 只召回 3/10 真错配（漏掉的 7 个 score ∈ [0.783, 0.854]，全是"高置信的错"）；
+#   0.86 是实测**召回饱和点**（最高分的错误 = 0.854）⇒ 召回 10/10，代价是标记率 10.2% → **89.4%**
+#   （vesna 21.5% → 87.3%）。精确率在任何阈值下都 ≈ 错误基准率 4.2%（12.5% → 4.7%）
+#   ⇒ **score 不是正确性信号**，0.86 的清单实际等价于"全量复核"。
+#   若你要的是**短清单**，改用 0.80（标记 22.5%、召回 40%）或 0.82（标记 50.4%、召回 60%）。
+#   该值必须与 `scripts/fuse_alarm.py` 的 THR_SCORE 保持一致（同一口径单一来源）。
+THR_SCORE = 0.86
 TOP_K = 5
 
 # 注：本脚本**不做"互为前缀的相邻段"合并**。
@@ -103,7 +117,26 @@ def run(case, tok, sess, out_dir):
     # 吸引子防护：空正文语料条目不得被有正文的段命中（与 fuse_calib 同源实现）
     mask_empty_body(S, corpus, [g["text"] for g in gc])
 
-    # ③ 单调 DP
+    # 「该不配」行掩码（§7.6 标定 / **§7.9 修订判据**）：**按素材开关**（UNMATCH_PER_CASE）。
+    # 判据（§7.9）：`len_sub >= 1 且 len_sub <= alpha * max_len_sub(top-K ∩ 与 argmax 并列的候选)`
+    # （alpha=0.95 / K=3 / tie_eps=0.0015，见 fuse_calib 常量区）。它依赖"显示语言比语料语言
+    # 单位内容更省"这一**素材事实**（本批英文显示←中文语料）⇒ 换语言对必须重标 ⇒ 不能全局
+    # 默认开，按素材逐个启用（与 D17 的 `hardsub_min_subtitle_sec` 同一思路：参数按素材分离）。
+    # 当前只对 vesna 开启（校验过：vesna 空集段命中 12/13 = 可达上限、四案例假阳性 0、
+    # 老三案例掩行 0；端到端 vesna 55 → 71/79）。
+    use_unmatch = UNMATCH_PER_CASE.get(case, False)
+    # 环境变量 `GSA_UNMATCH_FILTER=0/1` 可**临时覆盖**按素材开关——只为生成"掩码开/关"两版对照
+    # 产物供人工检验（默认行为不变：不设该变量时完全按 UNMATCH_PER_CASE）。
+    _env_um = os.environ.get("GSA_UNMATCH_FILTER")
+    if _env_um is not None and _env_um.strip() != "":
+        use_unmatch = _env_um.strip() not in ("0", "false", "False")
+    if use_unmatch:
+        from fuse_calib import (UNMATCH_ALPHA, UNMATCH_TIE_EPS, UNMATCH_TOPK,
+                                mask_should_unmatched)
+        mask_should_unmatched(S, [g["text"] for g in gc], corpus, alpha=UNMATCH_ALPHA,
+                              topk=UNMATCH_TOPK, tie_eps=UNMATCH_TIE_EPS)
+
+    # ③ 统一转移 DP
     match = align_v2(S, *DEFAULT, repeat_penalty=REPEAT_DEFAULT,
                      reset_penalty=RESET_DEFAULT)
 

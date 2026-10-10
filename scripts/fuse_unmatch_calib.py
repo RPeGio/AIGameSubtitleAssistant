@@ -39,6 +39,7 @@ import fuse_calib as FC  # noqa: E402
 
 KEYS = ["moon", "glupov", "pierro", "vesna"]
 NEG = FC.NEG
+TOPK_MAX = 10  # 特征表里保留的候选数（top-K 判据扫描用；见 §7.9）
 
 
 # ────────────────────────── 特征提取 ──────────────────────────
@@ -56,6 +57,9 @@ def build_features(data):
       argmax_j      最大相似度对应的语料下标（0-based；-1 = 全列被掩）
       margin        maxS − 次大
       best_len_sub  最佳匹配语料行的实质字符数
+      topk_j        **按相似度降序**的合法候选语料下标（长度 TOPK_MAX）  ← §7.9
+      topk_len_sub  与 topk_j 对齐的候选行实质字符数                      ← §7.9
+      topk_S        与 topk_j 对齐的候选相似度                            ← §7.9
       maxS_short[L] 仅短语料行（len_sub(corpus_j) <= L）上的最大相似度（None = 无短语料行）
       empty         truth_ok == []（该不配）
     """
@@ -75,8 +79,10 @@ def build_features(data):
                 mx = float(vr[order[0]])
                 second = float(vr[order[1]]) if len(vr) > 1 else mx
                 margin = mx - second
+                vcols = np.nonzero(valid)[0][order][:TOPK_MAX]
             else:
                 j, mx, margin = -1, float("nan"), float("nan")
+                vcols = np.array([], dtype=int)
             short = {}
             for L in (3, 4, 5):
                 cols = [c for c in np.nonzero(clen <= L)[0] if row[c] > NEG / 2]
@@ -90,6 +96,9 @@ def build_features(data):
                 "argmax_j": j,
                 "margin": margin,
                 "best_len_sub": int(clen[j]) if j >= 0 else None,
+                "topk_j": [int(x) for x in vcols],
+                "topk_len_sub": [int(clen[x]) for x in vcols],
+                "topk_S": [float(S[i, x]) for x in vcols],
                 "maxS_short": short,
                 "empty": not d["truth_ok"][i],
                 "truth_ok": d["truth_ok"][i],
@@ -146,6 +155,45 @@ def pred_r7(f, alpha):
     """**推荐判据**：段不比它最佳匹配的那一行更有内容。"""
     b = f["best_len_sub"]
     return b is not None and f["len_sub"] <= alpha * b
+
+
+def pred_r8(f, K, alpha):
+    """**§7.9 修订判据**：段不比它 **top-K 候选里最长**的那一行更有内容。
+
+    与 R7 的唯一区别是把 `best_len_sub`（argmax 那一行）换成 `max(topk_len_sub[:K])`。
+    动机：argmax 对相似度微差极不稳定（vesna `Huh?` 的 top1/top2 只差 0.0003，而两行
+    长度 2 vs 7），只看第一名会把"候选里明明有长行"的段漏掉。
+
+    内置 `len_sub >= 1` 那道门（与落地实现 `fuse_calib.mask_should_unmatched` 同构）：
+    `len_sub == 0` 的段没有可判别内容，配到同样无内容的语料行是**正确**的。
+    """
+    ls = f["len_sub"]
+    if ls < 1:
+        return False
+    tl = f["topk_len_sub"][:K]
+    return bool(tl) and ls <= alpha * max(tl)
+
+
+def pred_r9(f, K, eps, alpha):
+    """**§7.9 落地判据**：top-K 候选里**与 argmax 近似并列**（`S >= maxS - eps`）的那几条，
+    取其中**最长**的行与段比较。
+
+    为什么必须加"并列"这道限制（实测否决了字面 top-K max，见 `pred_r8`）：语料里长行很多，
+    而任意段与长行的相似度差距常在 0.01~0.05 ⇒ 按名次取 K 个必然把长行纳进来，
+    `max` 立刻退化成"语料的典型长行长度"，判据失真为纯长度规则（实测 moon `Aria.`
+    len=4、名次 2 的行 len=4（S 差 0.023）⇒ `4 <= 1.05·4` 误伤）。而**近似并列**才是
+    "argmax 不稳"的真正来源：`Huh?` 的 top1/top2 只差 0.0003。故只在这一小簇里取最长行，
+    判据对"谁当第一名"免疫，又不让远处的长行把门槛抬起来。
+    """
+    ls = f["len_sub"]
+    if ls < 1:
+        return False
+    sl = f["topk_len_sub"][:K]
+    sv = f["topk_S"][:K]
+    if not sl:
+        return False
+    tied = [l for l, s in zip(sl, sv) if s >= sv[0] - eps]
+    return ls <= alpha * max(tied)
 
 
 GATED = lambda f: f["len_sub"] >= 1  # noqa: E731
@@ -223,18 +271,25 @@ def section_features(feats, data):
                   str(f["argmax_j"] + 1 if j >= 0 else 0), str(f["best_len_sub"]), ss,
                   f["text"].replace("\n", " / ")[:44]))
     w("")
-    w("   要点：空集段 len_sub ∈ [2, 19]、maxS ∈ [0.804, 0.839]；非空集段 maxS 上限 0.911")
+    emp = [f for k in KEYS for f in feats[k] if f["scored"] and f["empty"]]
+    nok = [f for k in KEYS for f in feats[k] if f["scored"] and not f["empty"]]
+    w("   要点：空集段 len_sub ∈ [{}, {}]、maxS ∈ [{:.3f}, {:.3f}]；非空集段 maxS 上限 {:.3f}".format(
+        min(f["len_sub"] for f in emp), max(f["len_sub"] for f in emp),
+        min(f["maxS"] for f in emp), max(f["maxS"] for f in emp),
+        max(f["maxS"] for f in nok)))
     w("         ⇒ 相似度**整体重叠**，没有任何 max-S 阈值可用（与旧结论一致）。")
     w("")
 
 
 def section_criteria(feats):
+    nempty = sum(1 for f in feats["vesna"] if f["empty"] and f["scored"])
     w("=" * 116)
-    w("【2】判据对照（命中 = vesna 空集段被判「不配」/15；假阳性 = 非空集段被误判，硬指标）")
+    w("【2】判据对照（命中 = vesna 空集段被判「不配」/{}；假阳性 = 非空集段被误判，硬指标）".format(nempty))
     w("=" * 116)
     w("")
     w("   注：全部判据统一加门 `len_sub >= 1`；不加门时 R1(K≥1) 因 pierro `The Jester/…`")
     w("       （len_sub=0，合法匹配无内容语料行）立刻多 1 个假阳性。")
+    w("   注：本节为 §7.6 的**旧判据**（argmax 那一行）在当前真值下的复测；§7.9 的修订判据见【2b】。")
     w("")
     w("   {:<4} {:<26} {:>9} {:>10}  {}".format("代号", "参数", "vesna命中", "四案假阳性", "各案假阳性"))
     rows = []
@@ -242,8 +297,8 @@ def section_criteria(feats):
     def run(code, desc, pred, gate=True):
         hv, tfp, th, hit, fp, tot = evaluate(feats, pred, gate)
         rows.append((code, desc, hv, tfp, hit, fp))
-        w("   {:<4} {:<26} {:>6}/15 {:>10}  {}".format(
-            code, desc, hv, tfp,
+        w("   {:<4} {:<26} {:>6}/{} {:>10}  {}".format(
+            code, desc, hv, nempty, tfp,
             {k: v for k, v in fp.items() if v} or "—"))
         return hv, tfp
 
@@ -277,11 +332,9 @@ def section_criteria(feats):
     for a in (0.5, 0.8, 0.9, 1.0, 1.1):
         run("R6", "alpha={}".format(a), lambda f, a=a: pred_r6(f, a))
     w("")
-    w("   ── R7（推荐）：len_sub <= alpha · best_len_sub（不比最佳行更有内容）──")
+    w("   ── R7（§7.6 旧判据）：len_sub <= alpha · best_len_sub（不比**最佳那一行**更有内容）──")
     for a in (0.9, 1.0, 1.05, 1.10, 1.15, 1.2, 1.5, 2.0):
         run("R7", "alpha={}".format(a), lambda f, a=a: pred_r7(f, a))
-        if a == 1.05:
-            w("        └ 式中 alpha={} 即脚本落地常量 UNMATCH_ALPHA".format(a))
 
     w("")
     w("   ── 汇总：各判据在「假阳性 = 0」下的最高命中与平台 ──")
@@ -296,15 +349,18 @@ def section_criteria(feats):
             continue
         mh = max(h for _, h in good)
         tops = [d for d, h in good if h == mh]
-        w("   {:<4} {:>6}/15  {:<8}  {}（{} 个）".format(
-            code, mh, len(good), ", ".join(tops[:6]), len(tops)))
+        w("   {:<4} {:>6}/{}  {:<8}  {}（{} 个）".format(
+            code, mh, nempty, len(good), ", ".join(tops[:6]), len(tops)))
     w("")
     w("   ── R7 平台细扫（alpha 形式）──")
     w("      {:>6}  {:>8} {:>7}".format("alpha", "命中", "假阳性"))
+    r7_ok = []
     for a in (0.90, 0.95, 1.00, 1.05, 1.10, 1.12, 1.14, 1.15, 1.20):
         hv, tfp, _, _, _, _ = evaluate(feats, lambda f, a=a: pred_r7(f, a))
+        if tfp == 0:
+            r7_ok.append((a, hv))
         w("      {:>6}  {:>8} {:>7}  {}".format(
-            a, "{}/15".format(hv), tfp, "★ 安全平台" if tfp == 0 else ""))
+            a, "{}/{}".format(hv, nempty), tfp, "★ 安全平台" if tfp == 0 else ""))
     w("   ── R7 的等价「加性 slack」形式：len_sub <= best_len_sub + s ──")
     w("      {:>6}  {:>8} {:>7}".format("slack", "命中", "假阳性"))
     for s in (-2, -1, 0, 1, 2):
@@ -312,18 +368,229 @@ def section_criteria(feats):
             feats, lambda f, s=s: f["best_len_sub"] is not None
             and f["len_sub"] <= f["best_len_sub"] + s)
         w("      {:>+6}  {:>8} {:>7}  {}".format(
-            s, "{}/15".format(hv), tfp, "★" if tfp == 0 else ""))
+            s, "{}/{}".format(hv, nempty), tfp, "★" if tfp == 0 else ""))
     w("")
-    w("   结论：**FP=0 的上限就是 12/15**（alpha 一放到 1.15 立刻出现 5 个假阳性；")
-    w("         加性 slack 放到 +1 立刻 9 个假阳性 ⇒ 加性形式没有宽平台，故取比例形式）。")
-    w("         R7 在 alpha ∈ [1.00, 1.14] 全区间同为 12/15、FP=0 —— 取中段 1.05。")
+    r7_best = max((h for _, h in r7_ok), default=0)
+    r7_plat = [a for a, h in r7_ok if h == r7_best]
+    w("   结论：R7（argmax 旧判据）在 FP=0 下最高命中 {}/{}，平台 α∈[{:.2f}, {:.2f}]；".format(
+        r7_best, nempty, min(r7_plat), max(r7_plat)))
+    w("         α=1.15 起出现假阳性（加性 slack 放到 +1 立刻出假阳性 ⇒ 加性形式没有宽平台，故取比例形式）。")
+    w("         **但它的可达上限只有 {}/{}**：argmax 对相似度微差极不稳定 ⇒ §7.9 改判据。".format(
+        r7_best, nempty))
+    w("")
+
+
+# top-K 判据扫描的网格（§7.9）：α 在旧平台 [1.00, 1.14] 附近加密，并向低端延伸
+# （并列带判据的命中平台下沿实测在 0.75 附近，故 α 网格必须覆盖 <0.8）
+ALPHAS = [0.40, 0.50, 0.60, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95,
+          1.00, 1.05, 1.10, 1.14, 1.15, 1.20, 1.30]
+KS = [1, 2, 3, 5, 10]
+EPS_GRID = [0.0002, 0.0004, 0.0006, 0.0008, 0.0010, 0.0012, 0.0015, 0.0018,
+            0.0020, 0.0021, 0.0025, 0.0030, 0.0040, 0.0050, 0.0100, 0.0200]
+
+
+def _plateau(alphas, cells):
+    """→ (平台内最高命中, FP=0 且达最高命中的 α 列表)"""
+    good = [a for a in alphas if cells[a][1] == 0]
+    best = max((cells[a][0] for a in good), default=0)
+    return best, [a for a in good if cells[a][0] == best]
+
+
+def _first_bad(alphas, cells, nempty):
+    bad = [a for a in alphas if cells[a][1] > 0]
+    if not bad:
+        return "（网格内无假阳性）"
+    a0 = min(bad)
+    return "α={:.3f} → {}/{} FP {}".format(a0, cells[a0][0], nempty, cells[a0][1])
+
+
+def _print_grid(label, alphas, cells_by_row, rowfmt="{:>6}"):
+    w("   {:<8} {}".format(label, "  ".join(rowfmt.format(a) for a in alphas)))
+    for key in cells_by_row:
+        cells = cells_by_row[key]
+        w("   {:<8} {}".format(
+            key, "  ".join("{:>6}".format("{}!{}".format(cells[a][0], cells[a][1])
+                                           if cells[a][1] else str(cells[a][0]))
+                           for a in alphas)))
+
+
+def section_criteria_topk(feats, data):
+    """§7.9：判据从 argmax 改为 top-K 候选里的**最长行** —— (K, α) 与 (ε, α) 可行域。"""
+    nempty = sum(1 for f in feats["vesna"] if f["empty"] and f["scored"])
+    rk, ra, re = FC.UNMATCH_TOPK, FC.UNMATCH_ALPHA, FC.UNMATCH_TIE_EPS
+    w("=" * 116)
+    w("【2b】§7.9 修订判据：(K, α) / (ε, α) 可行域（命中 = vesna 空集段被判「不配」/{}；"
+      "`!` 后 = 四案例假阳性数）".format(nempty))
+    w("=" * 116)
+    w("")
+    w("   R8（**字面** top-K）：`len_sub >= 1 且 len_sub <= alpha * max(clen[j] for j in top-K(S[i]))`")
+    w("   R9（**并列带**，落地）：把 R8 的 top-K 换成 `top-K ∩ {{j : S[i,j] >= maxS_i - eps}}`")
+    w("   `K=1` 即 §7.6 旧判据（只看 argmax 那一行）。硬门：四案例非空集段假阳性必须为 0。")
+    w("")
+    w("   ── (a) R8 字面 top-K max：K × α 网格 ──")
+    g8 = {}
+    for K in KS:
+        g8[K] = {a: evaluate(feats, lambda f, K=K, a=a: pred_r8(f, K, a), gate=False)
+                 for a in ALPHAS}
+    _print_grid("K", ALPHAS, {"K={}".format(K): g8[K] for K in KS})
+    w("")
+    w("   ⇒ **R8 不可用**：K≥2 起，任何 α 都有假阳性（K=3, α=1.05 → 命中 12 但 FP **20**）。")
+    w("      机制：语料里长行很多，而任意段与长行的相似度差距常在 0.01~0.05 ⇒ 按**名次**取 K 个")
+    w("      必然把远处的长行纳进来，`max` 退化成「语料的典型长行长度」，判据失真为纯长度规则。")
+    w("      两个实例：moon `Aria.`(len 4) 名次 2 的行 len 4（S 差 0.023）⇒ `4 <= 1.05·4` 误伤；")
+    w("      vesna `Ohh!`(len 3) 名次 3 的行 len 6（S 差 0.0021）⇒ `3 <= 1.05·6` 误伤。")
+    w("")
+    w("   ── (b) R9 并列带（eps={}）：K × α 网格 ──".format(re))
+    g9 = {}
+    for K in KS:
+        g9[K] = {a: evaluate(feats, lambda f, K=K, e=re, a=a: pred_r9(f, K, e, a), gate=False)
+                 for a in ALPHAS}
+    _print_grid("K", ALPHAS, {"K={}".format(K): g9[K] for K in KS})
+    w("      ⇒ 加并列带后 K 不再是瓶颈：K∈[2,10] 结果逐格相同（并列簇本身很小），")
+    w("         K=1 退化为旧判据（看不到并列行，故漏掉 3 段）。")
+    w("")
+    w("   ── (c) R9 的 (eps, α) 网格（K={}）——真正的可行域 ──".format(rk))
+    gc = {}
+    for e in EPS_GRID:
+        gc[e] = {a: evaluate(feats, lambda f, e=e, a=a: pred_r9(f, rk, e, a), gate=False)
+                 for a in ALPHAS}
+    _print_grid("eps", ALPHAS, {"{:.4f}".format(e): gc[e] for e in EPS_GRID})
+    w("")
+    w("   ── (d) 每个 eps 的 FP=0 平台（α 区间）与命中（K={}）──".format(rk))
+    w("   {:>8} {:>9} {:<18} {:>9}  {}".format(
+        "eps", "最高命中", "FP=0 平台 α", "平台命中", "首次出 FP 的 α"))
+    for e in EPS_GRID:
+        best, plat = _plateau(ALPHAS, gc[e])
+        band = "[{:.3f}, {:.3f}]".format(min(plat), max(plat)) if plat else "—"
+        w("   {:>8.4f} {:>6}/{} {:<18} {:>6}/{}  {}".format(
+            e, best, nempty, band, best, nempty, _first_bad(ALPHAS, gc[e], nempty)))
+    w("")
+    w("   ── (e) 落地常量校验（K={}, eps={}, alpha={}）──".format(rk, re, ra))
+    hv, tfp, _, hit, fp, tot = evaluate(
+        feats, lambda f: pred_r9(f, rk, re, ra), gate=False)
+    w("      命中 {}/{}（空集段）  四案例假阳性 {}  各案假阳性 {}  {}".format(
+        hv, nempty, tfp, {k: v for k, v in fp.items() if v} or "—",
+        "★ 硬门通过" if tfp == 0 else "✗ 硬门失败"))
+    w("      K=1（旧判据）同 α 对照：命中 {}/{}、假阳性 {}".format(
+        evaluate(feats, lambda f: pred_r8(f, 1, ra), gate=False)[0], nempty,
+        evaluate(feats, lambda f: pred_r8(f, 1, ra), gate=False)[1]))
+    w("")
+    w("   ── (f) 空集段逐条：argmax 行 vs 并列簇最长行（K={}, eps={}, α={}）──".format(rk, re, ra))
+    w("   {:>8} {:>4} {:>6} {:>9} {:>6} {:>7}  {}".format(
+        "t(s)", "len", "top1行", "并列最长", "K=1判", "落地判", "文本"))
+    for f in sorted([x for x in feats["vesna"] if x["empty"] and x["scored"]],
+                    key=lambda x: x["start"]):
+        sl, sv = f["topk_len_sub"][:rk], f["topk_S"][:rk]
+        tied = [l for l, s in zip(sl, sv) if s >= sv[0] - re] if sl else []
+        w("   {:>8.2f} {:>4} {:>6} {:>9} {:>6} {:>7}  {}".format(
+            f["start"], f["len_sub"], sl[0] if sl else 0, max(tied) if tied else 0,
+            "命中" if pred_r8(f, 1, ra) else "漏",
+            "命中" if pred_r9(f, rk, re, ra) else "漏",
+            f["text"].replace("\n", " / ")))
+    w("")
+    w("   ── 各案例最短非空集段（硬门对照：判据必须不碰它们）──")
+    for k in KEYS:
+        fs = sorted([x for x in feats[k] if x["scored"] and not x["empty"]],
+                    key=lambda x: (x["len_sub"], x["start"]))[:3]
+        for f in fs:
+            sl, sv = f["topk_len_sub"][:rk], f["topk_S"][:rk]
+            tied = [l for l, s in zip(sl, sv) if s >= sv[0] - re] if sl else []
+            w("      {:<8} t={:>8.2f} len={:>3} 并列最长={:>3} 比值 len/最长={:>5}  {} {}".format(
+                k, f["start"], f["len_sub"], max(tied) if tied else 0,
+                "{:.2f}".format(f["len_sub"] / max(tied)) if tied and max(tied) else "inf",
+                f["text"].replace("\n", " / ")[:34],
+                "← 掩行" if pred_r9(f, rk, re, ra) else ""))
+    w("")
+
+    w("   ── (g) 边界约束：α 平台的两端由谁决定（K={}, eps={}）──".format(rk, re))
+    ok_rows, bad_rows = [], []
+    for k in KEYS:
+        for f in feats[k]:
+            if not f["scored"]:
+                continue
+            sl, sv = f["topk_len_sub"][:rk], f["topk_S"][:rk]
+            tied = [l for l, s in zip(sl, sv) if s >= sv[0] - re] if sl else []
+            mx = max(tied) if tied else 0
+            ratio = (f["len_sub"] / mx) if mx else float("inf")
+            (bad_rows if f["empty"] else ok_rows).append((ratio, k, f, mx))
+    # 命中侧：空集段里比值最大者决定 α 下沿；假阳性侧：非空集段里比值最小者决定 α 上沿
+    fp_hi = min(ok_rows, key=lambda x: x[0], default=None)
+    a_max = fp_hi[0] if fp_hi else float("inf")
+    reach = [r for r in bad_rows if r[0] < a_max]      # 比值 ≥ α 上沿 ⇒ 原理上不可达
+    hit_lo = max(reach, key=lambda x: x[0], default=None)
+    if hit_lo:
+        w("      α 下沿（**可达**的空集段里 len/并列最长 最大者，α 低于它该段就漏）：")
+        w("         {:<8} t={:>8.2f} len={:>3} 并列最长={:>3} 比值={:.4f}  {}".format(
+            hit_lo[1], hit_lo[2]["start"], hit_lo[2]["len_sub"], hit_lo[3], hit_lo[0],
+            hit_lo[2]["text"].replace("\n", " / ")[:34]))
+    if fp_hi:
+        w("      α 上沿（非空集段里 len/并列最长 最小者，α 一到它就被误伤）：")
+        w("         {:<8} t={:>8.2f} len={:>3} 并列最长={:>3} 比值={:.4f}  {}".format(
+            fp_hi[1], fp_hi[2]["start"], fp_hi[2]["len_sub"], fp_hi[3], fp_hi[0],
+            fp_hi[2]["text"].replace("\n", " / ")[:34]))
+    for r in bad_rows:
+        if r[0] >= a_max:
+            w("      **不可达**（比值 {:.4f} ≥ α 上沿 {:.4f}）：{:<8} t={:>8.2f} len={:>3} "
+              "并列最长={:>3}  {}".format(
+                  r[0], a_max, r[1], r[2]["start"], r[2]["len_sub"], r[3],
+                  r[2]["text"].replace("\n", " / ")[:30]))
+    w("      eps 窗口（在 alpha={} 下逐段算「要判对它 / 会误伤它」所需的最小间隔）：".format(ra))
+    req_hit, req_fp = [], []
+    for k in KEYS:
+        for f in feats[k]:
+            if not f["scored"] or not f["topk_S"]:
+                continue
+            ls = f["len_sub"]
+            if ls < 1:
+                continue
+            sl, sv = f["topk_len_sub"][:TOPK_MAX], f["topk_S"][:TOPK_MAX]
+            if ls <= ra * sl[0]:
+                continue                     # 不看并列行就已经判出结果 ⇒ 与 eps 无关
+            gap = None
+            for r in range(1, len(sv)):
+                if ls <= ra * sl[r]:         # 纳入第 r 个候选就会判「不配」
+                    gap = sv[0] - sv[r]
+                    break
+            if gap is None:
+                continue
+            (req_hit if f["empty"] else req_fp).append((gap, k, f))
+    if req_hit:
+        g, k, f = max(req_hit, key=lambda x: x[0])
+        w("         eps **下沿** = {:.5f}（空集段里「所需最小间隔」最大者，低于它该段就漏）：".format(g))
+        w("            {:<8} t={:>8.2f} len={:>3}  {}".format(
+            k, f["start"], f["len_sub"], f["text"].replace("\n", " / ")[:30]))
+    if req_fp:
+        g, k, f = min(req_fp, key=lambda x: x[0])
+        w("         eps **上沿** = {:.5f}（该配段里「触发所需最小间隔」最小者，一到它就误伤）：".format(g))
+        w("            {:<8} t={:>8.2f} len={:>3}  {}".format(
+            k, f["start"], f["len_sub"], f["text"].replace("\n", " / ")[:30]))
+    w("")
+    w("   ── 与落地实现的一致性自检（特征代理 vs `fuse_calib.mask_should_unmatched`）──")
+    tot_bad = 0
+    for k in KEYS:
+        d = data[k]
+        base = d["S"]
+        S = base.copy()
+        real = FC.mask_should_unmatched(S, d["seg_texts"], d["corpus"])
+        real_rows = set()
+        for i in d["idxs"]:
+            valid = base[i] > NEG / 2
+            if valid.any() and not (S[i][valid] > NEG / 2).any():
+                real_rows.add(i)
+        proxy = {f["i"] for f in feats[k] if pred_r9(f, rk, re, ra)}
+        bad = real_rows ^ proxy
+        tot_bad += len(bad)
+        w("      {:<8} 实现掩行 {:3} / 特征代理 {:3}  一致 {}".format(
+            k, real, len(proxy), "✓" if not bad else "✗ 差异 {}".format(sorted(bad))))
+    w("      ⇒ {}".format("两路逐段一致" if tot_bad == 0 else "存在差异，必须排查"))
     w("")
 
 
 def section_unreachable(feats):
     """同一文本、标签相反 ⇒ S 行逐位相同 ⇒ 任何"行掩码"都不可能区分。"""
+    nempty_all = sum(1 for f in feats["vesna"] if f["empty"] and f["scored"])
     w("=" * 116)
-    w("【3】不可达性：剩余 3 个空集段**原理上**无法被「该不配」判据命中")
+    w("【3】不可达性：文本逐字相同的「复现对」在原理上无法被「该不配」判据区分")
     w("=" * 116)
     w("")
     groups = defaultdict(list)
@@ -349,9 +616,9 @@ def section_unreachable(feats):
                 k, f["start"], f["len_sub"], f["best_len_sub"], fmt(f["maxS"]),
                 fmt(f["margin"]), "**该不配(空集)**" if f["empty"] else "该配(真值 ok)"))
     w("")
-    w("   共 {} 组，涉及**空集段 {} 个** ⇒ 可达上限 = 15 − {} = **12/15**，与【2】实测平台吻合。".format(
-        n, nempty, nempty))
-    w("   这 3 段都在 vesna 的「重看 PV / 拖进度条」复现区：同一句显示第二次出现时参考轨")
+    w("   共 {} 组，涉及**空集段 {} 个** ⇒ 可达上限 = {} − {} = **{}/{}**。".format(
+        n, nempty, nempty_all, nempty, nempty_all - nempty, nempty_all))
+    w("   这 {} 段都在 vesna 的「重看 PV / 拖进度条」复现区：同一句显示第二次出现时参考轨".format(nempty))
     w("   取不到中文行（ref_text 为空），真值据此判「空集」；而它的孪生段（首次出现、参考齐全）")
     w("   被判「该配」，且两者特征逐位相同。**这不是判据缺陷，是回退/重播区的口径问题**（§7.5）")
     w("   —— 解在「显式重播分段」，不在掩码。")
@@ -360,7 +627,10 @@ def section_unreachable(feats):
 
 # ────────────────────────── 端到端 ──────────────────────────
 
-def e2e(data, use_mask):
+def e2e(data, use_mask, alpha=None, topk=None, tie_eps=None):
+    alpha = FC.UNMATCH_ALPHA if alpha is None else alpha
+    topk = FC.UNMATCH_TOPK if topk is None else topk
+    tie_eps = FC.UNMATCH_TIE_EPS if tie_eps is None else tie_eps
     w("   {:<8} {:>10} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}".format(
         "案例", "score", "合计", "不配D", "回退C", "复用B", "前进A", "空集对"))
     tot = totn = 0
@@ -371,7 +641,7 @@ def e2e(data, use_mask):
         nmask = 0
         if use_mask:
             nmask = FC.mask_should_unmatched(S, d["seg_texts"], d["corpus"],
-                                             FC.UNMATCH_ALPHA)
+                                             alpha, topk, tie_eps)
         diag = {}
         m = FC.align_v2(S, *FC.DEFAULT, repeat_penalty=FC.REPEAT_DEFAULT,
                         reset_penalty=FC.RESET_DEFAULT, diag=diag)
@@ -403,6 +673,7 @@ def main():
             json.dump(feats, f, ensure_ascii=False, indent=1)
     section_features(feats, data)
     section_criteria(feats)
+    section_criteria_topk(feats, data)
     section_unreachable(feats)
     if args.e2e:
         w("=" * 116)
@@ -413,27 +684,33 @@ def main():
         w("   before：UNMATCH_FILTER=False（现行默认，掩码不生效）")
         b = e2e(data, False)
         w("")
-        w("   after：掩码生效，alpha={}（{}/15 可达上限）".format(FC.UNMATCH_ALPHA, 12))
+        w("   after-旧判据：topk=1（§7.6 argmax 那一行，alpha={}）".format(FC.UNMATCH_ALPHA))
+        o = e2e(data, True, topk=1, tie_eps=0)
+        w("")
+        w("   after-新判据：K={} eps={} alpha={}（§7.9；FP=0 实测上限见【2b】）".format(
+            FC.UNMATCH_TOPK, FC.UNMATCH_TIE_EPS, FC.UNMATCH_ALPHA))
         a = e2e(data, True)
         w("")
-        w("   {:>8} {:>16} {:>16} {:>10} {:>14}".format(
-            "案例", "score before", "score after", "差", "掩行数"))
+        w("   {:>8} {:>12} {:>12} {:>12} {:>8} {:>12}".format(
+            "案例", "before", "after(旧)", "after(新)", "新−旧", "掩行 旧/新"))
         for k in KEYS:
             b0, n0 = b[k][0], b[k][1]
-            a0 = a[k][0]
-            w("   {:>8} {:>10}/{:<5} {:>10}/{:<5} {:>+10} {:>14}".format(
-                k, b0, n0, a0, a[k][1], a0 - b0, a[k][5]))
+            w("   {:>8} {:>7}/{:<4} {:>7}/{:<4} {:>7}/{:<4} {:>+8} {:>7}/{:<4}".format(
+                k, b0, n0, o[k][0], o[k][1], a[k][0], a[k][1], a[k][0] - o[k][0],
+                o[k][5], a[k][5]))
         tb = sum(b[k][0] for k in KEYS)
+        to = sum(o[k][0] for k in KEYS)
         ta = sum(a[k][0] for k in KEYS)
         tn = sum(b[k][1] for k in KEYS)
-        w("   {:>8} {:>10}/{:<5} {:>10}/{:<5} {:>+10}".format(
-            "合计", tb, tn, ta, tn, ta - tb))
+        w("   {:>8} {:>7}/{:<4} {:>7}/{:<4} {:>7}/{:<4} {:>+8}".format(
+            "合计", tb, tn, to, tn, ta, tn, ta - to))
         w("")
         w("   硬门：moon/glupov/pierro 的掩行数均为 0 ⇒ 掩码是**恒等变换**，分数不可能下降。")
-        w("   vesna 的「空集·正确不配」：{} → {}".format(
+        w("   vesna 的「空集·正确不配」：{} → 旧 {} → 新 {}".format(
             "{}/{}".format(b["vesna"][3], b["vesna"][4]),
+            "{}/{}".format(o["vesna"][3], o["vesna"][4]),
             "{}/{}".format(a["vesna"][3], a["vesna"][4])))
-        w("   vesna 净增 {:+d}，其中空集段直接贡献 {:+d}，其余 {:+d} 来自掩码后 DP 路径整体改观。".format(
+        w("   vesna 净增 {:+d}（相对掩码关），其中空集段直接贡献 {:+d}，其余 {:+d} 来自掩码后 DP 路径整体改观。".format(
             a["vesna"][0] - b["vesna"][0], a["vesna"][3] - b["vesna"][3],
             (a["vesna"][0] - b["vesna"][0]) - (a["vesna"][3] - b["vesna"][3])))
         w("   after 判对的空集段：")

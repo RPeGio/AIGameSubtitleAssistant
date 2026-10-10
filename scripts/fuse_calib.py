@@ -67,23 +67,47 @@ REPEAT_DEFAULT = 0.25
 # `benchmark/FUSE_THRESHOLD_CALIBRATION.md` §7.5 待后续实施。
 RESET_DEFAULT = 0.05
 
-# ── 「该不配」判据（§7.6 标定，**默认关闭**）──
+# ── 「该不配」判据（§7.6 标定、**§7.9 修订**；开关**默认关闭**）──
 # 问题：`truth_ok == []` 的段（转写多出来的英文语气词等）在语料里**根本没有对应行**，
 # 正确行为是输出转写原文（DP 走 D 不配）；但 DP 只会选相似度最大的那条 ⇒ 必然硬塞一行。
 #
 # **实测结论：嵌入相似度矩阵不携带"有没有对应"这个信息**——原始 max-S 阈值、行/列/双向
 # 中心化、裕度(max−2nd)、限定短段后的 max-S 全部被否（详见 §7.6 与 fuse_unmatch_calib.py）。
-# 唯一可用的信号是**内容量**：`len_sub`（段剥标点/空白后的实质字符数）与 `best_len_sub`
-# （最佳匹配语料行的实质字符数）的相对关系。
+# 唯一可用的信号是**内容量**：`len_sub`（段剥标点/空白后的实质字符数）与**候选语料行**的
+# 实质字符数的相对关系。
 #
 # 规则（语言无关：只比较两个整数字符数，不检查字符集）：一段**有实质内容**（len_sub ≥ 1）
-# 却**不比它最佳匹配的那一行更有内容**（len_sub ≤ alpha · best_len_sub）时，判"该不配"。
-# alpha = 1.05 取实测平台 [1.00, 1.14] 中段；alpha = 1.0 的整数等价形式同分。
-# 当前四案例实测：vesna 空集段命中 12/15、四案例假阳性 0（上限即 12/15，见 §7.6 的
-# "复现对不可达"证明）。**注意**：该平台依赖"显示语言比语料语言单位内容更省"这一素材
+# 却**不比它「并列候选」里最长的那一行更有内容**时，判"该不配"：
+#     len_sub ≤ alpha · max_len_sub( top-K(S[i]) ∩ {j : S[i,j] ≥ maxS_i − tie_eps} )
+#
+# **§7.9 修订（判据改看 top-K，不再只看 argmax）**：argmax 对相似度微差**极不稳定**——
+# vesna `Huh?`（len_sub=3）的 argmax 落在 `上吧`（行 len=2，S=0.8050）上，它对
+# `那真不好意思呀`（行 len=7）是 0.8047，**只差 0.0003** ⇒ 旧判据 `3 > 1.05·2` 失效；
+# 但"候选里有长行"这一事实本应判"该不配"。用户补进语料行 `薇斯纳` 后短段 argmax 进一步
+# 被吸到短行，旧判据命中 12/13 → **9/13**，正是这个脆弱性的表现。
+#
+# **`tie_eps` 不是可选装饰，而是实测必需**：**字面**的 top-K max（即 `tie_eps = 0`）
+# 在四案例上**假阳性爆炸**（K=3, alpha=1.05 → 命中 12/13 但 FP **20**，moon 15→13、
+# pierro 119→110）。机制：语料长行很多、相似度差距常在 0.01~0.05，按**名次**取 K 个
+# 必然把远处的长行纳进来，`max` 退化成"语料的典型长行长度"（实例：moon `Aria.` len=4、
+# 名次 2 的行 len=4、S 差 0.023 ⇒ `4 ≤ 1.05·4` 误伤）。**近似并列**才是"argmax 不稳"的
+# 真正来源 ⇒ 只在并列簇里取最长行：判据对"谁当第一名"免疫，又不让远处的长行抬高门槛。
+# 标定结果（§7.9）：K=3、tie_eps=0.0015、alpha=0.95 命中 **12/13**（= 可达上限）、
+# 四案例假阳性 **0**；端到端 vesna **55 → 71/79**（旧判据 66），老三案例逐位不变。
+# `topk=1` 逐位复现 §7.6 旧判据（9/13），`tie_eps=0` 逐位复现字面 top-K（供对照）。
+# **注意**：平台的**形式**语言无关，但它依赖"显示语言比语料语言单位内容更省"这一素材
 # 事实（本批为 英文显示 ← 中文语料），换语言对必须重标。
 UNMATCH_FILTER = False
-UNMATCH_ALPHA = 1.05
+# α=0.95 取实测平台 [0.75, 1.1429] 的中点。两端由谁决定（§7.9 实测）：
+#   下沿 0.75 = vesna `…Huh?`（len 3 / 并列最长 4，α 再低就漏它）；
+#   上沿 1.1429 = pierro `MurderofBirds / So, Mitya helped too?`（len 16 / 并列最长 14，α 一到就误伤）。
+UNMATCH_ALPHA = 0.95
+UNMATCH_TOPK = 3
+# 并列带（相似度尺度）：`S[i,j] ≥ maxS_i − tie_eps` 的候选才算"并列"。0.0015 取实测窗口
+# **[0.00101, 0.00203)** 的中点：下沿由 `*hum*.`@418.59 的第二候选（差 0.00101、行 len 9，
+# 需要它进来才判得对）决定；上沿由 `Ohh!`@175.52 的第三候选（差 0.00203、行 len 6，
+# 进来就误伤）决定。**窗口只有 ~2 倍宽**，且与 argmax 的微差同源 ⇒ 换嵌入模型必须重标。
+UNMATCH_TIE_EPS = 0.0015
 
 # ── 显式重播分段（§7.7 **重评**，2026-10-08；**默认关闭**，与 UNMATCH_FILTER 同风格）──
 # 动机：C（回退）用**局部罚分**表达"序列整体后退"，而 DP 最大化的是「ΣS − 罚分」这个
@@ -524,24 +548,40 @@ def mask_empty_body(S, corpus, seg_texts):
     return masked
 
 
-def mask_should_unmatched(S, seg_texts, corpus, alpha=UNMATCH_ALPHA):
-    """「该不配」判据（§7.6）：**行掩码**——命中的段整行置 `NEG`，DP 随即只能走 D 不配。
+def mask_should_unmatched(S, seg_texts, corpus, alpha=UNMATCH_ALPHA, topk=UNMATCH_TOPK,
+                          tie_eps=UNMATCH_TIE_EPS):
+    """「该不配」判据（§7.6 标定、**§7.9 修订为 top-K 并列簇**）：**行掩码**——命中的段整行置
+    `NEG`，DP 随即只能走 D 不配。
 
     与既有 `mask_empty_body` 的**列掩码**对称：那条防的是"语料里没有内容的行被硬配"，
     这条防的是"语料里根本没有对应行的段被硬塞一行"。两者都是**单方向**、都不改 S 的其它部分。
 
     判据（语言无关，只比整数）：
-        `len_sub >= 1` 且 `len_sub <= alpha · best_len_sub`
-    其中 `len_sub` = 段剥表头/标点/空白后的实质字符数，`best_len_sub` = 掩列之后
-    **最佳匹配那一行**的实质字符数（故本函数必须在 `mask_empty_body` **之后**调用）。
+        `len_sub >= 1` 且 `len_sub <= alpha · max_len_sub(T)`，
+        `T = top-K(S[i]) ∩ {j : S[i,j] >= maxS_i − tie_eps}`
+    其中 `len_sub` = 段剥表头/标点/空白后的实质字符数，`max_len_sub(T)` = **相似度前 K 名
+    候选里、与 argmax 近似并列（差 ≤ tie_eps）的那些**中最长的语料行的实质字符数（故本函数
+    必须在 `mask_empty_body` **之后**调用）。
+
+    **§7.9 为什么从 argmax 改成 top-K**（缺陷实测）：旧判据只看 argmax 那一行，而 argmax
+    对相似度微差**极不稳定**。vesna `Huh?`（`len_sub=3`）的 argmax 落在 `上吧`（`clen=2`，
+    `S=0.8050`）上，它对 `那真不好意思呀`（`clen=7`）是 `0.8047`——**差 0.0003** ⇒ 旧判据
+    `3 > 1.05·2` 失效、漏判；用户补进语料行 `薇斯纳`（`clen=3`）后短段 argmax 进一步被吸到
+    短行，旧判据命中从 12/13 掉到 **9/13**。取并列簇里的**最长**候选对"谁是第一名"免疫，
+    且语义更贴判据本意（"这些并列候选行没有一个能为该段提供内容"）。
+
+    **`tie_eps` 是实测必需的**：`tie_eps = 0`（字面 top-K max）在四案例上假阳性爆炸
+    （K=3, alpha=1.05 → FP 20，moon 15→13、pierro 119→110），因为按名次取 K 个必然纳入
+    远处的长行（语料长行多、相似度差距常 0.01~0.05），`max` 退化为"语料典型长行长度"。
+    `topk=1` 逐位复现 §7.6 旧判据。
 
     `len_sub >= 1` 这道门是必需的、不是补丁：`len_sub == 0` 的段（如 pierro
     `The Jester / …`）**没有可用于判别的内容**，它配到同样无内容的语料行是**正确**的
     ——那正是 `mask_empty_body` 要保护的合法用例，不能在这里误伤。
 
-    实测（alpha = 1.05）：vesna 15 个空集段命中 12；moon/glupov/pierro 与 vesna 其余
-    220 个非空集段**零误伤**。剩下 3 段**原理上不可达**（同一文本在别处被正确匹配，
-    `S` 行逐位相同 ⇒ 任何只依赖 S 行与文本的掩码都不可能区分它们），见 §7.6。
+    实测（§7.9 重标：K=3、tie_eps=0.0015、alpha=0.95）：vesna 13 个空集段命中 **12**（可达上限，
+    剩 1 段是文本逐字相同的复现对）、四案例非空集段**零误伤**；旧判据（`topk=1`）只有 9。
+    "同一文本在别处被正确匹配"的复现对**原理上不可达**（`S` 行逐位相同），见 §7.6/§7.9。
     """
     clen = np.array([len(body_norm(t)) for t in corpus])
     masked = 0
@@ -553,8 +593,13 @@ def mask_should_unmatched(S, seg_texts, corpus, alpha=UNMATCH_ALPHA):
         valid = row > NEG / 2
         if not valid.any():
             continue
-        j = int(np.argmax(np.where(valid, row, NEG)))
-        if ls <= alpha * clen[j]:
+        cols = np.nonzero(valid)[0]
+        if topk < len(cols):
+            cols = cols[np.argsort(-row[cols])[:topk]]   # 相似度前 K 名（合法列内）
+        if tie_eps > 0:                                  # 只留与 argmax 近似并列的候选
+            top_s = float(row[cols].max())
+            cols = cols[row[cols] >= top_s - tie_eps]
+        if ls <= alpha * max(clen[j] for j in cols):
             S[i][valid] = NEG             # 整行封死 ⇒ DP 只能选"不配"
             masked += 1
     return masked
@@ -862,13 +907,15 @@ def main():
             data[key]["S"] = count_reward(data[key]["S_raw"])
         print("   （已启用：后续各段（掩码/基线/扫描/网格）均在 0/1 矩阵上测量）")
 
-    # ── 「该不配」判据（§7.6）：**默认关闭**；--unmatch-filter 才真正改变后续结果 ──
+    # ── 「该不配」判据（§7.6 标定 / **§7.9 修订为 top-K 并列簇**）：**默认关闭**；
+    # --unmatch-filter 才真正改变后续结果 ──
     # 两种状态都打印，便于对照；关闭时 data[key]["S"] 保持原样（不改默认行为）。
-    # 掩码判据（argmax 的行）始终在**原始 S** 上算：§7.6 判据的语义与目标函数解耦，
+    # 掩码判据（top-K 并列簇的行）始终在**原始 S** 上算：判据的语义与目标函数解耦，
     # 启用计数目标时矩阵再经 count_reward（§7.8）。
     print()
-    print("── 「该不配」行掩码（§7.6；alpha={}，{}）──".format(
-        UNMATCH_ALPHA, "**已启用**" if args.unmatch_filter else "默认关闭（仅对照）"))
+    print("── 「该不配」行掩码（§7.6 标定 / §7.9 修订；alpha={} K={} tie_eps={}，{}）──".format(
+        UNMATCH_ALPHA, UNMATCH_TOPK, UNMATCH_TIE_EPS,
+        "**已启用**" if args.unmatch_filter else "默认关闭（仅对照）"))
     print("   {:<8} {:>6}  {:<22} {:<22} {:>6}".format(
         "案例", "掩行", "before 类口径/D", "after 类口径/D", "空集对错"))
     for key in keys:
