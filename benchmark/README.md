@@ -17,8 +17,8 @@ cargo test --release --test bench_hardsub -- --ignored --nocapture --test-thread
 cargo test --release --test bench_pierro_embed_ocr -- --ignored --nocapture
 ```
 
-环境变量：`GSA_BENCH_TOLERANCE_SEC`（嵌字基准时间容差，默认 0.3s——1s 级偏差对字幕生产已是严重偏离）；`GSA_PIERRO_VIDEO`（pierro 切片视频路径，未设时回退约定素材名）。
-数据在 `examples/benchmark_examples/`：**`.gsa` 工程与参考文本 `*_reference.txt` 随 git 分发**（`.gsa` 已清洗本机绝对路径，顶层 `path`/`video`/`source_video` 置空串）；**视频不入库**（合计约 2.9 GB），用 `powershell -ExecutionPolicy Bypass -File scripts/fetch_bench_materials.ps1` 从 release 资产下载并按 `benchmark/materials.sha256` 校验。案例选区坐标已硬编码在 `src-tauri/tests/common/mod.rs`，以该文件为受控副本。
+环境变量：`GSA_BENCH_TOLERANCE_SEC`（嵌字基准时间容差，默认 **0.6s** = 2.4×采样量子；1s 级偏差对字幕生产已是严重偏离）；`GSA_PIERRO_VIDEO`（pierro 切片视频路径，未设时回退约定素材名）。
+数据在 `examples/benchmark_examples/`：**`.gsa` 工程与参考文本 `*_reference.txt` 随 git 分发**（`.gsa` 已清洗本机绝对路径，顶层 `path`/`video`/`source_video` 置空串）；**视频不入库**（合计约 2.9 GB），用 `powershell -ExecutionPolicy Bypass -File scripts/fetch_bench_materials.ps1` 从 release 资产下载并按 `benchmark/materials.sha256` 校验。案例选区真值 = 各案例 `.gsa` 内 `type=ocr_region` 且 page 匹配的控制轨事件（`src-tauri/tests/common/mod.rs::regions_from_gsa`，单一来源；PR31 时代的硬编码副本随 `.gsa` 入库退役）。
 **融合基准不需要视频**——它只读 `.gsa` 的 tracks 与参考文本，故 clone 即可复现（见 `src-tauri/tests/fuse_lab/README.md`）。
 
 素材或 OCR 环境缺失时测试打印 `[跳过]` 并正常结束；**素材与环境齐备后流水线自身报错则测试失败**（不再以 `[跳过]` 掩盖真实回归）；参考文本的时间码若非法（帧号越界 / 分隔或段数有误）会带行号直接报错。
@@ -107,6 +107,6 @@ missed_replacement / wrong_line / character_error，指标为替换准确率 + �
 - [FUSE_PIPELINE_DEFECTS.md](FUSE_PIPELINE_DEFECTS.md) — F1–F13 缺陷台账（含真实 `.gsa` + 真实 llama-cli 实测）；F13 证明 3B 主行为是「按下标对齐」，跨语言语义对齐未发生。
 - [FUSE_VECTOR_RECALL_VALIDATION.md](FUSE_VECTOR_RECALL_VALIDATION.md) — 向量召回（E5-small，CPU）+ 单调 DP 替代 LLM 的离线验证（moon 15/15、glupov 22/22）。
 - [FUSE_ALIGNMENT_SCALE_VALIDATION.md](FUSE_ALIGNMENT_SCALE_VALIDATION.md) — **规模化验证**（pierro 48min/148 语料/120 段）：88.3% → **99.2%**，主因是输入卫生（打字机前缀重复段引发 13 段漂移链），而非对齐算法。
-- [FUSE_THRESHOLD_CALIBRATION.md](FUSE_THRESHOLD_CALIBRATION.md) — **阈值校准**（三案例独立真值）：DP 参数**无需改**（现行值已在最优平台）；`margin<0.02` 告警建议**删除**（标记率 63.5%、精确率 ≤12%）；`score<0.78` 保留；护栏应移到输入侧。另发现语料近重复行（glupov 12 对）⇒ 评分须用等价类口径。
+- [FUSE_THRESHOLD_CALIBRATION.md](FUSE_THRESHOLD_CALIBRATION.md) — **阈值校准**（三案例独立真值）：DP 参数**无需改**（现行值已在最优平台）；`margin<0.02` 告警建议**删除**（标记率 63.5%、精确率 ≤12%）；`score<0.78` 保留；护栏应移到输入侧。另发现语料近重复行（glupov 12 对）⇒ 评分须用等价类口径。**最新（§7.9，2026-10-10）**：「该不配」top-K 并列簇判据落地（vesna 空集段 12/13、其余三案例假阳性 0）⇒ 四案例端到端 **226/236 (95.8%)**；`score` 阈值 0.78 → **0.86**（召回 30% → 100%，代价是标记率 89.4% ⇒ 清单等价"全量复核"）。
 
 判据与工具：`src-tauri/tests/fuse_lab/`（判别器 + 离线验证流水线）；含「内部句点名字」缺陷的回归素材见 `src-tauri/tests/fuse_lab/fixtures/`。

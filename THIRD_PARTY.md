@@ -23,6 +23,7 @@ Components are grouped by how they are consumed:
 | [image](https://github.com/image-rs/image) | Frame decoding | MIT OR Apache-2.0 |
 | [uuid](https://github.com/uuid-rs/uuid) | ID generation | MIT OR Apache-2.0 |
 | [ffmpeg-sidecar](https://github.com/nathanbabcock/ffmpeg-sidecar) | Locating FFmpeg binaries | MIT |
+| [base64](https://github.com/marshallpierce/rust-base64) | Base64 encoding of JPEG frames on the OCR IPC path | MIT OR Apache-2.0 |
 
 ### Frontend packages (`package.json`)
 
@@ -79,6 +80,18 @@ Components are grouped by how they are consumed:
 
 > **Qwen2.5-3B-Instruct license note.** Unlike the other models above, Qwen2.5-3B-Instruct is **not** distributed under a standard open-source license. Its "Qwen Research" license permits research use; **commercial use requires separate permission from Alibaba Cloud**. The terms are in the LICENSE file of the model repository linked above. If your use case is commercial, consider substituting a different model via `runtime/config.json` (`llm_binary` / `llm_model` fields) after checking its license.
 
+### Embedding / vector recall (scripts/bootstrap_embed.ps1)
+
+| Component | Purpose | License | Source |
+|---|---|---|---|
+| [onnxruntime](https://github.com/microsoft/onnxruntime) 1.20.1 (CPU) | ONNX inference runtime for sentence embeddings | MIT | PyPI `onnxruntime` |
+| [tokenizers](https://github.com/huggingface/tokenizers) | Tokenizer for the embedding model | Apache-2.0 | PyPI `tokenizers` |
+| [numpy](https://github.com/numpy/numpy) | Array math | BSD-3-Clause | PyPI `numpy` |
+| [huggingface_hub](https://github.com/huggingface/huggingface_hub) | Model / config download | Apache-2.0 | PyPI `huggingface_hub` |
+| [multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-small) (ONNX qint8 variant) | Multilingual sentence embeddings for the vector-recall alignment route | MIT | Hugging Face / [intfloat](https://huggingface.co/intfloat) |
+
+> These components belong to the **offline fusion-alignment lab** (the vector-recall route validated in `benchmark/`); `scripts/bootstrap_embed.ps1` installs them into `runtime/deps_embed/` and `runtime/models/embed/`. The product's current LLM fusion does **not** consume them yet — landing them in the product is the T4 task (`GameSubtitleAssistant_Plan.md` §6.3).
+
 ---
 
 ## External requirement
@@ -91,4 +104,4 @@ Components are grouped by how they are consumed:
 
 ## Worker scripts
 
-`scripts/ocr_worker.py` and `scripts/funasr_worker.py` (and their copies under `runtime/worker/`) are part of this project and carry the same MIT license as the rest of the codebase. Pip packages installed alongside them (e.g. `pydantic`, `scikit-learn`, `onnxruntime`, `soundfile`, `tqdm`) are transitive dependencies governed by their own licenses as published on PyPI.
+`scripts/ocr_worker.py` and `scripts/funasr_worker.py` (and their copies under `runtime/worker/`) are part of this project and carry the same MIT license as the rest of the codebase — as are the fusion calibration scripts (`scripts/fuse_*.py`, `src-tauri/tests/fuse_lab/`). Pip packages installed alongside them (e.g. `pydantic`, `scikit-learn`, `onnxruntime`, `soundfile`, `tqdm`) are transitive dependencies governed by their own licenses as published on PyPI.

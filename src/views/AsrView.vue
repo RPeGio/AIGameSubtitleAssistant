@@ -136,7 +136,7 @@ async function startEmbedOcr() {
 
 <template>
   <div class="page">
-    <h2 class="page-title">语音转写</h2>
+    <h2 class="page-title">打轴+转写</h2>
     <p class="page-desc">从切片视频生成精确的字幕轴 / 视频内嵌字轴</p>
 
     <NCollapse v-model:expanded-names="activeKeys" class="sources" arrow-placement="right">

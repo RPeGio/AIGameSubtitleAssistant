@@ -11,7 +11,7 @@ const projectStore = useProjectStore();
 /// 工作流导航项：name = 路由名，path 段 = 子路由路径
 const NAV_ITEMS = [
   { name: "corpus", segment: "corpus", icon: "📝", label: "文本语料" },
-  { name: "asr", segment: "asr", icon: "🎙️", label: "语音转写" },
+  { name: "asr", segment: "asr", icon: "🎙️", label: "打轴+转写" },
   { name: "fuse", segment: "fuse", icon: "🧩", label: "AI 融合" },
   { name: "editor", segment: "editor", icon: "📹", label: "时间轴编辑" },
 ];

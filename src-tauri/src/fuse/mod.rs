@@ -270,7 +270,7 @@ where
         return Err("没有可用的 OCR 字幕文本".into());
     }
     if inputs.is_empty() {
-        return Err("没有可用的游戏内容 ASR 段".into());
+        return Err("没有可用的游戏内容段（ASR 或画面嵌字 OCR）".into());
     }
 
     let total_batches = inputs.len().div_ceil(BATCH_SIZE);
