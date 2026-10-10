@@ -63,7 +63,7 @@
 - **位置**：`src-tauri/src/ocr/mod.rs`（`run_ocr_images`）
 - **问题**：图片列表改为逐个 `std::fs::read` 并 base64。若用户一次选几十张高分辨率截图，每张 RGB 几十 MB，base64 后更大，`images` 向量一次性驻留内存。`recognize_batch` 又是真批处理。虽比临时目录落盘省了磁盘 I/O，但峰值内存可能很高。
 - **修复建议**：分批读取 + base64，或限制单批图片数量（已有 `batch_size`，但 `images` 在循环前已全部构建）。可改为逐批构建 `images`。
-- **状态**：⬜ 未修复
+- **状态**：✅ 已修复（`7a6a9bd`：`run_ocr_images` 改为**按 IPC 批读取并 base64**、单批用完即弃，峰值内存降到一个批次；批语义与进度提示不变。代码现位于 `src-tauri/src/ocr/commands.rs`——原 `ocr/mod.rs` 已拆分子模块）
 
 ---
 

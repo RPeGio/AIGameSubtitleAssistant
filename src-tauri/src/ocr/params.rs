@@ -108,7 +108,7 @@ pub struct OcrRegionInput {
 /// OCR 运行参数
 #[derive(Deserialize)]
 pub struct OcrRunParams {
-    /// 帧间隔（秒），默认 1.0
+    /// 帧间隔（秒），默认 0.5（与前端 `ocrDefaults.ts` 的 createDefaultOcrParams 同源）
     pub frame_interval: f64,
     /// dHash 变化检测阈值，默认 3
     pub dhash_threshold: u32,

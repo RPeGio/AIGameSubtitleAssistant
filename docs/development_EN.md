@@ -56,7 +56,7 @@ Constraint: **fully offline**. The Rust side has no HTTP client and makes no net
 | `src-tauri/src/ai_runtime/config.rs` | `RuntimeConfig`: runtime-directory and provider path/parameter resolution & validation (below) |
 | `src-tauri/src/asr/mod.rs` | `run_asr`: audio extraction (RAII temp dir) → engine by params → `AsrSegment` list; re-entry guard + cancel (`asr_cancel`) |
 | `src-tauri/src/llm/mod.rs` | `run_llm`: single-prompt inference (frontend test bench); `llm-progress` events |
-| `src-tauri/src/fuse/mod.rs` | `run_fuse`: cross-language LLM fusion (see [Fusion pipeline](#fusion-pipeline-fusemodrs)) |
+| `src-tauri/src/fuse/mod.rs` | `run_fuse`: LLM index mapping + verbatim corpus-text carry-over (see [Fusion pipeline](#fusion-pipeline-fusemodrs)) |
 | `src-tauri/src/project/mod.rs` | Project / Track / TimelineEvent model, `<project-name>.gsa` I/O (magic header `GSA-PROJECT v1` + JSON body, atomic write), recent projects |
 | `src-tauri/src/export/mod.rs` | `export_track_subtitle`: single-track SRT / ASS / LRC / TXT (SRT/LRC/TXT written with a UTF-8 BOM so players don't misread them as GBK; ASS has a fixed style with `\` / `{}` escaped) |
 
@@ -71,10 +71,13 @@ runtime/
 ├── config.json          # the single config file (merged writes by bootstrap scripts)
 ├── python/              # embedded CPython 3.12.10 (NuGet package)
 ├── deps/                # OCR pip deps (--target isolated)
+├── deps_gpu/            # OCR GPU-only pieces (optional, bootstrap_ocr_gpu.ps1; runtime PYTHONPATH=deps_gpu;deps)
 ├── deps_funasr/         # FunASR pip deps (torch isolated from paddle)
+├── deps_embed/          # vector-recall pip deps (onnxruntime CPU + tokenizers, fusion lab)
 ├── models/
 │   ├── paddleocr/       # PP-OCRv5 cache
 │   ├── funasr/          # Fun-ASR-Nano + VAD + speaker models (modelscope cache)
+│   ├── embed/           # multilingual-e5-small (ONNX qint8, fusion lab)
 │   ├── moss/            # moss-transcribe-<quant>.gguf
 │   └── qwen/            # qwen2.5-3b-instruct-q4_k_m.gguf
 ├── worker/              # worker scripts copied by bootstrap
@@ -92,6 +95,7 @@ runtime/
 | `llm_binary` / `llm_model` / `llm_threads` | llama.cpp |
 | `asr_provider` | `moss` / `funasr` / empty=auto |
 | `funasr_worker` / `funasr_deps` / `funasr_model_dir` / `funasr_device` / `funasr_language` / `funasr_timeout_minutes` | FunASR |
+| `embed_model` / `embed_tokenizer` / `embed_deps_dir` | Vector-recall (fusion lab) model / tokenizer / deps paths; written by `bootstrap_embed.ps1`, not consumed by the product yet (planned to land as T4) |
 
 ### Runtime directory resolution order
 
@@ -126,7 +130,7 @@ Project
 | `ocr_text` | Reliable story text (corpus source, with confidence) |
 | `embed_ocr` | Hardsub text recognized from the clip (the "text to be replaced" — same shape as ocr_text, opposite semantics) |
 | `ocr_region` | Normalized subtitle region (control track) |
-| `asr` | Transcript segment (+ speaker; character filled during fusion) |
+| `asr` | Transcript segment (+ speaker; **`character` is no longer written by fusion** — plain-text contract; it can only be set by hand or synced from the track name) |
 | `fused` | Fusion output (the final-subtitle track) |
 | `manual` | Manual event |
 
@@ -140,7 +144,7 @@ The project is stored as a single `<project-name>.gsa` file in the project folde
 - **ProjectLayout**, three columns: `AppSidebar` (four-step navigation + save status) + workspace `<router-view>` + `ReviewPane` (the global proofing area: VideoPlayer + Timeline + TrackOverview). Owns the global shortcuts Ctrl+S / Ctrl+Z / Ctrl+Shift+Z.
 - **stores/project.ts**: project state + all Tauri call orchestration. Deep-watches the whole project object and autosaves with a 1-second debounce (`applyingSaved` guards against save loops; async switching guards against races); best-effort flush on close.
 - **stores/timeline.ts**: the timeline store. Components obtain their instance via `inject(TIMELINE_STORE_KEY)`, falling back to the global store only when absent — so the same component tree can host several independent timelines (the corpus mini-timeline, the hardsub timeline, the main review timeline).
-- **Views**: `Welcome` (project creation / recent projects), `CorpusView` (three corpus sources), `AsrView` (ASR + speaker tagging + hardsub OCR), `FuseView` (dual readiness cards → fusion), `Editor` (per-event proofreading of the fused track + export).
+- **Views**: `Welcome` (project creation / recent projects), `CorpusView` (three corpus sources), `AsrView` (② timing + transcribe: ASR (voiced) / hardsub OCR (unvoiced) + speaker tagging), `FuseView` (dual readiness cards → fusion), `Editor` (per-event proofreading of the fused track + export).
 
 ## Key pipelines
 
@@ -151,7 +155,7 @@ extract frames (ffmpeg) ─► crop region ─► dHash change detection (skip i
                         ─► PaddleOCR worker (changed frames only) ─► carry text forward ─► merge into segments
 ```
 
-- Parameters (frontend defaults): frame interval 0.5s, dHash threshold 3, batch size 16, merge similarity 0.3.
+- Parameters (frontend defaults): frame interval 0.5s, dHash threshold 3, batch size 16, merge similarity 0.3, minimum subtitle length 1.5s (`DEFAULT_MIN_SUBTITLE_SEC`).
 - **Merge rules** (`merge_frames`): adjacent similar texts join the same run; the run's final text is chosen by **majority vote** (instead of "longest wins" — a longer text polluted by noise scores low on total similarity and loses); empty frames tolerate a `(interval*1.5).max(0.8)` flicker window; typewriter-style progressive text (prefix supersets) merges into one event keeping the longest text.
 - Output destination is decided by the frontend: source mode → corpus (timing stripped); clip + page=asr → the embed_ocr (hardsub) track.
 - **Corrections only mark, never rewrite** (user decision, 2026-09-24/25): the last step runs punctuation
@@ -166,10 +170,12 @@ extract frames (ffmpeg) ─► crop region ─► dHash change detection (skip i
 
 ### Fusion pipeline (`fuse/mod.rs`)
 
-- Input contract (enforced by the frontend): OCR texts come **only from the corpus** (no fallback to ocr_text tracks — that would treat "text to be replaced" as reliable); ASR segments = game-role tracks + embed_ocr hardsub events (hardsub events overlapping ASR beyond a ratio are dropped — voice-covered lines don't need hardsub).
-- Batching: OCR texts go **in full** into every batch prompt (semantic matching needs global view); transcript segments are batched 30 at a time (`BATCH_SIZE`), with `MAX_TOKENS=4096`.
-- Prompt design: OCR/GC indices carry prefixes (`OCR[1]` / `GC[3]`, GC = game-content timeline segment) — without prefixes small models confuse the two numbering systems; the LLM outputs only the correspondence `{"index", "ocr_index", "character"}`, and **the final text is copied verbatim from the OCR list by code** — small models cannot reliably "copy text", and paraphrasing corrupts it.
-- Output: timing comes from the ASR segments; segments with `matched=false` — or entire batches whose JSON fails to parse — keep the original ASR text (counted in `failed_batches`).
+- **Plain-text contract** (user decision, 2026-10-02): this pipeline only performs "index mapping + text carry-over" and **produces no speaker / character name** — matched segments copy the corpus text verbatim (line breaks and name lines included), unmatched segments keep the transcript text; nothing is rewritten, no prefix is stripped, no line-break normalization is done. Speaker semantics await a design re-review (defect ledger F1/F2).
+- Input contract (enforced by the frontend): OCR texts come **only from the corpus** (no fallback to ocr_text tracks — that would treat "text to be replaced" as reliable); the transcript side = game-role ASR segments + embed_ocr hardsub events (**the two transcript-side options may coexist and are consumed here uniformly**; hardsub events overlapping ASR beyond a ratio are dropped — voice-covered lines don't need hardsub). An ASR segment's speaker is written by the frontend as the **first text line** (`character` first, else `speaker`; `未标注` is not injected) to match the corpus / hardsub shape; this only affects the copy sent to the backend, never the track.
+- Batching: OCR texts go **in full** into every batch prompt (semantic matching needs a global view); transcript segments are batched 30 at a time (`BATCH_SIZE`), with `MAX_TOKENS=4096`.
+- Prompt design: OCR/GC indices carry prefixes (`OCR[1]` / `GC[3]`, GC = game-content timeline segment) — without prefixes small models confuse the two numbering systems; the LLM outputs only the correspondence `{"index", "ocr_index"}`, and **the final text is copied verbatim from the OCR list by code** — small models cannot reliably "copy text", and paraphrasing corrupts it. Text enters the prompt as-is (line breaks kept), entries are delimited by the leading index tag, and an **explicit entry cap** is given (`本次 GC 共 N 条：最多只输出 N 条`) — keeping line breaks makes entries span several lines so small models lose count, which in testing let 2/3 batches run away into hundreds of indices.
+- Output: timing follows the transcript side. Every degraded path is counted explicitly and shown on the fusion page: `failed_batches` = batches whose JSON failed to parse (the whole batch keeps transcript text; parsing includes one repair level that completes a missing outer brace); `missing_segments` = segments in successfully parsed batches for which the model gave no verdict (previously completely silent).
+- **Current state & plan**: this implementation measurably **does not perform cross-language semantic alignment** — the 3B model's dominant behaviour is alignment by index (defect ledger F13). The **verified alternative** is local multilingual vector recall (E5-small qint8, CPU) + a unified transition DP: four cases **226/236 scored segments (95.8%)** (`benchmark/FUSE_THRESHOLD_CALIBRATION.md` §7.9); **T4** is planned to replace the LLM call in this section, in the same round as the frontend "post-fusion confidence audit table" (see `GameSubtitleAssistant_Plan.md` §6.3). Lab and tooling: `src-tauri/tests/fuse_lab/`, `scripts/fuse_*.py`.
 
 ### Progress events
 
@@ -198,11 +204,19 @@ An exit hook calls `asr.cancel()` to clean up subprocesses so no orphans keep bu
 
 ## Testing
 
-Five integration tests under `src-tauri/tests/`: `ocr_e2e.rs`, `asr_e2e.rs`, `fuse_e2e.rs`, `llm_e2e.rs`, `ocr_bench_refinement.rs`. Most are end-to-end and **require a provisioned runtime** (models and binaries in place) to pass; each module also has environment-free unit tests (e.g. "not ready → error, no callback fired").
+Nine integration tests under `src-tauri/tests/`: end-to-end `ocr_e2e.rs`, `asr_e2e.rs`, `fuse_e2e.rs`, `llm_e2e.rs`, `ocr_bench_refinement.rs`; quality benchmarks `bench_corpus.rs`, `bench_hardsub.rs`, `bench_pierro_embed_ocr.rs`, `bench_fusion.rs` (all `#[ignore]`; materials and how to run them: [benchmark/README.md](../benchmark/README.md)). Most are end-to-end and **require a provisioned runtime** (models and binaries in place) to pass; each module also has environment-free unit tests (e.g. "not ready → error, no callback fired").
+
+**Fusion capability benchmark** (`bench_fusion.rs`, `#[ignore]`) uses hand-written clean cases to tell whether "cross-language semantic alignment" actually happens: the corpus order is turned into a derangement so that the "copy the index" identity mapping is wrong on every entry, letting content accuracy be compared directly against the random baseline; aligned controls and a same-language verbatim capability-isolation case are included. It runs the **real pipeline** (`fuse_pipeline`) and supports `GSA_BENCH_LLM_MODEL` to swap models temporarily for a capability gradient, writing results to `temp/bench_output/fusion_capability_<model>.json`. Measured conclusions and the defect ledger: [benchmark/FUSE_PIPELINE_DEFECTS.md](../benchmark/FUSE_PIPELINE_DEFECTS.md) F13.
 
 ```powershell
 cd src-tauri; cargo test
+# fusion capability benchmark (requires a provisioned LLM runtime)
+cargo test --release --test bench_fusion -- --ignored --nocapture
 ```
+
+**Fusion-alignment lab** (`src-tauri/tests/fuse_lab/`, Python, not part of `cargo test`) is the reproducible tooling behind those conclusions, kept for the "fusion pipeline rebuild": LLM discriminator, **vector-recall discriminator**, and an **offline validation pipeline** (pre-proofread project → recall + monotonic DP → SRT).
+It depends on the CPU runtime installed by `scripts/bootstrap_embed.ps1` (onnxruntime + E5-small qint8, 113MB, no GPU).
+See [src-tauri/tests/fuse_lab/README.md](../src-tauri/tests/fuse_lab/README.md); the route conclusion is in [benchmark/FUSE_VECTOR_RECALL_VALIDATION.md](../benchmark/FUSE_VECTOR_RECALL_VALIDATION.md).
 
 ## Packaging & distribution status
 

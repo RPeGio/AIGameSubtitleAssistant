@@ -56,7 +56,7 @@
 | `src-tauri/src/ai_runtime/config.rs` | `RuntimeConfig`：runtime 目录与各 provider 路径/参数的解析与校验（见下文） |
 | `src-tauri/src/asr/mod.rs` | `run_asr`：音频提取（RAII 临时目录）→ 按参数选引擎 → `AsrSegment` 列表；重入守卫 + 取消（`asr_cancel`） |
 | `src-tauri/src/llm/mod.rs` | `run_llm`：单次 prompt 推理（前端测试台用）；`llm-progress` 事件 |
-| `src-tauri/src/fuse/mod.rs` | `run_fuse`：LLM 跨语言融合（详见[融合流水线](#融合流水线fuse)） |
+| `src-tauri/src/fuse/mod.rs` | `run_fuse`：LLM 编号对应 + 语料文本逐字搬运（详见[融合流水线](#融合流水线fuse)） |
 | `src-tauri/src/project/mod.rs` | Project / Track / TimelineEvent 数据模型、`<项目名>.gsa` 读写（魔数头 `GSA-PROJECT v1` + JSON 主体，原子写）、最近项目列表 |
 | `src-tauri/src/export/mod.rs` | `export_track_subtitle`：单轨导出 SRT / ASS / LRC / TXT（SRT/LRC/TXT 带 UTF-8 BOM 防播放器按 GBK 误读；ASS 固定样式并转义 `\` / `{}`） |
 
@@ -71,10 +71,13 @@ runtime/
 ├── config.json          # 唯一配置文件（bootstrap 脚本合并写入）
 ├── python/              # 内嵌 CPython 3.12.10（NuGet 包解压）
 ├── deps/                # OCR pip 依赖（--target 隔离）
+├── deps_gpu/            # OCR GPU 专有件（可选，bootstrap_ocr_gpu.ps1；运行时 PYTHONPATH=deps_gpu;deps）
 ├── deps_funasr/         # FunASR pip 依赖（torch 与 paddle 依赖隔离）
+├── deps_embed/          # 向量召回 pip 依赖（onnxruntime CPU + tokenizers，融合实验台用）
 ├── models/
 │   ├── paddleocr/       # PP-OCRv5 缓存
 │   ├── funasr/          # Fun-ASR-Nano + VAD + 说话人模型（modelscope 缓存）
+│   ├── embed/           # multilingual-e5-small（ONNX qint8，融合实验台用）
 │   ├── moss/            # moss-transcribe-<quant>.gguf
 │   └── qwen/            # qwen2.5-3b-instruct-q4_k_m.gguf
 ├── worker/              # bootstrap 拷贝的 worker 脚本
@@ -92,6 +95,7 @@ runtime/
 | `llm_binary` / `llm_model` / `llm_threads` | llama.cpp 配置 |
 | `asr_provider` | `moss` / `funasr` / 空=自动 |
 | `funasr_worker` / `funasr_deps` / `funasr_model_dir` / `funasr_device` / `funasr_language` / `funasr_timeout_minutes` | FunASR 配置 |
+| `embed_model` / `embed_tokenizer` / `embed_deps_dir` | 向量召回（融合实验台）的模型 / 分词器 / 依赖路径；由 `bootstrap_embed.ps1` 写入，产品侧暂未消费（T4 计划落地） |
 
 ### runtime 目录解析顺序
 
@@ -126,7 +130,7 @@ Project
 | `ocr_text` | 可靠剧情文本（语料来源之一，含置信度） |
 | `embed_ocr` | 切片内嵌字幕识别文本（嵌字轴——「待替换的转写文本」，结构同 ocr_text 但语义相反） |
 | `ocr_region` | 归一化字幕选区（控制轨） |
-| `asr` | 转写段（+ speaker，character 由融合阶段填） |
+| `asr` | 转写段（+ speaker；**character 不再由融合写入**——纯文本契约，仅可人工填写 / 由轨道命名同步） |
 | `fused` | 融合产物（最终字幕轨） |
 | `manual` | 手动事件 |
 
@@ -139,8 +143,8 @@ Project
 - **路由**（`src/router/index.ts`）：`/` 欢迎页；`/project/:path` → `ProjectLayout`，子路由 `corpus` / `asr` / `fuse` / `editor`（默认重定向到 editor）。
 - **ProjectLayout** 三栏：`AppSidebar`（四步导航 + 保存状态）+ 工作区 `<router-view>` + `ReviewPane`（全局校对区：VideoPlayer + Timeline + TrackOverview）。持有全局快捷键 Ctrl+S / Ctrl+Z / Ctrl+Shift+Z。
 - **stores/project.ts**：项目态 + 全部 Tauri 调用编排。深监听整个项目对象，任何变更 1 秒防抖自动保存（`applyingSaved` 防回环、await 期间切项目防竞态）；关闭前 best-effort flush。
-- **stores/timeline.ts**：时间轴 store。组件通过 `inject(TIMELINE_STORE_KEY)` 获取实例，找不到才 fallback 到全局 store——同一组件树可挂多个独立时间轴（语料页迷你轴、转写页嵌字轴、校对区主轴）。
-- **视图**：`Welcome`（项目创建/最近项目）、`CorpusView`（三种语料来源）、`AsrView`（ASR + 说话人标记 + 嵌字 OCR）、`FuseView`（双就绪卡片 → 融合）、`Editor`（fused 轨逐条校对 + 导出）。
+- **stores/timeline.ts**：时间轴 store。组件通过 `inject(TIMELINE_STORE_KEY)` 获取实例，找不到才 fallback 到全局 store——同一组件树可挂多个独立时间轴（语料页迷你轴、打轴+转写页嵌字轴、校对区主轴）。
+- **视图**：`Welcome`（项目创建/最近项目）、`CorpusView`（三种语料来源）、`AsrView`（② 打轴+转写：ASR（有配音）/ 嵌字 OCR（无配音）两种方案 + 说话人标记）、`FuseView`（双就绪卡片 → 融合）、`Editor`（fused 轨逐条校对 + 导出）。
 
 ## 关键流水线
 
@@ -151,7 +155,7 @@ Project
             ─► PaddleOCR worker(仅变化帧) ─► 帧文本顺延 ─► 合并成段
 ```
 
-- 参数（前端默认值）：帧间隔 0.5s、dHash 阈值 3、批大小 16、合并相似度 0.3。
+- 参数（前端默认值）：帧间隔 0.5s、dHash 阈值 3、批大小 16、合并相似度 0.3、字幕最短时长 1.5s（`DEFAULT_MIN_SUBTITLE_SEC`）。
 - **合并规则**（`merge_frames`）：相邻相似文本归入同一 run；run 内**多数投票**选最终文本（替代"更长者优先"——被噪声污染的更长文本总相似度低，不会被选中）；空帧有 `(interval*1.5).max(0.8)` 的抖动容错窗口；打字机式渐进文本（前缀超集）合并为一条保留最长。
 - 产物去向由前端决定：source 模式 → corpus 语料（去时间轴）；clip + page=asr → embed_ocr 嵌字轨。
 - **精度纠错 = 只标记不改写**（用户决策，2026-09-24/25）：末步做标点归一化（静默，目标字符可配）
@@ -165,10 +169,11 @@ Project
 ### 融合流水线（`fuse/mod.rs`）
 
 - **纯文本契约**（2026-10-02 用户决策）：本管线只做"编号映射 + 文本搬运"，**不产出说话人/角色名**——命中段逐字复制语料原文（含换行与角色名行），未命中段保留转写原文；不改写、不剥离前缀、不做换行归一。说话人语义待设计重评审（缺陷台账 F1/F2）。
-- 输入约定（前端保证）：OCR 文本**只来自 corpus**（不回退 ocr_text 轨，防止把"待替换文本"当可靠语料）；转写段 = game 轨 ASR 段 + embed_ocr 嵌字段（与 ASR 重叠占比过高的嵌字段丢弃——有配音处不靠嵌字）。ASR 段的说话人由前端写成**文本首行**（`character` 优先、否则 `speaker`；`未标注` 不注入），与语料/嵌字形态对齐；只作用于发给后端的副本，不回写轨道。
+- 输入约定（前端保证）：OCR 文本**只来自 corpus**（不回退 ocr_text 轨，防止把"待替换文本"当可靠语料）；转写段 = game 轨 ASR 段 + embed_ocr 嵌字段（**两种转写侧方案可并存，此处统一消费**；与 ASR 重叠占比过高的嵌字段丢弃——有配音处不靠嵌字）。ASR 段的说话人由前端写成**文本首行**（`character` 优先、否则 `speaker`；`未标注` 不注入），与语料/嵌字形态对齐；只作用于发给后端的副本，不回写轨道。
 - 分批：OCR 文本**全量**入每批 prompt（语义匹配需要全局视野），转写段每批 30 条（`BATCH_SIZE`），`MAX_TOKENS=4096`。
 - Prompt 设计：OCR/GC 编号带前缀（`OCR[1]` / `GC[3]`，GC = 游戏内容时间轴段）——批内两套编号无前缀时小模型会混淆；LLM 只输出 `{"index", "ocr_index"}` 对应关系，**最终文本由代码从 OCR 列表逐字复制**——实测小模型无法可靠"复制文本"，让它复述会改字。文本原样入 prompt（保留换行），条目按行首编号标记划分；并给出**显式条数上限**（`本次 GC 共 N 条：最多只输出 N 条`）——保留换行会让条目跨多行、小模型丢失条数感，实测无上限时 2/3 批次跑飞成数百条编号。
 - 输出：时间轴沿用转写段。降级路径全部显式计数并展示到融合页：`failed_batches` = JSON 解析失败的批数（整批保留转写原文；解析含"补全缺失外层花括号"一级修复）；`missing_segments` = 解析成功但模型未给出判定的段数（此前完全静默）。
+- **现状与计划**：本实现实测**未在做跨语言语义对齐**——3B 模型的主导行为是按下标对齐（缺陷台账 F13）。**已验证的替代路线**是本地多语言向量召回（E5-small qint8，CPU）+ 统一转移 DP：四案例 **226/236 计分段（95.8%）**（`benchmark/FUSE_THRESHOLD_CALIBRATION.md` §7.9）；计划在 **T4** 用它替换本节的 LLM 调用，并与前端「融合后置信度审计表」同轮做（见 `GameSubtitleAssistant_Plan.md` §6.3）。实验台与工具见 `src-tauri/tests/fuse_lab/`、`scripts/fuse_*.py`。
 
 ### 进度事件
 
@@ -197,7 +202,7 @@ Project
 
 ## 测试
 
-`src-tauri/tests/` 下六个集成测试：`ocr_e2e.rs`、`asr_e2e.rs`、`fuse_e2e.rs`、`llm_e2e.rs`、`ocr_bench_refinement.rs`、`bench_fusion.rs`。多数为端到端测试，**需要 runtime 环境就绪**（模型、二进制在位）才能通过；各模块内另有不依赖环境的单元测试（如"未就绪时报错且不触发回调"）。
+`src-tauri/tests/` 下九个集成测试：端到端 `ocr_e2e.rs`、`asr_e2e.rs`、`fuse_e2e.rs`、`llm_e2e.rs`、`ocr_bench_refinement.rs`；质量基准 `bench_corpus.rs`、`bench_hardsub.rs`、`bench_pierro_embed_ocr.rs`、`bench_fusion.rs`（全部 `#[ignore]`，素材与跑法见 [benchmark/README.md](../benchmark/README.md)）。多数为端到端测试，**需要 runtime 环境就绪**（模型、二进制在位）才能通过；各模块内另有不依赖环境的单元测试（如"未就绪时报错且不触发回调"）。
 
 **融合能力基准**（`bench_fusion.rs`，`#[ignore]`）用自撰的干净用例判别"跨语言语义对齐"是否真的发生：语料顺序打成无不动点排列，使"照抄编号"的恒等映射每条皆错，故内容正确率可直接对比随机基线；另设对齐对照与"同语言逐字相同"能力隔离用例。它走**真实管线**（`fuse_pipeline`），并支持 `GSA_BENCH_LLM_MODEL` 临时换模型做能力梯度、结果落盘 `temp/bench_output/fusion_capability_<model>.json`。实测结论与缺陷台账见 [benchmark/FUSE_PIPELINE_DEFECTS.md](../benchmark/FUSE_PIPELINE_DEFECTS.md) F13。
 

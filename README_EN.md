@@ -7,7 +7,7 @@
 GameSubtitleAssistant is built for game quest fan-translators, clip makers and subtitle groups. It turns the manual workflow — watch the recording → (screenshot OCR → copy text → find character names)(a.k.a. corpus collection) → hand-timed subtitles → translate → export — into a single AI-assisted pipeline:
 
 ```
-Video input ──► OCR + ASR + speaker diarization + auto timing
+Video input ──► OCR + timing & transcription (speech ASR / on-screen hardsub OCR)
             ──► AI fusion (text replacement) ──► manual correction ──► SRT / ASS / LRC / TXT
 ```
 
@@ -19,9 +19,9 @@ Video input ──► OCR + ASR + speaker diarization + auto timing
 ## Features
 
 - **Text corpus collecting (OCR)**: frame a subtitle region on the quest recording; use change detection to skip unchanged frames; PaddleOCR recognition with majority-vote merging produces game text decoupled from the timeline. Subtitle screenshots can also be OCR'd directly, or text can be pasted / imported if text corpuses has already existed in any platform.
-- **Speech transcription (ASR)**: two engines —MOSS-Transcribe-Diarize 0.9B (Auto diarization, and the most accurate) or FunASR (Fun-ASR-Nano, fast on a local GPU). Tag each speaker track as "game speech" (provide timeline for fusion part) or "streamer speech" (transcribing & exporting subtitle only) in one click.
-- **Hardsub track**: OCR a framed hardsub region on the clip video to build an embedded-subtitle timeline, in order to adapt non-voiced quests.
-- **AI fusion**: a local LLM (llama.cpp + Qwen2.5-3B) performs **cross-language semantic alignment** between the reliable corpus and the game-speech transcript — the model only outputs the correspondence; text is copied verbatim by code, so a small model cannot "paraphrase" it. Character names are extracted from corpus prefixes.
+- **Timing & transcription**: the transcript side of the clip (the timing source) has **two parallel options** — they may coexist in one project, and fusion consumes both. **Speech ASR** (voiced quests: timing comes from speech activity): two engines — MOSS-Transcribe-Diarize 0.9B (automatic diarization, the most accurate) or FunASR (Fun-ASR-Nano, fast on a local GPU). Tag each speaker track as "game speech" (provides a timeline for fusion) or "streamer speech" (transcription / export only) in one click.
+- **Hardsub OCR (embed_ocr)** (unvoiced quests: timing comes from on-screen text changes): OCR a framed hardsub region on the clip video to build an embedded-subtitle track, coexisting with ASR tracks and fed to fusion as game-content segments.
+- **AI fusion**: reliable corpus text replaces the transcript-side text while the transcript-side timing is kept. **The current product implementation** is a local LLM (llama.cpp + Qwen2.5-3B) mapping indices — a plain-text contract: the model only outputs the `ocr_index` correspondence and code copies the corpus text verbatim (no character names are produced). Measured behaviour of this 3B model is **alignment by index**, not cross-language semantics (see [benchmark/FUSE_PIPELINE_DEFECTS.md](benchmark/FUSE_PIPELINE_DEFECTS.md) F13); the **verified alternative** is local multilingual vector recall + a unified transition DP (four cases, 226/236 scored segments), planned to land as **T4**.
 - **Timeline editing**: multi-track timeline (split / merge / drag / snap / segment swap), video preview sync, undo & redo, per-event proofreading list.
 - **Export**: single-track export to SRT / ASS / LRC / TXT.
 - **Engineering**: project data (`<project-name>.gsa` — a magic header + JSON) autosaves with a 1-second debounce plus Ctrl+S manual save; recent-projects list.
@@ -31,10 +31,10 @@ Video input ──► OCR + ASR + speaker diarization + auto timing
 The app is organized as a four-page workbench, navigated in order from the sidebar:
 
 ```
-① Corpus        ──► ② Transcribe     ──► ③ Fuse              ──► ④ Edit
-  quest-recording    clip-video ASR +      reliable text          proofread +
-  OCR / screenshots / speaker tagging +    replaces transcript    export the final
-  manual text         hardsub OCR          (timing kept)          subtitles
+① Corpus        ──► ② Timing + transcribe ──► ③ Fuse            ──► ④ Edit
+  quest-recording    ASR (voiced) /           reliable text          proofread +
+  OCR / screenshots / hardsub OCR             replaces transcript    export the final
+  manual text         (unvoiced)              (timing kept)          subtitles
 ```
 
 A project mounts **two video sources**: `source` (the quest recording — the OCR corpus target, decoupled from the timeline) and `clip` (the video being subtitled — the global timeline reference). Fusion output goes into a single "final subtitles" track, proofread and exported in the editor.
@@ -86,9 +86,9 @@ pnpm tauri build   # produce installers (note: runtime-resource bundling is not 
 ## Usage
 
 1. **Create a project**: "Create New Project" on the welcome page; pick a save folder (project data lives in `<project-name>.gsa` inside it; multiple projects may share one folder).
-2. **Import videos**: import the quest recording (source) on the corpus page; import the clip video (clip) on the transcribe page.
+2. **Import videos**: import the quest recording (source) on the corpus page; import the clip video (clip) on the timing & transcription page.
 3. **① Corpus**: frame the subtitle region and time range, run OCR to collect reliable text — or OCR subtitle screenshots / paste plain text.
-4. **② Transcribe**: run ASR on the clip video (engine / speaker cap / language), then tag tracks containing game speech as "game speech". For games without voice acting, additionally frame the hardsub region to build an embedded-subtitle track.
+4. **② Timing + transcribe**: pick the option that fits the material (both may be used) — for voiced quests run ASR (engine / speaker cap / language) and tag tracks containing game speech as "game speech"; for unvoiced quests (or clips that already carry hardsubs) frame the hardsub region and run hardsub OCR.
 5. **③ Fuse**: once corpus and timeline are both ready, start fusion to get final subtitle events whose timing comes from the transcript / embed-subtitle and text from the reliable corpus.
 6. **④ Edit**: proofread event by event (edit text / character, split, merge, delete) and export SRT / ASS / LRC / TXT.
 
@@ -102,7 +102,7 @@ pnpm tauri build   # produce installers (note: runtime-resource bundling is not 
 │       ├── ocr/            # OCR pipeline (frame → change detection → OCR → merge)
 │       ├── asr/            # ASR dispatch (dual engine)
 │       ├── llm/            # llama.cpp invocation
-│       ├── fuse/           # cross-language LLM fusion
+│       ├── fuse/           # AI fusion (LLM index mapping + verbatim corpus text)
 │       ├── export/         # SRT/ASS/LRC/TXT export
 │       ├── project/        # project data model & persistence
 │       └── ai_runtime/     # AI runtime (provider abstraction, config, worker subprocesses)
@@ -115,14 +115,15 @@ pnpm tauri build   # produce installers (note: runtime-resource bundling is not 
 
 - [GameSubtitleAssistant_Plan.md](GameSubtitleAssistant_Plan.md) — vision, architecture design and phased plan (Chinese)
 - [docs/development.md](docs/development.md) — development guide: architecture / data model / pipeline details / testing (Chinese)
+- [benchmark/README.md](benchmark/README.md) — quality benchmarks and the validation record for the fusion-alignment route
 - [CONTRIBUTING.md](CONTRIBUTING.md) — contributing guide
 - [THIRD_PARTY.md](THIRD_PARTY.md) — third-party components & model licenses
 
 ## Roadmap
 
-**Done**: the full four-page workbench (corpus → transcribe → fuse → edit/export), the OCR pipeline (region selection / change detection / majority vote / multi-frame merge), FunASR + MOSS dual ASR engines with speaker diarization, the hardsub track, cross-language LLM fusion, multi-track timeline editing with undo/redo, single-track multi-format export, autosave.
+**Done**: the full four-page workbench (corpus → timing + transcribe → fuse → edit/export), the OCR pipeline (region selection / change detection / majority vote / multi-frame merge), FunASR + MOSS dual ASR engines with speaker diarization, the hardsub OCR track, AI fusion (LLM index mapping + verbatim corpus-text carry-over), multi-track timeline editing with undo/redo, single-track multi-format export, autosave.
 
-**In progress / to improve**: real-world long-text evaluation and tuning of the fusion pipeline; runtime-resource bundling (installer distribution).
+**In progress / to improve**: **T4** — landing the verified vector recall + unified transition DP in the product, replacing the current LLM fusion, **in the same round** as the frontend "post-fusion confidence audit table" (the two are coupled: the audit table depends on confidence / warning signals produced by fusion); runtime-resource bundling (installer distribution).
 
 **Planned**: translation assistance and bilingual subtitles, more export formats (Premiere XML / DaVinci Resolve XML / Aegisub), in-app model management, TTS and voice cloning (see Phase 7 of the plan).
 
@@ -131,7 +132,7 @@ pnpm tauri build   # produce installers (note: runtime-resource bundling is not 
 - Windows only; macOS / Linux would require porting the bootstrap scripts and runtime.
 - No installer — the AI environment is set up by scripts; models are downloaded at setup time, not by the app (which only performs readiness checks).
 - FFmpeg must be provided by the user (added to `PATH`).
-- Fusion quality is bounded by small local models; long-text behavior is still being tuned.
+- Fusion runs end to end but **does not yet meet the product goal**: defect ledger F13 measured that the local 3B LLM mainly **aligns by index** and does not perform cross-language semantic alignment; the verified alternative (vector recall + unified transition DP, four cases, 226/236 scored segments) is planned to land as T4 — until then, fusion output still needs per-event manual proofreading.
 - The default LLM, Qwen2.5-3B-Instruct, uses the **Qwen Research license** (commercial use requires separate permission) — see [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## License
