@@ -18,24 +18,26 @@ import json
 import os
 import re
 import subprocess
+import sys
 
 # ── 路径解析：仓库根 = 本文件上溯四级（src-tauri/tests/fuse_lab/__init__.py → 仓库根）──
 _HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(_HERE, "..", "..", ".."))
 RUNTIME = os.path.join(REPO_ROOT, "runtime")
-DEPS_EMBED = os.path.join(RUNTIME, "deps_embed")
-MODELS_EMBED = os.path.join(RUNTIME, "models", "embed")
 EXAMPLES = os.path.join(REPO_ROOT, "examples", "benchmark_examples")
 BENCH_OUT = os.path.join(REPO_ROOT, "temp", "bench_output")
+
+# ── 融合核心（表头剥离 / 向量编码 / 统一转移 DP / 两类掩码）统一从 scripts/fuse_core.py 导入，
+#    与产品侧 worker 共用同一份实现（单一真源，避免算法漂移）──
+sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
+from fuse_core import (  # noqa: E402
+    DEFAULT_EMBED_MODEL, DEFAULT_ONNX, DEPS_EMBED, E5_PREFIX, MODELS_EMBED, SENT_END,
+    encode_texts, load_embedder, rebuild, similarity_matrix, split_header, strip_for_embed,
+)
 
 # ── 仅作实验输入：模型/提示由运行时配置与 Rust build_prompt 决定，此处保持一致 ──
 BATCH_SIZE = 30
 MAX_TOKENS = 4096
-DEFAULT_EMBED_MODEL = "multilingual-e5-small"
-DEFAULT_ONNX = "model_qint8_avx512_vnni.onnx"
-E5_PREFIX = ("query: ", "passage: ")
-
-SENT_END = "。！？…!?."
 
 # ── 30 组自撰干净对照：(英文 = 转写侧, 中文 = 可靠语料) ──
 # 每句完整、语义互不重叠（不共享实体词），故不存在"靠关键词撞上"的捷径。
@@ -153,40 +155,6 @@ def identity_baseline(truth):
     return sum(1 for i, w in enumerate(truth) if w == i + 1 and w != 0)
 
 
-# ────────────────────────── 表头（名字行）处理 ──────────────────────────
-
-def split_header(text):
-    """拆分前导表头（名字行/头衔行/名牌）与正文 → (header|None, body)。
-
-    判据：行短（≤16 字符）且不含句末标点 ⇒ 视为表头。
-    **只用于模型输入**；产物文本必须用原文（header + body），
-    因为"产物与对应语料逐字一致"是既定产品要求。
-    整段皆为表头（无正文）时**不剥离**，避免空串参与匹配。
-    """
-    lines = [l.strip() for l in text.split("\n")]
-    lines = [l for l in lines if l]
-    head_lines = []
-    while len(lines) > 1:
-        head = lines[0]
-        if len(head) <= 16 and not any(c in head for c in SENT_END):
-            head_lines.append(lines.pop(0))
-        else:
-            break
-    body = "\n".join(lines).strip()
-    if not body:
-        return None, text.strip()
-    return ("\n".join(head_lines).strip() or None), body
-
-
-def strip_for_embed(text):
-    """取用于编码的正文（表头不参与语义匹配——表头同形会淹没正文）"""
-    return split_header(text)[1]
-
-
-def rebuild(header, body):
-    """产物文本还原：表头 + 正文"""
-    return "{}\n{}".format(header, body) if header else body
-
 
 # ────────────────────────── 单调 DP 对齐 ──────────────────────────
 
@@ -231,67 +199,6 @@ def monotonic_align(S, skip_penalty=0.02, unmatched_penalty=0.25):
         j = int(prev_j)
     return match, dp
 
-
-# ────────────────────────── 向量编码（onnxruntime + tokenizers）──────────────────────────
-
-_SESSION_CACHE = {}
-
-
-def load_embedder(model=DEFAULT_EMBED_MODEL, onnx=None):
-    """加载 tokenizer 与 onnx 会话（CPU）。返回 (tokenizer, session)。"""
-    import sys
-    if DEPS_EMBED not in sys.path:
-        sys.path.insert(0, DEPS_EMBED)
-    key = (model, onnx)
-    if key in _SESSION_CACHE:
-        return _SESSION_CACHE[key]
-    from tokenizers import Tokenizer
-    import onnxruntime as ort
-    d = os.path.join(MODELS_EMBED, model)
-    tok = Tokenizer.from_file(os.path.join(d, "tokenizer.json"))
-    tok.enable_truncation(max_length=256)
-    sess = ort.InferenceSession(
-        os.path.join(d, onnx or os.environ.get("GSA_EMBED_ONNX", DEFAULT_ONNX)),
-        providers=["CPUExecutionProvider"])
-    _SESSION_CACHE[key] = (tok, sess)
-    return tok, sess
-
-
-def encode_texts(tok, sess, texts):
-    """batch 编码 → L2 归一化句向量（mask 平均池化，E5 官方做法）"""
-    import numpy as np
-    encs = tok.encode_batch(list(texts))
-    maxlen = max(len(e.ids) for e in encs)
-    pad_id = 1
-    ids = np.full((len(encs), maxlen), pad_id, dtype=np.int64)
-    mask = np.zeros((len(encs), maxlen), dtype=np.int64)
-    for i, e in enumerate(encs):
-        n = len(e.ids)
-        ids[i, :n] = e.ids
-        mask[i, :n] = e.attention_mask
-    feed = {}
-    for inp in sess.get_inputs():
-        if inp.name == "input_ids":
-            feed[inp.name] = ids
-        elif inp.name == "attention_mask":
-            feed[inp.name] = mask
-        elif inp.name == "token_type_ids":
-            feed[inp.name] = np.zeros_like(ids)
-    out = sess.run(None, feed)
-    h = out[0]
-    if h.ndim == 3:
-        m = mask[..., None].astype(np.float32)
-        v = (h * m).sum(1) / np.clip(m.sum(1), 1e-9, None)
-    else:
-        v = h
-    return v / np.clip(np.linalg.norm(v, axis=1, keepdims=True), 1e-9, None)
-
-
-def similarity_matrix(tok, sess, corpus, queries, prefix=E5_PREFIX):
-    """cos 相似度矩阵 S[i][j]（已归一化 ⇒ 点积）"""
-    C = encode_texts(tok, sess, [prefix[1] + t for t in corpus])
-    Q = encode_texts(tok, sess, [prefix[0] + t for t in queries])
-    return Q @ C.T
 
 
 # ────────────────────────── 真实工程（.gsa）读取 ──────────────────────────

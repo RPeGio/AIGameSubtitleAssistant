@@ -8,7 +8,8 @@ bootstrap_embed.ps1 —— 搭建多语言向量召回运行环境（onnxruntime
    只走 CPU：GPU 算力留给 OCR/ASR；短文本编码 CPU 已足够
 2. 下载 multilingual-e5-small 的 ONNX 量化件到 runtime/models/embed/multilingual-e5-small/
    （qint8 约 113MB；SHA256 从 HF API 取官方 LFS hash 校验，API 不可达时告警跳过）
-3. 合并写 runtime/config.json 的 embed_* 字段（保留既有字段）
+3. 部署 worker（scripts/fuse_core.py + scripts/embed_worker.py → runtime/worker/）
+4. 合并写 runtime/config.json 的 embed_* 字段（保留既有字段）
 
 参数：
   -Model <名>                模型目录名，默认 multilingual-e5-small
@@ -82,13 +83,22 @@ foreach ($f in $files) {
 }
 "$Model|$Variant" | Set-Content -Encoding utf8 (Join-Path $modelDir "VARIANT.txt")
 
-# ── 3. 合并写 runtime/config.json（保留既有字段） ──
+# ── 3. 部署 worker（产品侧一次性子进程；算法核心 fuse_core.py 必须与它同目录） ──
+$workerDir = Join-Path $root "runtime\worker"
+New-Item -ItemType Directory -Force -Path $workerDir | Out-Null
+foreach ($f in @("fuse_core.py", "embed_worker.py")) {
+  Copy-Item (Join-Path $PSScriptRoot $f) (Join-Path $workerDir $f) -Force
+  Write-Host "==> 已部署 runtime/worker/$f"
+}
+
+# ── 4. 合并写 runtime/config.json（保留既有字段） ──
 if (Test-Path $cfgPath) {
   $cfg = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
 } else {
   $cfg = New-Object psobject
 }
 $fields = @{
+  embed_worker = "worker/embed_worker.py"
   embed_model = "models/embed/$Model/$Variant"
   embed_tokenizer = "models/embed/$Model/tokenizer.json"
   embed_deps_dir = "deps_embed"
@@ -98,7 +108,7 @@ foreach ($k in $fields.Keys) {
   else { $cfg | Add-Member -NotePropertyName $k -NotePropertyValue $fields[$k] }
 }
 $cfg | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 $cfgPath
-Write-Host "==> 已更新 runtime/config.json（embed_model / embed_tokenizer / embed_deps_dir）"
+Write-Host "==> 已更新 runtime/config.json（embed_worker / embed_model / embed_tokenizer / embed_deps_dir）"
 Write-Host "==> 完成。验证："
 $env:PYTHONPATH = $deps
 & $py -c "import onnxruntime, tokenizers, numpy; print('onnxruntime', onnxruntime.__version__); print('tokenizers', tokenizers.__version__)"
