@@ -6,8 +6,8 @@ use crate::ai_runtime::{OcrError, OcrManager, OcrResult};
 use super::params::FrameText;
 use super::correct::{collect_glossary_hits, consistency_diffs, merge_diff, normalize_punctuation, Diff};
 use super::merge::{
-    merge_contained_adjacent, merge_frames, merge_short_fragments_into_next,
-    merge_similar_adjacent,
+    drop_below_min_text_length, merge_contained_adjacent, merge_frames,
+    merge_short_fragments_into_next, merge_similar_adjacent,
 };
 use super::params::{OcrRegionInput, OcrRunParams, OcrSegment};
 use super::refine::{clamp_segment_times, refine_segment_ends, refine_window_changes};
@@ -248,6 +248,8 @@ where
     let merge_similarity = params.merge_similarity;
     // 字幕预估最短长度：≤0 视为关闭短碎片激进合并
     let min_subtitle_sec = params.min_subtitle_sec;
+    // 文本长度门（O1/O5）：0 = 关闭，1 = 只丢纯符号段，见 `drop_below_min_text_length`
+    let min_text_length = params.min_text_length;
     // 标点归一化配置（精度策略的前置层，用户可个性目标字符）
     let punctuation = params.punctuation.clone();
     // 术语表（S2，可选）：在标点归一化之后应用（词条与产出须同形才能匹配）
@@ -534,7 +536,7 @@ where
         // 第二遍：包含关系拼接（同一句的字幕分片合成一段，含误召回的抖动短字幕）
         let segments = merge_contained_adjacent(segments, frame_interval);
         // 第三遍：相邻文本相似合并（消除阶段 2 召回的同句碎片/伪短字幕）
-        let segments = merge_similar_adjacent(segments, merge_similarity);
+        let segments = merge_similar_adjacent(segments, merge_similarity, frame_interval);
         // 第四遍（B-ii）：段尾精化——用密帧实测切换时刻替换"末采样+半间隔"的量化估计
         let segments =
             refine_segment_ends(segments, &scan_stream, dhash_threshold, frame_interval, clip.end);
@@ -553,7 +555,9 @@ where
         // clamp 前 ≈3.63s（超 3.5s 门被拒）、clamp 后 **3.38s**（应在门内）。
         // 合并后再 `clamp` 本会产生重叠，故必须放在 clamp 之后（合并结果沿用后条已 clamp 的终点，
         // 而碎片的起点 ≤ 前段终点，故不引入重叠）。
-        let mut segments = merge_short_fragments_into_next(segments, min_subtitle_sec);
+        let segments = merge_short_fragments_into_next(segments, min_subtitle_sec);
+        // 第七遍（输出层，O1/O5）：实质字符数低于阈值的垃圾段（纯符号/单字符）直接丢弃
+        let mut segments = drop_below_min_text_length(segments, min_text_length);
         // 末步（输出层）：标点/省略号归一化（**静默执行**，用户 2026-09-24 决策）+
         // 术语表**标记**（只收集 Diff，不改文本——纠正由前端审批后执行）。
         // 顺序关键：归一化必须先做（词条与产出须同形才能匹配）

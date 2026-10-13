@@ -447,6 +447,19 @@ pub(crate) const RESIDUAL_MAX_SPAN_FACTOR: f64 = 4.0;
 /// 0.5s = 原 0.5s 网格下一格；网格降为 0.25s 后仍保持 0.5s（显示行为的绝对尺度）。
 pub(crate) const CONTIGUOUS_MAX_GAP_SEC: f64 = 0.5;
 
+/// 相邻段**相似文本合并**的时间邻接窗（秒）：两段间空档大于此值即使文本相似也不并
+/// （O3，2026-10-12）。`merge_similar_adjacent` 此前只看文本相似、空档不限长，把
+/// vesna 嵌字里相隔 44.7s 的两处 `Lady Vesna!` 显示并成一条 47.01s 长段（两段之间
+/// 画面上字幕已消失 45.5s）。
+///
+/// 取值依据（2026-10-12 四素材 at-pass 探针普查，`temp/t1_merge_gap_measurement.md`）：
+/// 基线（无门）会合并的相邻段对中，合法对的空档上限为 pierro **10.731s**（长静态
+/// 场景的同句重读/渐进碎片，D11/D12 族），moon 2.333s、glupov 0.250s、vesna 合法对
+/// 3.051s；**最小缺陷间隔为 vesna 44.733s**。取 11.0 = 覆盖全部合法对（+0.27s 余量）
+/// 且离最小缺陷间隔 4 倍。0.5s 初值会误拆 pierro 14 组/moon 2 组合法合并
+/// （71.7→67.4 / 71.4→66.1），已实测否决。
+pub(crate) const SIMILAR_MAX_GAP_SEC: f64 = 11.0;
+
 /// 相邻段"包含关系拼接"：把同一句被拆开的分片合成一段（修复碎片化）。
 ///
 /// 判据（较短者记 S、较长者记 L，两个方向共用）：
@@ -841,7 +854,17 @@ pub(crate) fn merge_short_fragments_into_next(
 ///
 /// 用于阶段 2 短字幕召回后：dHash 判为变化但 OCR 文本与相邻段相同的"伪短字幕"
 /// （字幕视觉抖动/OCR 抖动）会与相邻段相似，在此合并，避免同一句被拆成碎片。
-pub(crate) fn merge_similar_adjacent(segments: Vec<OcrSegment>, threshold: f64) -> Vec<OcrSegment> {
+///
+/// 时间邻接门（O3，2026-10-12）：空档 > `SIMILAR_MAX_GAP_SEC.max(interval)` 的
+/// 相似段视为不同条目不并——vesna 嵌字里两处相隔 44.7s 的 `Lady Vesna!` 会被
+/// 无门合并成 47.01s 长段；常量注释里有该缺陷的完整取证链。
+pub(crate) fn merge_similar_adjacent(
+    segments: Vec<OcrSegment>,
+    threshold: f64,
+    interval: f64,
+) -> Vec<OcrSegment> {
+    // 绝对秒下限与网格相对项取较大者（与 merge_contained_adjacent 同款缩放）
+    let max_gap = SIMILAR_MAX_GAP_SEC.max(interval);
     let mut out: Vec<OcrSegment> = Vec::with_capacity(segments.len());
     for seg in segments {
         if let Some(last) = out.last_mut() {
@@ -852,7 +875,10 @@ pub(crate) fn merge_similar_adjacent(segments: Vec<OcrSegment>, threshold: f64) 
                 last.end - last.start,
                 seg.confidence,
             );
-            if !stable_boundary && similar_text(&last.text, &seg.text, threshold) {
+            // 空档超窗：显示确实中断过（vesna 实测 45.5s 空档期间保险丝逐帧读到空文本），
+            // 即使文本相同也是两处独立显示
+            let contiguous = seg.start - last.end <= max_gap;
+            if contiguous && !stable_boundary && similar_text(&last.text, &seg.text, threshold) {
                 last.end = last.end.max(seg.end);
                 // 更长且置信度不低于原段才替换文本，避免用低置信度长文本覆盖清晰短文本
                 if seg.text.chars().count() > last.text.chars().count()
@@ -867,5 +893,27 @@ pub(crate) fn merge_similar_adjacent(segments: Vec<OcrSegment>, threshold: f64) 
         out.push(seg);
     }
     out
+}
+
+/// 输出层文本长度门（O1/O5，2026-10-12）：实质字符数低于 `min_text_length` 的产出段
+/// 直接丢弃——粗略选区把画面元素读成的单字符/纯符号垃圾段（`6`/`O`/`口`/`+`/`*` 等）
+/// 从输出里清除。0 = 关闭本 pass（保持全部产出）；产品默认 1 = 丢弃纯符号段（0 实质字符）。
+///
+/// - "实质字符"复用 `norm_chars`（Unicode 字母数字含 CJK，剔空白与标点）的口径：
+///   `口`/`入`/`个` 计 1，`+`/`*` 计 0；
+/// - 必须放在**全部合并 pass 之后**（碎片并入邻段后才判定终局文本，避免误删
+///   尚待合并的超短真句）；放在标点归一化之前（归一化只改标点，不影响实质计数）；
+/// - 阈值是**素材相关**参数（`params::DEFAULT_MIN_TEXT_LENGTH` 注释里有标定依据）。
+pub(crate) fn drop_below_min_text_length(
+    segments: Vec<OcrSegment>,
+    min_text_length: usize,
+) -> Vec<OcrSegment> {
+    if min_text_length == 0 {
+        return segments;
+    }
+    segments
+        .into_iter()
+        .filter(|seg| norm_chars(&seg.text).len() >= min_text_length)
+        .collect()
 }
 

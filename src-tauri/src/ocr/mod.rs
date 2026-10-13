@@ -28,7 +28,7 @@ mod refine;
 pub use commands::{approve_corpus_diff, lines_from_results, run_ocr, run_ocr_images};
 pub use correct::{Diff, find_consistency_hints, replace_diff_forms};
 pub use merge::{merge_contained_adjacent, merge_frames};
-pub use params::{DEFAULT_MIN_SUBTITLE_SEC, OcrProgress, OcrRegionInput, OcrRunParams, OcrSegment, PunctuationNorm};
+pub use params::{DEFAULT_MIN_SUBTITLE_SEC, DEFAULT_MIN_TEXT_LENGTH, OcrProgress, OcrRegionInput, OcrRunParams, OcrSegment, PunctuationNorm};
 pub use pipeline::{fmt_time, ocr_pass, run_ocr_pipeline};
 pub use refine::refine_window_changes;
 

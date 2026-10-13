@@ -57,3 +57,7 @@ session-ses_*.md
 !examples/benchmark_examples/*.gsa
 # 历史中间产物，无代码/文档引用（见该目录 README「已知事项」）
 examples/benchmark_examples/pierro_fixed.gsa
+
+# Python 字节码缓存（脚本运行时自动生成；曾误入一次提交）
+__pycache__/
+*.pyc
