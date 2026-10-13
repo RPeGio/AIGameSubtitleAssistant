@@ -1784,13 +1784,21 @@ fn test_merge_similar_adjacent_far_gap_not_merged() {
 
 #[test]
 fn test_merge_similar_adjacent_gap_within_window_by_interval() {
-    // 空档门随网格缩放：interval=2.0 时 1.5s 的空档仍在窗内 → 仍合并
+    // 空档门随网格缩放：interval=12.0 > SIMILAR_MAX_GAP_SEC=11.0 时门跟着变大，
+    // 11.5s 空档在纯绝对门下会被拒（>11.0），由 `.max(interval)` 放行 → 仍合并
     let segs = vec![
         OcrSegment { start: 1.0, end: 3.0, text: "卡侬\n…那是我本职工作的一部分。".into(), confidence: 0.9 },
-        OcrSegment { start: 4.5, end: 4.7, text: "卡侬\n…那是我本职工作的一部分。".into(), confidence: 0.9 },
+        OcrSegment { start: 14.5, end: 14.7, text: "卡侬\n…那是我本职工作的一部分。".into(), confidence: 0.9 },
     ];
-    let out = merge_similar_adjacent(segs, 0.3, 2.0);
+    let out = merge_similar_adjacent(segs, 0.3, 12.0);
     assert_eq!(out.len(), 1);
+    // 同一空档在产品默认网格（0.5s）下被绝对门拒收 → 不并
+    let segs = vec![
+        OcrSegment { start: 1.0, end: 3.0, text: "卡侬\n…那是我本职工作的一部分。".into(), confidence: 0.9 },
+        OcrSegment { start: 14.5, end: 14.7, text: "卡侬\n…那是我本职工作的一部分。".into(), confidence: 0.9 },
+    ];
+    let out = merge_similar_adjacent(segs, 0.3, 0.5);
+    assert_eq!(out.len(), 2);
 }
 
 #[test]

@@ -48,6 +48,10 @@ pub const DEFAULT_MIN_SUBTITLE_SEC: f64 = 1.5;
 ///   四个真值文件均无 ≤1 实质字符的条目（`---` 是分隔符），阈值 2 零误杀。
 ///
 /// serde default 与前端缺省同源（`DEFAULT_MIN_TEXT_LENGTH`），防旧参数缺字段反序列化失败
+///
+/// **作用域**：该门只作用于视频 OCR 管线（`ocr_pass` 内的输出层 pass）；
+/// `run_ocr_images` 截图语料入口直出 `lines_from_results`，**不过此门**
+/// （截图源由用户逐张挑选，垃圾概率低——PR42 审查 P2-3 登记）。
 pub const DEFAULT_MIN_TEXT_LENGTH: usize = 1;
 
 /// 标点归一化配置（S1：参数化，供前端"个性化归一化目标"使用）。

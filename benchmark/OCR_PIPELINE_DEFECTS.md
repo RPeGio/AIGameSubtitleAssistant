@@ -852,7 +852,9 @@
   `So, I hope\nhad\nnight…\nyou\na\ngood`（语序错乱）。
 - **判读**：宽扁选区 + det 切行所致，**嵌字侧特有**，不是通用 OCR 问题。
 - **✅ 已修复（2026-10-13，依据提交 `33e154e`，根因在 worker 的行拼接序——非"宽扁选区"）**：
-  `scripts/ocr_worker.py`（真源，经 `bootstrap_ocr.ps1` 复制进 `runtime/worker/`）
+  `scripts/ocr_worker.py`（真源，经 `bootstrap_ocr.ps1` 复制进 `runtime/worker/`——
+  **运行时用的是副本，无启动时自动同步；已初始化过 runtime 的环境拉取本修复后
+  必须重跑 `scripts/bootstrap_ocr.ps1` 才生效，否则 worker 仍是旧版行拼接且无报错**）
   的 `_extract_result` 此前用 det 返回序直接 `\n` 拼接，而 `rec_texts` 顺序**不保证**
   "行内左→右 / 物理行不被拆散"。修复 = **几何行重排**三个函数：
   `_extract_items`（逐框 (text, conf, box)，`rec_boxes`(xyxy) 与 rec_texts/rec_scores
