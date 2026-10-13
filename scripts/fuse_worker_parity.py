@@ -16,6 +16,8 @@
 只输出合法候选）。
 
 用法：python scripts/fuse_worker_parity.py   （退出码 0 = 零差异）
+环境：numpy/onnxruntime 装在 runtime/deps_embed，直接跑需先
+    $env:PYTHONPATH="<仓库根>\\runtime\\deps_embed"（产品侧由 Rust 传入，见 embed.rs）
 """
 import io
 import json

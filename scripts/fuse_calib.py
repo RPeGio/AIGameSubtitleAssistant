@@ -19,6 +19,8 @@
     python scripts/fuse_calib.py                # 全案例网格搜索
     python scripts/fuse_calib.py --selfcheck    # 只做 DP 等价性自检
     python scripts/fuse_calib.py --cases pierro # 限定案例
+环境：numpy/onnxruntime 装在 runtime/deps_embed，直接跑需先
+    $env:PYTHONPATH="<仓库根>\\runtime\\deps_embed"（产品侧由 Rust 传入，见 embed.rs）
 """
 import argparse
 import difflib

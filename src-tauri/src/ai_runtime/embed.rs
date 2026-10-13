@@ -35,6 +35,13 @@ pub struct EmbedRequest {
     pub unmatch_filter: bool,
     /// 候选名单长度
     pub top_k: usize,
+    /// 嵌入模型目录名（`runtime/models/embed/` 下；缺省/null = worker 内置默认，
+    /// PR43 审查 P1-1：从 `RuntimeConfig::embed_model` 路径拆出，兑现配置契约）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// 该目录下的 ONNX 文件名；缺省/null = worker 内置默认
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub onnx: Option<String>,
 }
 
 /// worker 输出：每段的对齐结果与结构化审计信号
@@ -131,9 +138,17 @@ pub fn run_embed_worker(
     }
 
     // 输入/输出走系统临时目录（命名隔离，不会污染工程目录）：
-    // 写输入 JSON 必须先于 spawn（worker 启动即读文件）
-    let tmp = std::env::temp_dir()
-        .join(format!("gsa_embed_fuse_{}", std::process::id()));
+    // 写输入 JSON 必须先于 spawn（worker 启动即读文件）。
+    // 子目录按 pid+纳秒唯一（一次一目录）：同进程两次并发调用不得互写对方文件，
+    // 也不读上一次调用遗留的陈旧输出（PR43 审查 P2-1）
+    let tmp = std::env::temp_dir().join(format!(
+        "gsa_embed_fuse_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
     std::fs::create_dir_all(&tmp)
         .map_err(|e| EmbedError::Worker(format!("无法创建临时目录: {}", e)))?;
     let in_path = tmp.join("input.json");
@@ -174,9 +189,30 @@ pub fn run_embed_worker(
         })
     });
 
-    let status = child
-        .wait()
+    // 轮询等待（非阻塞 try_wait）：onnxruntime 卡死等异常不能把融合命令永久挂起
+    //（一次成功的端到端约 2s，120s 兜底已十倍余量；els onnx 卡死时 kill + 报错，
+    // 前端由 run_fuse 的错误路径接住——PR43 审查 P2-2）
+    const EMBED_WAIT_TIMEOUT_SECS: u64 = 120;
+    let started = std::time::Instant::now();
+    let mut status = child
+        .try_wait()
         .map_err(|e| EmbedError::Worker(format!("fuse worker 异常: {}", e)))?;
+    while status.is_none() {
+        if started.elapsed().as_secs() >= EMBED_WAIT_TIMEOUT_SECS {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(EmbedError::Worker(format!(
+                "fuse worker 超过 {}s 未退出，已终止（疑似 onnxruntime 卡死）",
+                EMBED_WAIT_TIMEOUT_SECS
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        status = child
+            .try_wait()
+            .map_err(|e| EmbedError::Worker(format!("fuse worker 异常: {}", e)))?;
+    }
+    let status = status.expect("循环退出条件的谓词保证 Some");
     let stdout = String::from_utf8_lossy(
         &out_reader
             .map(|h| h.join().unwrap_or_default())
@@ -191,6 +227,7 @@ pub fn run_embed_worker(
     .into_owned();
     let _ = stdout; // worker stdout 只打一行摘要，留日志排查用
     if !status.success() {
+        let _ = std::fs::remove_dir_all(&tmp);
         return Err(EmbedError::Worker(format!(
             "fuse worker 退出码非零（{}）：{}",
             status,
@@ -201,8 +238,11 @@ pub fn run_embed_worker(
     let resp: EmbedResponse = serde_json::from_reader(std::fs::File::open(&out_path).map_err(
         |e| EmbedError::Worker(format!("无法读取 worker 输出: {}", e)),
     )?)
-    .map_err(|e| EmbedError::Worker(format!("worker 输出解析失败: {}", e)))?;
-    match resp {
+    .map_err(|e| {
+        let _ = std::fs::remove_dir_all(&tmp);
+        EmbedError::Worker(format!("worker 输出解析失败: {}", e))
+    })?;
+    let out = match resp {
         EmbedResponse {
             ok: true,
             stats: Some(stats),
@@ -217,5 +257,7 @@ pub fn run_embed_worker(
         _ => Err(EmbedError::Worker(
             "fuse worker 输出结构不完整（ok/stats/segments）".into(),
         )),
-    }
+    };
+    let _ = std::fs::remove_dir_all(&tmp); // 一次性目录用完即清（成功/失败都走到这）
+    out
 }
