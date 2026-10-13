@@ -843,7 +843,7 @@
 - **例**：`And\nusing\nforbidden\nalchemy to\nforge\ngemstones?`（一行显示被拆成 6 行）、
   `So, I hope\nhad\nnight…\nyou\na\ngood`（语序错乱）。
 - **判读**：宽扁选区 + det 切行所致，**嵌字侧特有**，不是通用 OCR 问题。
-- **✅ 已修复（2026-10-13，依据提交 `0aa001c`，根因在 worker 的行拼接序——非"宽扁选区"）**：
+- **✅ 已修复（2026-10-13，依据提交 `33e154e`，根因在 worker 的行拼接序——非"宽扁选区"）**：
   `scripts/ocr_worker.py`（真源，经 `bootstrap_ocr.ps1` 复制进 `runtime/worker/`）
   的 `_extract_result` 此前用 det 返回序直接 `\n` 拼接，而 `rec_texts` 顺序**不保证**
   "行内左→右 / 物理行不被拆散"。修复 = **几何行重排**三个函数：
