@@ -86,7 +86,7 @@ pub struct AsrEvent {
     pub confidence: f64,
 }
 
-/// AI 融合事件 —— LLM 将 OCR 文本与 ASR 段融合后的最终字幕（Phase 4）
+/// AI 融合事件 —— 将 OCR 文本与 ASR 段融合后的最终字幕（Phase 4 → T4 向量路线）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FusedEvent {
     pub id: String,
@@ -94,9 +94,13 @@ pub struct FusedEvent {
     pub end: f64,
     /// 融合后的最终文本（优先 OCR 文本，无匹配时保留 ASR 原文本）
     pub text: String,
-    /// 角色名（LLM 从 OCR 文本提取），可能为空
+    /// 角色名（LLM 从 OCR 文本提取），可能为空 —— T4 向量路线下恒 None（不产出说话人）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub character: Option<String>,
+    /// 融合审计元数据（T4/R2 起；融合时写入，供前端审计表逐段查看与替换决策）。
+    /// `#[serde(default)]` 兼容旧 `.gsa`（事件无此字段时不报错），None 时不落盘。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fuse_meta: Option<crate::fuse::FuseMeta>,
 }
 
 /// 手动创建的字幕事件 —— 用户手工添加或编辑的台词
@@ -785,6 +789,7 @@ mod tests {
             end: 4.2,
             text: "旅行者，你来了".into(),
             character: Some("派蒙".into()),
+            fuse_meta: None,
         });
         let json = serde_json::to_string(&ev).unwrap();
         assert!(json.contains("\"type\":\"fused\""));
@@ -807,6 +812,7 @@ mod tests {
             end: 1.0,
             text: "未匹配文本".into(),
             character: None,
+            fuse_meta: None,
         });
         let json = serde_json::to_string(&ev).unwrap();
         assert!(!json.contains("character"));

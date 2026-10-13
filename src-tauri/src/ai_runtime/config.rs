@@ -82,6 +82,18 @@ pub struct RuntimeConfig {
     /// FunASR 转写超时（分钟）：0 = 不限。含模型加载时间（约 20-40s）
     #[serde(default)]
     pub funasr_timeout_minutes: u32,
+    /// 融合 worker 脚本路径（相对 runtime，如 worker/embed_worker.py）；空 = 未配置向量融合
+    #[serde(default)]
+    pub embed_worker: String,
+    /// 融合嵌入模型 ONNX 路径（相对 runtime，如 models/embed/multilingual-e5-small/model_qint8_avx512_vnni.onnx）
+    #[serde(default)]
+    pub embed_model: String,
+    /// 融合 E5 tokenizer.json 路径（相对 runtime）
+    #[serde(default)]
+    pub embed_tokenizer: String,
+    /// 融合嵌入依赖目录（相对 runtime，如 deps_embed，pip --target 安装，作为 PYTHONPATH）
+    #[serde(default)]
+    pub embed_deps_dir: String,
 }
 
 fn default_ocr_model() -> String {
@@ -126,6 +138,10 @@ impl Default for RuntimeConfig {
             funasr_device: default_funasr_device(),
             funasr_language: default_funasr_language(),
             funasr_timeout_minutes: 0,
+            embed_worker: String::new(),
+            embed_model: String::new(),
+            embed_tokenizer: String::new(),
+            embed_deps_dir: String::new(),
         }
     }
 }
@@ -215,10 +231,12 @@ impl RuntimeConfig {
 
     /// 校验各路径的合法性：
     /// - worker_script / deps_dir / model_dir / moss_binary / moss_model / llm_binary / llm_model
-    ///   / funasr_worker / funasr_deps / funasr_model_dir 必须解析在 runtime 目录内（防路径穿越）
+    ///   / funasr_worker / funasr_deps / funasr_model_dir
+    ///   / embed_worker / embed_model / embed_tokenizer / embed_deps_dir 必须解析在 runtime 目录内（防路径穿越）
     /// - python_path 解析后（相对则按 runtime 目录解析）必须存在
     /// - moss_binary / llm_binary 非空时必须存在（缺失时对应运行时不可用，由 provider 报告原因）
     /// - moss_model / llm_model 不做存在性检查（模型缺失时由 provider 报告"未就绪"原因）
+    /// - embed_* 四个字段**整组必配或整组为空**（半配状态视为配置错误，避免运行期才失败）
     pub fn validate(&self, runtime_dir: &Path) -> Result<(), String> {
         for (name, value) in [
             ("worker_script", &self.worker_script),
@@ -231,6 +249,10 @@ impl RuntimeConfig {
             ("funasr_worker", &self.funasr_worker),
             ("funasr_deps", &self.funasr_deps),
             ("funasr_model_dir", &self.funasr_model_dir),
+            ("embed_worker", &self.embed_worker),
+            ("embed_model", &self.embed_model),
+            ("embed_tokenizer", &self.embed_tokenizer),
+            ("embed_deps_dir", &self.embed_deps_dir),
         ] {
             let pb = PathBuf::from(value);
             let joined = if pb.is_absolute() {
@@ -241,6 +263,26 @@ impl RuntimeConfig {
             if !is_within(&joined, runtime_dir) {
                 return Err(format!("{} 不能越出 runtime 目录: {}", name, value));
             }
+        }
+
+        // embed_* 整组必配或整组为空（半配状态视为配置错误，避免运行期才失败）
+        let embed_set: [(&str, &String); 4] = [
+            ("embed_worker", &self.embed_worker),
+            ("embed_model", &self.embed_model),
+            ("embed_tokenizer", &self.embed_tokenizer),
+            ("embed_deps_dir", &self.embed_deps_dir),
+        ];
+        let configured = embed_set.iter().filter(|(_, v)| !v.is_empty()).count();
+        if configured != 0 && configured != embed_set.len() {
+            let missing: Vec<&str> = embed_set
+                .iter()
+                .filter(|(_, v)| v.is_empty())
+                .map(|(name, _)| *name)
+                .collect();
+            return Err(format!(
+                "embed_* 配置必须整组同时存在（缺：{}）",
+                missing.join(", ")
+            ));
         }
 
         let pp = PathBuf::from(&self.python_path);
@@ -334,6 +376,10 @@ mod tests {
             funasr_device: "cpu".into(),
             funasr_language: "英文".into(),
             funasr_timeout_minutes: 45,
+            embed_worker: "worker/embed_worker.py".into(),
+            embed_model: "models/embed/multilingual-e5-small/model_qint8_avx512_vnni.onnx".into(),
+            embed_tokenizer: "models/embed/multilingual-e5-small/tokenizer.json".into(),
+            embed_deps_dir: "deps_embed".into(),
         };
         cfg.save(&dir).unwrap();
 
@@ -360,6 +406,16 @@ mod tests {
         assert_eq!(loaded.funasr_device, "cpu");
         assert_eq!(loaded.funasr_language, "英文");
         assert_eq!(loaded.funasr_timeout_minutes, 45);
+        assert_eq!(loaded.embed_worker, "worker/embed_worker.py");
+        assert_eq!(
+            loaded.embed_model,
+            "models/embed/multilingual-e5-small/model_qint8_avx512_vnni.onnx"
+        );
+        assert_eq!(
+            loaded.embed_tokenizer,
+            "models/embed/multilingual-e5-small/tokenizer.json"
+        );
+        assert_eq!(loaded.embed_deps_dir, "deps_embed");
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -411,6 +467,10 @@ mod tests {
             funasr_device: "cuda".into(),
             funasr_language: String::new(), // 空 = auto 自动检测
             funasr_timeout_minutes: 0,
+            embed_worker: String::new(),
+            embed_model: String::new(),
+            embed_tokenizer: String::new(),
+            embed_deps_dir: String::new(),
         };
         assert!(cfg.validate(&dir).is_ok());
         let _ = fs::remove_dir_all(&dir);
@@ -472,6 +532,11 @@ mod tests {
         assert_eq!(cfg.funasr_device, "cuda");
         assert_eq!(cfg.funasr_language, ""); // 空 = auto 自动检测
         assert_eq!(cfg.funasr_timeout_minutes, 0);
+        // embed 字段（向量融合，T4 之后）也应取默认值：空 = 未配置向量融合
+        assert_eq!(cfg.embed_worker, "");
+        assert_eq!(cfg.embed_model, "");
+        assert_eq!(cfg.embed_tokenizer, "");
+        assert_eq!(cfg.embed_deps_dir, "");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -484,6 +549,46 @@ mod tests {
         cfg.python_path = "python.exe".into();
         cfg.moss_binary = "../evil.exe".into();
         assert!(cfg.validate(&dir).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_validate_rejects_embed_traversal() {
+        let dir = temp_dir("cfg_embed_traversal");
+        let mut cfg = RuntimeConfig::default();
+        cfg.embed_worker = "worker/embed_worker.py".into();
+        cfg.embed_model = "../evil.onnx".into();
+        cfg.embed_tokenizer = "tokenizer.json".into();
+        cfg.embed_deps_dir = "deps_embed".into();
+        assert!(cfg.validate(&dir).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_validate_rejects_partial_embed_config() {
+        // embed_* 四个字段整组必配或整组为空：只配两个是配置错误
+        let dir = temp_dir("cfg_embed_partial");
+        let mut cfg = RuntimeConfig::default();
+        cfg.embed_worker = "worker/embed_worker.py".into();
+        cfg.embed_deps_dir = "deps_embed".into();
+        let err = cfg.validate(&dir).unwrap_err();
+        assert!(err.contains("整组"), "错误信息应说明整组配置要求：{}", err);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_validate_full_embed_config_ok_when_paths_in_runtime() {
+        // 全组非空 + 都在 runtime 内 → 校验通过（不做存在性检查，由 worker 报告原因）
+        let dir = temp_dir("cfg_embed_full");
+        let mut cfg = RuntimeConfig::default();
+        cfg.python_path = "python.exe".into();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("python.exe"), b"dummy").unwrap();
+        cfg.embed_worker = "worker/embed_worker.py".into();
+        cfg.embed_model = "models/embed/multilingual-e5-small/model_qint8_avx512_vnni.onnx".into();
+        cfg.embed_tokenizer = "models/embed/multilingual-e5-small/tokenizer.json".into();
+        cfg.embed_deps_dir = "deps_embed".into();
+        assert!(cfg.validate(&dir).is_ok());
         let _ = fs::remove_dir_all(&dir);
     }
 

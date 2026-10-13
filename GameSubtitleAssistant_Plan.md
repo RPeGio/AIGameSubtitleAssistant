@@ -393,6 +393,20 @@ GameSubtitleAssistant
 
 **前端形态**（用户决策）：融合跑完后把低置信段罗列出来，逐段可选 **保留当前 / 从候选名单替换 / 在整个语料列表里选择替换 / 不配该条**。
 
+**T4 进度（2026-10-XX，本轮）**：
+- ✅ **R1 已落地（Python 侧产品化）**：新增 `scripts/fuse_core.py`（对齐核心单一真源：表头剥离 + E5 编码 +
+  统一转移 DP + 两个掩码）、`scripts/embed_worker.py`（产品侧一次性子进程）、`scripts/fuse_worker_parity.py`
+  （产品 ↔ 实验台逐段对拍门）；`fuse_calib.py`/`tests/fuse_lab/__init__.py` 改为从 `fuse_core` 导入；
+  `bootstrap_embed.ps1` 补 worker 部署与 `embed_worker` 配置键。验收：selfcheck 两项等价通过、
+  `fuse_align_srt` 12 产物与 R0 基线逐字节相同、对拍 8/8 零差异、`cargo test` 287/0。
+  遗留见 [FUSE_PIPELINE_DEFECTS.md](benchmark/FUSE_PIPELINE_DEFECTS.md) F14。
+- ⚠ **F14（本轮登记）**：走向量路线后**去掉 ASR 段首行 speaker 注入**（它只服务 LLM prompt，
+  编码剥表头也会把它剥掉），⇒ 「**同台词、跨说话人**」的站桩剧情无法凭正文分到正确语料行——
+  真实案例存在、当前 4 个基准素材未覆盖，须在 R2 之后单独适配（结构化说话人输入或按说话人分块）。
+- ⬜ R2（待开工）：Rust 侧接线——`RuntimeConfig` 补 `embed_*` 字段、`ai_runtime/embed.rs` 一次性子进程客户端、
+  `fuse/mod.rs::run_fuse` 改走向量路径 + 契约扩三处（Rust `FusedSegment`/`FusedEvent`+`#[serde(default)]`/TS）、删除 LLM 融合路径。
+- ⬜ R3：前端「融合后置信度审计表」UI + 四动作（保留/候选/全语料/不配）+ 持久化往返。
+
 ## Phase 7：高级功能（未来）
 - TTS、声音克隆、自动翻译、游戏角色声音库
 
