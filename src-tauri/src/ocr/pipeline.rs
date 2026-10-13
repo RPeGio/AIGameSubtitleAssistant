@@ -534,7 +534,7 @@ where
         // 第二遍：包含关系拼接（同一句的字幕分片合成一段，含误召回的抖动短字幕）
         let segments = merge_contained_adjacent(segments, frame_interval);
         // 第三遍：相邻文本相似合并（消除阶段 2 召回的同句碎片/伪短字幕）
-        let segments = merge_similar_adjacent(segments, merge_similarity);
+        let segments = merge_similar_adjacent(segments, merge_similarity, frame_interval);
         // 第四遍（B-ii）：段尾精化——用密帧实测切换时刻替换"末采样+半间隔"的量化估计
         let segments =
             refine_segment_ends(segments, &scan_stream, dhash_threshold, frame_interval, clip.end);

@@ -1765,9 +1765,32 @@ fn test_merge_similar_adjacent_merges_same_text() {
         OcrSegment { start: 1.0, end: 3.0, text: "卡侬\n…那是我本职工作的一部分。".into(), confidence: 0.9 },
         OcrSegment { start: 3.0, end: 3.2, text: "卡侬\n…那是我本职工作的一部分。".into(), confidence: 0.9 },
     ];
-    let out = merge_similar_adjacent(segs, 0.3);
+    let out = merge_similar_adjacent(segs, 0.3, 0.5);
     assert_eq!(out.len(), 1);
     assert!((out[0].end - 3.2).abs() < 1e-9);
+}
+
+#[test]
+fn test_merge_similar_adjacent_far_gap_not_merged() {
+    // O3（2026-10-12）：空档超过 `SIMILAR_MAX_GAP_SEC` 的相似段是两处独立显示，不并
+    // ——vesna 嵌字实测 44.7s 空档的两处 `Lady Vesna!` 此前被并成 47.01s 长段
+    let segs = vec![
+        OcrSegment { start: 10.0, end: 11.0, text: "Lady Vesna!".into(), confidence: 1.0 },
+        OcrSegment { start: 55.7, end: 56.5, text: "Lady Vesna!".into(), confidence: 1.0 },
+    ];
+    let out = merge_similar_adjacent(segs, 0.3, 0.5);
+    assert_eq!(out.len(), 2);
+}
+
+#[test]
+fn test_merge_similar_adjacent_gap_within_window_by_interval() {
+    // 空档门随网格缩放：interval=2.0 时 1.5s 的空档仍在窗内 → 仍合并
+    let segs = vec![
+        OcrSegment { start: 1.0, end: 3.0, text: "卡侬\n…那是我本职工作的一部分。".into(), confidence: 0.9 },
+        OcrSegment { start: 4.5, end: 4.7, text: "卡侬\n…那是我本职工作的一部分。".into(), confidence: 0.9 },
+    ];
+    let out = merge_similar_adjacent(segs, 0.3, 2.0);
+    assert_eq!(out.len(), 1);
 }
 
 #[test]
@@ -1777,7 +1800,7 @@ fn test_merge_similar_adjacent_keeps_distinct() {
         OcrSegment { start: 1.0, end: 3.0, text: "卡侬".into(), confidence: 0.9 },
         OcrSegment { start: 3.0, end: 5.0, text: "获得".into(), confidence: 0.9 },
     ];
-    let out = merge_similar_adjacent(segs, 0.3);
+    let out = merge_similar_adjacent(segs, 0.3, 0.5);
     assert_eq!(out.len(), 2);
 }
 
