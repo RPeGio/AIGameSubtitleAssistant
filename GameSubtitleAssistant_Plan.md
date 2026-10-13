@@ -400,10 +400,13 @@ GameSubtitleAssistant
   `bootstrap_embed.ps1` 补 worker 部署与 `embed_worker` 配置键。验收：selfcheck 两项等价通过、
   `fuse_align_srt` 12 产物与 R0 基线逐字节相同、对拍 8/8 零差异、`cargo test` 287/0。
   遗留见 [FUSE_PIPELINE_DEFECTS.md](benchmark/FUSE_PIPELINE_DEFECTS.md) F14。
-- ⚠ **F14（本轮登记）**：走向量路线后**去掉 ASR 段首行 speaker 注入**（它只服务 LLM prompt，
-  编码剥表头也会把它剥掉），⇒ 「**同台词、跨说话人**」的站桩剧情无法凭正文分到正确语料行——
-  真实案例存在、当前 4 个基准素材未覆盖，须在 R2 之后单独适配（结构化说话人输入或按说话人分块）。
-  适配落地前，这类场景靠**审计表人工裁决**兜底。
+- ✅ **F14 已实证收口（2026-10-15）**：「同台词、跨说话人」的站桩剧情——拟定的算法修复
+  （R4 按说话人分块对齐）经实验**否决**：真 4 案例回归 pierro 119→59（总 149/236），
+  且 flat 在「异台词 + 语料分组 + 说话交错」合成场景本就全对；flat 唯一失败模式
+  （语料精确去重后同台词重复行）错绑行文本逐字相同 ⇒ **字幕内容不受影响**，
+  残留面仅为审计表的说话人归属展示（重复行本就命中 reused/低分结构信号，人工裁决）。
+  实验依据：`scripts/fuse_speaker_exp.py`（本机 log：`temp/f14_exp3.log`；temp 不入库，按脚本头注释复跑即得），
+  详见 [FUSE_PIPELINE_DEFECTS.md](benchmark/FUSE_PIPELINE_DEFECTS.md) F14 实验收口。
 - ✅ **R2 已落地（Rust 侧接线）**：`RuntimeConfig` 补 4 个 `embed_*` 字段（整组必配或整组为空、防穿越校验）、
   `ai_runtime/embed.rs` 一次性子进程客户端 + `EmbedManager` + `check_embed_runtime` 命令、
   `fuse/mod.rs` 重写为向量路径（越界 `ocr_index` 报错不静默降级）+ 契约扩三处
