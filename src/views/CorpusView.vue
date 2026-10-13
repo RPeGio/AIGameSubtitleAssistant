@@ -261,6 +261,20 @@ function discardDiff(d: Diff) {
                 </NText>
               </div>
               <div class="cfg-field">
+                <NText depth="2">单段最少实质字符数（0 关闭过滤）</NText>
+                <NInputNumber
+                  v-model:value="ocrParams.min_text_length"
+                  :min="0"
+                  :max="10"
+                  :step="1"
+                  style="width: 100%"
+                />
+                <NText depth="3" style="font-size: 12px">
+                  低于此值的产出段直接丢弃（纯符号/单字符垃圾，如画面元素被读成 `6`/`O`/`口`）。
+                  实质字符 = 字母/数字/汉字（标点空白不计）。默认 1 只丢纯符号段；粗略选区常需 2
+                </NText>
+              </div>
+              <div class="cfg-field">
                 <div style="display: flex; align-items: center; justify-content: space-between">
                   <NText depth="2">术语表（可选，用于纠正形近字误读）</NText>
                   <NButton size="tiny" quaternary @click="addGlossaryTerm">+ 添加</NButton>

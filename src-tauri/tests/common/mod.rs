@@ -96,6 +96,12 @@ pub struct CaseCfg {
     /// 与 `excluded_refs` 一样按**下标**索引 ⇒ **参考文本一旦重打轴/改块序必须同步更新**。
     pub corpus_excluded_refs: &'static [(usize, &'static str)],
     pub hardsub_min_subtitle_sec: f64,
+    /// **嵌字基准专用** `min_text_length`（单段最少实质字符数，O1/O5 的文本长度门）：
+    /// 四案例统一 2——嵌字轴实测靶子（vesna 17 条 + glupov 1 条，`6`/`O`/`口`/`A` 等）
+    /// 全部 ≤1 实质字符，而四个真值文件均无 ≤1 实质字符条目（`---` 是分隔符）⇒ 2 零误杀。
+    /// 产品默认 1（只丢纯符号段），语料基准仍用产品默认（与 `hardsub_min_subtitle_sec`
+    /// 同款分离策略，见 `drop_below_min_text_length`）。
+    pub hardsub_min_text_length: usize,
 }
 
 /// pierro 两处人工 transition 涉及的参考条目（用户 2026-09-18 确认有且仅此两处）：
@@ -121,6 +127,8 @@ pub const MOON_SISTERS: CaseCfg = CaseCfg {
     corpus_excluded_refs: &[],
     // 实测最短 3.62s（p5 3.75s）
     hardsub_min_subtitle_sec: 3.6,
+    // O1/O5 文本长度门：该素材嵌字产物无 ≤1 实质字符垃圾段，2 与其余案例统一
+    hardsub_min_text_length: 2,
 };
 
 pub const GLUPOV: CaseCfg = CaseCfg {
@@ -135,6 +143,8 @@ pub const GLUPOV: CaseCfg = CaseCfg {
     // 实测最短 3.52s（第 17 条姓名框态，p5 4.48s）——**必须低于 3.52**，
     // 否则 D12 保护的姓名框档案会被本 pass 吞并（glupov 会回归）
     hardsub_min_subtitle_sec: 3.4,
+    // O1 垃圾段 1 条（#24 "A" 09:44.243→09:44.627）
+    hardsub_min_text_length: 2,
 };
 
 pub const PIERRO_QUESTIONS: CaseCfg = CaseCfg {
@@ -152,6 +162,8 @@ pub const PIERRO_QUESTIONS: CaseCfg = CaseCfg {
     // 是否误吞合法的 2.25~2.83s 短条（如「丑角」/可以。）取决于"弱关联"判据，
     // 由基准实测检验（缺失/被吞并不得增加）。
     hardsub_min_subtitle_sec: 3.5,
+    // 该素材嵌字产物无 ≤1 实质字符垃圾段
+    hardsub_min_text_length: 2,
 };
 
 /// vesna 参考文本里"**只存在于英文嵌字轨、中文 PV 没有**"的语气/感叹词块（1-based 下标）。
@@ -197,6 +209,9 @@ pub const VESNA: CaseCfg = CaseCfg {
     // **该素材字幕寿命远短于其他案例**（3.4~3.6s）：PV 对白字幕一句话一闪而过，
     // 若沿用产品默认 1.5s，合法短条会被 D14 pass 吞并（中位才 1.10s）→ 取 p5 = 0.43s。
     hardsub_min_subtitle_sec: 0.43,
+    // O1 垃圾段 17 条（`6`/`V`/`7`/`X`/`+`/`口`/`个`/`入`/`O`/`1`/`C`/`2`/`*`，
+    // 含一条 11.25s 的 `O`）；真值短条（`*hum*` 等）实质字符 ≥3 不受影响
+    hardsub_min_text_length: 2,
 };
 
 /// 按**下标表**剔除参考条目（1-based 下标 + 原因），返回剔除明细。
@@ -582,16 +597,23 @@ pub fn default_ocr_params() -> OcrRunParams {
     ocr_params_with_min(ai_game_subtitle_assistant_lib::ocr::DEFAULT_MIN_SUBTITLE_SEC)
 }
 
-/// **嵌字基准专用**参数：其余同产品默认，仅把 `min_subtitle_sec` 换成该素材实测值
-/// （`CaseCfg::hardsub_min_subtitle_sec`）。语料基准不走这里，继续用产品默认 1.5s。
+/// **嵌字基准专用**参数：其余同产品默认，把 `min_subtitle_sec`/`min_text_length`
+/// 换成该素材实测值（`CaseCfg::hardsub_min_subtitle_sec` /
+/// `hardsub_min_text_length`）。语料基准不走这里，继续用产品默认（1.5s / 1）。
 ///
-/// env `GSA_BENCH_HARDSUB_MIN_SUBTITLE_SEC` 可覆盖，用于参数标定扫描（不必改代码）。
+/// env `GSA_BENCH_HARDSUB_MIN_SUBTITLE_SEC` / `GSA_BENCH_HARDSUB_MIN_TEXT_LENGTH`
+/// 可覆盖，用于参数标定扫描（不必改代码）。
 pub fn hardsub_ocr_params(cfg: &CaseCfg) -> OcrRunParams {
     let v = std::env::var("GSA_BENCH_HARDSUB_MIN_SUBTITLE_SEC")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(cfg.hardsub_min_subtitle_sec);
-    ocr_params_with_min(v)
+    let mut params = ocr_params_with_min(v);
+    params.min_text_length = std::env::var("GSA_BENCH_HARDSUB_MIN_TEXT_LENGTH")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(cfg.hardsub_min_text_length);
+    params
 }
 
 fn ocr_params_with_min(min_subtitle_sec: f64) -> OcrRunParams {
@@ -623,6 +645,8 @@ fn ocr_params_with_min(min_subtitle_sec: f64) -> OcrRunParams {
             .unwrap_or_default(),
         // 一致性纠错（S3）：基准默认关闭（只产出建议，需 env 显式开启验证）
         consistency_hints: std::env::var("GSA_BENCH_CONSISTENCY").is_ok(),
+        // 文本长度门（O1/O5）：`hardsub_ocr_params` 会按素材覆盖；此处取产品默认 1
+        min_text_length: ai_game_subtitle_assistant_lib::ocr::DEFAULT_MIN_TEXT_LENGTH,
     }
 }
 

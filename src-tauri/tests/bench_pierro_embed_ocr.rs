@@ -50,6 +50,7 @@ fn default_params() -> OcrRunParams {
         punctuation: PunctuationNorm::default(),
         glossary: Vec::new(),
         consistency_hints: false,
+        min_text_length: 1,
     }
 }
 

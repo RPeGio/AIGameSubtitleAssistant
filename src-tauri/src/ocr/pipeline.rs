@@ -6,8 +6,8 @@ use crate::ai_runtime::{OcrError, OcrManager, OcrResult};
 use super::params::FrameText;
 use super::correct::{collect_glossary_hits, consistency_diffs, merge_diff, normalize_punctuation, Diff};
 use super::merge::{
-    merge_contained_adjacent, merge_frames, merge_short_fragments_into_next,
-    merge_similar_adjacent,
+    drop_below_min_text_length, merge_contained_adjacent, merge_frames,
+    merge_short_fragments_into_next, merge_similar_adjacent,
 };
 use super::params::{OcrRegionInput, OcrRunParams, OcrSegment};
 use super::refine::{clamp_segment_times, refine_segment_ends, refine_window_changes};
@@ -248,6 +248,8 @@ where
     let merge_similarity = params.merge_similarity;
     // 字幕预估最短长度：≤0 视为关闭短碎片激进合并
     let min_subtitle_sec = params.min_subtitle_sec;
+    // 文本长度门（O1/O5）：0/1 = 只丢纯符号段/关闭，见 `drop_below_min_text_length`
+    let min_text_length = params.min_text_length;
     // 标点归一化配置（精度策略的前置层，用户可个性目标字符）
     let punctuation = params.punctuation.clone();
     // 术语表（S2，可选）：在标点归一化之后应用（词条与产出须同形才能匹配）
@@ -554,6 +556,8 @@ where
         // 合并后再 `clamp` 本会产生重叠，故必须放在 clamp 之后（合并结果沿用后条已 clamp 的终点，
         // 而碎片的起点 ≤ 前段终点，故不引入重叠）。
         let mut segments = merge_short_fragments_into_next(segments, min_subtitle_sec);
+        // 第七遍（输出层，O1/O5）：实质字符数低于阈值的垃圾段（纯符号/单字符）直接丢弃
+        let mut segments = drop_below_min_text_length(segments, min_text_length);
         // 末步（输出层）：标点/省略号归一化（**静默执行**，用户 2026-09-24 决策）+
         // 术语表**标记**（只收集 Diff，不改文本——纠正由前端审批后执行）。
         // 顺序关键：归一化必须先做（词条与产出须同形才能匹配）

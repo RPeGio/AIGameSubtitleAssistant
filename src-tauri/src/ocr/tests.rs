@@ -1804,6 +1804,42 @@ fn test_merge_similar_adjacent_keeps_distinct() {
     assert_eq!(out.len(), 2);
 }
 
+// ── 输出层文本长度门（O1/O5）──
+
+#[test]
+fn test_drop_below_min_text_length_drops_junk() {
+    // O1/O5 实测靶子：实质字符 = Unicode 字母数字含 CJK；`口`/`入` 计 1、`+`/`*` 计 0
+    let segs = vec![
+        OcrSegment { start: 1.0, end: 2.0, text: "6".into(), confidence: 0.9 },
+        OcrSegment { start: 2.0, end: 3.0, text: "+".into(), confidence: 0.9 },
+        OcrSegment { start: 3.0, end: 4.0, text: "口".into(), confidence: 0.9 },
+        OcrSegment { start: 4.0, end: 6.0, text: "上吧".into(), confidence: 0.9 },
+    ];
+    // 阈值 2：单字符垃圾全滤，保留真句（嵌字基准标定值）
+    let out = drop_below_min_text_length(segs.clone(), 2);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].text, "上吧");
+    // 产品默认 1：只丢纯符号段
+    let out = drop_below_min_text_length(segs.clone(), 1);
+    assert_eq!(out.len(), 3);
+    // 0 = 关闭本 pass
+    let out = drop_below_min_text_length(segs, 0);
+    assert_eq!(out.len(), 4);
+}
+
+#[test]
+fn test_drop_below_min_text_length_counts_cjk_multi_line() {
+    // 多行段按整段计数：两行各 1 个实质字符 ⇒ 合计 2，不被阈值 2 误删
+    let segs = vec![OcrSegment {
+        start: 1.0,
+        end: 2.0,
+        text: "6\n7".into(),
+        confidence: 0.9,
+    }];
+    let out = drop_below_min_text_length(segs, 2);
+    assert_eq!(out.len(), 1);
+}
+
 // ── lines_from_results ──
 
 #[test]

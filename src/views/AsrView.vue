@@ -361,6 +361,20 @@ async function startEmbedOcr() {
                   能收掉长打字机/遮挡造成的碎片，但会提高"误吞真实短句"的概率（0 关闭）
                 </NText>
               </div>
+              <div class="cfg-field">
+                <NText depth="2">单段最少实质字符数（0 关闭过滤）</NText>
+                <NInputNumber
+                  v-model:value="ocrParams.min_text_length"
+                  :min="0"
+                  :max="10"
+                  :step="1"
+                  style="width: 100%"
+                />
+                <NText depth="3" style="font-size: 12px">
+                  低于此值的产出段直接丢弃（纯符号/单字符垃圾，如画面元素被读成 `6`/`O`/`口`）。
+                  实质字符 = 字母/数字/汉字（标点空白不计）。默认 1 只丢纯符号段；粗略选区常需 2
+                </NText>
+              </div>
             </div>
 
             <!-- 仅"开始识别"按钮 -->

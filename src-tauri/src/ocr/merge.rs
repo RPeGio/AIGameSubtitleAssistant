@@ -895,3 +895,25 @@ pub(crate) fn merge_similar_adjacent(
     out
 }
 
+/// 输出层文本长度门（O1/O5，2026-10-12）：实质字符数低于 `min_text_length` 的产出段
+/// 直接丢弃——粗略选区把画面元素读成的单字符/纯符号垃圾段（`6`/`O`/`口`/`+`/`*` 等）
+/// 从输出里清除。0 = 关闭本 pass（保持全部产出）；产品默认 1 = 丢弃纯符号段（0 实质字符）。
+///
+/// - "实质字符"复用 `norm_chars`（Unicode 字母数字含 CJK，剔空白与标点）的口径：
+///   `口`/`入`/`个` 计 1，`+`/`*` 计 0；
+/// - 必须放在**全部合并 pass 之后**（碎片并入邻段后才判定终局文本，避免误删
+///   尚待合并的超短真句）；放在标点归一化之前（归一化只改标点，不影响实质计数）；
+/// - 阈值是**素材相关**参数（`params::DEFAULT_MIN_TEXT_LENGTH` 注释里有标定依据）。
+pub(crate) fn drop_below_min_text_length(
+    segments: Vec<OcrSegment>,
+    min_text_length: usize,
+) -> Vec<OcrSegment> {
+    if min_text_length == 0 {
+        return segments;
+    }
+    segments
+        .into_iter()
+        .filter(|seg| norm_chars(&seg.text).len() >= min_text_length)
+        .collect()
+}
+

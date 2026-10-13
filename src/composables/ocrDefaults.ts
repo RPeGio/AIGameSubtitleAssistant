@@ -11,7 +11,8 @@ export function defaultPunctuation(): PunctuationNorm {
   };
 }
 
-/// 产品默认 `min_subtitle_sec` 与后端 `DEFAULT_MIN_SUBTITLE_SEC` 同源（1.5s）
+/// 产品默认 `min_subtitle_sec` 与后端 `DEFAULT_MIN_SUBTITLE_SEC` 同源（1.5s）；
+/// `min_text_length` 与后端 `DEFAULT_MIN_TEXT_LENGTH` 同源（1，只丢纯符号段）
 export function createDefaultOcrParams(): OcrRunParams {
   return {
     frame_interval: 0.5,
@@ -19,6 +20,7 @@ export function createDefaultOcrParams(): OcrRunParams {
     batch_size: 16,
     merge_similarity: 0.3,
     min_subtitle_sec: 1.5,
+    min_text_length: 1,
     punctuation: defaultPunctuation(),
     glossary: [],
   };
