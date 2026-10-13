@@ -180,16 +180,20 @@ def make_ocr():
     )
 
 
-def _extract_lines(res):
-    """从 OCR 结果里逐行产出 (text, confidence)。
+def _extract_items(res):
+    """逐框产出 (text, confidence, box)——box 为该框的 xyxy（无几何字段时为 None）。
 
-    paddleocr 3.x 的 `res` 可能是：
-      - dict: {"rec_texts": [...], "rec_scores": [...], ...}
-      - list: [{"text": ..., "confidence": ...}, ...] 或 [str, ...]
+    dict 路径按 rec_texts/rec_scores/rec_boxes 下标对齐；list 兼容路径无 box。
     """
     if isinstance(res, dict):
-        for t, c in zip(res.get("rec_texts", []), res.get("rec_scores", [])):
-            yield t or "", float(c or 0.0)
+        boxes = res.get("rec_boxes")
+        n = len(res.get("rec_texts", []))
+        aligned = boxes is not None and len(boxes) == n
+        for i, (t, c) in enumerate(
+            zip(res.get("rec_texts", []), res.get("rec_scores", []))
+        ):
+            box = boxes[i] if aligned else None
+            yield t or "", float(c or 0.0), (box if aligned else None)
     elif isinstance(res, list):
         for it in res:
             if isinstance(it, dict):
@@ -198,14 +202,101 @@ def _extract_lines(res):
             else:
                 text = str(it)
                 conf = 0.0
-            yield text, conf
+            yield text, conf, None
+
+
+def _is_latin_alnum(ch):
+    return ch.isascii() and ch.isalnum()
+
+
+def _join_row(items):
+    """同一物理行内按 x 升序拼接。
+
+    两侧都是 ASCII 字母/数字才补空格（`I`+`have`→`I have`，修复 det 行内
+    碎片拼接丢空格——moon 实测 `no objections, Ihave nothing...`）；
+    中文/标点直接相连（`上`+`吧`→`上吧`，中文无空格）。
+    """
+    acc = ""
+    for _, t in sorted(items, key=lambda it: it[0]):
+        t = t.strip()
+        if not t:
+            continue
+        if acc:
+            sep = " " if _is_latin_alnum(acc[-1]) and _is_latin_alnum(t[0]) else ""
+            acc += sep + t
+        else:
+            acc = t
+    return acc
+
+
+def _lines_geometric(items):
+    """几何行重排（O2 修复，2026-10-13）。
+
+    根因：det 返回框序**不保证**"行内左→右 / 行间自上而下"——vesna 实测同一
+    物理行的两框在 rec_texts 里被另一行的空框隔开（clip_0 frame_00039：
+    rec=VC/空框/a，几何上 VC 与 a 同行）、单行显示被 det 拆成 2~7 个碎片框
+    （台账例 `So, I hope\\nhad\\nnight……` 语序错乱）。先前 `_extract_result`
+    直接按 rec 顺序 `\\n` 连接 ⇒ 嵌字侧 29/74 段含换行且部分语序错乱。
+
+    修复：对已通过置信度过滤的 (text, conf, box) 三元组按几何重排——
+    **物理行分组**：相邻框（按 y 中心排序）的**竖向重叠** > 0.4×较矮框高
+    才算同一物理行，否则断行。行内按 x 中心升序拼接（`_join_row`）。
+    **行间仍以 \\n 分隔**——D9/D11/D12 合并层依赖"姓名框+对话行"的多行结构，
+    禁止拍平（merge.rs 的 is_line_prefix/is_stable_line_boundary_cut/comparable_line）。
+
+    判据标定（2026-10-13 四帧实测，帧存 temp/t3_dump3_out.txt）：
+    - 真同行碎片：y 重叠 68~75px（≈整行高，如 ".Fabricating"/"import log…"、
+      "And using…" 与 "gemstones?"——后者把台账 O2 例句的伪 2 行还原为 1 行）；
+    - 物理相邻行（姓名框 58→66、对话两行 99→101）：重叠 0~5px（<0.15×行高）。
+    - **教训**：首版判据"竖向空隙 > 0.5×较矮框高即断行"方向反了——行距 2~9px
+      的相邻行被判同行，整帧 3 行连成一句，嵌字四卡崩盘（moon 71.4→-5.1、
+      pierro 71.7→-13.1、glupov 71.5→47.2，temp/bench_output/t3_hardsub.log）。
+    - 次版教训：先按 conf 过滤再对齐 `rec_boxes` 会**下标错位**（rec_boxes 覆盖
+      全部 det 框，被滤框会让 len 对不上、整帧回落旧序——frame_00217 因此
+      仍出 2 行）。**必须带着框索引过滤**：本函数收到的是已对齐的三元组。
+
+    任一框缺失几何（兼容路径/形状异常）→ 返回 None，回落 rec 顺序。
+    """
+    if not items or any(it[2] is None for it in items):
+        return None
+    try:
+        import numpy as _np
+
+        b = _np.asarray([it[2] for it in items], dtype=float)
+    except Exception:
+        return None
+    if b.ndim != 2 or b.shape[1] != 4:
+        return None
+    yc = (b[:, 1] + b[:, 3]) / 2.0
+    order = sorted(range(len(items)), key=lambda i: yc[i])
+    rows = []
+    cur = [order[0]]
+    for i in order[1:]:
+        p = cur[-1]
+        overlap = min(b[i][3], b[p][3]) - max(b[i][1], b[p][1])
+        min_h = min(b[i][3] - b[i][1], b[p][3] - b[p][1])
+        if overlap > 0.4 * min_h:
+            cur.append(i)
+        else:
+            rows.append(cur)
+            cur = [i]
+    rows.append(cur)
+    out = []
+    for row in rows:
+        rowitems = [((b[i][0] + b[i][2]) / 2.0, items[i][0]) for i in row]
+        out.append(_join_row(rowitems))
+    out = [t for t in out if t]
+    if not out:
+        return None
+    return "\n".join(out)
 
 
 def _extract_result(result):
     """从单条 predict 结果提取 (text, confidence)。
 
-    后处理链：低置信度行过滤（conf < CONF_THRESHOLD 丢弃）→
-    白名单/行级清理（_clean_text）。整体置信度取剩余行最低值。
+    后处理链：低置信度框过滤（conf < CONF_THRESHOLD 丢弃，**带框索引**）→
+    几何行重排（`_lines_geometric`，有 rec_boxes 时；否则沿用 rec 顺序）→
+    白名单/行级清理（_clean_text）。整体置信度取剩余框最低值。
     """
     if result is None:
         return "", 0.0
@@ -222,17 +313,18 @@ def _extract_result(result):
     if res is None:
         return "", 0.0
 
-    texts = []
-    confs = []
-    for text, conf in _extract_lines(res):
+    items = []  # (text, confidence, box) 过滤后保留
+    for text, conf, box in _extract_items(res):
         text = (text or "").strip()
         if text and conf >= CONF_THRESHOLD:
-            texts.append(text)
-            confs.append(conf)
-    if not texts:
+            items.append((text, conf, box))
+    if not items:
         return "", 0.0
-    cleaned = _clean_text("\n".join(texts))
-    return cleaned, min(confs) if cleaned else 0.0
+    joined = _lines_geometric(items)
+    if joined is None:
+        joined = "\n".join(t for t, _, _ in items)
+    cleaned = _clean_text(joined)
+    return cleaned, min(c for _, c, _ in items) if cleaned else 0.0
 
 
 def respond(stdout, rid, **payload):

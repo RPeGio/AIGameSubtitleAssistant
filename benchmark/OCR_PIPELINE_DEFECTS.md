@@ -843,6 +843,36 @@
 - **例**：`And\nusing\nforbidden\nalchemy to\nforge\ngemstones?`（一行显示被拆成 6 行）、
   `So, I hope\nhad\nnight…\nyou\na\ngood`（语序错乱）。
 - **判读**：宽扁选区 + det 切行所致，**嵌字侧特有**，不是通用 OCR 问题。
+- **✅ 已修复（2026-10-13，依据提交 `0aa001c`，根因在 worker 的行拼接序——非"宽扁选区"）**：
+  `scripts/ocr_worker.py`（真源，经 `bootstrap_ocr.ps1` 复制进 `runtime/worker/`）
+  的 `_extract_result` 此前用 det 返回序直接 `\n` 拼接，而 `rec_texts` 顺序**不保证**
+  "行内左→右 / 物理行不被拆散"。修复 = **几何行重排**三个函数：
+  `_extract_items`（逐框 (text, conf, box)，`rec_boxes`(xyxy) 与 rec_texts/rec_scores
+  按下标对齐）、`_lines_geometric`（物理行分组：按 y 中心排序后，相邻框**竖向重叠
+  > 0.4×较矮框高**判为同一行，否则断行）、`_join_row`（行内 x 升序；两侧均为
+  ASCII 字母数字才插空格——`I`+`have`→`I have`）。**行间保留 `\n`**：D9/D11/D12
+  合并层（`is_line_prefix`/`is_stable_line_boundary_cut`/`comparable_line`）依赖
+  "姓名框 + 对话行"多行结构，**禁止拍平**。
+  标定证据（`temp/t3_dump3_out.txt` 四帧实测）：真同行碎片 y 重叠 ≈ 行高（68~75px），
+  物理相邻行重叠 0~5px（<0.15×行高）。**两次判据教训**：
+  ① 首版"空隙 > 0.5×较矮框高即断行"把行距 2~9px 的相邻行并进一行 → 整帧 3 行
+  连成一句，嵌字四卡崩盘（moon 71.4→**-5.1**、pierro 71.7→-13.1、glupov 71.5→47.2，
+  `temp/bench_output/t3_hardsub.log`）——方向反了，已否决；
+  ② 先按 conf 过滤再对齐 `rec_boxes` 会下标错位（rec_boxes 覆盖全部 det 框，
+  被滤框使 len 不等 ⇒ 整帧回落旧序，frame_00217 因此仍出 2 行）——**必须带框索引过滤**。
+  验证（帧级，`temp/t3_verify4_out.txt`）：台账例句 `And\nusing\n…\ngemstones?`
+  还原为单行完整句（det 把行1 拆成 2 框、行2 是同带右半，非两行）；
+  `..Fabricating / import / logs / is a crime` 四框同带还原单行；
+  `Mitya` 姓名框 + 两行对话保持 3 行多行结构。
+  四卡：嵌字轴 **pierro 71.7→72.1（+0.4）**，glupov 71.5 / moon 71.4 / vesna 58.9 与硬门持平；
+  语料轴 100.0 / 97.1 / 99.6 / 99.5 零回归（pierro CER p95 0.026→0.024）。
+  产物级：vesna 嵌字轴多行段 **8→0**（79 块全部单行或"姓名框+对话"合法结构），
+  三处 `gemstones?` 全部还原完整句（`#39` 残一个打字机过渡 `u`——识别过渡帧内容，
+  非行序问题）。
+  **登记残留（非行序缺陷）**：`moon_sisters_hardsub.srt` #14 `no objections,
+  Ihave nothing more to say` 中的 `Ihave`——`I` 与 `have` 在**同一个 rec 框内部**，
+  空格是识别器 token 输出层丢失（D4 家族），行内拼接只能修"框边界"处的间距，
+  框内无法修； moon `nas` 同框残留残留同理。不可在行序层修。
 
 ### O3 跨空白合并段（把不相邻的显示并成一条）
 - `07:58.262 → 08:19.300`（**21.02s**）`Natlanese gems…`：把紧随其后的「舞会」「还有帮派」一并吞掉。
