@@ -42,9 +42,11 @@ pub struct FuseCandidate {
 }
 
 /// 前端逐段审计用的融合元数据。
-/// 所有字段都由 embed worker 产出（R2 只做透传），`score` **不是**正确性信号
+/// 由 embed worker 产出（R2 透传、R3 补审计字段），`score` **不是**正确性信号
 /// （任何阈值下精确率 ≈ 错误基准率 4.2%，见 FUSE_THRESHOLD_CALIBRATION.md §7.9），
-/// 审计表必须依赖 transition / reused / masked / matched 这些结构化信号。
+/// 审计表必须依赖 transition / reused / masked 这些结构化信号。
+/// `source_text`/`reviewed` 带 `#[serde(default)]`：兼容 R2 时代的 `.gsa`
+/// （有 fuse_meta 但无这两个字段）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FuseMeta {
     /// 命中的语料下标（1-based）；0 = 不配
@@ -59,6 +61,12 @@ pub struct FuseMeta {
     pub transition: String,
     /// 该段命中的语料行被 >=2 段命中
     pub reused: bool,
+    /// 融合时刻的转写侧原文（「不配该条」回退真值；R2 时代数据为空串）
+    #[serde(default)]
+    pub source_text: String,
+    /// 人工已复核标记（审计表四动作都置 true；重跑融合时随元数据整体重写）
+    #[serde(default)]
+    pub reviewed: bool,
 }
 
 /// 融合结果段（时间轴沿用转写侧段；纯文本，无说话人字段）
@@ -141,6 +149,8 @@ fn map_worker_meta(out: &EmbedSegmentOut) -> FuseMeta {
         masked: out.masked,
         transition: out.transition.clone(),
         reused: out.reused,
+        source_text: out.source_text.clone(),
+        reviewed: false,
     }
 }
 

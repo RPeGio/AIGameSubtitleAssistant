@@ -403,9 +403,19 @@ GameSubtitleAssistant
 - ⚠ **F14（本轮登记）**：走向量路线后**去掉 ASR 段首行 speaker 注入**（它只服务 LLM prompt，
   编码剥表头也会把它剥掉），⇒ 「**同台词、跨说话人**」的站桩剧情无法凭正文分到正确语料行——
   真实案例存在、当前 4 个基准素材未覆盖，须在 R2 之后单独适配（结构化说话人输入或按说话人分块）。
-- ⬜ R2（待开工）：Rust 侧接线——`RuntimeConfig` 补 `embed_*` 字段、`ai_runtime/embed.rs` 一次性子进程客户端、
-  `fuse/mod.rs::run_fuse` 改走向量路径 + 契约扩三处（Rust `FusedSegment`/`FusedEvent`+`#[serde(default)]`/TS）、删除 LLM 融合路径。
-- ⬜ R3：前端「融合后置信度审计表」UI + 四动作（保留/候选/全语料/不配）+ 持久化往返。
+  适配落地前，这类场景靠**审计表人工裁决**兜底。
+- ✅ **R2 已落地（Rust 侧接线）**：`RuntimeConfig` 补 4 个 `embed_*` 字段（整组必配或整组为空、防穿越校验）、
+  `ai_runtime/embed.rs` 一次性子进程客户端 + `EmbedManager` + `check_embed_runtime` 命令、
+  `fuse/mod.rs` 重写为向量路径（越界 `ocr_index` 报错不静默降级）+ 契约扩三处
+  （Rust `FuseCandidate`/`FuseMeta`/`FuseStats`、`FusedEvent.fuse_meta`（`#[serde(default)]` 兼容旧工程）、TS 同步）、
+  删除 LLM 融合路径（`bench_fusion.rs` 退役、F13 复现改 Python 判别器）。验收：`cargo test` 250+15+15 全绿、
+  对拍 8/8 零差异、`fuse_e2e`（moon 15/15）通过、`pnpm build` 通过。
+- ✅ **R3 已落地（前端「融合后置信度审计表」）**：FuseView 页内审计栏——风险分层
+  （**A 重点** = 掩码 / 回退 / 复用转移 / 未命中，默认展开；**B 低分** = `score<0.82` 折叠单行标记，
+  仅展示辅助**不是告警**，依据 §7.9⑥；已复核清零为 normal）、四动作（保留 / 候选替换（继承候选实测分）/
+  全语料惰性弹窗选择 / 不配回退融合时转写原文）、`reviewed` 与改判结果随 `fuse_meta` 落 `.gsa`；
+  纯逻辑 `src/stores/fuseAudit.ts` + 自检 `scripts/check_fuse_audit.mjs`（分层/排序/计数/四动作/可逆性全断言通过）。
+  设计记录见 [FUSE_THRESHOLD_CALIBRATION.md](benchmark/FUSE_THRESHOLD_CALIBRATION.md) §八。
 
 ## Phase 7：高级功能（未来）
 - TTS、声音克隆、自动翻译、游戏角色声音库

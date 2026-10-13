@@ -20,8 +20,10 @@ import type {
   FuseAsrInput,
   FuseResult,
   FusedSegment,
+  FusedEvent,
 } from "../types";
 import { OCR_PROGRESS_EVENT, ASR_PROGRESS_EVENT, LLM_PROGRESS_EVENT } from "../types";
+import { buildAuditRows, applyFusedDecision, type FuseAuditDecision } from "./fuseAudit";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
@@ -1058,6 +1060,41 @@ export const useProjectStore = defineStore("project", () => {
       .sort((a, b) => a.start - b.start);
   }
 
+  // ── 融合审计表（R3）────────────────────────────────
+  /// 审计行 = fused 轨事件 × fuse_meta（数据源已随工程落盘）；
+  /// 跟随 fused 轨与语料自动重算，无融合结果时为空表。
+  const fusedAuditRows = computed(() => {
+    const project = currentProject.value;
+    if (!project) return [];
+    const track = project.tracks.find((t) => t.type === "fused");
+    if (!track) return [];
+    // fused 轨只装 FusedEvent（fuse_meta 随事件持久化），此处类型收窄成立
+    return buildAuditRows(track.events as FusedEvent[], project.corpus.map((c) => c.text));
+  });
+
+  /// 审计四动作入口（保留/替换/不配）。先在克隆上应用，成功才入撤销快照并
+  /// 写回（失败零副作用）；写回后自动保存把 reviewed/改判落盘到 .gsa。
+  function applyFusedAuditDecision(
+    eventId: string,
+    decision: FuseAuditDecision
+  ): string | null {
+    const project = currentProject.value;
+    if (!project) return "当前无项目";
+    const track = project.tracks.find((t) => t.type === "fused");
+    if (!track) return "当前无融合结果";
+    const cloned = JSON.parse(JSON.stringify(track.events)) as FusedEvent[];
+    const err = applyFusedDecision(
+      cloned,
+      eventId,
+      project.corpus.map((c) => c.text),
+      decision
+    );
+    if (err) return err;
+    recordSnapshot();
+    track.events = cloned;
+    return null;
+  }
+
   /// 把 IPC/后端错误映射为用户可读的信息，未识别时才回退原文
   function normalizeFuseError(e: unknown): string {
     const msg = String(e);
@@ -1383,6 +1420,8 @@ export const useProjectStore = defineStore("project", () => {
     checkLlmRuntime,
     fuseRunning,
     runFuse,
+    fusedAuditRows,
+    applyFusedAuditDecision,
     closeProject,
   };
 });

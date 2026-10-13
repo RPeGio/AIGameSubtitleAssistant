@@ -260,6 +260,10 @@ export interface FuseMeta {
   transition: "forward" | "repeat" | "reset" | "unmatched";
   /// 该段命中的语料行被 >=2 段命中
   reused: boolean;
+  /// 融合时刻的转写原文（「不配/替换」回退真值；R2 时代数据无此字段）
+  source_text?: string;
+  /// 人工已复核标记（审计表四动作都置 true；重跑融合时重置）
+  reviewed?: boolean;
 }
 
 /// 融合产物段（纯文本契约：无说话人字段，文本逐字搬运）

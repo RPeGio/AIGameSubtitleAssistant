@@ -819,6 +819,62 @@ mod tests {
     }
 
     #[test]
+    fn test_fused_event_fuse_meta_roundtrip() {
+        // fuse_meta（R3 审计元数据）随事件往返，逐字段保留
+        let ev = TimelineEvent::Fused(FusedEvent {
+            id: "f3".into(),
+            start: 2.0,
+            end: 3.0,
+            text: "卡侬\n台词".into(),
+            character: None,
+            fuse_meta: Some(crate::fuse::FuseMeta {
+                ocr_index: 3,
+                score: 0.8342,
+                candidates: vec![
+                    crate::fuse::FuseCandidate { ocr_index: 3, score: 0.8342 },
+                    crate::fuse::FuseCandidate { ocr_index: 2, score: 0.8011 },
+                ],
+                masked: false,
+                transition: "forward".into(),
+                reused: false,
+                source_text: "You've been ditching".into(),
+                reviewed: true,
+            }),
+        });
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: TimelineEvent = serde_json::from_str(&json).unwrap();
+        match back {
+            TimelineEvent::Fused(f) => {
+                let m = f.fuse_meta.expect("fuse_meta 应保留");
+                assert_eq!(m.ocr_index, 3);
+                assert_eq!(m.candidates.len(), 2);
+                assert_eq!(m.transition, "forward");
+                assert_eq!(m.source_text, "You've been ditching");
+                assert!(m.reviewed);
+            }
+            _ => panic!("类型标签分发错误"),
+        }
+    }
+
+    #[test]
+    fn test_fused_event_fuse_meta_legacy_fields_default() {
+        // R2 时代的 fuse_meta 没有 source_text/reviewed ⇒ 反序列化取默认值（兼容旧工程）
+        let json = r#"{"type":"fused","id":"f4","start":0.0,"end":1.0,"text":"文本",
+            "fuse_meta":{"ocr_index":2,"score":0.85,"candidates":[],"masked":false,
+            "transition":"forward","reused":false}}"#;
+        let back: TimelineEvent = serde_json::from_str(json).unwrap();
+        match back {
+            TimelineEvent::Fused(f) => {
+                let m = f.fuse_meta.expect("fuse_meta 应保留");
+                assert_eq!(m.ocr_index, 2);
+                assert_eq!(m.source_text, "");
+                assert!(!m.reviewed);
+            }
+            _ => panic!("类型标签分发错误"),
+        }
+    }
+
+    #[test]
     fn test_embed_ocr_event_roundtrip() {
         // embed_ocr（切片内嵌字幕 OCR）：tagged union 往返 + 字段完整保留
         let ev = TimelineEvent::EmbedOcr(OcrTextEvent {

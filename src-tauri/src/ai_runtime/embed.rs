@@ -47,6 +47,9 @@ pub struct EmbedSegmentOut {
     pub ocr_index: i64,
     /// 命中行的余弦相似度；不配时为 0.0
     pub score: f64,
+    /// 融合时刻的转写原文（R3 审计表「不配/替换」的回退真值；旧 worker 无此字段时为空）
+    #[serde(default)]
+    pub source_text: String,
     /// 产物文本：命中 = 语料原文逐字；不配 = 转写侧原文
     pub product_text: String,
     /// 候选名单 [[语料下标(1-based), 相似度]]，相似度降序

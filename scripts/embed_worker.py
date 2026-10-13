@@ -33,6 +33,7 @@ GBK 噪音（`funasr.rs` 已踩过这个坑），文件交换没有这个失效�
          "index": 1, "start": 0.0, "end": 1.0,
          "ocr_index": 3,                  # 1-based 语料下标；-1 = 不配
          "score": 0.9071,                 # 命中行的余弦；不配时为 0.0
+         "source_text": "转写原文",         # 融合时刻的转写原文（审计表回退真值）
          "product_text": "语料原文逐字",     # 不配时为输入 text 原文
          "candidates": [[3, 0.9071], ...],# 相似度前 top_k（1-based 语料下标 + 余弦）
          "masked": false,                 # 该段被「该不配」判据整行封死
@@ -135,6 +136,9 @@ def run(inp):
             "end": s.get("end"),
             "ocr_index": (j + 1) if j >= 0 else -1,
             "score": round(score, 6),
+            # 融合时刻的转写原文（R3 审计表「不配/替换」的回退真值：
+            # 产物时间轴在编辑器里可被拖动/分割，不能用 (start,end) 反查）
+            "source_text": seg_text[i],
             "product_text": product_text,
             "candidates": candidates,
             "masked": bool(use_unmatch and not cols),
