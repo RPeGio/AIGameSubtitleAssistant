@@ -11,7 +11,7 @@
 | 桌面壳 | Tauri 2（`protocol-asset`、dialog / opener 插件） |
 | 前端 | Vue 3 + TypeScript + Pinia + Vue Router + Naive UI + Tailwind CSS 4 + Vite 6 |
 | 后端 | Rust 2021（tauri / serde / image / uuid / ffmpeg-sidecar） |
-| AI | PaddleOCR（Python worker）、FunASR / MOSS（ASR）、llama.cpp + Qwen2.5-3B（LLM） |
+| AI | PaddleOCR（Python worker）、FunASR / MOSS（ASR）、multilingual-e5-small + 统一转移 DP（融合）、llama.cpp + Qwen2.5-3B（LLM，测试台） |
 
 约束：**完全离线**。Rust 侧无 HTTP 客户端，应用不做任何网络请求；所有 AI 能力通过本地子进程实现。
 
@@ -36,8 +36,9 @@
 │ runtime/（bootstrap 脚本生成）                                │
 │  python/ + deps/            ← PaddleOCR worker（常驻）       │
 │  deps_funasr/ + models/     ← funasr_worker.py（一次性）     │
+│  deps_embed/ + models/embed/ ← embed_worker.py（一次性，融合）│
 │  bin/moss-transcribe.exe    ← MOSS CLI（一次性）             │
-│  bin/llm/llama-cli.exe      ← llama.cpp（一次性）            │
+│  bin/llm/llama-cli.exe      ← llama.cpp（一次性，测试台）    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -52,11 +53,12 @@
 | `src-tauri/src/ai_runtime/paddle.rs` | PaddleOCR worker provider：常驻子进程，JSON lines over stdio（`{"id":1,"images":[...]}` / `ping` / `shutdown`） |
 | `src-tauri/src/ai_runtime/funasr.rs` | FunASR provider：一次性 `funasr_worker.py <wav>`，stdout 输出 JSON 段数组；启动前清理孤儿 worker 进程 |
 | `src-tauri/src/ai_runtime/moss.rs` | MOSS CLI provider：`moss-transcribe transcribe <model.gguf> <audio.wav> --format json`；转写前清理残留进程 |
-| `src-tauri/src/ai_runtime/llm.rs` | llama.cpp provider：一次性 `llama-cli -m <model> -p <prompt> -st -n <tokens> --no-display-prompt` |
+| `src-tauri/src/ai_runtime/llm.rs` | llama.cpp provider：一次性 `llama-cli -m <model> -p <prompt> -st -n <tokens> --no-display-prompt`（融合能力测试台用，产品融合不再依赖） |
+| `src-tauri/src/ai_runtime/embed.rs` | 向量融合 provider：一次性 `embed_worker.py <in.json> <out.json>`（E5-small 编码 + 统一转移 DP）；出参逐段含 `ocr_index` / `score` / `product_text` / `candidates` / `masked` / `transition` / `reused` / `source_text` 与统计 |
 | `src-tauri/src/ai_runtime/config.rs` | `RuntimeConfig`：runtime 目录与各 provider 路径/参数的解析与校验（见下文） |
 | `src-tauri/src/asr/mod.rs` | `run_asr`：音频提取（RAII 临时目录）→ 按参数选引擎 → `AsrSegment` 列表；重入守卫 + 取消（`asr_cancel`） |
 | `src-tauri/src/llm/mod.rs` | `run_llm`：单次 prompt 推理（前端测试台用）；`llm-progress` 事件 |
-| `src-tauri/src/fuse/mod.rs` | `run_fuse`：LLM 编号对应 + 语料文本逐字搬运（详见[融合流水线](#融合流水线fuse)） |
+| `src-tauri/src/fuse/mod.rs` | `run_fuse`：向量召回 + 统一转移 DP 融合，产出最终字幕段与审计元数据（详见[融合流水线](#融合流水线fuse)） |
 | `src-tauri/src/project/mod.rs` | Project / Track / TimelineEvent 数据模型、`<项目名>.gsa` 读写（魔数头 `GSA-PROJECT v1` + JSON 主体，原子写）、最近项目列表 |
 | `src-tauri/src/export/mod.rs` | `export_track_subtitle`：单轨导出 SRT / ASS / LRC / TXT（SRT/LRC/TXT 带 UTF-8 BOM 防播放器按 GBK 误读；ASS 固定样式并转义 `\` / `{}`） |
 
@@ -73,13 +75,13 @@ runtime/
 ├── deps/                # OCR pip 依赖（--target 隔离）
 ├── deps_gpu/            # OCR GPU 专有件（可选，bootstrap_ocr_gpu.ps1；运行时 PYTHONPATH=deps_gpu;deps）
 ├── deps_funasr/         # FunASR pip 依赖（torch 与 paddle 依赖隔离）
-├── deps_embed/          # 向量召回 pip 依赖（onnxruntime CPU + tokenizers，融合实验台用）
+├── deps_embed/          # 向量召回 pip 依赖（onnxruntime CPU + tokenizers，融合用）
 ├── models/
 │   ├── paddleocr/       # PP-OCRv5 缓存
 │   ├── funasr/          # Fun-ASR-Nano + VAD + 说话人模型（modelscope 缓存）
-│   ├── embed/           # multilingual-e5-small（ONNX qint8，融合实验台用）
+│   ├── embed/           # multilingual-e5-small（ONNX qint8，融合用）
 │   ├── moss/            # moss-transcribe-<quant>.gguf
-│   └── qwen/            # qwen2.5-3b-instruct-q4_k_m.gguf
+│   └── qwen/            # qwen2.5-3b-instruct-q4_k_m.gguf（可选，测试台）
 ├── worker/              # bootstrap 拷贝的 worker 脚本
 └── bin/                 # moss-transcribe.exe、bin/llm/（llama.cpp）
 ```
@@ -92,10 +94,10 @@ runtime/
 | `ocr_model` | `mobile`（默认）或 `server`（PP-OCRv5 档位） |
 | `language` / `dev_debug` | OCR 语言、调试帧落盘（`temp/`） |
 | `moss_binary` / `moss_model` / `moss_threads` / `moss_device` | MOSS 配置；`moss_device`：空=自动 / cpu / cuda / vulkan |
-| `llm_binary` / `llm_model` / `llm_threads` | llama.cpp 配置 |
+| `llm_binary` / `llm_model` / `llm_threads` | llama.cpp 配置（可选，仅融合能力测试台） |
 | `asr_provider` | `moss` / `funasr` / 空=自动 |
 | `funasr_worker` / `funasr_deps` / `funasr_model_dir` / `funasr_device` / `funasr_language` / `funasr_timeout_minutes` | FunASR 配置 |
-| `embed_model` / `embed_tokenizer` / `embed_deps_dir` | 向量召回（融合实验台）的模型 / 分词器 / 依赖路径；由 `bootstrap_embed.ps1` 写入，产品侧暂未消费（T4 计划落地） |
+| `embed_worker` / `embed_model` / `embed_tokenizer` / `embed_deps_dir` | 融合 worker 脚本 / E5-small 模型 / 分词器 / 依赖路径；由 `bootstrap_embed.ps1` 写入，产品融合与实验台共用；**四个字段整组必配或整组为空** |
 
 ### runtime 目录解析顺序
 
@@ -103,7 +105,7 @@ runtime/
 2. 从 exe 目录逐级向上找 `runtime/config.json`（开发期即仓库根）
 3. 兜底：Tauri `app_data_dir/runtime`
 
-`validate()` 保证所有相对路径不越出 runtime 目录（防路径穿越）、python / moss / llm 二进制存在；模型文件不做存在性检查（由 provider 报"未就绪"）。
+`validate()` 保证所有相对路径不越出 runtime 目录（防路径穿越）、python / moss / llm 二进制存在；`embed_*` 四项**整组必配或整组为空**（半配视为配置错误，避免运行期才失败），已配置时同样逐项做越界校验；模型文件不做存在性检查（由 provider 报"未就绪"）。
 
 ## 数据模型（`project/mod.rs`）
 
@@ -144,7 +146,8 @@ Project
 - **ProjectLayout** 三栏：`AppSidebar`（四步导航 + 保存状态）+ 工作区 `<router-view>` + `ReviewPane`（全局校对区：VideoPlayer + Timeline + TrackOverview）。持有全局快捷键 Ctrl+S / Ctrl+Z / Ctrl+Shift+Z。
 - **stores/project.ts**：项目态 + 全部 Tauri 调用编排。深监听整个项目对象，任何变更 1 秒防抖自动保存（`applyingSaved` 防回环、await 期间切项目防竞态）；关闭前 best-effort flush。
 - **stores/timeline.ts**：时间轴 store。组件通过 `inject(TIMELINE_STORE_KEY)` 获取实例，找不到才 fallback 到全局 store——同一组件树可挂多个独立时间轴（语料页迷你轴、打轴+转写页嵌字轴、校对区主轴）。
-- **视图**：`Welcome`（项目创建/最近项目）、`CorpusView`（三种语料来源）、`AsrView`（② 打轴+转写：ASR（有配音）/ 嵌字 OCR（无配音）两种方案 + 说话人标记）、`FuseView`（双就绪卡片 → 融合）、`Editor`（fused 轨逐条校对 + 导出）。
+- **stores/fuseAudit.ts**：融合审计表的纯逻辑（零 Vue 依赖）——风险分层（`auditRisk`：已复核 > 结构信号 A 层（掩码 / 回退 / 复用 / 未命中）> 低分 B 层（`score < 0.82`））、行构建与排序、计数、四动作裁决（`applyFusedDecision`：保留 / 候选替换 / 全语料选择 / 不配）与 `reused` 重算；由 `project.ts` 的 `fusedAuditRows` / `applyFusedAuditDecision` 接入项目态并纳入撤销重做（失败零副作用）。
+- **视图**：`Welcome`（项目创建/最近项目）、`CorpusView`（三种语料来源）、`AsrView`（② 打轴+转写：ASR（有配音）/ 嵌字 OCR（无配音）两种方案 + 说话人标记）、`FuseView`（双就绪卡片 → 融合 → 审计表：A 层默认展开、低分 B 层折叠标记、全语料弹窗惰性加载）、`Editor`（fused 轨逐条校对 + 导出）。
 
 ## 关键流水线
 
@@ -168,12 +171,12 @@ Project
 
 ### 融合流水线（`fuse/mod.rs`）
 
-- **纯文本契约**（2026-10-02 用户决策）：本管线只做"编号映射 + 文本搬运"，**不产出说话人/角色名**——命中段逐字复制语料原文（含换行与角色名行），未命中段保留转写原文；不改写、不剥离前缀、不做换行归一。说话人语义待设计重评审（缺陷台账 F1/F2）。
-- 输入约定（前端保证）：OCR 文本**只来自 corpus**（不回退 ocr_text 轨，防止把"待替换文本"当可靠语料）；转写段 = game 轨 ASR 段 + embed_ocr 嵌字段（**两种转写侧方案可并存，此处统一消费**；与 ASR 重叠占比过高的嵌字段丢弃——有配音处不靠嵌字）。ASR 段的说话人由前端写成**文本首行**（`character` 优先、否则 `speaker`；`未标注` 不注入），与语料/嵌字形态对齐；只作用于发给后端的副本，不回写轨道。
-- 分批：OCR 文本**全量**入每批 prompt（语义匹配需要全局视野），转写段每批 30 条（`BATCH_SIZE`），`MAX_TOKENS=4096`。
-- Prompt 设计：OCR/GC 编号带前缀（`OCR[1]` / `GC[3]`，GC = 游戏内容时间轴段）——批内两套编号无前缀时小模型会混淆；LLM 只输出 `{"index", "ocr_index"}` 对应关系，**最终文本由代码从 OCR 列表逐字复制**——实测小模型无法可靠"复制文本"，让它复述会改字。文本原样入 prompt（保留换行），条目按行首编号标记划分；并给出**显式条数上限**（`本次 GC 共 N 条：最多只输出 N 条`）——保留换行会让条目跨多行、小模型丢失条数感，实测无上限时 2/3 批次跑飞成数百条编号。
-- 输出：时间轴沿用转写段。降级路径全部显式计数并展示到融合页：`failed_batches` = JSON 解析失败的批数（整批保留转写原文；解析含"补全缺失外层花括号"一级修复）；`missing_segments` = 解析成功但模型未给出判定的段数（此前完全静默）。
-- **现状与计划**：本实现实测**未在做跨语言语义对齐**——3B 模型的主导行为是按下标对齐（缺陷台账 F13）。**已验证的替代路线**是本地多语言向量召回（E5-small qint8，CPU）+ 统一转移 DP：四案例 **226/236 计分段（95.8%）**（`benchmark/FUSE_THRESHOLD_CALIBRATION.md` §7.9）；计划在 **T4** 用它替换本节的 LLM 调用，并与前端「融合后置信度审计表」同轮做（见 `GameSubtitleAssistant_Plan.md` §6.3）。实验台与工具见 `src-tauri/tests/fuse_lab/`、`scripts/fuse_*.py`。
+- **路线**：本地多语言向量召回（multilingual-e5-small qint8，ONNX / CPU）+ **统一转移 DP**。语料与转写段各自编码后取相似度矩阵，再用全局单调 DP 选整体最优路径——转移含前进 / 复用（`repeat_penalty`）/ 回退（`reset_penalty`，允许语料行被跳过后回跳）/ 不配（`unmatched`）。四案例实测 **210/236 计分段**，开启「该不配」掩码后 **226/236（95.8%）**；阈值与判据标定见 [benchmark/FUSE_THRESHOLD_CALIBRATION.md](../benchmark/FUSE_THRESHOLD_CALIBRATION.md) §7.9。此前基于 llama.cpp 的 LLM 编号对应路线实测**未在做跨语言语义对齐**（缺陷台账 F13），已随本路线退役；`src/llm/` 与 `run_llm` 仅保留给融合能力测试台。
+- **纯文本契约**：命中段逐字复制语料原文（含换行与角色名行），未命中段保留转写原文；不改写、不剥离前缀、不做换行归一。**不产出说话人/角色名**——`character` 不再由融合写入（缺陷台账 F1/F2）。
+- 输入约定（前端保证）：语料**只来自 corpus**（不回退 ocr_text 轨，防止把"待替换文本"当可靠语料）；转写段 = game 轨 ASR 段 + embed_ocr 嵌字段（**两种转写侧方案可并存，此处统一消费**；与 ASR 重叠占比过高的嵌字段丢弃——有配音处不靠嵌字）。R2 起不再向转写文本注入说话人首行（该注入会干扰前缀注意力，已移除）。
+- 「该不配」掩码（可选，按素材开关，前端复选框，默认关）：判据是"该转写段的内容在语料任何一行里都放不下"——`len_sub >= 1` 且 `len_sub <= α · max{len_corpus[j] : j ∈ top-K}`（α=0.95 / K=3 / 相似度并列容差 `tie_eps`=0.0015）。四案例假阳性为 0，但收益依赖语言对（显示语言比语料语言单位内容更省），故按素材开关（当前仅 vesna 开）。**换嵌入模型或素材必须重标**（`tie_eps` 有效窗口仅约 2 倍宽）。
+- 输出：时间轴沿用转写段；每段带审计元数据 `ocr_index` / `score` / `product_text` / `candidates` / `masked` / `transition` / `reused` / `source_text`（融合时刻的转写原文）/ `reviewed`（人工已复核），供前端审计表分层与四动作裁决。降级计数：`masked_segments`（掩码判为"不配"的段数）、`reused_segments`（复用语料行的段数）；`ocr_index` 越界直接报错，不静默降级。
+- 工具：`scripts/fuse_core.py`（Python 单一真源：编码 / 相似度 / DP / 掩码）、`scripts/embed_worker.py`（产品一次性 worker）、`scripts/fuse_worker_parity.py`（实验室 ↔ worker 对拍）；实验台与判据见 `src-tauri/tests/fuse_lab/` 与 `scripts/fuse_*.py`。
 
 ### 进度事件
 
@@ -181,7 +184,7 @@ Project
 |---|---|
 | `ocr-progress` | `{clip_index, clip_count, progress, message}` |
 | `asr-progress` | `{progress: 0.0~1.0, message}` |
-| `llm-progress` | `{progress: 0.0~1.0, message}` |
+| `llm-progress` | `{progress: 0.0~1.0, message}`（LLM 测试台与**融合进度共用此事件名**） |
 
 前端事件名常量集中在 `src/types/index.ts`，与 Rust 侧常量需保持一致。
 
@@ -191,7 +194,7 @@ Project
 |---|---|
 | project | `create_project` `open_project` `save_project` `set_project_video` `read_text_file` `list_recent_projects` `rename_project` `remove_recent_project` |
 | video | `get_video_metadata` |
-| ai_runtime | `check_ocr_runtime` `check_asr_runtime` `check_asr_engines` `check_llm_runtime` `asr_cancel` |
+| ai_runtime | `check_ocr_runtime` `check_asr_runtime` `check_asr_engines` `check_llm_runtime` `check_embed_runtime` `asr_cancel` |
 | ocr | `run_ocr` `run_ocr_images` `approve_corpus_diff` |
 | asr | `run_asr` |
 | llm | `run_llm` |
@@ -202,18 +205,17 @@ Project
 
 ## 测试
 
-`src-tauri/tests/` 下九个集成测试：端到端 `ocr_e2e.rs`、`asr_e2e.rs`、`fuse_e2e.rs`、`llm_e2e.rs`、`ocr_bench_refinement.rs`；质量基准 `bench_corpus.rs`、`bench_hardsub.rs`、`bench_pierro_embed_ocr.rs`、`bench_fusion.rs`（全部 `#[ignore]`，素材与跑法见 [benchmark/README.md](../benchmark/README.md)）。多数为端到端测试，**需要 runtime 环境就绪**（模型、二进制在位）才能通过；各模块内另有不依赖环境的单元测试（如"未就绪时报错且不触发回调"）。
+`src-tauri/tests/` 下八个集成测试：端到端 `ocr_e2e.rs`、`asr_e2e.rs`、`fuse_e2e.rs`、`llm_e2e.rs`、`ocr_bench_refinement.rs`；质量基准 `bench_corpus.rs`、`bench_hardsub.rs`、`bench_pierro_embed_ocr.rs`（全部 `#[ignore]`，素材与跑法见 [benchmark/README.md](../benchmark/README.md)）。多数为端到端测试，**需要 runtime 环境就绪**（模型、二进制在位）才能通过；各模块内另有不依赖环境的单元测试（如"未就绪时报错且不触发回调"）。
 
-**融合能力基准**（`bench_fusion.rs`，`#[ignore]`）用自撰的干净用例判别"跨语言语义对齐"是否真的发生：语料顺序打成无不动点排列，使"照抄编号"的恒等映射每条皆错，故内容正确率可直接对比随机基线；另设对齐对照与"同语言逐字相同"能力隔离用例。它走**真实管线**（`fuse_pipeline`），并支持 `GSA_BENCH_LLM_MODEL` 临时换模型做能力梯度、结果落盘 `temp/bench_output/fusion_capability_<model>.json`。实测结论与缺陷台账见 [benchmark/FUSE_PIPELINE_DEFECTS.md](../benchmark/FUSE_PIPELINE_DEFECTS.md) F13。
+**融合能力基准**（原 `bench_fusion.rs`，`#[ignore]`）随 LLM 融合路线退役而删除：它用自撰的干净用例判别"跨语言语义对齐"是否真的发生——语料顺序打成无不动点排列，使"照抄编号"的恒等映射每条皆错，故内容正确率可直接对比随机基线。实测结论已落档 [benchmark/FUSE_PIPELINE_DEFECTS.md](../benchmark/FUSE_PIPELINE_DEFECTS.md) F13；同一判别器的 Python 版本仍在 `fuse_lab`（下节），可复现该结论。
 
 ```powershell
 cd src-tauri; cargo test
-# 融合能力基准（需 runtime LLM 就绪）
-cargo test --release --test bench_fusion -- --ignored --nocapture
 ```
 
-**融合对齐实验台**（`src-tauri/tests/fuse_lab/`，Python，非 `cargo test` 流程）是上表结论的可复现工具，
-供"融合管线重构"复用：LLM 判别器、**向量召回判别器**、**离线验证流水线**（预校对工程 → 召回 + 单调 DP → SRT）。
+**融合对齐实验台**（`src-tauri/tests/fuse_lab/`，Python，非 `cargo test` 流程）是上述结论的可复现工具，
+T4 落地后仍作为融合阈值 / 判据的**标定与回归来源**：LLM 判别器、**向量召回判别器**、**离线验证流水线**（预校对工程 → 召回 + 单调 DP → SRT）。
+产品侧另用 `scripts/fuse_worker_parity.py` 做「实验室 ↔ 产品 worker」逐段对拍（8 组零差异）。
 依赖 `scripts/bootstrap_embed.ps1` 搭的 CPU 运行时（onnxruntime + E5-small qint8 113MB，不占 GPU）。
 详见 [src-tauri/tests/fuse_lab/README.md](../src-tauri/tests/fuse_lab/README.md)；
 路线结论见 [benchmark/FUSE_VECTOR_RECALL_VALIDATION.md](../benchmark/FUSE_VECTOR_RECALL_VALIDATION.md)。
