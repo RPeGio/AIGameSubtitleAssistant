@@ -303,15 +303,17 @@ function fmtTime(s: number): string {
             <span class="audit-caret">{{ rowExpanded(row) ? "▾" : "▸" }}</span>
           </div>
           <div v-if="rowExpanded(row)" class="audit-detail">
-            <div class="audit-cur">
-              <NText depth="3" style="font-size: 12px">当前命中</NText>
-              <span>
-                {{
-                  row.meta.ocr_index > 0
-                    ? `#${row.meta.ocr_index} ${snippet(row.corpusText || corpusAt(row.meta.ocr_index))}`
-                    : "不配（保留转写原文）"
-                }}
+            <div class="audit-map">
+              <NText depth="3" style="font-size: 12px">嵌字</NText>
+              <span class="map-src">
+                {{ snippet(row.meta.source_text || "（旧版融合产物，无转写原文）") }}
               </span>
+              <span class="map-arrow">→</span>
+              <NText depth="3" style="font-size: 12px">语料</NText>
+              <span v-if="row.meta.ocr_index > 0" class="map-dst">
+                #{{ row.meta.ocr_index }} {{ snippet(row.corpusText || corpusAt(row.meta.ocr_index)) }}
+              </span>
+              <NTag v-else size="small">不配</NTag>
             </div>
             <div v-if="row.meta.candidates.length" class="audit-cands">
               <NText depth="3" style="font-size: 12px">候选名单（点击替换）</NText>
@@ -343,9 +345,10 @@ function fmtTime(s: number): string {
       </div>
     </div>
 
-    <!-- 全语料选择弹窗：display-directive=if 惰性渲染，大语料不常驻内存 -->
+    <!-- 全语料选择弹窗：preset=card 提供卡片底；display-directive=if 惰性渲染，大语料不常驻内存 -->
     <NModal
       v-model:show="pickerShow"
+      preset="card"
       display-directive="if"
       title="从语料中选择替换文本"
       style="width: 640px"
@@ -532,11 +535,30 @@ function fmtTime(s: number): string {
   gap: 8px;
 }
 
-.audit-cur {
+.audit-map {
   display: flex;
   gap: 8px;
   align-items: baseline;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.map-src {
   font-size: 13px;
+  color: var(--color-text-secondary);
+  min-width: 0;
+}
+
+.map-arrow {
+  font-weight: 700;
+  color: var(--color-primary, #18a058);
+  flex-shrink: 0;
+}
+
+.map-dst {
+  font-size: 13px;
+  font-weight: 600;
+  min-width: 0;
 }
 
 .audit-cands {
