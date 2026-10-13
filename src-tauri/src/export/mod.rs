@@ -267,6 +267,7 @@ mod tests {
                     end: 3.25,
                     text: "第二句".into(),
                     character: Some("角色B".into()),
+                    fuse_meta: None,
                 }),
                 TimelineEvent::Fused(FusedEvent {
                     id: "f1".into(),
@@ -274,6 +275,7 @@ mod tests {
                     end: 1.2,
                     text: "第一句\n多行".into(),
                     character: None,
+                    fuse_meta: None,
                 }),
             ],
         }

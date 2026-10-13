@@ -1,0 +1,1906 @@
+GSA-PROJECT v1
+{
+  "path": "",
+  "video": "",
+  "source_video": "",
+  "name": "pierro_questions",
+  "corpus": [
+    {
+      "id": "muwd2xtfmalt4t",
+      "text": "NO.0217\n我很想你，派蒙。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfeoueh5",
+      "text": "派蒙\n瞧你说的，哈哈，我们也没分开多久呀？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtftrtxb0",
+      "text": "NO.0217\n这次不一样。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf6bwi7y",
+      "text": "NO.0217\n你的状态好像很不错？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfbq0hz3",
+      "text": "派蒙\n是的，我感觉好像已经完全恢复啦。前面我睡了一觉，醒来就发现在这里了…",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfk6l5ku",
+      "text": "派蒙\n「丑角」和那个正在和他说话的人，施加了一种「能量」在我身上，我隐隐感觉到它抵消了某种让我不舒服的力量",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfpgmac3",
+      "text": "NO.0217\n还有米提亚的功劳？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfoh7gxu",
+      "text": "米提亚\n抱歉，NO.0217，前面在剧院我走得有些匆忙，是着急验证一些猜想。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfdrtcbf",
+      "text": "米提亚\n你伙伴的事就请放心吧，我们逆转了实验能量对她的影响，「丑角大人专门嘱托我这样做的",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf3rzxe7",
+      "text": "「丑角」\n这次才算是正式见面吧，NO.0217。派蒙的情况不容拖延，我才直接带走了她，希望你不要介意。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfkmumv9",
+      "text": "派蒙\n可是可是像你这样的大人物，为什么会在意我的事…？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfh04bvg",
+      "text": "「丑角」\n你刚来至冬的时候我就说过，我们曾经有过一段时间的相处…在很久以前的过去",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfrd3jx3",
+      "text": "派蒙\n嗯你确实提过，当时我第一次见你就感觉很亲切",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfmfv7d1",
+      "text": "「丑角」\n叙旧可以之后再叙，米提亚，先继续刚才的汇报吧。你提前进行能源研究的最终实验，有得出什么结论么？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfqx8nxm",
+      "text": "米提亚\n好消息是，我对「死之执政」的猜测得到了验证。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf7tppox",
+      "text": "米提亚\n坏消息是我建议全面暂停实验以及「槲寄生计划，目前我们完全没有突破段···这是基于研究者完全理性的判断。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf2k9ghu",
+      "text": "「丑角」\n···",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfcuant5",
+      "text": "「丑角」\n我尊重你的意见，暂停吧···在解决掉「死之执政」之前。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfxz8n48",
+      "text": "派蒙\n么什么，你们在讲什么？你们…你们要解决掉「死之执政若娜瓦？怎么解决，杀死她吗？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfwqz4xu",
+      "text": "米提亚\n只要能让她再也构不成威胁，什么手段都可以。但在此之前，我们做的一切都会是徒劳。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfcgl8wk",
+      "text": "米提亚\nNO.0217，经过刚才的事，我已经确定若娜瓦的目的了或者说「死之诅咒」的触发条件。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfe07fo5",
+      "text": "NO.0217\n说来听听？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfus3wbg",
+      "text": "米提亚\n她在做的，是「封锁」至冬的科技进步，避免至冬拥有任何能够威胁到天理的手段。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf4wb4yo",
+      "text": "「丑角」\n天理的走狗···",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf3r26bg",
+      "text": "米提亚\n而\n一切导致技术进步的想法、研究、实验等等，都可以成为「死之诅咒」的触发条件。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfp3s5ad",
+      "text": "米提亚\n正如刚刚，我提前组织并展开了一次能源研究最终阶段的实验，只要实验成功，便可以取得关键性的突破",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf2m35jj",
+      "text": "米提亚\n果不其然，实验刚刚开始，所有的研究员、实验员、观测者全部因诅咒而「死去」了。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfetjwaf",
+      "text": "米提亚\n我们枉费了心血，枉费了依赖严冬计划给我们收集的能源与材料…最终一无所获。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfileyjj",
+      "text": "NO.0217\n也就是说，我们在剧院的时候，也发生了类似的情况？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf7bpnvx",
+      "text": "米提亚\n没错，演出的过程中，我忽然有了些关于实验的关键想法，所以才牵连了大家。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfebuc2j",
+      "text": "米提亚\n看来诅咒的内容应该类似于当科技进步的因素出现时，夺走所在场所内的\n切生命",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf6bl3tb",
+      "text": "派蒙\n好…好暴力的办法。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf9nxwfz",
+      "text": "米提亚\n正常来讲，诅咒被触发的场合一般都在军械宫内，由于外人禁止出入，这种群体性的死亡现象才一直没有被观测到。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfvmjxf7",
+      "text": "米提亚\n奥黛塔可能是第一个观测者，「死之诅咒刚好在她潜入军械宫之前被触发了。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfvn7sz4",
+      "text": "派蒙\n可是你刚刚不是说什么「最终阶段的实验吗？说明你们也不是完全没有进展？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfxc8wq6",
+      "text": "米提亚\n是啊，即便被神明封锁了那些关键要素，人类依旧可以通过渺小的点滴积累，缓慢推动科技…",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfsna0ge",
+      "text": "米提亚\n可若娜瓦一定也清楚，这种点滴的积累总会有到达极限的一天，届时一场用来证明「真理的实验将会是必须的。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfg2cmyu",
+      "text": "派蒙\n你指的就是你们刚刚要做的实验？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfqnblb8",
+      "text": "米提亚\n是的，我们正处于进步的最关键节点，量变无限接近于质变的一个瞬间，一场实验便能让迄今为止的一切开花结果。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfx8mwl6",
+      "text": "米提亚\n可现在，像是本来就在黑暗中不断摸索前进的我们，终于触碰到了一堵完全密不透光的墙。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf3cezn7",
+      "text": "米提亚\n只要若娜瓦的「死之诅咒还在，我们便没办法推进实验以及获取实验结果",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfbq1x6q",
+      "text": "「丑角」\n严冬计划进行至今，至冬当下的国力也很难支持这种状态下的反复试错。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf3iulvz",
+      "text": "「丑角」\n唯有先解决若娜瓦，才有继续推进计划的可能",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfjdhffq",
+      "text": "派蒙\n那可是「死之执政…她想让谁死，就能让谁死的吧？感觉是最最可怕的权能了，真的能敌得过这么不讲道理的家伙吗",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf9wirys",
+      "text": "米提亚\n不好说哦。她肯定也没办法为所欲为的，最好的证据就是…看，我还活着。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf7oh7hr",
+      "text": "派蒙\n你是说···",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfa9zsyf",
+      "text": "米提亚\n明明把我们这些研究人员杀死就好了，为什么还要一次一次地复活，甚至让我们将科技进展到了如今的程度呢？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfsktz8c",
+      "text": "派蒙\n你是说…即便是「死之执政」，也存在一些我们不知道的限制？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf4l8abw",
+      "text": "米提亚\n没错，我想破局的关键就在这个地方。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfj490i3",
+      "text": "「丑角」\n不论如何，「死之执政」本就是我们必须要过的一关。甚至「生」「死」「时」「空」我们都必须面对。毕竟…",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfarkofl",
+      "text": "「丑角\n我们的目标是「天理」。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfocgj3b",
+      "text": "派蒙\n愚人众···要挑战「天理」？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfpvk41n",
+      "text": "NO.0217\n「尽管内心早就隐隐能够猜测到，愚人众和至冬女皇的目标会是天理」」",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfqs9zje",
+      "text": "NO.0217\n(但听到「丑角亲口说出这样的话，还是令人感到有些震撼和惊讶，怪不得皇的目的对普通民众一直保密。」",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfq0kopm",
+      "text": "NO.0217\n「对至冬来说，那将会是一条怎样的道路呢",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfv6wg3o",
+      "text": "米提亚\n那么「丑角大人，我想申请一段时间的休假，正好利用这段时间整理\n下思路和数据。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfo96c1l",
+      "text": "「丑角」\n去休息吧，实验的事就别再想了，当心「死之诅咒」影响到平民。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfff9ujt",
+      "text": "「丑角」\n趁现在还有时间，我可以招待一下你这位至冬的「贵客。有什么想要了解的事么？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf8voa3y",
+      "text": "NO.0217\n「槲寄生这个字眼，我记得从哥伦比娅那里听过。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf82rpe2",
+      "text": "派蒙\n对，刚才我听到这个名字的时候也想问你，我只知道至冬在进行「严冬计划」，这个「槲寄生计划又是什么？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf32lv7z",
+      "text": "「丑角」\n「严冬计划」你们知道，是为了统筹国家资源所进行的一系列措施，其目的也是为了服务「槲寄生计划」",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfz45hrx",
+      "text": "「丑角」\n你们至今所见到的许多事情，本质上都是为了「槲寄生计划的推进。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf64zw94",
+      "text": "「丑角」\n包括挪德卡莱的月矩力试验设计局，研究月矩力只是表象，其核心工作则是利用当地的资源和研究成果制造「槲寄生」",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfrqp0tg",
+      "text": "NO.0217\n是用来与「天理进行决战的武器，对么？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfof6hxb",
+      "text": "派蒙\n欸，你怎么知道？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfw51ho9",
+      "text": "NO.0217\n有人告诉了我一些情报，我推断的。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfcm6eed",
+      "text": "派蒙\n所以…就是那边的那个东西吧！你们在挪德卡莱安排那么多人手，到头来就是为了它呀，我可要好好观摩观摩…",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfhhrxu2",
+      "text": "「丑角」\n单单依靠月矩力，是突破不了天空岛的防线的，更别提挑战「天理」。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfjvxsp5",
+      "text": "「丑角」\n与光界力的对抗，「天理应该习以为常。而元素力是「天理己转化出的人界力，更不可能拿来对付创造者。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtffdi9bx",
+      "text": "「丑角」\n于是，我们暂时将目光放在与「第三降临者」和「星之楔」有关的能量上，它有潜力能让「槲寄生」真正与「天理」抗衡。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfx6u0u2",
+      "text": "「丑角」\n可以说，通过对星之楔所蕴含的相关能量进行溯源，我们能够得到一种「对天空岛专用能量」",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfmp36x2",
+      "text": "派蒙\n月矩力试验设计局「严冬计划」…新能源的研究实验，原来这些事情都是由「槲寄生计划」串在一起的呀。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf599wm9",
+      "text": "派蒙\n而且看起来，你们的计划马上就要完成了，怪不得会引来「死之执政对付你们",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfaujxdc",
+      "text": "「丑角」\n女皇陛下亲自前往征讨魔物，若非如此，我想女皇陛下应该会很乐意接见你。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfemxmql",
+      "text": "NO.0217\n「看来至冬并不打算计较我与愚人众过往的那些冲突」",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfext5x9",
+      "text": "「丑角」\n执行官在回收神之心的相关事务上享有自主权，但与之相对，他们也并不会完全代表至冬官方场。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfjayy90",
+      "text": "NO.0217\n我在想的事被你看穿了。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf843tms",
+      "text": "派蒙\n这么说的话，我有一个一直一直想问的问题，至冬女皇到底是为什么要收集神之心呀，也是为了对抗「天理吗？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfnxlm49",
+      "text": "「丑角」\n毋庸置疑，神之心是对抗「天理」的关键筹码，除此之外…你最好自己去问女皇，我不确定这是否是我应当提供的信息。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf8m2qxw",
+      "text": "派蒙\n你官这么大，还不确定呀…算了算了。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfab49dt",
+      "text": "NO.0217\n对付「天理这种事，在常人看来就像痴人说梦一样。女皇为何如此执着于这件事？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfn1omjm",
+      "text": "「丑角」\n在如今的提瓦特，「文明」不过是虚幻的表象，是随时可以被「否定」的事物。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfwhj6gd",
+      "text": "「丑角」\n我们的文明可以在抗争中毁灭，但决不能因为「天理的一个念头便被彻底否定存在，接受消失的命运。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf7p2ngu",
+      "text": "「丑角」\n唯有改变这种状况，唯有推翻「天理，我们的文明才称得上是扎下了根基",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfuwk1cm",
+      "text": "「丑角」\n否则像坎瑞亚、亥珀波瑞亚等国度的人们所经历的，只会不断上演。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf33e6lb",
+      "text": "派蒙\n可以「毁灭」…但不能被「否定」…",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfpbsvki",
+      "text": "「丑角」\n另外…或许对你们来说还有些难以理解。你们是否知道，这个世界的一切规则，都是由「诅咒所构成的？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfpa1np4",
+      "text": "派蒙\n欸？全部吗？我知道你们说的「死之诅咒，还有你和戴因斯雷布所中的「不死诅咒」",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf6mr1ry",
+      "text": "NO.0217\n丘丘人的诞以及纳塔的「还魂诗规则也是诅咒？我还知道芙宁娜的长寿也源自芙卡洛斯对她的诅咒…",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfg5nno6",
+      "text": "「丑角」\n嗯，还有「魔神对人类的爱」，也是天理施加给魔神的诅咒。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtful3k54",
+      "text": "派蒙\n连、连这个都是？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfnwh9dw",
+      "text": "「丑角」\n女皇一直都有着充分的理由憎恨「天理",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf4ewyta",
+      "text": "「丑角」\n如果女皇能够夺取「天理的权能，她将会重构整个世界到那时，人们将彻底从诅咒与谎言之中解脱。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfgut2xu",
+      "text": "「丑角」\n请期待吧，那将是超乎你们想象的世界。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfqhfnma",
+      "text": "「丑角」\n尽管至冬的普通民众不懂这些，但在这无时无刻不在与环境抗争的雪国，在这从来不被神明所偏爱的国度",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf0ai0j6",
+      "text": "「丑角」\n我们都相信团结在皇身边一起「抗争，定会迎来更好的新世界",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfhrnxon",
+      "text": "派蒙\n我\n我真的不记得了，在我的记忆里我们什么都没有，你要相信我呀NO.0217！",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfki1l2x",
+      "text": "「丑角」\n我来说明吧，之所以派蒙会对军械宫研究的「对天空岛专用能量有反应，正是因为",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfqcqi2u",
+      "text": "「丑角」\n派蒙来自天空岛，是天空岛的造物。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfz0acou",
+      "text": "派蒙\n我？天空岛的造物？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfozpgfs",
+      "text": "NO.0217\n(对哦，当时被愤怒冲昏头脑了，回想起来若娜瓦刚才也说派蒙是天空岛的造物，但又不蕴含天空岛的力量或者权能…」",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf8riz0r",
+      "text": "「丑角」\n挪德卡莱的月球碎片…你知道的，是通过愚人众的技术将其从天空中「拉」下来的",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfhwxi1n",
+      "text": "「丑角」\n而这种技术的初次应用，是在五百多年前的坎瑞亚",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf81gmxo",
+      "text": "「丑角」\n我对着天穹使用这种技术，所得到的回应…正是从天空岛降临而来的派蒙。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf4hbn9q",
+      "text": "「丑角」\n我曾将派蒙献予「黑王」，可「黑王」对这份礼物并无兴趣，也并不满意。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf2fo9r3",
+      "text": "「丑角」\n此后派蒙便暂住于我宫中，直到…「坎瑞亚灾变」的来临。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfndf28i",
+      "text": "A派蒙\n等等\n我有点乱，你在说的是五百年前",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfjra9w3",
+      "text": "派蒙\n等等…我有点乱，你在说的是五百年前坎瑞亚发生的事？而且是关于我的？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfgs1lne",
+      "text": "派蒙\n可是，我对你说的这些还是没有印象，不管是从天上掉下来，还是被当礼物送人的事…",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfce4qiv",
+      "text": "「丑角」\n经历过坎瑞亚灾变，或许你也负上了什么诅咒吧。丧失记忆算是我见过最小的代价了",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfdiogv6",
+      "text": "派蒙\n不止是坎瑞亚时候的记忆，我连这五百年我是怎么过来的都不知道，怎么回想也只能想起近几年的记忆",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf0x0rti",
+      "text": "派蒙\n坎瑞亚时期的我，是什么样的？从天空岛降临而来，难道懂得很多？或者超级超级聪明？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfikpnn4",
+      "text": "「丑角」\n很遗憾，你降临于坎瑞亚的时候，意识就像刚诞生的婴儿一般无人知晓你在天空岛上曾是怎样的存在。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfrildex",
+      "text": "「丑角」\n在坎瑞亚生活的时间里，你的个性也与现在并无二致。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf2ucnrs",
+      "text": "派蒙\n喂！NO.0217！可恶，我找回记忆变得聪明的计划还没开始就泡汤了…",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfcq9let",
+      "text": "派蒙\n我猜那个时候，你一定对我还蛮照顾的吧？不然…嗯…我也不会失去记忆后，还隐约觉得你很亲切…",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfy7mmqf",
+      "text": "「丑角」\n恰恰相反，当时我一直漠视你的存在，心思全都在与「贤者」海洛塔帝的斗争上",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfujpkkg",
+      "text": "「丑角」\n而如今的你在我眼里，像是那个疯狂的时代留下的唯一不疯狂的东西，值得受到保护。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf05wrda",
+      "text": "派蒙\n呃我居然会觉得这样的你很亲切，看来是我的问题",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfp9l0ki",
+      "text": "派蒙\n不过，我在意的是…那个、那个NO.0217，你不会因为我是「天空岛的造物就不要我了吧",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf3w5q8t",
+      "text": "派蒙\n嘿嘿，那、那我就放心啦，毕竟我也是刚知道这种消息，我自己都还没消化好呢！",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfdorfg5",
+      "text": "NO.0217\n谢谢你告诉了我这么多，说实话有些出乎我的意料，我以为有些情报不会对我如此透明。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfeh8mkn",
+      "text": "「丑角」\n形势如此，愚人众无需对「盟友」有所隐瞒。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfbowfsf",
+      "text": "派蒙\n「盟友」？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf40a2xn",
+      "text": "「丑角」\n为了推进「槲寄生计划」，我们必须解决「死之执政」的问题。而你也没打算放过她，对吗？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf0qqji3",
+      "text": "NO.0217\n不错。从她提出下次仍要「回收」派蒙的时候起，我想就已经无法和解了。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfq614vd",
+      "text": "「丑角」\n面对这种级别的对手，可没时间留给我们纠结场问题，联合一切可以联合的力量应当视为行动的前提。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfu9tz4t",
+      "text": "派蒙\nNO.0217居然是为了我才要挑战「死之执政」？可是…可是我只是",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfeh28ae",
+      "text": "派蒙\n谢谢…谢谢你…哎呀，你这样搞得我都不知道该说什么好了！总、总之，我很感动！",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf0eif8i",
+      "text": "「丑角」\n女皇陛下即将凯旋，愚人众内部也会商讨对敌一事，我们再次见面的时机很快就会到来。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfjqf6f3",
+      "text": "NO.0217\n嗯，派蒙的事谢谢你了，这段时间我会保护好她",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfdw4ift",
+      "text": "派蒙\n那个…我还有件事，嗯…应该说有个请求，你说的那把用来对付天理的「槲寄生」到底长什么样呀，我想看看！",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf7x4u07",
+      "text": "派蒙\n没事我知道是机密，就随便问问，不方便也没关系",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfi0ezy7",
+      "text": "「丑角」\n可以。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf71zts1",
+      "text": "派蒙\n欸！真的可以吗！要不、要不还是算了，万一若娜瓦抓住机会，忽然冒出来…",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfixtjgs",
+      "text": "「丑角」\n虽然技术尚未成熟，但也已经到了天空岛造物无力对它造成破坏的阶段，这一点可以放心。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtful1wf2",
+      "text": "派蒙\n哦～怪不得之前我离那么远都觉得不舒服。好啦，那我就准备放心欣赏啦！",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfch2ufg",
+      "text": "派蒙\n欸，这不是奥黛塔吗？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfanhi23",
+      "text": "奥黛塔\n派蒙？成功把你救出来了就好…你看起来很有精神，身体恢复了？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfxsap08",
+      "text": "派蒙\n是呀，说来话长…你怎么在这里，是在等我们吗？",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf42x9m1",
+      "text": "奥黛塔\n没错，我醒过来的时候本想追进去，可那些守卫也同样都醒了过来一个人对付有些吃力，又没法光明正大地「潜入」…",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfmxk12r",
+      "text": "奥黛塔\n…所以就原路返回在这里等你们了。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfrpudp4",
+      "text": "NO.0217\n当时多亏了你，我的灵魂才能那么快找回身体，谢谢你。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfxzul6i",
+      "text": "奥黛塔\n原来那么做真的有效吗？我只是在不好的预感来临时，试着碰了碰运气罢了。",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtfu1n58q",
+      "text": "奥黛塔\n要谢…应该谢谢这个东西",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    },
+    {
+      "id": "muwd2xtf46ok3h",
+      "text": "奥黛塔\n既然这里的事情告一段落，我也准备去做些自己该做的事情了…",
+      "source": "ocr_track",
+      "created_at": "2026-10-06T07:32:49.971Z"
+    }
+  ],
+  "corpus_ocr_diffs": [],
+  "tracks": [
+    {
+      "id": "mtuc0oxmnu85ss",
+      "name": "嵌字选区（内嵌字幕）",
+      "type": "ocr_region",
+      "track_role": "game",
+      "scope": "control",
+      "page": "asr",
+      "video": "clip",
+      "preview_visible": true,
+      "events": [
+        {
+          "type": "ocr_region",
+          "id": "mtuc0oxmta86hp",
+          "start": 49.566388194397724,
+          "end": 2946.326729,
+          "x1": 0.26026785714285716,
+          "y1": 0.7401785714285714,
+          "x2": 0.8426897321428573,
+          "y2": 0.9267857142857144
+        }
+      ]
+    },
+    {
+      "id": "mtuc9bbivl801v",
+      "name": "OCR 选区（剧情录屏）",
+      "type": "ocr_region",
+      "track_role": "game",
+      "scope": "control",
+      "page": "corpus",
+      "video": "source",
+      "preview_visible": true,
+      "events": [
+        {
+          "type": "ocr_region",
+          "id": "mtuc9bbizwnkda",
+          "start": 0.0,
+          "end": 1272.3,
+          "x1": 0.16484375,
+          "y1": 0.7601340682215787,
+          "x2": 0.8326450892857143,
+          "y2": 0.9522546737609396
+        }
+      ]
+    },
+    {
+      "id": "muuvtmqmm8k499",
+      "name": "内嵌字幕 OCR",
+      "type": "embed_ocr",
+      "track_role": "game",
+      "scope": "output",
+      "page": "",
+      "video": "clip",
+      "preview_visible": true,
+      "events": [
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmvnu7hl",
+          "start": 54.070888194397725,
+          "end": 62.779588194397725,
+          "text": "MurderofBirds\nI missed you, Paimon.",
+          "confidence": 0.9714911580085754
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmjvom24",
+          "start": 62.779588194397725,
+          "end": 109.69312152773108,
+          "text": "Paimon\nnd\nthat guy talking to him used some kinda \"energy\non Paimon, and she could\na feel it canceling out that other thing that was making her feel unwell.",
+          "confidence": 0.9453423619270324
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmsbryk9",
+          "start": 109.69312152773108,
+          "end": 119.20262152773104,
+          "text": "MurderofBirds\nSo, Mitya helped too?",
+          "confidence": 0.9780672788619996
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmx4lbht",
+          "start": 119.20262152773104,
+          "end": 130.31372152773108,
+          "text": "Mitya\nies for leaving in such a hurry at the theater earlier. I was in a rush to verify\nsome theories.",
+          "confidence": 0.9395922422409058
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmx6r04m",
+          "start": 130.31372152773108,
+          "end": 149.58297152773108,
+          "text": "Mitya\ned that your companion is perfectly safe. We've reversed the effects that the\nmental energy had on her. The Jester specifically instructed me to do so.",
+          "confidence": 0.9623546600341796
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmmnvaws",
+          "start": 149.58297152773108,
+          "end": 180.4304548610644,
+          "text": "The Jester\nis is our first official meeting, MurderofBirds. I could not let Paimon suffer in\non for a moment longer, and so I simply took her without explanation. I hope\nyou do not mind.",
+          "confidence": 0.9616654515266418
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmao4wwj",
+          "start": 180.4304548610644,
+          "end": 191.5916048610644,
+          "text": "Paimon\nbut why would a big shot like you care about what happens to Paimon…?",
+          "confidence": 0.9688252210617064
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmrgd3c5",
+          "start": 191.5916048610644,
+          "end": 203.6536548610644,
+          "text": "The Jester\nnen you first arrived in Snezhnaya, we once spent some time together… in the\ndistant past.",
+          "confidence": 0.9565823078155518
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmsrs9dq",
+          "start": 203.6536548610644,
+          "end": 227.19383819439773,
+          "text": "Paimon\nou did mention that. And Paimon did think you seemed strangely familiar the\nfirst time we met…",
+          "confidence": 0.9556843042373656
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm8gbq4j",
+          "start": 227.19383819439773,
+          "end": 273.08968819439775,
+          "text": "The Jester\nhe reminiscing will have to wait. Mitya, let us continue with the report. What\nns, if any, did you reach from conducting the final experiment of\nour energy\nresearch ahead of schedule?",
+          "confidence": 0.955945372581482
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmtgvrdr",
+          "start": 273.08968819439775,
+          "end": 278.59518819439774,
+          "text": "Mitya\nod news is, my hypothesis regarding the Ruler of Death has been verified.",
+          "confidence": 0.9859219789505004
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmsg4lr5",
+          "start": 278.59518819439774,
+          "end": 317.0836381943978,
+          "text": "Mitya\nbad news… I recommend we suspend the experiments and Project Mistilteinn\nr notice. Currently, we have no means with which to make a breakthrough… I\nsay this purely as a scientist, guided by reason alone.",
+          "confidence": 0.9557204842567444
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmj8d7xn",
+          "start": 322.3055215277311,
+          "end": 323.8070215277311,
+          "text": "The Jester\n…",
+          "confidence": 0.9395878911018372
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmoud8zf",
+          "start": 323.8070215277311,
+          "end": 347.8477048610644,
+          "text": "The Jester\nour judgement. We shall put the project on hold… until the Ruler of Death has\nbeen/eliminated.",
+          "confidence": 0.961790144443512
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmslod7b",
+          "start": 347.8477048610644,
+          "end": 356.3395215277311,
+          "text": "Mitya\nmeans necessary, so long as it removes the threat she poses to us. Until then,\neverything we do will be in vain.",
+          "confidence": 0.9736448526382446
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm69rljn",
+          "start": 356.3395215277311,
+          "end": 363.7969715277311,
+          "text": "Mitya\nust happened, I've ascertained Ronova's goal… or rather, the trigger condition\nfor the Curse of Death.",
+          "confidence": 0.9610128998756408
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm4i3yiu",
+          "start": 364.08058819439776,
+          "end": 366.88338819439775,
+          "text": "MurderofBirds\nOkay, let's hear it.",
+          "confidence": 0.9491140246391296
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmqxjme2",
+          "start": 366.88338819439775,
+          "end": 386.88670486106446,
+          "text": "Mitya\ndoing is\n\"blocking\"\nSnezhnaya's technological progress, preventing us from\n)ssessing anymeans with which to threaten the Heavenly Principles.",
+          "confidence": 0.9639179706573486
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmzn2vs4",
+          "start": 386.88670486106446,
+          "end": 399.3157881943978,
+          "text": "The Jester\nHmph, just like the little lapdog she is…",
+          "confidence": 0.939276397228241
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmj4258b",
+          "start": 399.3157881943978,
+          "end": 408.25805486106447,
+          "text": "Mitya\nS, research, or experiments that lead to technological progress can trigger the\ncurse.",
+          "confidence": 0.9475035071372986
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm42k11a",
+          "start": 408.25805486106447,
+          "end": 419.28573819439777,
+          "text": "Mitya\nfor instance, I was set to launch a final-phase energy experiment ahead of\nlule. If the experiment was successful, we could have achieved a crucial\nbreakthrough…",
+          "confidence": 0.9085156321525574
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmthe5t8",
+          "start": 419.28573819439777,
+          "end": 437.06638819439775,
+          "text": "Mitya\nd, though, the moment the experiment began, all the researchers, technicians,\nand witnesses\"died\" from the curse.",
+          "confidence": 0.9710989594459534
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmjgrhzl",
+          "start": 437.06638819439775,
+          "end": 449.6660881943978,
+          "text": "Mitya\nfort, not to mention the energy and materials we relied on Project Stuzha to\ngather for us… went to waste. In the end, nothing was gained.",
+          "confidence": 0.964220404624939
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm950ch9",
+          "start": 449.6660881943978,
+          "end": 455.67208819439776,
+          "text": "MurderofBirds\ns that mean something similar happened when we were at the theater?",
+          "confidence": 0.9763268828392028
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm6e4wn1",
+          "start": 455.7888715277311,
+          "end": 483.6500381943978,
+          "text": "Mitya\nt. During the performance, I thought of an important breakthrough regarding\nthe experiment, and wound updragging everyone into this.",
+          "confidence": 0.925251841545105
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmp50bjn",
+          "start": 483.6500381943978,
+          "end": 549.6493048610645,
+          "text": "Mitya\nire of the curse seems to be something like… when moments of technological\nprogress occur, all life in the vicinity is taken away.",
+          "confidence": 0.9507941603660583
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmxp8b84",
+          "start": 549.6493048610645,
+          "end": 561.0663881943977,
+          "text": "The Jester\nh Project Stuzha having been in effect all this time, at our nation's current\nstrength, repeated trial and error is simply unsustainable.",
+          "confidence": 0.9705034494400024
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmriis5u",
+          "start": 561.0663881943977,
+          "end": 586.9532381943978,
+          "text": "The Jester\nliminating Ronova first will it be possible to continue advancing our plans.",
+          "confidence": 0.9619219899177552
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmhyv6ms",
+          "start": 586.9532381943978,
+          "end": 599.5825215277312,
+          "text": "Paimon\nle Ruler of Death… She can just kill whoever she wants, right? That's gotta be\nthe scariest power ever! Is it even possible to beat her?",
+          "confidence": 0.960001826286316
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmoevpjr",
+          "start": 599.5825215277312,
+          "end": 617.6505715277311,
+          "text": "Mitya\nBut, one thing's for sure. She definitely can't just do whatever she wants. The\nbest proof of that is me… standing here, very much alive.",
+          "confidence": 0.9575127363204956
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm3ickrw",
+          "start": 617.6839381943978,
+          "end": 621.8888465982374,
+          "text": "Paimon\nYou're saying...",
+          "confidence": 0.9678673148155212
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm9my7j9",
+          "start": 621.8888465982374,
+          "end": 633.5998381943978,
+          "text": "Mitya\nbe easier to just kill all of us researchers for good? Why resurrect us over and\nover again? Why let us advance our technology to this point?",
+          "confidence": 0.9376238584518432
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmabjpin",
+          "start": 633.5998381943978,
+          "end": 665.2814881943978,
+          "text": "Paimon\nre saying… even the Ruler of Death has limitations we don't know about?",
+          "confidence": 0.9610025882720948
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm7yeyjn",
+          "start": 665.5150548610644,
+          "end": 670.1697048610645,
+          "text": "Mitya\nExactly, and I think that's where the key to our breakthrough lies.",
+          "confidence": 0.9504820108413696
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmgj3ebj",
+          "start": 670.1697048610645,
+          "end": 685.7352548610645,
+          "text": "The Jester\nthe\"Ruler of Death\" has always been an obstacle we must overcome. Indeed\nwe mustface\"Life,\"\"Death,\nTime,\" and\"Space.\"After all.",
+          "confidence": 0.9407442212104796
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmyjlaqe",
+          "start": 685.7352548610645,
+          "end": 742.8089381943978,
+          "text": "The Jester\n…Our goal is the Heavenly Principles.",
+          "confidence": 0.944214940071106
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmz6kxij",
+          "start": 742.8089381943978,
+          "end": 751.7178381943978,
+          "text": "Paimon\nThe Fatui… want to challenge the Heavenly Principles?",
+          "confidence": 0.9656329154968262
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmfhabia",
+          "start": 751.7178381943978,
+          "end": 759.7592048610645,
+          "text": "MurderofBirds\ntime, I've had a vague suspicion the Fatui and the Tsaritsa were targeting the\nHeavenly Principles…)",
+          "confidence": 0.9724003076553344
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmdhowcd",
+          "start": 759.7592048610645,
+          "end": 772.2717048610644,
+          "text": "MurderofBirds\ng The Jester admit it is still a shock. No wonder the Tsaritsa's goal has always\nbeen kept a secret from the people.)",
+          "confidence": 0.9628751277923584
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmv9dlh9",
+          "start": 772.2717048610644,
+          "end": 781.9814048610644,
+          "text": "The Jester\nsome rest, put the experiment out of your mind, and take care that the Curse\nof Death doesn't affect any civilians.",
+          "confidence": 0.9712405800819396
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmoat3pw",
+          "start": 788.3047423963176,
+          "end": 813.3794381943978,
+          "text": "The Jester\nhere is yet time, allow me to offer you my hospitality, \"honored guest\" of\nSnezhnaya. Is there anything you wish to know?",
+          "confidence": 0.9492929577827454
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmior3v4",
+          "start": 813.3794381943978,
+          "end": 817.2332881943978,
+          "text": "MurderofBirds\nIremember",
+          "confidence": 0.974853217601776
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmsqd0uk",
+          "start": 817.2332881943978,
+          "end": 827.7104215277311,
+          "text": "Paimon\nmon wanted to ask about that when the name came up just now! what is it?\nPaimon's heard of Project Stuzha, but not this one.",
+          "confidence": 0.956970989704132
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmhiup1o",
+          "start": 827.7104215277311,
+          "end": 847.3467048610645,
+          "text": "The Jester\nw, Project Stuzha is a series of measures enacted to consolidate our nation's\nources, the greater purpose of which… is to serve Project Mistilteinn.",
+          "confidence": 0.9664170145988464
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmnc00gp",
+          "start": 847.3467048610645,
+          "end": 855.3880715277312,
+          "text": "The Jester\nthings you have encountered thus far are, essentially, for the advancement of\nthatproject.",
+          "confidence": 0.9448469281196594
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmduoy43",
+          "start": 855.3880715277312,
+          "end": 874.8742048610645,
+          "text": "The Jester\nludes the Kuuvahki Experimental Design Bureau in Nod-Krai. Researching\nas merely a facade. Its core objective was to use local resources and research\nfindings to build \"Mistilteinn\" itself…",
+          "confidence": 0.9548516869544984
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmo34n3k",
+          "start": 875.2412381943979,
+          "end": 913.3459715277312,
+          "text": "MurderofBirds\na weapon built for the final battle against the Heavenly Principles, isn't it?",
+          "confidence": 0.9581626057624816
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmsyj0r1",
+          "start": 913.3459715277312,
+          "end": 916.7994215277312,
+          "text": "Paimon\nHuh? How did you know that?",
+          "confidence": 0.9729018807411194
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmw0mbo4",
+          "start": 916.7994215277312,
+          "end": 921.1783025893368,
+          "text": "MurderofBirds\nI was given some intel, and I made some deductions.",
+          "confidence": 0.9701561331748962
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmrv9tvj",
+          "start": 921.1783025893368,
+          "end": 950.9168381943978,
+          "text": "Paimon\nmust mean that thing over there! Oh, Paimon's gotta take a closer look at this\nEspecially after you guys sent so many people to Nod-Krai to work on it.",
+          "confidence": 0.9666345119476318
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm9b5e04",
+          "start": 951.0169381943978,
+          "end": 959.8090548610644,
+          "text": "The Jester\nki alone will not break through Celestia's defenses, let alone challenge the\nHeavenly Principles.",
+          "confidence": 0.9409265518188475
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm0wmsnx",
+          "start": 960.1760881943978,
+          "end": 995.6615381943978,
+          "text": "enly Principles is no doubt accustomed to combating the power of the Light\nElemental energy is simply the power of the Human Realm, converted to that\nle Heavenly Principles themselves. Any attempt to use this power against its\ncreator would be a futile endeavor.",
+          "confidence": 0.9740707278251648
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmsezikh",
+          "start": 995.6615381943978,
+          "end": 1032.2981381943978,
+          "text": "The Jester\nrefore, we have set our sights on the form of energy associated with the Third\nand the Stellar Linchpins. This may hold the potential to allow Mistilteinn to\ncontend with the Heavenly Principles.",
+          "confidence": 0.9150403738021852
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmxqthyw",
+          "start": 1032.5317048610643,
+          "end": 1077.9604215277311,
+          "text": "The Jester\nsay that by reverse engineering the Stellar Linchpins to extract the energy\nwithin, we have obtained a source of \"anti-Celestia energy.\"",
+          "confidence": 0.9659626483917236
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmfvx154",
+          "start": 1077.9604215277311,
+          "end": 1097.6133881943977,
+          "text": "Paimon\nTuvahki Experimental Design Bureau, Project Stuzha, and the new energy\nexperiments… So Project Mistilteinn is what ties it all together.",
+          "confidence": 0.9692561626434326
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm3vafya",
+          "start": 1097.6133881943977,
+          "end": 1120.1253563087084,
+          "text": "Paimon\nlike your plan is almost complete… No wonder the Ruler of Death came after\nyou…",
+          "confidence": 0.9239896535873412
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmo1546c",
+          "start": 1120.1253563087084,
+          "end": 1135.7848548610643,
+          "text": "The Jester\nthe Tsaritsa has embarked upon an expedition to vanquish a monster. Were it\nthis, I imagine she would have been delighted to grant you an audience.",
+          "confidence": 0.967681050300598
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm3v6040",
+          "start": 1136.0684715277312,
+          "end": 1150.8665881943978,
+          "text": "MurderofBirds\nthe powers that be in Snezhnaya don't intend to hold my past conflicts with\nthe Fatui against me…)",
+          "confidence": 0.9445489048957824
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmvakdse",
+          "start": 1150.8665881943978,
+          "end": 1165.547921527731,
+          "text": "The Jester\ngers have been granted significant autonomy in retrieving the Gnoses. But by\nme token, they do not completely represent Snezhnaya's official stance.",
+          "confidence": 0.9720638990402222
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm8ishw1",
+          "start": 1165.547921527731,
+          "end": 1167.7668048610644,
+          "text": "MurderofBirds\nYou read my mind.",
+          "confidence": 0.954900085926056
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmezrakj",
+          "start": 1167.7668048610644,
+          "end": 1170.6697048610645,
+          "text": "Paimon\nof the Gnoses, Paimon's been dying to ask this question since forever. Why",
+          "confidence": 0.9821107387542723
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmssfw8j",
+          "start": 1170.6697048610645,
+          "end": 1187.27696982338,
+          "text": "Paimon\nof the Gnoses, Paimon's been dying to ask this question since forever. Why\ns the Tsaritsa wanna collect them? Is it something to do with the fight against\nthe Heavenly Principles?",
+          "confidence": 0.95421040058136
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmc1tmyr",
+          "start": 1187.27696982338,
+          "end": 1243.1087381943978,
+          "text": "The Jester\nses will undoubtedly serve as a key bargaining chip when she confronts the\nrinciples. Beyond that… you had best ask the Tsaritsa herself. I am not sure if\nthis information is mine to disclose.",
+          "confidence": 0.9533340334892272
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm3lwk4i",
+          "start": 1243.1087381943978,
+          "end": 1256.8724881943976,
+          "text": "Paimon\nomean, \"not sure\"? Don't you make the rules? You're the highest-ranking\nharbinger… Ugh, never mind.",
+          "confidence": 0.975250244140625
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmf0l2w2",
+          "start": 1256.8724881943976,
+          "end": 1269.3182548610644,
+          "text": "MurderofBirds\nthe Heavenly Principles is something most people wouldn't even entertain in\ntheir wildest fantasies. Why is the Tsaritsa so fixated on this?",
+          "confidence": 0.979101538658142
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm0lrgki",
+          "start": 1269.3182548610644,
+          "end": 1284.6335548610643,
+          "text": "The Jester\noday,\"civilization\" is nothing but an illusion, something whose very existence\ncan be\"negated\" at any moment.",
+          "confidence": 0.9464208483695984
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmql810v",
+          "start": 1284.6335548610643,
+          "end": 1327.3929381943976,
+          "text": "The Jester\nization may very well be destroyed in the struggle, but as things stand, the\ninciples could choose to negate our existence on a passing whim, and we must\nnot sit back and accept that fate.",
+          "confidence": 0.931216597557068
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm2igmcg",
+          "start": 1327.3929381943976,
+          "end": 1346.2951548610645,
+          "text": "The Jester\ninging this state of affairs, only by overthrowing the Heavenly Principles, can\nour civilization truly be said to have taken root…",
+          "confidence": 0.9343279600143432
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmgwd0rh",
+          "start": 1346.2951548610645,
+          "end": 1359.2080548610645,
+          "text": "The Jester\ne, the fate of the people of Khaenri'ah and Hyperborea is a cycle doomed to\nrepeat itself.",
+          "confidence": 0.924542248249054
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmazgxp0",
+          "start": 1359.2080548610645,
+          "end": 1368.0556728295828,
+          "text": "Paimon\nng potential destruction… in return for getting to control your own fate…",
+          "confidence": 0.9726182222366332
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmsxcbd3",
+          "start": 1368.0556728295828,
+          "end": 1387.502988194398,
+          "text": "The Jester\ne… Hm, perhaps this is still somewhat difficult for you to understand. Are you\naware that all the rules of this world are made up of \"curses\"?",
+          "confidence": 0.9614742994308472
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm76x0iw",
+          "start": 1387.502988194398,
+          "end": 1405.3374715277312,
+          "text": "Paimon\nem? Paimon knows about the Curse of Death you mentioned, and the \"Curse of\nImmortality\" that you and Dainsleif have…",
+          "confidence": 0.9550006985664368
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmx63g41",
+          "start": 1405.3374715277312,
+          "end": 1421.236688194398,
+          "text": "MurderofBirds\nbirth of the Hilichurls, the rules of Natlan's Ode of Resurrection… Those are\no? Furina's long life seems to stem from a curse placed on her by Focalors as\nwell…",
+          "confidence": 0.7839747071266174
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm9vef0b",
+          "start": 1421.236688194398,
+          "end": 1487.3026881943977,
+          "text": "The Jester\n\"a god's love for humanity\"\nis a curse the Heavenly Principles inflicted upon\nthe gods.",
+          "confidence": 0.932012379169464
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmlqb6sf",
+          "start": 1487.3026881943977,
+          "end": 1524.206221527731,
+          "text": "The Jester\nTsaritsa has always had ample reason to hate the Heavenly Principles…",
+          "confidence": 0.9711323380470276
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmao2489",
+          "start": 1524.206221527731,
+          "end": 1590.6559381943978,
+          "text": "The Jester\nize their authority, she will reconstruct the entire world… and when that time\ncomes, humanity will be completely Liberated from curses and lies.",
+          "confidence": 0.9617392420768738
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmon6xg9",
+          "start": 1590.6559381943978,
+          "end": 1605.9378715277312,
+          "text": "The Jester\nLook forward to it. It will be a world beyond your imagination.",
+          "confidence": 0.944471001625061
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm5nbval",
+          "start": 1605.9378715277312,
+          "end": 1623.5888381943978,
+          "text": "The Jester\nordinary people of Snezhnaya may not understand these details, in this frigid\nd in a ceaseless struggle against the environment, in this nation to which the\ngods have never shown favor…",
+          "confidence": 0.9704753756523132
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmjmnq7x",
+          "start": 1623.5888381943978,
+          "end": 1688.0699215277311,
+          "text": "The Jester\neve that standing in solidarity with the Tsaritsa in our shared \"struggle\" will\nsurely usher in a new and better world.",
+          "confidence": 0.9241235852241516
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmi02fbo",
+          "start": 1688.0699215277311,
+          "end": 1706.388221527731,
+          "text": "Paimon\nLly doesn't remember! He's basically a stranger! You've gotta believe Paimon!",
+          "confidence": 0.9733575582504272
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm1u9c8q",
+          "start": 1706.388221527731,
+          "end": 1717.8663548610643,
+          "text": "The Jester\nexplain. The reason Paimon reacted to the \"Anti-Celestia Energy\" developed by\nthe Armory Palace…",
+          "confidence": 0.9654210805892944
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmy9fqcf",
+          "start": 1717.8997215277311,
+          "end": 1783.2483381943978,
+          "text": "The Jester\nshe comes from Celestia herself. More specifically, she is one of its creations.",
+          "confidence": 0.9735261797904968
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqml7nb90",
+          "start": 1783.2483381943978,
+          "end": 1792.7411548610644,
+          "text": "Paimon\nPaimon? A creation of Celestia?",
+          "confidence": 0.955104112625122
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmk8kzr8",
+          "start": 1792.7411548610644,
+          "end": 1816.2980215277312,
+          "text": "MurderofBirds\nwas blinded by anger earlier, but thinking back on it… Ronova also said that\nn is a creation of Celestia, but she lacks Celestia's power or authority…)",
+          "confidence": 0.9719476699829102
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmnwti7g",
+          "start": 1816.2980215277312,
+          "end": 1824.8232048610644,
+          "text": "The Jester\nW, the lunar fragments in Nod-Krai… were \"pulled\" down from the sky using\nFatui technology.",
+          "confidence": 0.9457563161849976
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmgsrhl8",
+          "start": 1824.8899381943977,
+          "end": 1837.302338194398,
+          "text": "The Jester\nrst application of this technology was in Khaenri'ah, over five hundred years\nago…",
+          "confidence": 0.8406221270561218
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmkoze67",
+          "start": 1837.302338194398,
+          "end": 1953.3075634397137,
+          "text": "The Jester\ntechnology upon the heavens, and the response I received… was none other\nthan Paimon, descending from Celestia.",
+          "confidence": 0.9344730377197266
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm0zvwq1",
+          "start": 1953.3075634397137,
+          "end": 2051.566388194398,
+          "text": "The Jester\nher to the Vinster King, but he took no interest in this gift, nor did it satisfy\nhim.",
+          "confidence": 0.9401551485061646
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm2hk90h",
+          "start": 2051.566388194398,
+          "end": 2066.1142548610646,
+          "text": "The Jester\nn took up temporary residence in my palace until, of course, the arrival of the\nCataclysm.",
+          "confidence": 0.9462855458259584
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmt70fyq",
+          "start": 2066.1142548610646,
+          "end": 2116.047471527731,
+          "text": "Paimon\nlon's a little confused. You're talking about things that happened in Khaenri'ah\nfive hundred years ago! You're saying Paimon was there for that?",
+          "confidence": 0.967025637626648
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmsr0roz",
+          "start": 2116.047471527731,
+          "end": 2130.161571527731,
+          "text": "Paimon\nn doesn't remember any of that! Falling from the sky, being given away as a\ngift…Noneofit!",
+          "confidence": 0.970267653465271
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm8uazja",
+          "start": 2130.161571527731,
+          "end": 2210.7921215277315,
+          "text": "The Jester\nd through the Cataclysm, perhaps you, too, were burdened with some manner\nlthough losing your memories would indeed be the smallest price Ihave ever\nseen paid.",
+          "confidence": 0.9587391018867492
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmpwbvar",
+          "start": 2210.7921215277315,
+          "end": 2227.1251048610648,
+          "text": "Paimon\njust her memories from Khaenri'ah… Paimon doesn't even know how she spent\nve hundred years. She only has memories from the past few years,no matter\nhow hard she tries to remember…",
+          "confidence": 0.9645500779151917
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm53mi23",
+          "start": 2227.1251048610648,
+          "end": 2257.205154861065,
+          "text": "Paimon\ntimon like back in Khaenri'ah? Did she know a whole lot because she came from\nCelestia? Was she super smart?",
+          "confidence": 0.962949275970459
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmxhme6c",
+          "start": 2257.205154861065,
+          "end": 2282.1300548610648,
+          "text": "The Jester\nately, when you arrived in Khaenri'ah, your consciousness was like that of a\nrn infant… None could say what kind of being you once were in Celestia.",
+          "confidence": 0.9619070887565612
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm7i2sya",
+          "start": 2282.1300548610648,
+          "end": 2298.546454861065,
+          "text": "The Jester\ntime you lived in Khaenri'ah, your personality was no different from how it is\nnoW.",
+          "confidence": 0.8618980050086975
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmibimua",
+          "start": 2298.546454861065,
+          "end": 2338.503038194398,
+          "text": "Paimon\nimon's plan to get her memories back and become super smart is ruined before\nit could even start…",
+          "confidence": 0.97517192363739
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmdhp2hh",
+          "start": 2338.503038194398,
+          "end": 2413.1109048610647,
+          "text": "Paimon\nven though Paimon lost her memories, she still feels weirdly close to you for\nason. That must mean you took pretty good care of Paimon back then, huh!",
+          "confidence": 0.9776595234870912
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmo9hfra",
+          "start": 2413.1109048610647,
+          "end": 2455.7868715277314,
+          "text": "The Jester\ncontrary, I completely ignored your existence.I was entirely focused on my\nstruggle against Hroptatyr\"The Wise\"…",
+          "confidence": 0.9634964466094972
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm9ewyt3",
+          "start": 2456.020438194398,
+          "end": 2471.9224827100848,
+          "text": "The Jester\n, as I see it, it is as if you are the only sane thing that survived that era of\ninsanity, and thus, are worthy of protection.",
+          "confidence": 0.917845904827118
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm0bdjt6",
+          "start": 2471.9224827100848,
+          "end": 2483.848238194398,
+          "text": "Paimon\ned. Man, Paimon's gotta stop projecting friendship on everyone she meets.",
+          "confidence": 0.9780824184417723
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmpgekrz",
+          "start": 2483.848238194398,
+          "end": 2548.713038194398,
+          "text": "Paimon\nurderofBirds… E-Even though you know Paimon's some\n\"creation of Celestia\"\nnow, you still want her right? Y—You're not going to abandon her?",
+          "confidence": 0.9625063538551332
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmw5v1i9",
+          "start": 2548.7797715277316,
+          "end": 2570.584888194398,
+          "text": "Paimon\new. That's a relief! Paimon's just learning about this too. She's barely even\nprocessed it!",
+          "confidence": 0.9666138887405396
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmenxg6h",
+          "start": 2570.584888194398,
+          "end": 2590.1878048610647,
+          "text": "MurderofBirds\nfor telling me so much. I'm a bit surprised, honestly. I didn't expect you to be\nquite so transparent with me.",
+          "confidence": 0.9691041111946106
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmtjltls",
+          "start": 2590.1878048610647,
+          "end": 2641.255488194398,
+          "text": "The Jester\nn the circumstances, the Fatui need not hide anything from our allies.",
+          "confidence": 0.9435263872146606
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmvukpgj",
+          "start": 2641.255488194398,
+          "end": 2643.841404861065,
+          "text": "Paimon\n\"Allies\"?",
+          "confidence": 0.9719008207321168
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmvrfchj",
+          "start": 2643.8747715277314,
+          "end": 2662.1930715277313,
+          "text": "The Jester\nProject Mistilteinn, we must first resolve our issue with the Ruler of Death.\nesume correctly… you have no intention of letting her actions go unpunished\neither, do you?",
+          "confidence": 0.9442178010940552
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmiqcpba",
+          "start": 2662.1930715277313,
+          "end": 2672.8036715277312,
+          "text": "MurderofBirds\nht. Ever since she said she intends to\"reclaim\" Paimon when we next meet, I\nfigured reconciliation was out of the question.",
+          "confidence": 0.9569132328033448
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmxhc9cq",
+          "start": 2672.8036715277312,
+          "end": 2710.7082048610646,
+          "text": "The Jester\npponent of this caliber, deliberating over our allegiances would waste time we\n. We must join forces unreservedly with whomever we can if we are to stand\nanything like a fighting chance.",
+          "confidence": 0.9441959261894226
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmks2kj4",
+          "start": 2710.7082048610646,
+          "end": 2727.664865445923,
+          "text": "Paimon\ng to challenge the Ruler of Death… just for Paimon? But… but Paimon's only…",
+          "confidence": 0.9441934823989868
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmbpphfx",
+          "start": 2727.664865445923,
+          "end": 2750.1142381943982,
+          "text": "Paimon\nThank you… Oh gee, now Paimon doesn't even know",
+          "confidence": 0.94399493932724
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm9y1lph",
+          "start": 2750.1142381943982,
+          "end": 2764.5453215277316,
+          "text": "The Jester\nitsa will return in triumph in short order, and the Fatui shall hold internal\nns regarding the enemy. The time for us to meet again will come very soon.",
+          "confidence": 0.9591803550720216
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmcj7x6u",
+          "start": 2764.5453215277316,
+          "end": 2784.3651215277314,
+          "text": "MurderofBirds\nThanks for your help with Paimon. I'll be sure to look after her for you.",
+          "confidence": 0.953377902507782
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmbjy9yb",
+          "start": 2784.648738194398,
+          "end": 2799.913988194398,
+          "text": "Paimon\nas just one another thing… Well, just a request, really. Paimon reeeally wants\nthis Mistilteinn thingy you're gonna use against the Heavenly Principles looks\nlike!",
+          "confidence": 0.9214690923690796
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmfn3oah",
+          "start": 2799.913988194398,
+          "end": 2808.1055048610647,
+          "text": "Paimon\nPaimon knows it's top secret and stuff, but she just had to ask. It's okay if the\nanswer's no…",
+          "confidence": 0.9363041520118712
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmmi0dh2",
+          "start": 2808.5893215277315,
+          "end": 2811.0751381943983,
+          "text": "The Jester\nCertainly, you may.",
+          "confidence": 0.943269431591034
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmnjmr5m",
+          "start": 2811.0751381943983,
+          "end": 2824.3050215277312,
+          "text": "Paimon\neal!? Uh… A—Actually, maybe it's best not to…? What if Ronova suddenly pops\nup again? She might take this chance to",
+          "confidence": 0.9214743971824646
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqm4yl03k",
+          "start": 2824.321704861065,
+          "end": 2838.2189215277313,
+          "text": "The Jester\ntechnology is not yet fully developed, it has nevertheless reached the stage\nstia's creations are unable to damage it. In that regard, you may rest assured.",
+          "confidence": 0.9681954979896544
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmpidaya",
+          "start": 2838.235604861065,
+          "end": 2856.587271527731,
+          "text": "Paimon\nno wonder Paimon felt so out of sorts recently, even though it was super far\nit then, Paimon's ready to take a sneaky peek at this top-secret super weapon!",
+          "confidence": 0.9794926643371582
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muuvtmqmds0kv8",
+          "start": 2894.341654861065,
+          "end": 2945.9932548610645,
+          "text": "Paimon\nHuh? Oh, hey there, Odette!",
+          "confidence": 0.9697326421737672
+        }
+      ]
+    }
+  ],
+  "created_at": "1788972175",
+  "updated_at": "1791356546"
+}

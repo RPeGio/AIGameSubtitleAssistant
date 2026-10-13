@@ -8,6 +8,7 @@
 
 pub mod config;
 pub mod dhash;
+pub mod embed;
 pub mod funasr;
 pub mod llm;
 pub mod moss;
@@ -1018,6 +1019,33 @@ impl LlmManager {
     }
 }
 
+// ─── 向量融合运行时（T4/R2）───────────────────────────────
+
+/// 全局向量融合作管理器 —— 持有配置（不做 provider 抽象：只有 worker 一种实现）
+pub struct EmbedManager {
+    config: RuntimeConfig,
+    runtime_dir: PathBuf,
+}
+
+impl EmbedManager {
+    /// 构造。**不做就绪探测**（不 spawn python：worker 加载模型需秒级，
+    /// 可加载性由真正融合时验证并返回具体错误）。
+    pub fn new(config: RuntimeConfig, runtime_dir: PathBuf) -> Self {
+        Self {
+            config,
+            runtime_dir,
+        }
+    }
+
+    pub fn config(&self) -> &RuntimeConfig {
+        &self.config
+    }
+
+    pub fn runtime_dir(&self) -> &PathBuf {
+        &self.runtime_dir
+    }
+}
+
 // ─── LLM 单元测试 ─────────────────────────────────────────
 
 #[cfg(test)]
@@ -1069,4 +1097,76 @@ pub async fn check_llm_runtime(app: tauri::AppHandle) -> LlmRuntimeStatus {
             ready: false,
             message: format!("LLM 运行环境探测失败: {}", e),
         })
+}
+
+// ─── 向量融合 Tauri 命令 ─────────────────────────────────
+
+/// 向量融合运行时状态（就绪 = 四个 embed_* 配置齐 + worker 脚本真实存在）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbedRuntimeStatus {
+    pub ready: bool,
+    pub message: String,
+}
+
+impl EmbedManager {
+    /// 就绪判定**只做静态检查**（配置齐 + worker 脚本存在），不 spawn python——
+    /// 模型可加载性由真正融合时验证并给出具体错误（与 FunAsr/Llm 就绪探测同哲学）。
+    pub fn status(&self) -> EmbedRuntimeStatus {
+        let missing: Vec<&str> = [
+            ("embed_worker", &self.config.embed_worker),
+            ("embed_model", &self.config.embed_model),
+            ("embed_tokenizer", &self.config.embed_tokenizer),
+            ("embed_deps_dir", &self.config.embed_deps_dir),
+        ]
+        .iter()
+        .filter(|(_, v)| v.is_empty())
+        .map(|(name, _)| *name)
+        .collect();
+        if !missing.is_empty() {
+            return EmbedRuntimeStatus {
+                ready: false,
+                message: format!(
+                    "向量融合未配置（缺 {}，请先跑 scripts/bootstrap_embed.ps1）",
+                    missing.join(" / ")
+                ),
+            };
+        }
+        let worker = resolve_path(&self.config.embed_worker, &self.runtime_dir);
+        let deps = resolve_path(&self.config.embed_deps_dir, &self.runtime_dir);
+        let python = resolve_path(&self.config.python_path, &self.runtime_dir);
+        if !python.is_file() {
+            return EmbedRuntimeStatus {
+                ready: false,
+                message: format!("Python 解释器不存在: {}", python.display()),
+            };
+        }
+        if !worker.is_file() {
+            return EmbedRuntimeStatus {
+                ready: false,
+                message: format!(
+                    "fuse worker 脚本不存在: {}（请先跑 scripts/bootstrap_embed.ps1）",
+                    worker.display()
+                ),
+            };
+        }
+        if !deps.is_dir() {
+            return EmbedRuntimeStatus {
+                ready: false,
+                message: format!(
+                    "向量依赖目录不存在: {}（请先跑 scripts/bootstrap_embed.ps1）",
+                    deps.display()
+                ),
+            };
+        }
+        EmbedRuntimeStatus {
+            ready: true,
+            message: "向量融合运行时就绪".into(),
+        }
+    }
+}
+
+/// Tauri 命令：探测向量融合运行环境是否就绪（供 FuseView 就绪卡）
+#[tauri::command]
+pub fn check_embed_runtime(state: tauri::State<'_, EmbedManager>) -> EmbedRuntimeStatus {
+    state.status()
 }

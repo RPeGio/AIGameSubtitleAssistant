@@ -1,6 +1,6 @@
 [package]
 name = "ai_game_subtitle_assistant"
-version = "0.1.0"
+version = "0.3.0"
 description = "AI Game Subtitle Workstation — 游戏剧情字幕生产工作站"
 authors = ["you"]
 edition = "2021"

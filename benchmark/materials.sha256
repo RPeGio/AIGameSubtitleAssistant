@@ -1,0 +1,13 @@
+﻿# 基准素材（OCR 基准所需的 8 个 mp4）清单。
+# 格式：<sha256>  <字节数>  <release 资产名>  <落地文件名>
+# 两列名字通常不同：GitHub 会改写 release 资产名（实测括号 () 各被替换为 .），
+# 故必须按「资产名」拼下载 URL、按「落地文件名」保存——否则 404。
+# 由 scripts/fetch_bench_materials.ps1 消费（下载后校验 SHA256 与字节数）。
+555f4385c47df736a69e3ea54e15b9c4dc8ac79088539d466eb88fd39330caae  129246838  quality_bench_test.voiced._5min.mp4  quality_bench_test(voiced)_5min.mp4
+998b66658c9e24e3db3e57fc4ea9964cc090b81069aa4a269dfc977769ac7cfc  44577523  quality_bench_test_corpus.voiced._5min.mp4  quality_bench_test_corpus(voiced)_5min.mp4
+b5821948ccf1a427e15d7ed7cdb7c3f790989640fd3540bdee04a83b9f49a110  391299571  quality_bench_test.non-voiced._11min.mp4  quality_bench_test(non-voiced)_11min.mp4
+250a8497dc6458312cb2a90362fe8042ce48abceb4ef20ea18a7467d83d0c15d  6509336  quality_bench_test_corpus.non-voiced._11min.mp4  quality_bench_test_corpus(non-voiced)_11min.mp4
+9260c7f8e13e640b051ec59a4203c3d9fb1f91f9eda64409287c021f0e0669fc  1477953718  quality_bench_test.voiced._48min.mp4  quality_bench_test(voiced)_48min.mp4
+651a5232363cb03b505ce0f1889fc8e77a7a7f308f1ca93b25f3ce0b7f99cdcc  428670899  quality_bench_test_corpus.voiced._48min.mp4  quality_bench_test_corpus(voiced)_48min.mp4
+a20eae9d5b41c5e14b30710383dcd95bbeac05f21853c608351889cf5fc65f09  426726896  pv_reaction_vesna.voiced._12min.mp4  pv_reaction_vesna(voiced)_12min.mp4
+b1b00b4ca6e0f1ad1ed56d28cc9b5f1bc933fb8e41d2520b43b03f7536d3f53b  89263478  pv_reaction_vesna_corpus.voiced._12min.mp4  pv_reaction_vesna_corpus(voiced)_12min.mp4

@@ -11,7 +11,7 @@ pub mod llm;           // LLM 推理流水线（Phase 5）
 pub mod fuse;          // AI 融合流水线（Phase 4）
 pub mod export;        // 导出（Phase 6 实现）
 
-use ai_runtime::{config::resolve_runtime_dir, AsrManager, LlmManager, OcrManager, RuntimeConfig};
+use ai_runtime::{config::resolve_runtime_dir, AsrManager, EmbedManager, LlmManager, OcrManager, RuntimeConfig};
 use tauri::Manager; // app.path() 等
 
 /// Tauri 应用入口
@@ -50,6 +50,7 @@ pub fn run() {
             };
             app.manage(OcrManager::new(config.clone(), runtime_dir.clone()));
             app.manage(AsrManager::new(config.clone(), runtime_dir.clone()));
+            app.manage(EmbedManager::new(config.clone(), runtime_dir.clone()));
             app.manage(LlmManager::new(config, runtime_dir));
             Ok(())
         })
@@ -73,6 +74,7 @@ pub fn run() {
             ai_runtime::check_asr_runtime,
             ai_runtime::check_asr_engines,
             ai_runtime::check_llm_runtime,
+            ai_runtime::check_embed_runtime,
             ai_runtime::asr_cancel,
             // ocr 模块
             ocr::commands::run_ocr,

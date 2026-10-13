@@ -35,7 +35,7 @@
 ```
 视频输入
  ↓
-剧情文字识别 + 语音识别 + 说话人分离 + 自动打轴 + 字幕整理
+剧情文字识别 + 打轴+转写（语音 ASR + 说话人分离 / 画面嵌字 OCR）+ 字幕整理
  ↓
 人工校正
  ↓
@@ -106,11 +106,11 @@ AI Runtime
                                       |
           ------------------------------------------------
           |                    |                       |
-       PaddleOCR            MOSS                 Local LLM
-       OCR Engine       ASR+Diarization        Qwen/Gemma
+       PaddleOCR          MOSS / FunASR          Local LLM
+       OCR Engine       ASR+Diarization        Qwen2.5-3B
                                       |
                               Project Storage
-                              SQLite + JSON
+                              <name>.gsa (JSON)
 ```
 
 ---
@@ -131,15 +131,11 @@ AI Runtime
 
 负责：视频处理调度、AI任务管理、文件管理、时间轴数据、导出
 
-目录：
+目录（`src-tauri/src/`）：
 ```
-src-tauri
-├── video
-├── timeline
-├── subtitle
-├── ai_runtime
-├── export
-└── project
+├── video / ocr / asr / llm / fuse   # 视频处理、OCR、ASR、LLM 调用、融合
+├── ai_runtime / export / project    # provider 抽象、字幕导出、项目持久化
+└── timeline / subtitle              # 空壳占位（时间轴在前端 store，字幕生成在 export）
 ```
 
 ## Video Engine: FFmpeg
@@ -150,11 +146,11 @@ src-tauri
 
 用途：识别游戏剧情文本、UI文字
 运行方式：Rust → Python Worker → PaddleOCR
-通信：gRPC / ZeroMQ
+通信：JSON lines over stdio（常驻 worker 子进程，无端口/HTTP）
 
-## ASR + Speaker Diarization: MOSS-Transcribe-Diarize 0.9B
+## ASR + Speaker Diarization: MOSS-Transcribe-Diarize 0.9B / FunASR
 
-替代 FunASR + pyannote
+双引擎可选（用户按素材与硬件选）：MOSS-Transcribe-Diarize 0.9B（说话人分离自动、更准）或 FunASR + diarize（本地 GPU 更快；说话人分离用 WeSpeaker 嵌入，不经 pyannote）
 
 输入：audio
 输出：
@@ -169,9 +165,9 @@ src-tauri
 
 ## Local LLM: llama.cpp Runtime
 
-默认推荐：Qwen3-4B-Instruct / Qwen2.5-3B-Instruct (GGUF Q4_K_M)
+默认：Qwen2.5-3B-Instruct (GGUF Q4_K_M)；可经 `runtime/config.json` 的 `llm_model` 换其它 GGUF
 
-用途：OCR文本整理、去重、格式化、OCR纠错、翻译辅助
+用途：语料与转写侧的对应（融合）——现为编号对应 + 语料文本逐字搬运；另供前端 LLM 测试台。**不产出角色名**（纯文本契约，见 §6）
 
 ---
 
@@ -192,16 +188,26 @@ interface SubtitleEvent {
 }
 ```
 
+（实现为 `TimelineEvent` 标签联合：`ocr_text` / `embed_ocr` / `ocr_region` / `asr` / `fused` / `manual`——见 [docs/development.md](docs/development.md) 的数据模型。）
+
 ## Project 结构
 
-保存为 `<项目名>.gsa` 项目文件：首行为魔数头 `GSA-PROJECT v1`，其后为 JSON（内部结构如下）：
+保存为 `<项目名>.gsa` 项目文件：首行为魔数头 `GSA-PROJECT v1`，其后为 JSON（实际字段如下，详见 [docs/development.md](docs/development.md)）：
 
 ```json
 {
+  "path": "<项目名>.gsa 的绝对路径（项目身份 = 文件）",
   "video": "",
+  "source_video": "",
+  "corpus": [ { "id": "", "text": "", "source": "paste|image_ocr|ocr_track", "created_at": "" } ],
+  "corpus_ocr_diffs": [],
   "tracks": [
-    { "type": "subtitle", "events": [] },
-    { "type": "voice", "events": [] }
+    {
+      "id": "", "name": "",
+      "type": "ocr_text|embed_ocr|ocr_region|asr|fused|manual",
+      "track_role": "game|streamer", "scope": "output|control", "page": "", "video": "clip|source",
+      "events": []
+    }
   ]
 }
 ```
@@ -222,12 +228,12 @@ Video → FFmpeg → Frame Stream + Audio Stream
 Frame → 字幕区域裁剪 → 变化检测 → OCR → Raw Text → Deduplicate → Subtitle Event
 ```
 
-变化检测使用 SSIM / perceptual hash，避免每帧OCR。
+变化检测使用 64-bit dHash（汉明距离阈值），避免每帧 OCR。
 
 ## ASR Pipeline
 
 ```
-Audio → MOSS → Speaker Segments → Text Events
+Audio → ASR 引擎（MOSS / FunASR + diarize）→ Speaker Segments → Text Events
 ```
 
 输出：主播 S01、剧情角色 S02
@@ -236,14 +242,18 @@ Audio → MOSS → Speaker Segments → Text Events
 
 目标：把 S01 转换为 "派蒙"
 
-优先级：
+优先级（设计）：
 1. OCR角色名匹配
 2. 声音embedding
 3. LLM辅助判断
 
+**现状：未实现**——说话人契约已暂时整体放弃（缺陷台账 F1/F2）：融合只做文本搬运、**不产出角色名**，`character` 仅可人工填写（或由轨道命名同步到事件）。
+
 ## Subtitle Fusion
 
-融合 OCR字幕 + ASR字幕 + Speaker信息，生成最终字幕事件。
+把可靠语料文本替换转写侧（ASR / 嵌字 OCR）文本，时间轴沿用转写侧段。
+**现状**：向量召回 + 统一转移 DP（T4 已落地，2026-10-13，见 §6.3），命中段逐字搬运语料原文（纯文本契约）。
+**历史**：原 LLM 编号对应路线实测未在做跨语言对齐（缺陷台账 F13），已随 T4 退役。
 
 ---
 
@@ -251,13 +261,11 @@ Audio → MOSS → Speaker Segments → Text Events
 
 支持多轨、拖动、分割、合并、修改时间
 
-Track:
+Track（实际类型 + 角色）：
 ```
 Timeline
-├── Video Track
-├── Character Subtitle Track
-├── Streamer Subtitle Track
-└── Translation Track
+├── 控制轨 (scope=control)：ocr_region 选区，归属 page=corpus/asr/fuse/editor
+└── 产物轨 (scope=output)：ocr_text / embed_ocr / asr (track_role=game|streamer) / fused / manual
 ```
 
 ---
@@ -271,8 +279,8 @@ Frontend: HTML5 Video + Canvas Overlay
 
 # 9. 导出
 
-第一阶段：SRT / ASS
-第二阶段：Premiere XML / DaVinci Resolve XML / Aegisub
+已实现：单轨导出 SRT / ASS / LRC / TXT
+后续：Premiere XML / DaVinci Resolve XML / Aegisub
 
 ---
 
@@ -284,16 +292,18 @@ trait TextProcessor {
 }
 ```
 
-实现：local_llama.rs / openai.rs / ollama.rs / none.rs
+实现（现状）：`src-tauri/src/ai_runtime/` 的 provider trait + `llm.rs`（llama.cpp 调用）+ NoneProvider 占位；离线约束下不提供云端 provider（openai / ollama 未实现）。
 
 ---
 
 # 11. 用户模式设计
 
-启动时 AI 模式选择：
+规划：启动时 AI 模式选择：
 - 完全离线模式（内置模型）
 - 高级模式（自定义API）
 - 混合模式（本地处理 + 云端翻译）
+
+**现状：只有完全离线模式**——Rust 侧无 HTTP 客户端、应用不做任何网络请求（见 [docs/development.md](docs/development.md)）；自定义 API / 云端翻译与 §2.1 的离线约束冲突，需先复议，未实现。
 
 ---
 
@@ -310,6 +320,8 @@ GameSubtitleAssistant
 ```
 
 首次启动检测模型是否存在 → 下载 → 校验hash → 启用
+
+**现状修正**：模型**不入包**，由 `scripts/bootstrap_*.ps1` 下载并校验 SHA256 后落到 `runtime/`；**应用启动只做就绪检测**（`check_*` 命令），不在应用内下载（安装包携带 runtime 的分发方案尚未配置）。
 
 ---
 
@@ -331,7 +343,8 @@ GameSubtitleAssistant
 - 生成主播轴和角色语音轴
 
 ## Phase 4：AI融合
-- OCR + ASR 合并、角色识别、自动整理
+- OCR + 转写侧（ASR / 嵌字）合并、自动整理（已实现：向量召回 + 统一转移 DP + 语料原文逐字搬运，T4；原 LLM 编号对应路线已退役）
+- 角色识别：**暂缓**（说话人契约整体放弃，见 F1/F2 与 §6 Character Resolver）
 
 ## Phase 5：Local LLM
 - llama.cpp + Qwen 模型接入
@@ -349,21 +362,71 @@ GameSubtitleAssistant
 
 **① 获取可靠的游戏内文本**
 - 现状：OCR 剧情录屏（区域框选 + 变化检测 + PaddleOCR + 去重合并）
-- 未来：支持用户手动提供——上传剧情文本截图后 OCR，或直接上传纯文本
-- 可靠文本与视频时间轴解耦，作为独立"文本语料"（后续由 LLM 融合消费）
+- 已实现：用户手动提供——上传剧情文本截图后 OCR（`run_ocr_images`），或直接粘贴 / 导入纯文本（`read_text_file`）
+- 可靠文本与视频时间轴解耦，作为独立"文本语料"（由融合消费）
 
 **② 上传要烤制的录播切片视频，获取精确的字幕轴与视频内嵌字轴**
-- ASR 说话人分离：提供说话人时间轴 + 转录文本
-- 用户手动标记：主播语音（用于字幕轴）与游戏内语音（用于视频内嵌字轴）
-- 未来：OCR 切片视频的字幕，适配没有配音的游戏任务
-- 未来：变化检测处使用二分（或其他方法）提高时间轴准确度
+- 打轴+转写有**两条并列路线**（可同时存在于同一工程，融合侧统一消费）：**ASR**（有配音：时间轴来自语音活动 + 说话人分离）与**嵌字 OCR**（无配音：时间轴来自画面文字变化）
+- 用户手动标记：主播语音（仅供字幕轴参考 / 导出）与游戏内容（参与融合）
+- 已实现：OCR 切片视频的内嵌字幕，适配没有配音的游戏任务
+- 已封盘：起止两侧帧级真值归因完毕，0.5s 网格内无通用可修项（见 benchmark/OCR_TIMELINE_CLOSURE.md）——"变化检测处二分"不再列为待办
 
-**③ 将可靠文本与嵌字轴中的转写外语文本对应**
+**③ 将可靠文本与转写侧（ASR / 嵌字）的外语文本对应**
 - 用可靠的游戏文本替换转写文本，保留其时间轴
-- 实现：LLM 融合（链路已基本搭建，但未实测实际长文本场景下的效果，需后续优化）
+- 现状：向量召回 + 统一转移 DP（T4 已落地，2026-10-13）——语料与转写段各自编码后由全局单调 DP 选整体最优路径，命中段逐字搬运语料原文
+- 历史：原 LLM 融合（编号对应）实测主导行为是**按下标对齐**、跨语言语义对齐未发生（缺陷台账 F13），已随 T4 退役
 
 ### 6.2 其他
 - 字幕编辑器、双语字幕、翻译辅助
+
+### 6.3 ✅ 已完成：T4 落地 + 前端「融合后置信度审计表」（同轮做，2026-10-13）
+
+**状态：已完成**——R1/R2/R3 全绿，PR #43 合并入 dev（`7d8d5c9`）。以下为立项时的依据、耦合论证与落地记录，保留原文。
+
+**T4 = 把已验证的向量召回 + 统一转移 DP 落地产品**，替换 `src-tauri/src/fuse/` 的 LLM 跨语言对齐。
+依据：F13 证明 LLM 未在做跨语言对齐（[benchmark/FUSE_PIPELINE_DEFECTS.md](benchmark/FUSE_PIPELINE_DEFECTS.md)）；实验室路线四案例 **226/236 计分段（95.8%）**（[benchmark/FUSE_THRESHOLD_CALIBRATION.md](benchmark/FUSE_THRESHOLD_CALIBRATION.md) §7.9）。
+
+**为什么与前端「融合后置信度审计表」同轮做**——两者**耦合**：审计表需要融合侧产出**置信度 / 告警信号**，而该信号的标定结论已经定了，必须一并设计：
+
+- `score` **不是正确性信号**：精确率在任何阈值下都 ≈ 错误基准率（§7.9 实测；取 0.86 时标记率 89.4% 才换来召回 100% ⇒ 清单等价于"全量复核"）；
+- 「该不配」行掩码判据**精确**（vesna 空集段 12/13、四案例假阳性 0），但**依赖语言对与嵌入模型**，须按素材开关（§7.6 / §7.9）；
+- ⇒ 审计表**不应以 `score` 作为唯一信号**，需要结构化信号：**路径走了回退 / 复用**、**语料行被重复使用**、**掩码近似命中**、**段落未命中**。
+  这条结论必须写进实现——否则后来者会照着已被证否的信号（`margin` / 单一 `score` 阈值）去实现。
+
+**前端形态**（用户决策）：融合跑完后把低置信段罗列出来，逐段可选 **保留当前 / 从候选名单替换 / 在整个语料列表里选择替换 / 不配该条**。
+
+**T4 进度（2026-10-13，本轮）**：
+- ✅ **R1 已落地（Python 侧产品化）**：新增 `scripts/fuse_core.py`（对齐核心单一真源：表头剥离 + E5 编码 +
+  统一转移 DP + 两个掩码）、`scripts/embed_worker.py`（产品侧一次性子进程）、`scripts/fuse_worker_parity.py`
+  （产品 ↔ 实验台逐段对拍门）；`fuse_calib.py`/`tests/fuse_lab/__init__.py` 改为从 `fuse_core` 导入；
+  `bootstrap_embed.ps1` 补 worker 部署与 `embed_worker` 配置键。验收：selfcheck 两项等价通过、
+  `fuse_align_srt` 12 产物与 R0 基线逐字节相同、对拍 8/8 零差异、`cargo test` 287/0。
+  遗留见 [FUSE_PIPELINE_DEFECTS.md](benchmark/FUSE_PIPELINE_DEFECTS.md) F14。
+- ✅ **F14 已实证收口（2026-10-13）**：「同台词、跨说话人」的站桩剧情——拟定的算法修复
+  （R4 按说话人分块对齐）经实验**否决**：真 4 案例回归 pierro 119→59（总 149/236），
+  且 flat 在「异台词 + 语料分组 + 说话交错」合成场景本就全对；flat 唯一失败模式
+  （语料精确去重后同台词重复行）错绑行文本逐字相同 ⇒ **字幕内容不受影响**，
+  残留面仅为审计表的说话人归属展示（重复行本就命中 reused/低分结构信号，人工裁决）。
+  实验依据：`scripts/fuse_speaker_exp.py`（本机 log：`temp/f14_exp3.log`；temp 不入库，按脚本头注释复跑即得），
+  详见 [FUSE_PIPELINE_DEFECTS.md](benchmark/FUSE_PIPELINE_DEFECTS.md) F14 实验收口。
+- ✅ **R2 已落地（Rust 侧接线）**：`RuntimeConfig` 补 4 个 `embed_*` 字段（整组必配或整组为空、防穿越校验）、
+  `ai_runtime/embed.rs` 一次性子进程客户端 + `EmbedManager` + `check_embed_runtime` 命令、
+  `fuse/mod.rs` 重写为向量路径（越界 `ocr_index` 报错不静默降级）+ 契约扩三处
+  （Rust `FuseCandidate`/`FuseMeta`/`FuseStats`、`FusedEvent.fuse_meta`（`#[serde(default)]` 兼容旧工程）、TS 同步）、
+  删除 LLM 融合路径（`bench_fusion.rs` 退役、F13 复现改 Python 判别器）。验收：`cargo test` 250+15+15 全绿、
+  对拍 8/8 零差异、`fuse_e2e`（moon 15/15）通过、`pnpm build` 通过。
+- ✅ **R3 已落地（前端「融合后置信度审计表」）**：FuseView 页内审计栏——风险分层
+  （**A 重点** = 掩码 / 回退 / 复用转移 / 未命中，默认展开；**B 低分** = `score<0.82` 折叠单行标记，
+  仅展示辅助**不是告警**，依据 §7.9⑥；已复核清零为 normal）、四动作（保留 / 候选替换（继承候选实测分）/
+  全语料惰性弹窗选择 / 不配回退融合时转写原文）、`reviewed` 与改判结果随 `fuse_meta` 落 `.gsa`；
+  纯逻辑 `src/stores/fuseAudit.ts` + 自检 `scripts/check_fuse_audit.mjs`（分层/排序/计数/四动作/可逆性全断言通过）。
+  设计记录见 [FUSE_THRESHOLD_CALIBRATION.md](benchmark/FUSE_THRESHOLD_CALIBRATION.md) §八。
+- **收口快照（2026-10-13，PR43 审查独立复现实测；以上各行内数字为各自落地时点）**：
+  `cargo test` 252 lib + 15 bench_corpus + 15 bench_hardsub 全绿（fuse_e2e 等 6 个二进制的
+  `#[ignored]` 项不受影响）、`fuse_e2e --ignored`（moon）15/15、selfcheck 两项等价、
+  对拍 8/8 零差异、`check_fuse_audit` 30 断言、`pnpm build` 通过、clippy 与主基线持平。
+  审查收尾（review-reports/PR43_REVIEW.md 处置记录）：P1-1 配置兑现（embed_model/onnx
+  拆分传入 worker）+ P2-1/P2-2 临时目录唯一化与 120s 超时兜底 + P2-4 候选下标显式校验。
 
 ## Phase 7：高级功能（未来）
 - TTS、声音克隆、自动翻译、游戏角色声音库

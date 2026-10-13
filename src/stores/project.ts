@@ -20,8 +20,10 @@ import type {
   FuseAsrInput,
   FuseResult,
   FusedSegment,
+  FusedEvent,
 } from "../types";
 import { OCR_PROGRESS_EVENT, ASR_PROGRESS_EVENT, LLM_PROGRESS_EVENT } from "../types";
+import { buildAuditRows, applyFusedDecision, type FuseAuditDecision } from "./fuseAudit";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
@@ -68,6 +70,8 @@ const EMBED_OVERLAP_DROP = 0.5;
 /// - 嵌字 OCR 段（track_role=game）与 ASR 段并集重叠 ≥ EMBED_OVERLAP_DROP 则丢弃；
 ///   其余（未配音处没有对应语音段）保留，天然嵌入无 ASR 的时间空隙
 /// 合并后按 start 升序、全局编号，转 FuseAsrInput（契约不变）。
+/// **不加说话人首行**（T4/F14）：向量对齐剥表头后说话人无去向，注入只制造
+/// 与已验证 226/236 口径不同源的输入；说话人语义的正式契约待设计重评审。
 function collectGameContentSegments(tracks: Track[]): FuseAsrInput[] {
   const asr = tracks
     .filter((t) => t.type === "asr" && t.track_role === "game" && t.events.length > 0)
@@ -94,7 +98,12 @@ function collectGameContentSegments(tracks: Track[]): FuseAsrInput[] {
 
   return [...asr, ...embeds]
     .sort((a, b) => a.start - b.start)
-    .map((e, i) => ({ index: i + 1, start: e.start, end: e.end, text: e.text }));
+    .map((e, i) => ({
+      index: i + 1,
+      start: e.start,
+      end: e.end,
+      text: e.text,
+    }));
 }
 
 function asrSegmentToEvent(seg: AsrSegment): TimelineEvent {
@@ -109,6 +118,8 @@ function asrSegmentToEvent(seg: AsrSegment): TimelineEvent {
   };
 }
 
+/// 融合产物事件：纯文本搬运，不再由融合写 character
+/// （`FusedEvent.character` 字段保留：仍可人工在编辑页填写、旧工程数据不丢）
 function fusedToEvent(seg: FusedSegment): TimelineEvent {
   return {
     id: generateId(),
@@ -116,7 +127,6 @@ function fusedToEvent(seg: FusedSegment): TimelineEvent {
     start: seg.start,
     end: seg.end,
     text: seg.text,
-    ...(seg.character ? { character: seg.character } : {}),
   };
 }
 
@@ -364,7 +374,7 @@ export const useProjectStore = defineStore("project", () => {
           projectPath: currentProject.value.path,
           videoPath,
         });
-        // 只合并字段，不整体替换 —— 防止并发写入的轨道（ensureDefaultTrack 等在
+        // 只合并字段，不整体替换 —— 防止并发写入的轨道（选区控制轨等在
         // loadedmetadata 后添加）被 set_project_video 返回的旧对象覆盖丢失
         currentProject.value.video = updated.video;
         currentProject.value.updated_at = updated.updated_at;
@@ -433,45 +443,6 @@ export const useProjectStore = defineStore("project", () => {
   async function removeRecentProject(path: string, deleteFile = false) {
     await invoke("remove_recent_project", { projectPath: path, deleteFile });
     await refreshRecentProjects();
-  }
-
-  /// 确保校对区基础产物轨存在（无 ocr_text 轨时补一个 mock 供校对总览展示）。
-  /// 不再创建 page=editor 的 OCR 选区控制轨：OCR 生产已迁至语料页（source）
-  /// 与转写页嵌字（clip，page="asr"，见 ensureAsrRegionTrack），避免重复建轨。
-  function ensureDefaultTrack(duration: number) {
-    if (!currentProject.value) return;
-    const tracks = currentProject.value.tracks;
-
-    if (!tracks.some((t) => t.type === "ocr_text")) {
-      tracks.push({
-        id: generateId(),
-        name: "剧情文本 (mock)",
-        type: "ocr_text",
-        track_role: "game",
-        scope: "output",
-        page: "",
-        video: "clip",
-        preview_visible: true,
-        events: [
-          {
-            id: generateId(),
-            type: "ocr_text",
-            start: 0.5,
-            end: duration * 0.1,
-            text: "旅行者，你来了",
-            confidence: 0.88,
-          },
-          {
-            id: generateId(),
-            type: "ocr_text",
-            start: duration * 0.45,
-            end: duration * 0.55,
-            text: "前方似乎有什么东西在等待",
-            confidence: 0.9,
-          },
-        ],
-      });
-    }
   }
 
   /// 语料页：确保剧情录屏（视频 A）的 OCR 选区控制轨存在。
@@ -1012,16 +983,16 @@ export const useProjectStore = defineStore("project", () => {
   // ── AI 融合（Phase 4）──────────────────────────────────
   const fuseRunning = ref(false);
 
-  /// 收集 corpus 语料文本（优先）与任意 ASR 段（按时间排序、编号），
-  /// 调 run_fuse 交给 LLM 融合，结果写入 fused 最终产物轨道（重跑覆盖）
-  async function runFuse(): Promise<FuseResult> {
+  /// 收集 corpus 语料文本，调 run_fuse 交给向量融合，结果写入 fused 最终产物轨道（重跑覆盖）。
+  /// `unmatchFilter`：「该不配」掩码开关（按素材，默认关；见 §7.6/§7.9 标定）
+  async function runFuse(unmatchFilter = false): Promise<FuseResult> {
     if (fuseRunning.value || !currentProject.value) throw new Error("当前无法执行 AI 融合");
     if (!currentVideoMeta.value) throw new Error("请先导入视频");
 
     // 可靠文本：只来自 corpus 语料（剧情录屏 OCR / 截图 / 手动）。
-    // 不回退 ocr_text 轨：它只可能是 mock 占位文本，或旧编辑页对"切片视频"的
-    // OCR 结果——那是"待替换的转写文本"，不是"可靠剧情文本"（可靠文本必须来自
-    // source 视频的语料，见 plan 6.1 ①步）。混作可靠文本会导致错误替换。
+    // 不回退 ocr_text 轨：它是旧编辑页对"切片视频"的 OCR 结果——那是"待替换的
+    // 转写文本"，不是"可靠剧情文本"（可靠文本必须来自 source 视频的语料，
+    // 见 plan 6.1 ①步）。混作可靠文本会导致错误替换。
     const project = currentProject.value;
     if (project.corpus.length === 0) {
       throw new Error(
@@ -1039,7 +1010,11 @@ export const useProjectStore = defineStore("project", () => {
     llmProgress.value = 0;
     llmMessage.value = "准备中...";
     try {
-      const result = await invoke<FuseResult>("run_fuse", { ocrTexts, asrSegments });
+      const result = await invoke<FuseResult>("run_fuse", {
+        ocrTexts,
+        asrSegments,
+        unmatchFilter,
+      });
       writeFusedSegments(result);
       llmProgress.value = 1;
       llmMessage.value = "完成";
@@ -1079,13 +1054,53 @@ export const useProjectStore = defineStore("project", () => {
   function writeFusedSegments(result: FuseResult) {
     recordSnapshot();
     const track = ensureFusedTrack();
-    track.events = result.segments.map(fusedToEvent).sort((a, b) => a.start - b.start);
+    // 审计元数据随事件持久化（fuse_meta 落 .gsa；下次打开工程审计表仍可见）
+    track.events = result.segments
+      .map((seg, i) => ({ ...fusedToEvent(seg), fuse_meta: result.metas?.[i] }))
+      .sort((a, b) => a.start - b.start);
+  }
+
+  // ── 融合审计表（R3）────────────────────────────────
+  /// 审计行 = fused 轨事件 × fuse_meta（数据源已随工程落盘）；
+  /// 跟随 fused 轨与语料自动重算，无融合结果时为空表。
+  const fusedAuditRows = computed(() => {
+    const project = currentProject.value;
+    if (!project) return [];
+    const track = project.tracks.find((t) => t.type === "fused");
+    if (!track) return [];
+    // fused 轨只装 FusedEvent（fuse_meta 随事件持久化），此处类型收窄成立
+    return buildAuditRows(track.events as FusedEvent[], project.corpus.map((c) => c.text));
+  });
+
+  /// 审计四动作入口（保留/替换/不配）。先在克隆上应用，成功才入撤销快照并
+  /// 写回（失败零副作用）；写回后自动保存把 reviewed/改判落盘到 .gsa。
+  function applyFusedAuditDecision(
+    eventId: string,
+    decision: FuseAuditDecision
+  ): string | null {
+    const project = currentProject.value;
+    if (!project) return "当前无项目";
+    const track = project.tracks.find((t) => t.type === "fused");
+    if (!track) return "当前无融合结果";
+    const cloned = JSON.parse(JSON.stringify(track.events)) as FusedEvent[];
+    const err = applyFusedDecision(
+      cloned,
+      eventId,
+      project.corpus.map((c) => c.text),
+      decision
+    );
+    if (err) return err;
+    recordSnapshot();
+    track.events = cloned;
+    return null;
   }
 
   /// 把 IPC/后端错误映射为用户可读的信息，未识别时才回退原文
   function normalizeFuseError(e: unknown): string {
     const msg = String(e);
-    if (msg.includes("未就绪")) return "LLM 运行环境未就绪，请先运行环境引导脚本";
+    // 向量融合（T4）：未就绪来自 EmbedManager 状态（bootstrap_embed.ps1）
+    if (msg.includes("向量融合未配置") || msg.includes("未就绪"))
+      return "向量融合运行环境未就绪，请先运行 scripts/bootstrap_embed.ps1";
     if (msg.includes("没有可用的 OCR")) return "缺少 OCR 字幕文本，请先运行 OCR";
     if (msg.includes("没有可用的游戏内容"))
       return "没有游戏内容 ASR 段，请先运行 ASR 并检查轨道属性（主播语音除外）";
@@ -1345,7 +1360,6 @@ export const useProjectStore = defineStore("project", () => {
     openProject,
     importVideo,
     importSourceVideo,
-    ensureDefaultTrack,
     ensureCorpusRegionTrack,
     ensureAsrRegionTrack,
     ensureEmbedOcrTrack,
@@ -1406,6 +1420,8 @@ export const useProjectStore = defineStore("project", () => {
     checkLlmRuntime,
     fuseRunning,
     runFuse,
+    fusedAuditRows,
+    applyFusedAuditDecision,
     closeProject,
   };
 });

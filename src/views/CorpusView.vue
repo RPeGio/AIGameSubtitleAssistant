@@ -3,8 +3,8 @@ import { computed, ref } from "vue";
 import { useProjectStore } from "../stores/project";
 import SourceVideoPreview from "../components/SourceVideoPreview.vue";
 import SourceTimeline from "../components/SourceTimeline.vue";
-import type { Diff, OcrRunParams } from "../types";
-import { createDefaultOcrParams } from "../composables/ocrDefaults";
+import type { Diff } from "../types";
+import { usePersistedOcrParams } from "../composables/ocrDefaults";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -26,7 +26,8 @@ const message = useMessage();
 const activeKeys = ref<string[]>(["recordings"]);
 
 // ── "从剧情录屏中截取" ────────────────────────────────
-const ocrParams = ref<OcrRunParams>(createDefaultOcrParams());
+// 跨栏目切换保留（此前是组件局部 ref ⇒ 切栏目即静默回到默认，见 ocrDefaults.ts）
+const ocrParams = usePersistedOcrParams("corpus");
 
 /// 术语表条目操作（可增删的 input-text 列表）
 function addGlossaryTerm() {
@@ -257,6 +258,20 @@ function discardDiff(d: Diff) {
                 <NText depth="3" style="font-size: 12px">
                   短于此长度的产出段若与后一条同句（前缀/子序列），并入后一条。默认 1.5，
                   能收掉长打字机/遮挡造成的碎片，但会提高"误吞真实短句"的概率（0 关闭）
+                </NText>
+              </div>
+              <div class="cfg-field">
+                <NText depth="2">单段最少实质字符数（0 关闭过滤）</NText>
+                <NInputNumber
+                  v-model:value="ocrParams.min_text_length"
+                  :min="0"
+                  :max="10"
+                  :step="1"
+                  style="width: 100%"
+                />
+                <NText depth="3" style="font-size: 12px">
+                  低于此值的产出段直接丢弃（纯符号/单字符垃圾，如画面元素被读成 `6`/`O`/`口`）。
+                  实质字符 = 字母/数字/汉字（标点空白不计）。默认 1 只丢纯符号段；粗略选区常需 2
                 </NText>
               </div>
               <div class="cfg-field">

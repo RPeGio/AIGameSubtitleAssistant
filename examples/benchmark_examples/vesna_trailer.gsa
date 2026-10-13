@@ -1,0 +1,960 @@
+GSA-PROJECT v1
+{
+  "path": "",
+  "video": "",
+  "source_video": "",
+  "name": "vesna_trailer",
+  "corpus": [
+    {
+      "id": "muxt86aekaegce",
+      "text": "新的一天",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86aesw800e",
+      "text": "向你问候",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86aeqe1ldj",
+      "text": "至冬堡",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86aeenbw9y",
+      "text": "这是从纳塔进的珍品",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86ae2ujr9v",
+      "text": "想办法弄到那批宝石",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86aeg991jz",
+      "text": "纳塔宝石",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86aepyje6b",
+      "text": "舞会",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86aega3nbp",
+      "text": "还有帮派",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86ae5zwiq1",
+      "text": "世道不太平啊",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86aem3888r",
+      "text": "不用找了",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86ae28favs",
+      "text": "薇斯纳大人",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86ae286767",
+      "text": "薇斯纳",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86aen8vdwh",
+      "text": "这么热闹的舞会",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86ae7adznc",
+      "text": "我怎么能缺席呢",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86aeoskwtl",
+      "text": "听说你们想要这批宝石",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86ae2l22u3",
+      "text": "那真不好意思呀",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86aext7qpr",
+      "text": "我也盯上它了",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86aexrhs60",
+      "text": "可恶",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86aeq3w6r8",
+      "text": "以女皇之名",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86aehcshg0",
+      "text": "上吧",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86aeapo8km",
+      "text": "干完这一票",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86ae5jb43q",
+      "text": "摩拉满地窖",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86aeq55k12",
+      "text": "爱做梦就到牢里去做吧",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86ae87ex5l",
+      "text": "集群战术",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86aevxcjg0",
+      "text": "真是太感谢",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86ae2zujha",
+      "text": "没想到这些家伙",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86ae32q6a2",
+      "text": "还会惊动到冬契军",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86ae24ebmi",
+      "text": "他们",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86ae2oyxht",
+      "text": "当然不会",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86aepoo8kn",
+      "text": "捏造进口记录可是重罪",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86aefes3t2",
+      "text": "拿至冬禁用的炼金术来伪造宝石",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86aegar5u3",
+      "text": "就更罪加一等了",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86aeawqzqg",
+      "text": "所以你的下一场晚会",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    },
+    {
+      "id": "muxt86aen8jx5y",
+      "text": "就到监狱里陪他们一起过吧",
+      "source": "ocr_track",
+      "created_at": "2026-10-07T07:52:34.261Z"
+    }
+  ],
+  "corpus_ocr_diffs": [],
+  "tracks": [
+    {
+      "id": "muxrhppq0wapw0",
+      "name": "OCR 选区（剧情录屏）",
+      "type": "ocr_region",
+      "track_role": "game",
+      "scope": "control",
+      "page": "corpus",
+      "video": "source",
+      "preview_visible": true,
+      "events": [
+        {
+          "type": "ocr_region",
+          "id": "muxrhppqi4t410",
+          "start": 0.0,
+          "end": 190.997333,
+          "x1": 0.2,
+          "y1": 0.85625,
+          "x2": 0.739732142857143,
+          "y2": 0.9848214285714286
+        }
+      ]
+    },
+    {
+      "id": "muxs3odrev06zx",
+      "name": "嵌字选区（内嵌字幕）",
+      "type": "ocr_region",
+      "track_role": "game",
+      "scope": "control",
+      "page": "asr",
+      "video": "clip",
+      "preview_visible": true,
+      "events": [
+        {
+          "type": "ocr_region",
+          "id": "muxs3odrehhcwk",
+          "start": 154.54503344111032,
+          "end": 195.6155314942367,
+          "x1": 0.2100446428571429,
+          "y1": 0.8535714285714285,
+          "x2": 0.7623325892857143,
+          "y2": 1.0
+        },
+        {
+          "type": "ocr_region",
+          "id": "muxsbqp94hwt7d",
+          "start": 195.6155314942367,
+          "end": 218.1371192797065,
+          "x1": 0.2100446428571429,
+          "y1": 0.8535714285714285,
+          "x2": 0.7221540178571428,
+          "y2": 1.0
+        },
+        {
+          "type": "ocr_region",
+          "id": "muxscxhm2fwxxm",
+          "start": 218.1371192797065,
+          "end": 430.58866915972294,
+          "x1": 0.2,
+          "y1": 0.8312499999999998,
+          "x2": 0.8,
+          "y2": 1.0
+        },
+        {
+          "type": "ocr_region",
+          "id": "muxsagu3o5fied",
+          "start": 453.93756381631937,
+          "end": 691.1647551251244,
+          "x1": 0.19748883928571428,
+          "y1": 0.83125,
+          "x2": 0.7974888392857143,
+          "y2": 1.0
+        }
+      ]
+    },
+    {
+      "id": "muxsq0xk34zfod",
+      "name": "内嵌字幕 OCR",
+      "type": "embed_ocr",
+      "track_role": "game",
+      "scope": "output",
+      "page": "",
+      "video": "clip",
+      "preview_visible": true,
+      "events": [
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlkokrq2",
+          "start": 166.92406677444365,
+          "end": 167.55803344111033,
+          "text": "A new day!",
+          "confidence": 0.9928117990493774
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xl40fg2u",
+          "start": 168.00848344111031,
+          "end": 170.07721677444366,
+          "text": "Good morning, Snezhnograd!",
+          "confidence": 0.9979144334793092
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlbhrf86",
+          "start": 174.51498344111033,
+          "end": 175.51598344111034,
+          "text": ".This is all the way from Natlan!",
+          "confidence": 0.97586590051651
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muy7sfziwp3ihy",
+          "start": 175.51598344111034,
+          "end": 176.36173351401126,
+          "text": "Ohh!",
+          "confidence": 0.979389786720276
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muy7sfzie7i60c",
+          "start": 176.36173351401126,
+          "end": 178.90270010777698,
+          "text": "We gotta get our hands on those gems…",
+          "confidence": 0.979389786720276
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlavyknw",
+          "start": 180.0705334411103,
+          "end": 181.955750107777,
+          "text": "…Mm-hmm!",
+          "confidence": 0.8511608839035034
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xln1znjv",
+          "start": 183.457250107777,
+          "end": 184.3414667744437,
+          "text": "*hum*",
+          "confidence": 0.9969590902328492
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xld1y4ud",
+          "start": 209.31254816090336,
+          "end": 211.41464816090337,
+          "text": "Natlanese gems…",
+          "confidence": 0.9481626152992249
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlmsckjh",
+          "start": 211.41464816090337,
+          "end": 212.21544816090335,
+          "text": "The ball",
+          "confidence": 0.9834815263748168
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlqi1ft1",
+          "start": 212.21544816090335,
+          "end": 213.3832814942367,
+          "text": "The gangs…",
+          "confidence": 0.9255438446998596
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xl3wm00w",
+          "start": 214.10066482757003,
+          "end": 215.61884816090335,
+          "text": "These are troubled times…",
+          "confidence": 0.9703111052513124
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlbdsbrs",
+          "start": 215.61884816090335,
+          "end": 216.60316482757003,
+          "text": "Here, keep the change",
+          "confidence": 0.9915987849235536
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlmjgvmq",
+          "start": 216.60316482757003,
+          "end": 217.45401482757003,
+          "text": "Huh?",
+          "confidence": 0.9988404512405396
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xl6n4s1c",
+          "start": 220.62293594637316,
+          "end": 221.1901692797065,
+          "text": "Ah…",
+          "confidence": 0.8892068266868591
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlri6czg",
+          "start": 236.6055692797065,
+          "end": 237.67330261303985,
+          "text": "Lady Vesna!",
+          "confidence": 0.9928492903709412
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xltfqzqr",
+          "start": 243.6125692797065,
+          "end": 245.14743594637315,
+          "text": "Vesna…? Ugh!",
+          "confidence": 0.9638239145278932
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xl4pszr7",
+          "start": 247.6666192797065,
+          "end": 248.6676192797065,
+          "text": "…Huh?",
+          "confidence": 0.94627046585083
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlp1xdch",
+          "start": 250.63625261303983,
+          "end": 252.15443594637316,
+          "text": "Such a lively ball…",
+          "confidence": 0.9097987413406372
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlcpux1k",
+          "start": 252.6215692797065,
+          "end": 253.6559359463732,
+          "text": "How could I miss it?",
+          "confidence": 0.9724626541137696
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xl8mkmmy",
+          "start": 254.1230692797065,
+          "end": 256.6255692797065,
+          "text": "I hear you're after the gems?",
+          "confidence": 0.9692826271057128
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlj2o90l",
+          "start": 256.6255692797065,
+          "end": 258.1604359463732,
+          "text": "Well, I'm sorry…",
+          "confidence": 0.9347177147865297
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xldx9axu",
+          "start": 259.1280692797065,
+          "end": 259.66193594637315,
+          "text": "But so am I",
+          "confidence": 0.9440990686416626
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlwftj8s",
+          "start": 266.11838594637317,
+          "end": 266.6522526130398,
+          "text": "Ugh!",
+          "confidence": 0.9967020153999328
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xl9so84w",
+          "start": 275.61120261303984,
+          "end": 276.6455692797065,
+          "text": "For the Tsaritsa!",
+          "confidence": 0.9944143891334534
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlliz9bu",
+          "start": 277.11270261303986,
+          "end": 277.6465692797065,
+          "text": "Attack!",
+          "confidence": 0.9306230545043944
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlg4p02l",
+          "start": 286.65556927970647,
+          "end": 288.65756927970654,
+          "text": "Finish the job! We'll be rich! Charge…!",
+          "confidence": 0.939602255821228
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xl7nh9nn",
+          "start": 288.65756927970654,
+          "end": 290.1590692797065,
+          "text": "In your\ndreams, you're going to jail!",
+          "confidence": 0.9830740094184875
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xl1z661s",
+          "start": 290.6262026130398,
+          "end": 291.6605692797065,
+          "text": "Surround them!",
+          "confidence": 0.9993728399276732
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlzzdieo",
+          "start": 315.30085261303986,
+          "end": 316.10165261303985,
+          "text": "Thank you so much",
+          "confidence": 0.9821462035179138
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlhz6gi8",
+          "start": 316.10165261303985,
+          "end": 317.7032526130398,
+          "text": "I can't believe those brutes",
+          "confidence": 0.9948946833610536
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlwe3wjl",
+          "start": 317.7032526130398,
+          "end": 318.7209359463732,
+          "text": "Warranted the Druzhna…",
+          "confidence": 0.9828788638114928
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlxnxve5",
+          "start": 318.9878692797065,
+          "end": 319.82203594637315,
+          "text": "Them?",
+          "confidence": 0.9955521821975708
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muy7ut8vxq4b83",
+          "start": 321.35690261303984,
+          "end": 322.18310379611734,
+          "text": "Oh, they didn't",
+          "confidence": 0.9957813024520874
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muy7ut8vwemql6",
+          "start": 322.18310379611734,
+          "end": 322.49136927970653,
+          "text": "What?",
+          "confidence": 0.9957813024520874
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xl93g0vi",
+          "start": 322.49136927970653,
+          "end": 325.26080261303986,
+          "text": "… Fabricating\nimport logs is a crime",
+          "confidence": 0.9339420199394226
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlhfjsyl",
+          "start": 325.9448192797065,
+          "end": 328.48068594637317,
+          "text": "And\nusing\nforbidden alchemy to forge\ngemstones?",
+          "confidence": 0.920661985874176
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xl15p12w",
+          "start": 329.4149526130399,
+          "end": 330.61615261303984,
+          "text": "An aggravating factor",
+          "confidence": 0.9837642908096312
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlccwzge",
+          "start": 330.88308594637317,
+          "end": 332.7015692797065,
+          "text": "So, I hope you had a good night…",
+          "confidence": 0.9837108850479126
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlw468ml",
+          "start": 332.7015692797065,
+          "end": 335.2374359463732,
+          "text": "But the afterparty's gonna be in prison",
+          "confidence": 0.9845141172409058
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlyti3dg",
+          "start": 342.6448359463732,
+          "end": 344.4966859463732,
+          "text": "And using\nforbidden alchemy to forge\ngemstones?",
+          "confidence": 0.974592924118042
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlhyf5tk",
+          "start": 402.07086927970647,
+          "end": 402.63810261303985,
+          "text": "A new day!",
+          "confidence": 0.9878413081169128
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xl39n6a7",
+          "start": 402.63810261303985,
+          "end": 405.1572859463732,
+          "text": "Good morning, Snezhnograd!",
+          "confidence": 0.9985652565956116
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muy870l9ajhn8c",
+          "start": 409.5783692797065,
+          "end": 411.3854768104901,
+          "text": "…This is all the way from Natlan!",
+          "confidence": 0.931755006313324
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muy870l9ts6s2i",
+          "start": 411.3854768104901,
+          "end": 411.8681145448782,
+          "text": "Ohh!",
+          "confidence": 0.931755006313324
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xl8y0l7a",
+          "start": 411.8681145448782,
+          "end": 413.9994526130398,
+          "text": "We gotta get our hands on those gems…",
+          "confidence": 0.9766368269920348
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlft1wwe",
+          "start": 415.15060261303984,
+          "end": 416.75220261303986,
+          "text": ".Mm-hmm!",
+          "confidence": 0.9861885905265808
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlonbq7p",
+          "start": 418.58736927970654,
+          "end": 419.3881692797065,
+          "text": "*hum*.",
+          "confidence": 0.981525421142578
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlr5skxq",
+          "start": 478.26186381631936,
+          "end": 499.2995471496527,
+          "text": "Natlanese gems…",
+          "confidence": 0.971787452697754
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xl4acwnh",
+          "start": 499.3829638163194,
+          "end": 500.13371381631936,
+          "text": "The ball",
+          "confidence": 0.985847234725952
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlrbe7fe",
+          "start": 500.13371381631936,
+          "end": 501.3515971496527,
+          "text": "The gangs…",
+          "confidence": 0.9405593276023864
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlhwbuuu",
+          "start": 502.169080482986,
+          "end": 503.5537971496527,
+          "text": "These are troubled times…",
+          "confidence": 0.9746813774108888
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlvwmj4k",
+          "start": 503.5537971496527,
+          "end": 504.521430482986,
+          "text": "Here, keep the change",
+          "confidence": 0.9985836744308472
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xliut1rn",
+          "start": 504.521430482986,
+          "end": 505.5557971496527,
+          "text": "Huh?",
+          "confidence": 0.9983793497085572
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlvb29ht",
+          "start": 508.2918638163194,
+          "end": 508.9591971496527,
+          "text": "Ah…",
+          "confidence": 0.9310829639434814
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muy89ip921kgjg",
+          "start": 523.940830482986,
+          "end": 525.6250994689307,
+          "text": "Lady Vesna!",
+          "confidence": 0.9969266653060912
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muy89ip9d51779",
+          "start": 570.9544638163194,
+          "end": 571.7632408269292,
+          "text": "Lady Vesna!",
+          "confidence": 0.9969266653060912
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlzry3i6",
+          "start": 577.4275971496527,
+          "end": 578.4619638163194,
+          "text": "Vesna…? Ugh!",
+          "confidence": 0.9795998930931092
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xliaf9h4",
+          "start": 581.9320971496527,
+          "end": 582.5660638163193,
+          "text": "…Huh?",
+          "confidence": 0.8475645780563354
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xl5e9i8p",
+          "start": 583.9340971496526,
+          "end": 585.4689638163194,
+          "text": "Such a lively ball.",
+          "confidence": 0.968088448047638
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlyouc7y",
+          "start": 585.9360971496527,
+          "end": 587.4709638163193,
+          "text": "How could I miss it?",
+          "confidence": 0.988301157951355
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xl7soylo",
+          "start": 587.904730482986,
+          "end": 590.407230482986,
+          "text": "I hear you're after the gems?",
+          "confidence": 0.9558787941932678
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlzq3333",
+          "start": 590.407230482986,
+          "end": 591.4749638163194,
+          "text": "Well, I'm sorry…",
+          "confidence": 0.9270455241203308
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xl9k5urr",
+          "start": 592.409230482986,
+          "end": 593.4769638163193,
+          "text": "But so am I",
+          "confidence": 0.9588770270347596
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xl5ubar2",
+          "start": 599.916730482986,
+          "end": 600.517330482986,
+          "text": "Ugh!",
+          "confidence": 0.999058723449707
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xltqyvfp",
+          "start": 608.9257304829861,
+          "end": 609.9600971496527,
+          "text": "For the Tsaritsa!",
+          "confidence": 0.992395281791687
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlry3gxw",
+          "start": 620.437230482986,
+          "end": 622.689480482986,
+          "text": "Finish the job! We'll be rich! Charge…!",
+          "confidence": 0.944657027721405
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xl87vjqn",
+          "start": 622.689480482986,
+          "end": 623.940730482986,
+          "text": "In your\ndreams, you're going to jail!",
+          "confidence": 0.9693111777305604
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlxeci0s",
+          "start": 623.940730482986,
+          "end": 625.4755971496527,
+          "text": "Surround them!",
+          "confidence": 0.9994474053382874
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xly0edlq",
+          "start": 648.4985971496527,
+          "end": 649.466230482986,
+          "text": "Thank you so much",
+          "confidence": 0.9635165929794312
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xllsiilo",
+          "start": 649.466230482986,
+          "end": 650.5339638163193,
+          "text": "I can't believe those brutes",
+          "confidence": 0.9931301474571228
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xllg7xdf",
+          "start": 650.5339638163193,
+          "end": 652.5359638163194,
+          "text": "Warranted the Druzhna…",
+          "confidence": 0.978656530380249
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlpoqrls",
+          "start": 652.8028971496527,
+          "end": 653.5536471496528,
+          "text": "Them?",
+          "confidence": 0.9949811697006226
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xl2m7jx4",
+          "start": 654.8048971496528,
+          "end": 655.772530482986,
+          "text": "Oh, they didn't",
+          "confidence": 0.9585496187210084
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlwhtlsn",
+          "start": 655.772530482986,
+          "end": 656.0728304829861,
+          "text": "What?",
+          "confidence": 0.99955952167511
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlduordz",
+          "start": 656.0728304829861,
+          "end": 658.4418638163194,
+          "text": "… Fabricating\nimport logs\nis a crime",
+          "confidence": 0.9160187244415284
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xl9vzzb8",
+          "start": 658.4418638163194,
+          "end": 662.0788304829861,
+          "text": "And using\nforbidden alchemy to forge gemstones?",
+          "confidence": 0.9748010039329528
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xl3or1cd",
+          "start": 663.0130971496527,
+          "end": 664.2476638163193,
+          "text": "An aggravating factor",
+          "confidence": 0.995535373687744
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlw1f31r",
+          "start": 664.4812304829861,
+          "end": 666.3163971496527,
+          "text": "So, I hope you had a good night…",
+          "confidence": 0.9809585809707642
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muy8isego7vpjf",
+          "start": 666.3497638163194,
+          "end": 668.9856590685486,
+          "text": "But the afterparty's gonna be in prison",
+          "confidence": 0.9888117909431458
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muy8iwsmr69mms",
+          "start": 671.718222722947,
+          "end": 672.2222971496527,
+          "text": "But the afterparty's gonna be in prison",
+          "confidence": 0.9888117909431458
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlj6ehpa",
+          "start": 672.5448914699637,
+          "end": 673.2566638163194,
+          "text": "…Fabricating import logs is a crime",
+          "confidence": 0.9257966876029968
+        },
+        {
+          "type": "embed_ocr",
+          "id": "muxsq0xlb19fhl",
+          "start": 673.2566638163194,
+          "end": 673.9073138163194,
+          "text": "Warranted the Druzhna…",
+          "confidence": 0.973526895046234
+        }
+      ]
+    }
+  ],
+  "created_at": "1791356572",
+  "updated_at": "1791602912"
+}

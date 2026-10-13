@@ -3,8 +3,8 @@ import { computed, ref, watch } from "vue";
 import { useProjectStore } from "../stores/project";
 import SourceVideoPreview from "../components/SourceVideoPreview.vue";
 import SourceTimeline from "../components/SourceTimeline.vue";
-import type { AsrRunParams, AsrEngineStatus, OcrRunParams } from "../types";
-import { createDefaultOcrParams } from "../composables/ocrDefaults";
+import type { AsrRunParams, AsrEngineStatus } from "../types";
+import { usePersistedOcrParams } from "../composables/ocrDefaults";
 import {
   NButton,
   NCollapse,
@@ -106,7 +106,8 @@ function setTrackRole(trackId: string, role: string) {
 /// 产出带时间轴的 embed_ocr 轨（嵌字轴），作为"游戏内容"源供融合。
 // 术语表是**语料 OCR 独有**功能：嵌字产物进 embed_ocr 轨（供融合做游戏内容段），
 // 不落 corpus，也就没有"待审批纠正"的去处，故保持共享工厂的空数组缺省（后端 serde default 同义）
-const ocrParams = ref<OcrRunParams>(createDefaultOcrParams());
+// 跨栏目切换保留（此前是组件局部 ref ⇒ 切栏目即静默回到默认，见 ocrDefaults.ts）
+const ocrParams = usePersistedOcrParams("asr");
 
 const hasClipVideo = computed(() => projectStore.currentVideoMeta !== null);
 
@@ -135,7 +136,7 @@ async function startEmbedOcr() {
 
 <template>
   <div class="page">
-    <h2 class="page-title">语音转写</h2>
+    <h2 class="page-title">打轴+转写</h2>
     <p class="page-desc">从切片视频生成精确的字幕轴 / 视频内嵌字轴</p>
 
     <NCollapse v-model:expanded-names="activeKeys" class="sources" arrow-placement="right">
@@ -358,6 +359,20 @@ async function startEmbedOcr() {
                 <NText depth="3" style="font-size: 12px">
                   短于此长度的产出段若与后一条同句（前缀/子序列），并入后一条。默认 1.5，
                   能收掉长打字机/遮挡造成的碎片，但会提高"误吞真实短句"的概率（0 关闭）
+                </NText>
+              </div>
+              <div class="cfg-field">
+                <NText depth="2">单段最少实质字符数（0 关闭过滤）</NText>
+                <NInputNumber
+                  v-model:value="ocrParams.min_text_length"
+                  :min="0"
+                  :max="10"
+                  :step="1"
+                  style="width: 100%"
+                />
+                <NText depth="3" style="font-size: 12px">
+                  低于此值的产出段直接丢弃（纯符号/单字符垃圾，如画面元素被读成 `6`/`O`/`口`）。
+                  实质字符 = 字母/数字/汉字（标点空白不计）。默认 1 只丢纯符号段；粗略选区常需 2
                 </NText>
               </div>
             </div>

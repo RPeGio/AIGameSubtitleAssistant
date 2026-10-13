@@ -80,7 +80,47 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - **One task per conversation round** — do not batch multiple tasks in one response
 - Before coding each task, present the plan and let the user confirm
 
+### 素材责任边界与异常上报（重要）
+
+本项目的输入素材分两类，**归属不同，绝不能混淆**：
+
+| 素材 | 谁负责正确 | 出现异常时 |
+|---|---|---|
+| **管线 raw 产出**（未经人工干预：OCR / ASR / 融合的原始产物） | **管线自己** | 噪音、碎片、不合理分段都是**管线缺陷**——就地定位根因、**在管线层修**，并登记缺陷台账 |
+| **人工预校对后的素材**（用户逐条核对过） | **用户** | 发现异常就**直接、明确地告知用户**，不要自己绕开 |
+
+**不要默认"用户做过的一定是对的"，然后自己瞎摸索绕路。** 判据只有一句话：
+
+> **这段内容本应由谁保证正确？** 该由管线保证（raw 产出）→ 修管线；该由用户保证（校对后）→ 告知用户。
+
+反面案例（本项目真实发生过）：在**人工预校对过**的素材里发现"同一句台词被拆成两段"，
+直接当成既有事实、准备在**下游（融合侧）加一层合并**绕过——既没指出这其实是
+**OCR 合并层的 raw 缺陷**，也没告知用户这是**校对时的遗漏**。
+
+沉默绕过的代价是双重的：**掩盖管线缺陷**（真实根因没人修）＋**把用户的遗漏固化进后续结论**
+（错误的前提被当作事实继续使用）。发现异常却犹豫"这算不算问题"时，宁可直说。
+
+### 档案同步（改了就更新点名它的文档）
+
+本项目有多份**随时间追加的档案**：审查记录（`review-reports/`）、缺陷台账
+（`benchmark/OCR_PIPELINE_DEFECTS.md`）、标定记录（`benchmark/FUSE_THRESHOLD_CALIBRATION.md`）等。
+
+> **修了某份档案点名的问题，就在同一个提交里更新那份档案的状态行**，并写明依据
+> （提交号 / PR 号）。档案里的"未修复"是**承诺**，不是描述——它过期就会误导后来者。
+
+**反面案例（真实发生过两次）**：
+- 审查记录里 P1-1 标着「⚠ 未修复」，实际修复发生在合并之后、由另一会话完成（`d9da992`），
+  状态行没同步 ⇒ 后来者据此以为问题还在，甚至准备重修一遍；
+- `.gsa` 入库后，`benchmark/README.md` 仍写着"视频与 `.gsa` 工程不入库" ⇒ 文档与仓库现状相反。
+
+**操作要点**：
+- 修复提交与档案更新**同提交**（避免"稍后补"变成永不补）；
+- 状态行写**依据**（提交号/PR 号）而非结论（"已修复"三个字无法核对）；
+- 状态行确实要滞后时，在档案头部留一句**同步说明**（写清滞后原因与核对时间），
+  让"曾经过期"这件事本身可追溯——否则后人只看到矛盾，看不到原因。
+
 ### Git Policy
+
 - **Do NOT auto-commit** after completing a task
 - After coding, output a **conventional commit message** (title + body) that the user can copy for manual commit
 - The user is responsible for committing and pushing

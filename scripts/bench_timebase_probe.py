@@ -13,6 +13,14 @@
 4. **选区与视频尺寸不再硬编码**：选区从 `src-tauri/tests/common/mod.rs::hardsub_regions`
    解析（基准的受控副本），尺寸用 ffprobe 取——旧探针硬编码的那份曾导致 13px 错位。
 5. 批处理 OCR（每批 16 帧）。
+6. **TSV 默认全量重测、案例级整体覆写（无增量合并）**：每次运行对本案例的全部参考条目
+   重新测量，该案例在 TSV 中的既有行整体丢弃、只写本次结果。为什么默认全量：窗口按当前
+   applied 预居中，applied 变更后采样网格相位随之平移，而 tau 是网格锚定测量（= 变化事件
+   在 `(center−half)+j·step` 名义网格上的位置），会随 applied 整体平移 ≤1 个 0.05s 槽位
+   （2026-10-08 实测：applied-a 每变 δ，同一案例所有 tau 平移 δ，约 δ/0.05 比例的行额外
+   跳一个槽位）。增量合并把旧轮次（更老 applied 预居中）测出的行与新轮次的行混在同一案例
+   下，拟合被年代混杂污染、且探针不可逐位复现。非本次案例的既有行原样保留：各案例拟合
+   相互独立，跨案例年代不同无碍。
 
 输出：`temp/probe/ref_calib_fine.tsv`（逐条：idx/ref_start/t_a/t_b/tau/halfwidth/before/after），
 不修改任何基准数据。
@@ -65,9 +73,11 @@ CASES = {
                      "quality_bench_test(voiced)_5min_reference.txt"),
     "pierro_questions": ("quality_bench_test(voiced)_48min.mp4",
                          "quality_bench_test(voiced)_48min_reference.txt"),
+    "vesna": ("pv_reaction_vesna(voiced)_12min.mp4",
+              "pv_reaction_vesna(voiced)_12min_reference.txt"),
 }
 REF_FPS = {"glupov": 60000.0 / 1001.0, "moon_sisters": 60.0,
-           "pierro_questions": 60000.0 / 1001.0}
+           "pierro_questions": 60000.0 / 1001.0, "vesna": 60000.0 / 1001.0}
 TC = re.compile(r"^(\d{2}):(\d{2}):(\d{2}):(\d{2}) - (\d{2}):(\d{2}):(\d{2}):(\d{2})$")
 
 
@@ -188,7 +198,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--step", type=float, default=0.05)
     ap.add_argument("--half-window", type=float, default=0.4)
-    ap.add_argument("--cases", default=",".join(CASES))
+    ap.add_argument("--cases", default=",".join(CASES),
+                    help="本次重测的案例（逗号分隔，默认全部）。默认全量：对这些案例的全部"
+                         "参考条目重新测量并整体覆写其在 TSV 中的行——增量合并会保留旧轮次"
+                         "（更老 applied 预居中）测出的行，年代混杂污染拟合、破坏逐位复现")
     ap.add_argument("--anchor", choices=("start", "end"), default="start",
                     help="start=参考起点（默认）；end=参考终点（写独立 TSV）")
     args = ap.parse_args()
@@ -254,7 +267,13 @@ def main():
 
     tsv_path.parent.mkdir(parents=True, exist_ok=True)
     cols = ["case", "idx", "ref", "t_a", "t_b", "tau", "half", "before", "after", "note"]
-    # 增量合并：只替换本次跑过的案例，其余案例的既有行保留（便于单案例重跑）
+    # 全量重测（默认，无增量合并）：本次运行的案例已在上面对其全部参考条目重新测量，
+    # 这里把该案例在 TSV 中的既有行整体丢弃、只写本次结果——同一案例的行永不混年代。
+    # 原因：窗口按 applied 预居中，applied 变更后采样网格相位随之平移，tau（网格锚定
+    # 测量）会随 applied 整体平移 ≤1 个 0.05s 槽位；增量合并保留旧年代的行会让拟合被
+    # 年代混杂污染、探针不可逐位复现。
+    # 非本次案例的既有行原样保留：各案例拟合相互独立（gen 按 case 取行拟合），
+    # 跨案例年代不同无碍。
     ran = set(args.cases.split(","))
     old = []
     if tsv_path.is_file():

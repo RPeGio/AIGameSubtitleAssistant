@@ -17,21 +17,21 @@
 GameSubtitleAssistant 面向游戏剧情实况翻译（烤肉）、切片和字幕组创作者，把「观看录播 → （截图 OCR → 复制文本 → 找角色名）（此三步可概括为游戏语料收集） → 人工打轴 → 翻译整理 → 导出字幕」的人工流程，压缩为一条 AI 辅助流水线：
 
 ```
-视频输入 ──► 剧情文字识别(OCR) + 语音识别(ASR) + 说话人分离 + 自动打轴
+视频输入 ──► 剧情文字识别(OCR) + 打轴+转写(语音 ASR / 画面嵌字 OCR)
         ──► AI 融合(文本替换) ──► 人工校正 ──► SRT / ASS / LRC / TXT
 ```
 
-### **无需账号、无需 API Key、不上传视频、不依赖云端服务**——所有 AI 推理（OCR / ASR / 说话人分离 / LLM 文本对齐）**均在本地完成**。
+### **无需账号、无需 API Key、不上传视频、不依赖云端服务**——所有 AI 推理（OCR / ASR / 说话人分离 / 多语言向量召回对齐）**均在本地完成**。
 ### [（点击跳转使用指南）](#使用指南)
 
-> ⚠️ 本项目处于早期阶段（v0.1.0），目前仅支持 Windows，尚未提供安装包：AI 运行环境需要通过脚本在本地搭建（见[快速开始](#快速开始)）。
+> ⚠️ 本项目处于早期阶段（v0.3.0），目前仅支持 Windows，尚未提供安装包：AI 运行环境需要通过脚本在本地搭建（见[快速开始](#快速开始)）。
 
 ## 功能特性
 
 - **文本语料收集（OCR）**：对剧情录屏框选游戏字幕区域，通过变化检测跳过未变化帧，PaddleOCR 识别 + 多数投票合并，产出与时间轴解耦的「可靠游戏文本」；在其它平台已有游戏语料的情况下也支持直接识别字幕截图或粘贴/导入纯文本。
-- **语音转写（ASR）**：双引擎可选——MOSS-Transcribe-Diarize 0.9B（说话人分离最强且自动，更准）或FunASR（Fun-ASR-Nano，本地 GPU 更快）；一键把每条说话人轨标记为「游戏内容」（提供时间轴参与融合）或「主播语音」（仅供字幕转写导出）。
-- **嵌字轴**：对切片视频框选内嵌字幕区域跑 OCR，生成视频内嵌字时间轴，适配无配音的任务。
-- **AI 融合**：本地 LLM（llama.cpp + Qwen2.5-3B）把可靠语料与游戏语音转写做**跨语言语义对齐**——只让模型输出对应关系，文本由代码逐字复制，避免小模型「复述」改字；角色名从语料前缀自动提取。
+- **打轴+转写**：切片视频的转写侧（时间轴来源）有**两种可选方案**（并列，可同时存在于同一工程，融合侧统一消费）——**语音 ASR**（有配音：时间轴来自语音活动）：双引擎可选——MOSS-Transcribe-Diarize 0.9B（说话人分离最强且自动，更准）或 FunASR（Fun-ASR-Nano，本地 GPU 更快）；一键把每条说话人轨标记为「游戏内容」（提供时间轴参与融合）或「主播语音」（仅供字幕转写导出）。
+- **嵌字 OCR（embed_ocr）**（无配音：时间轴来自画面文字变化）：对切片视频框选画面内嵌字幕区域跑 OCR，产出嵌字轨——与 ASR 轨并存，供融合作为游戏内容段。
+- **AI 融合**：用可靠语料替换转写侧文本、时间轴沿用转写侧。实现为**本地多语言向量召回（multilingual-e5-small qint8，ONNX / CPU）+ 统一转移 DP**：逐段在语料中召回候选，再由全局单调 DP（前进 / 复用 / 回退 / 不配）求整体最优路径，命中段由代码**逐字复制语料原文**（不产出角色名）。四案例计分段 **210/236**，开启「该不配」掩码后 **226/236（95.8%）**。融合后同页给出**置信度审计表**——按风险分层罗列可疑段（掩码 / 回退 / 复用 / 未命中 / 低分），支持**保留 / 候选替换 / 全语料选择 / 不配**四种人工裁决，改判结果随工程持久化。历史 LLM 路线（llama.cpp + Qwen2.5-3B 按编号对应）实测**未做跨语言语义对齐**（见 [benchmark/FUSE_PIPELINE_DEFECTS.md](benchmark/FUSE_PIPELINE_DEFECTS.md) F13），已退役。
 - **时间轴编辑**：多轨时间轴（分割 / 合并 / 拖拽 / 吸附 / 分段互换）、视频预览联动、撤销重做、逐条校对列表。
 - **导出**：单轨导出 SRT / ASS / LRC / TXT。
 - **工程化**：项目数据（`<项目名>.gsa` 单文件：魔数头 + JSON）1 秒防抖自动保存 + Ctrl+S 手动保存，最近项目列表。
@@ -41,9 +41,9 @@ GameSubtitleAssistant 面向游戏剧情实况翻译（烤肉）、切片和字�
 应用按「四页工作台」组织，侧边栏按序导航：
 
 ```
-① 文本语料 Corpus ──► ② 语音转写 ASR ──► ③ AI 融合 Fuse ──► ④ 时间轴编辑 Editor
-  剧情录屏 OCR /        切片视频 ASR +        可靠文本替换      校对 + 导出
-  截图 OCR / 手动文本   说话人标记 + 嵌字OCR   转写文本(留时间轴) 最终字幕
+① 文本语料 Corpus ──► ② 打轴+转写 ────────► ③ AI 融合 Fuse ──► ④ 时间轴编辑 Editor
+  剧情录屏 OCR /        ASR（有配音）/        可靠文本替换      校对 + 导出
+  截图 OCR / 手动文本   嵌字 OCR（无配音）     转写文本(留时间轴) 最终字幕
 ```
 
 项目挂载**两个视频源**：`source`（剧情录屏，语料 OCR 的对象，与时间轴解耦）与 `clip`（要烤制的切片视频，全局时间轴基准）。融合产物写入唯一的「最终字幕」轨，在编辑页校对后导出。
@@ -58,7 +58,7 @@ GameSubtitleAssistant 面向游戏剧情实况翻译（烤肉）、切片和字�
 | FFmpeg + ffprobe | 需自行安装并加入 `PATH`，应用不会自动下载 |
 | NVIDIA GPU（可选） | FunASR 默认 CUDA 12.4；llama.cpp / MOSS 支持 cpu / cuda / vulkan 后端，无 GPU 用 cpu（转写时间延长数倍） |
 
-各 AI 模块合计占用 13.9 GB 左右磁盘空间（模型 + Python 依赖）。
+各 AI 模块合计占用 13.9 GB 左右磁盘空间（模型 + Python 依赖）；向量融合的 E5-small qint8 模型另约 113 MB。
 
 ## 快速开始
 
@@ -79,7 +79,10 @@ powershell -ExecutionPolicy Bypass -File scripts/bootstrap_moss.ps1 [-Backend cp
 #   或 FunASR（需 GPU 时默认 -Device cuda）
 powershell -ExecutionPolicy Bypass -File scripts/bootstrap_funasr.ps1 [-Device cpu]
 
-# ③ LLM（AI 融合依赖）
+# ③ 向量融合（必装：AI 融合依赖；CPU 推理，模型约 113 MB）
+powershell -ExecutionPolicy Bypass -File scripts/bootstrap_embed.ps1
+
+# ④ LLM（可选：仅供融合能力测试台 run_llm 使用，产品融合不再依赖）
 powershell -ExecutionPolicy Bypass -File scripts/bootstrap_llm.ps1 [-Backend cpu]
 ```
 
@@ -95,10 +98,10 @@ pnpm tauri build   # 产出安装包（注：运行时资源打包尚未配置�
 ## 使用指南
 
 1. **创建项目**：欢迎页「创建新项目」，选择保存文件夹（项目数据保存在其中的 `<项目名>.gsa`；同一文件夹可共存多个项目）。
-2. **导入视频**：语料页导入剧情录屏（source）；转写页导入切片视频（clip）。
+2. **导入视频**：语料页导入剧情录屏（source）；打轴+转写页导入切片视频（clip）。
 3. **① 文本语料**：框选字幕区域 + 时间段，跑 OCR 收集可靠文本；或识别字幕截图 / 粘贴纯文本。
-4. **② 语音转写**：对切片视频跑 ASR（选引擎 / 说话人上限 / 语言），把含游戏语音的轨标记为「游戏内容」；无配音任务可额外框选内嵌字幕区域生成嵌字轴。
-5. **③ AI 融合**：语料与时间轴双就绪后开始融合，得到以转写 / 内嵌时间轴为准、文本来自可靠语料的最终字幕段。
+4. **② 打轴+转写**：按素材选方案（两者可并用）——有配音跑 ASR（选引擎 / 说话人上限 / 语言），把含游戏语音的轨标记为「游戏内容」；无配音（或画面本身有嵌字）时框选内嵌字幕区域跑嵌字 OCR。
+5. **③ AI 融合**：语料与时间轴双就绪后开始融合，得到以转写 / 内嵌时间轴为准、文本来自可靠语料的最终字幕段；同页**审计表**按风险分层复核（保留 / 候选替换 / 全语料选择 / 不配）。
 6. **④ 时间轴编辑**：逐条校对（改文本 / 角色、分割、合并、删除），导出 SRT / ASS / LRC / TXT。
 
 ## 项目结构
@@ -110,8 +113,8 @@ pnpm tauri build   # 产出安装包（注：运行时资源打包尚未配置�
 │       ├── video/          # ffprobe 元数据、帧/音频提取
 │       ├── ocr/            # OCR 流水线（抽帧→变化检测→识别→合并）
 │       ├── asr/            # ASR 调度（双引擎）
-│       ├── llm/            # llama.cpp 调用
-│       ├── fuse/           # LLM 跨语言融合
+│       ├── llm/            # llama.cpp 调用（融合能力测试台）
+│       ├── fuse/           # AI 融合（向量召回 + 统一转移 DP）
 │       ├── export/         # SRT/ASS/LRC/TXT 导出
 │       ├── project/        # 项目数据模型与持久化
 │       └── ai_runtime/     # AI 运行时（provider 抽象、配置、worker 子进程）
@@ -124,14 +127,15 @@ pnpm tauri build   # 产出安装包（注：运行时资源打包尚未配置�
 
 - [GameSubtitleAssistant_Plan.md](GameSubtitleAssistant_Plan.md) — 项目定位、架构设计与分阶段计划
 - [docs/development.md](docs/development.md) — 开发文档（架构 / 数据模型 / 流水线细节 / 测试）
+- [benchmark/README.md](benchmark/README.md) — 质量基准与融合对齐路线的验证记录
 - [CONTRIBUTING.md](CONTRIBUTING.md) — 参与贡献
 - [THIRD_PARTY.md](THIRD_PARTY.md) — 第三方组件与模型许可证
 
 ## 路线图
 
-**已完成**：四页工作台全链路（语料 → 转写 → 融合 → 编辑导出）、OCR 流水线（区域框选 / 变化检测 / 多数投票 / 多帧合并）、FunASR + MOSS 双 ASR 引擎与说话人分离、嵌字轴、LLM 跨语言融合、多轨时间轴编辑与撤销重做、单轨多格式导出、自动保存。
+**已完成**：四页工作台全链路（语料 → 打轴+转写 → 融合 → 编辑导出）、OCR 流水线（区域框选 / 变化检测 / 多数投票 / 多帧合并）、FunASR + MOSS 双 ASR 引擎与说话人分离、嵌字 OCR 轴、AI 融合（本地向量召回 + 统一转移 DP，含**融合后置信度审计表**）、多轨时间轴编辑与撤销重做、单轨多格式导出、自动保存。
 
-**进行中 / 待改进**：融合链路在真实长文本场景的实测与优化；运行时资源打包（安装包分发）。
+**进行中 / 待改进**：运行时资源打包（安装包分发）；融合置信度信号的进一步标定——`score` 不是正确性判据，审计表分层只作提示（依据见 [benchmark/FUSE_THRESHOLD_CALIBRATION.md](benchmark/FUSE_THRESHOLD_CALIBRATION.md) §7.9⑥）。
 
 **未来计划**：翻译辅助与双语字幕、更多导出格式（Premiere XML / DaVinci Resolve XML / Aegisub）、应用内模型管理、TTS 与声音克隆（见计划书 Phase 7）。
 
@@ -140,8 +144,8 @@ pnpm tauri build   # 产出安装包（注：运行时资源打包尚未配置�
 - 仅支持 Windows；macOS / Linux 需要移植引导脚本与运行时。
 - 无安装包，AI 环境依赖脚本搭建；模型在安装阶段下载，应用内不自动下载（仅有就绪检测）。
 - FFmpeg 需自备（加入 `PATH`）。
-- 融合质量受本地小模型能力限制，长文本场景仍在优化中。
-- 默认 LLM 为 Qwen2.5-3B-Instruct，采用 **Qwen Research 许可**（商用需另行授权），详见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+- 融合产出仍需逐条人工校对：`score` 在任何阈值下的精确率都接近错误基准率（4.2%），**不能作为正确性判据**，审计表只提供结构化分层提示（依据见 [benchmark/FUSE_THRESHOLD_CALIBRATION.md](benchmark/FUSE_THRESHOLD_CALIBRATION.md) §7.9⑥）；「同台词跨说话人」场景（[F14](benchmark/FUSE_PIPELINE_DEFECTS.md)）错绑行的文本逐字相同、字幕内容不受影响，但审计表的说话人归属展示可能不准，该场景经实验否决算法侧修复、走人工裁决。
+- 默认 LLM 为 Qwen2.5-3B-Instruct（**可选**，仅供融合能力测试台使用），采用 **Qwen Research 许可**（商用需另行授权），详见 [THIRD_PARTY.md](THIRD_PARTY.md)。
 
 ## 许可证
 

@@ -86,7 +86,7 @@ pub struct AsrEvent {
     pub confidence: f64,
 }
 
-/// AI 融合事件 —— LLM 将 OCR 文本与 ASR 段融合后的最终字幕（Phase 4）
+/// AI 融合事件 —— 将 OCR 文本与 ASR 段融合后的最终字幕（Phase 4 → T4 向量路线）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FusedEvent {
     pub id: String,
@@ -94,9 +94,13 @@ pub struct FusedEvent {
     pub end: f64,
     /// 融合后的最终文本（优先 OCR 文本，无匹配时保留 ASR 原文本）
     pub text: String,
-    /// 角色名（LLM 从 OCR 文本提取），可能为空
+    /// 角色名（LLM 从 OCR 文本提取），可能为空 —— T4 向量路线下恒 None（不产出说话人）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub character: Option<String>,
+    /// 融合审计元数据（T4/R2 起；融合时写入，供前端审计表逐段查看与替换决策）。
+    /// `#[serde(default)]` 兼容旧 `.gsa`（事件无此字段时不报错），None 时不落盘。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fuse_meta: Option<crate::fuse::FuseMeta>,
 }
 
 /// 手动创建的字幕事件 —— 用户手工添加或编辑的台词
@@ -785,6 +789,7 @@ mod tests {
             end: 4.2,
             text: "旅行者，你来了".into(),
             character: Some("派蒙".into()),
+            fuse_meta: None,
         });
         let json = serde_json::to_string(&ev).unwrap();
         assert!(json.contains("\"type\":\"fused\""));
@@ -807,9 +812,66 @@ mod tests {
             end: 1.0,
             text: "未匹配文本".into(),
             character: None,
+            fuse_meta: None,
         });
         let json = serde_json::to_string(&ev).unwrap();
         assert!(!json.contains("character"));
+    }
+
+    #[test]
+    fn test_fused_event_fuse_meta_roundtrip() {
+        // fuse_meta（R3 审计元数据）随事件往返，逐字段保留
+        let ev = TimelineEvent::Fused(FusedEvent {
+            id: "f3".into(),
+            start: 2.0,
+            end: 3.0,
+            text: "卡侬\n台词".into(),
+            character: None,
+            fuse_meta: Some(crate::fuse::FuseMeta {
+                ocr_index: 3,
+                score: 0.8342,
+                candidates: vec![
+                    crate::fuse::FuseCandidate { ocr_index: 3, score: 0.8342 },
+                    crate::fuse::FuseCandidate { ocr_index: 2, score: 0.8011 },
+                ],
+                masked: false,
+                transition: "forward".into(),
+                reused: false,
+                source_text: "You've been ditching".into(),
+                reviewed: true,
+            }),
+        });
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: TimelineEvent = serde_json::from_str(&json).unwrap();
+        match back {
+            TimelineEvent::Fused(f) => {
+                let m = f.fuse_meta.expect("fuse_meta 应保留");
+                assert_eq!(m.ocr_index, 3);
+                assert_eq!(m.candidates.len(), 2);
+                assert_eq!(m.transition, "forward");
+                assert_eq!(m.source_text, "You've been ditching");
+                assert!(m.reviewed);
+            }
+            _ => panic!("类型标签分发错误"),
+        }
+    }
+
+    #[test]
+    fn test_fused_event_fuse_meta_legacy_fields_default() {
+        // R2 时代的 fuse_meta 没有 source_text/reviewed ⇒ 反序列化取默认值（兼容旧工程）
+        let json = r#"{"type":"fused","id":"f4","start":0.0,"end":1.0,"text":"文本",
+            "fuse_meta":{"ocr_index":2,"score":0.85,"candidates":[],"masked":false,
+            "transition":"forward","reused":false}}"#;
+        let back: TimelineEvent = serde_json::from_str(json).unwrap();
+        match back {
+            TimelineEvent::Fused(f) => {
+                let m = f.fuse_meta.expect("fuse_meta 应保留");
+                assert_eq!(m.ocr_index, 2);
+                assert_eq!(m.source_text, "");
+                assert!(!m.reviewed);
+            }
+            _ => panic!("类型标签分发错误"),
+        }
     }
 
     #[test]

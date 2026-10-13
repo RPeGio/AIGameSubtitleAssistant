@@ -38,6 +38,8 @@ export interface FusedEvent extends TimelineEventBase {
   type: "fused";
   text: string;
   character?: string;
+  /// 融合审计元数据（T4 起写入；旧工程无此字段）
+  fuse_meta?: FuseMeta;
 }
 
 export interface ManualEvent extends TimelineEventBase {
@@ -135,6 +137,11 @@ export interface OcrRunParams {
   /// 产出段若与后一条弱关联则并入后一条（保留碎片起点 + 后条终点/文本）。调大能减少碎片，
   /// 但会提高误吞真实短句的概率（实测 1.6s 时基准语料出现缺失）；≤0 关闭该合并。
   min_subtitle_sec: number;
+  /// 单段最少实质字符数（默认 1，与后端 DEFAULT_MIN_TEXT_LENGTH 同源）：低于该值的产出段
+  /// 直接丢弃（纯符号/单字符垃圾，如 `+`/`*`/粗略选区把画面元素读成的 `6`/`O`/`口`）。
+  /// 实质字符 = 字母/数字/汉字（标点与空白不计）。调大更干净，但可能丢掉真实的超短句；
+  /// 0 = 关闭该过滤。
+  min_text_length: number;
   /// 标点归一化配置（精度策略统一前置层；目标字符可由用户个性化）
   punctuation: PunctuationNorm;
   /// 术语表（可选精度策略）：正确词条列表，产出文本在标点归一化后与之模糊匹配并纠正。
@@ -229,7 +236,8 @@ export interface LlmProgress {
 /// LLM 进度事件名（Rust 侧 `LLM_PROGRESS_EVENT` 需保持一致）
 export const LLM_PROGRESS_EVENT = "llm-progress";
 
-/// AI 融合输入：一个游戏内容 ASR 段（index = 输入顺序，LLM 输出按此对应）
+/// AI 融合输入：一个游戏内容转写段（index = 输入顺序，向量召回输出按此对应）。
+/// text 原样进入对齐输入（含换行）；**不带说话人前缀**（F14，见 fuse/mod.rs）。
 export interface FuseAsrInput {
   index: number;
   start: number;
@@ -237,23 +245,54 @@ export interface FuseAsrInput {
   text: string;
 }
 
+/// 候选名单条目（1-based 语料下标 + 该行的相似度）
+export interface FuseCandidate {
+  ocr_index: number;
+  score: number;
+}
+
+/// 融合逐段审计元数据（由向量 worker 产出；score 不是正确性信号 —— 见标定 §7.9）
+export interface FuseMeta {
+  /// 命中的语料下标（1-based）；0 = 不配
+  ocr_index: number;
+  /// 命中行的余弦相似度；不配时为 0
+  score: number;
+  /// 候选名单（相似度降序，含命中的那条）
+  candidates: FuseCandidate[];
+  /// 该段被「该不配」判据整行封死
+  masked: boolean;
+  /// forward / repeat / reset / unmatched
+  transition: "forward" | "repeat" | "reset" | "unmatched";
+  /// 该段命中的语料行被 >=2 段命中
+  reused: boolean;
+  /// 融合时刻的转写原文（「不配/替换」回退真值；R2 时代数据无此字段）
+  source_text?: string;
+  /// 人工已复核标记（审计表四动作都置 true；重跑融合时重置）
+  reviewed?: boolean;
+}
+
+/// 融合产物段（纯文本契约：无说话人字段，文本逐字搬运）
 export interface FusedSegment {
   start: number;
   end: number;
+  /// 命中段 = 语料原文（含换行/角色名行）；未命中段 = 转写原文
   text: string;
-  /// Rust Option<String> 序列化为 "派蒙"/null
-  character: string | null;
-  /// false = 未匹配 OCR 文本，保留 ASR 原文本
+  /// false = 未匹配 OCR 文本，保留转写原文本
   matched: boolean;
 }
 
 export interface FuseStats {
   total: number;
   matched: number;
-  failed_batches: number;
+  /// 「该不配」掩码命中数（该段被判必不配；是精确判据，假阳性 0）
+  masked_segments: number;
+  /// 「候选语料行被重复使用」的段数（同一段语料被 ≥2 段命中）
+  reused_segments: number;
 }
 
 export interface FuseResult {
   segments: FusedSegment[];
+  /// 与 segments 一一对应的审计元数据（旧后端无此字段）
+  metas?: FuseMeta[];
   stats: FuseStats;
 }

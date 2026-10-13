@@ -39,14 +39,12 @@ const resolutionLabel = computed(() => {
   return "";
 });
 
-// 视频加载后确保基础产物轨存在（无 ocr_text 轨时补 mock 供总览展示），
-// 并聚焦产物轨让总览立即可见。OCR 选区控制轨由语料页/转写页各自建立，
+// 视频加载后聚焦产物轨让总览立即可见。OCR 选区控制轨由语料页/转写页各自建立，
 // 不进全局时间轴；校对区只聚焦产物轨（scope=output）。
 watch(
   () => timeline.duration,
   (d) => {
     if (d > 0) {
-      projectStore.ensureDefaultTrack(d);
       const outputTrack = projectStore.currentProject?.tracks.find(
         (t) => t.scope !== "control"
       );

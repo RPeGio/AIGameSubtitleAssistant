@@ -36,6 +36,24 @@ pub struct FrameText {
 /// "被并入"判定（`tests/common::absorbed_indices`）单列报告、不计满分缺失。
 pub const DEFAULT_MIN_SUBTITLE_SEC: f64 = 1.5;
 
+/// 单段产出最少的**实质字符数**（O1/O5，2026-10-12）：实质字符 = Unicode 字母数字
+/// （含 CJK，即 `norm_chars` 的口径），空白与标点不计。产出末段低于该值的
+/// "纯符号段/单字符垃圾段"（如 `+`/`*`/`…`/粗略选区把画面元素读成的 `6`/`O`/`口`）
+/// 直接丢弃——比照 `min_subtitle_sec` 的设计，这是一道**文本长度门**：
+///
+/// - 产品默认 **1**（丢弃纯符号段，如 `+`/`*`）：保守，不碰单字符实词；
+/// - 素材相关：粗略选区下画面元素会被读成单字符垃圾（O1 实测 vesna 嵌字 17 条、
+///   glupov 1 条；语料 O5 2 条），需要 2 才能全滤——基准照 D17"按素材实测 +
+///   基准侧参数分离"，嵌字四案例统一用 `CaseCfg::hardsub_min_text_length = 2` 覆盖；
+///   四个真值文件均无 ≤1 实质字符的条目（`---` 是分隔符），阈值 2 零误杀。
+///
+/// serde default 与前端缺省同源（`DEFAULT_MIN_TEXT_LENGTH`），防旧参数缺字段反序列化失败
+///
+/// **作用域**：该门只作用于视频 OCR 管线（`ocr_pass` 内的输出层 pass）；
+/// `run_ocr_images` 截图语料入口直出 `lines_from_results`，**不过此门**
+/// （截图源由用户逐张挑选，垃圾概率低——PR42 审查 P2-3 登记）。
+pub const DEFAULT_MIN_TEXT_LENGTH: usize = 1;
+
 /// 标点归一化配置（S1：参数化，供前端"个性化归一化目标"使用）。
 ///
 /// 归一化是**精度策略的统一前置层**（用户 2026-09-24 决策）：术语表/一致性纠错都要求
@@ -71,6 +89,10 @@ pub(crate) fn default_true() -> bool {
 /// `OcrRunParams::min_subtitle_sec` 的 serde 缺省（与产品默认同源）
 pub(crate) fn default_min_subtitle_sec() -> f64 {
     DEFAULT_MIN_SUBTITLE_SEC
+}
+/// `OcrRunParams::min_text_length` 的 serde 缺省（与产品默认同源）
+pub(crate) fn default_min_text_length() -> usize {
+    DEFAULT_MIN_TEXT_LENGTH
 }
 
 impl Default for PunctuationNorm {
@@ -108,7 +130,7 @@ pub struct OcrRegionInput {
 /// OCR 运行参数
 #[derive(Deserialize)]
 pub struct OcrRunParams {
-    /// 帧间隔（秒），默认 1.0
+    /// 帧间隔（秒），默认 0.5（与前端 `ocrDefaults.ts` 的 createDefaultOcrParams 同源）
     pub frame_interval: f64,
     /// dHash 变化检测阈值，默认 3
     pub dhash_threshold: u32,
@@ -142,6 +164,10 @@ pub struct OcrRunParams {
     /// 默认关闭。
     #[serde(default)]
     pub consistency_hints: bool,
+    /// 单段最少实质字符数（产品默认 1，见 `DEFAULT_MIN_TEXT_LENGTH`；O1/O5）：低于该值
+    /// 的产出段直接丢弃（纯符号/单字符垃圾）。前端可调，基准嵌字侧按素材覆盖。
+    #[serde(default = "default_min_text_length")]
+    pub min_text_length: usize,
 }
 
 /// 进度事件载荷

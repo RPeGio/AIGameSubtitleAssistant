@@ -54,6 +54,7 @@ fn test_t3_end_to_end() {
         punctuation: Default::default(),
         glossary: Vec::new(),
         consistency_hints: false,
+        min_text_length: 1,
     };
 
     let start = Instant::now();

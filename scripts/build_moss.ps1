@@ -185,10 +185,12 @@ try {
   if (-not (Test-Path $built)) { throw "构建完成但找不到 moss-transcribe.exe（$buildDir\Release\ 或 $buildDir\）" }
 
   Copy-Item $built $targetExe -Force
-  # ggml 以共享库构建：DLL 在 build/bin/Release/（CMake RUNTIME_OUTPUT_DIRECTORY），
-  # 单配置生成器可能无该布局，回退到 exe 同目录
+  # ggml 以共享库构建：DLL 在 build/bin/Release/（CMake RUNTIME_OUTPUT_DIRECTORY）。
+  # Ninja 单配置布局：build-cuda/bin/*.dll（无 Release 子目录）——2026-09-30 CUDA 构建
+  # 实踩：仅回退 exe 同目录导致 DLL 全缺（info 自检 0xC0000135），故先探 Ninja 的 bin/。
   $exeDir = Split-Path $built
   $dllDir = Join-Path $exeDir "..\bin\Release"
+  if (-not (Test-Path (Join-Path $dllDir "ggml.dll"))) { $dllDir = Join-Path $exeDir "bin" }
   if (-not (Test-Path (Join-Path $dllDir "ggml.dll"))) { $dllDir = $exeDir }
   Get-ChildItem -Path $dllDir -Filter "*.dll" | Copy-Item -Destination $binDir -Force
   # 记录后端标记，供下次构建检测后端切换
