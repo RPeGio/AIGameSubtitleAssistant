@@ -38,6 +38,8 @@ export interface FusedEvent extends TimelineEventBase {
   type: "fused";
   text: string;
   character?: string;
+  /// 融合审计元数据（T4 起写入；旧工程无此字段）
+  fuse_meta?: FuseMeta;
 }
 
 export interface ManualEvent extends TimelineEventBase {
@@ -234,13 +236,39 @@ export interface LlmProgress {
 /// LLM 进度事件名（Rust 侧 `LLM_PROGRESS_EVENT` 需保持一致）
 export const LLM_PROGRESS_EVENT = "llm-progress";
 
-/// AI 融合输入：一个游戏内容转写段（index = 输入顺序，LLM 输出按此对应）。
-/// text 原样进 prompt（含换行）：ASR 段的说话人由预处理写成首行
+/// AI 融合输入：一个游戏内容转写段（index = 输入顺序，向量召回输出按此对应）。
+/// text 原样进入对齐输入（含换行）；**不带说话人前缀**（F14，见 fuse/mod.rs）。
 export interface FuseAsrInput {
   index: number;
   start: number;
   end: number;
   text: string;
+}
+
+/// 候选名单条目（1-based 语料下标 + 该行的相似度）
+export interface FuseCandidate {
+  ocr_index: number;
+  score: number;
+}
+
+/// 融合逐段审计元数据（由向量 worker 产出；score 不是正确性信号 —— 见标定 §7.9）
+export interface FuseMeta {
+  /// 命中的语料下标（1-based）；0 = 不配
+  ocr_index: number;
+  /// 命中行的余弦相似度；不配时为 0
+  score: number;
+  /// 候选名单（相似度降序，含命中的那条）
+  candidates: FuseCandidate[];
+  /// 该段被「该不配」判据整行封死
+  masked: boolean;
+  /// forward / repeat / reset / unmatched
+  transition: "forward" | "repeat" | "reset" | "unmatched";
+  /// 该段命中的语料行被 >=2 段命中
+  reused: boolean;
+  /// 融合时刻的转写原文（「不配/替换」回退真值；R2 时代数据无此字段）
+  source_text?: string;
+  /// 人工已复核标记（审计表四动作都置 true；重跑融合时重置）
+  reviewed?: boolean;
 }
 
 /// 融合产物段（纯文本契约：无说话人字段，文本逐字搬运）
@@ -256,13 +284,15 @@ export interface FusedSegment {
 export interface FuseStats {
   total: number;
   matched: number;
-  /// JSON 解析失败的批数（该批全部段保留转写原文）
-  failed_batches: number;
-  /// 模型未给出判定（缺 index）的段数，仅统计解析成功的批
-  missing_segments: number;
+  /// 「该不配」掩码命中数（该段被判必不配；是精确判据，假阳性 0）
+  masked_segments: number;
+  /// 「候选语料行被重复使用」的段数（同一段语料被 ≥2 段命中）
+  reused_segments: number;
 }
 
 export interface FuseResult {
   segments: FusedSegment[];
+  /// 与 segments 一一对应的审计元数据（旧后端无此字段）
+  metas?: FuseMeta[];
   stats: FuseStats;
 }

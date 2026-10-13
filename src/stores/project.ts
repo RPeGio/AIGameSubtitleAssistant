@@ -20,8 +20,10 @@ import type {
   FuseAsrInput,
   FuseResult,
   FusedSegment,
+  FusedEvent,
 } from "../types";
 import { OCR_PROGRESS_EVENT, ASR_PROGRESS_EVENT, LLM_PROGRESS_EVENT } from "../types";
+import { buildAuditRows, applyFusedDecision, type FuseAuditDecision } from "./fuseAudit";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
@@ -62,25 +64,14 @@ function embedOcrToEvent(seg: OcrSegment): TimelineEvent {
 /// 合计已冗余时仍因单条都 <50% 而保留，产生重复段。
 const EMBED_OVERLAP_DROP = 0.5;
 
-/// ASR 段的说话人标签注入：写成文本首行（"Sonnet\n正文"），与语料/嵌字的
-/// "名字行 + 正文"形态对齐。融合管线已降格为纯文本（无说话人字段），标签只能
-/// 作为文本随原文透传；待说话人契约定稿后再恢复结构化传递。
-/// 只作用于返回给后端的副本，**绝不回写轨道事件**（否则重跑会二次注入）；
-/// `未标注` 是前端的假说话人，不注入。
-function withSpeakerLine(ev: Extract<TimelineEvent, { type: "asr" }>): string {
-  // 空文本不注入：否则会产出只剩名字行的空字幕
-  if (!ev.text.trim()) return ev.text;
-  const name = (ev.character ?? "").trim() || (ev.speaker ?? "").trim();
-  if (!name || name === UNKNOWN_SPEAKER) return ev.text;
-  return ev.text.startsWith(`${name}\n`) ? ev.text : `${name}\n${ev.text}`;
-}
-
 /// 收集融合的"游戏内容时间轴段"：game-ASR 段整段 + 无配音处嵌字段填空隙。
 /// 策略（混用场景：任务大多有配音，但主播会找无配音 NPC 对话）：
 /// - ASR 段（track_role=game）全部保留（有配音处占住时间轴）
 /// - 嵌字 OCR 段（track_role=game）与 ASR 段并集重叠 ≥ EMBED_OVERLAP_DROP 则丢弃；
 ///   其余（未配音处没有对应语音段）保留，天然嵌入无 ASR 的时间空隙
 /// 合并后按 start 升序、全局编号，转 FuseAsrInput（契约不变）。
+/// **不加说话人首行**（T4/F14）：向量对齐剥表头后说话人无去向，注入只制造
+/// 与已验证 226/236 口径不同源的输入；说话人语义的正式契约待设计重评审。
 function collectGameContentSegments(tracks: Track[]): FuseAsrInput[] {
   const asr = tracks
     .filter((t) => t.type === "asr" && t.track_role === "game" && t.events.length > 0)
@@ -111,7 +102,7 @@ function collectGameContentSegments(tracks: Track[]): FuseAsrInput[] {
       index: i + 1,
       start: e.start,
       end: e.end,
-      text: e.type === "asr" ? withSpeakerLine(e) : e.text,
+      text: e.text,
     }));
 }
 
@@ -992,9 +983,9 @@ export const useProjectStore = defineStore("project", () => {
   // ── AI 融合（Phase 4）──────────────────────────────────
   const fuseRunning = ref(false);
 
-  /// 收集 corpus 语料文本（优先）与任意 ASR 段（按时间排序、编号），
-  /// 调 run_fuse 交给 LLM 融合，结果写入 fused 最终产物轨道（重跑覆盖）
-  async function runFuse(): Promise<FuseResult> {
+  /// 收集 corpus 语料文本，调 run_fuse 交给向量融合，结果写入 fused 最终产物轨道（重跑覆盖）。
+  /// `unmatchFilter`：「该不配」掩码开关（按素材，默认关；见 §7.6/§7.9 标定）
+  async function runFuse(unmatchFilter = false): Promise<FuseResult> {
     if (fuseRunning.value || !currentProject.value) throw new Error("当前无法执行 AI 融合");
     if (!currentVideoMeta.value) throw new Error("请先导入视频");
 
@@ -1019,7 +1010,11 @@ export const useProjectStore = defineStore("project", () => {
     llmProgress.value = 0;
     llmMessage.value = "准备中...";
     try {
-      const result = await invoke<FuseResult>("run_fuse", { ocrTexts, asrSegments });
+      const result = await invoke<FuseResult>("run_fuse", {
+        ocrTexts,
+        asrSegments,
+        unmatchFilter,
+      });
       writeFusedSegments(result);
       llmProgress.value = 1;
       llmMessage.value = "完成";
@@ -1059,13 +1054,53 @@ export const useProjectStore = defineStore("project", () => {
   function writeFusedSegments(result: FuseResult) {
     recordSnapshot();
     const track = ensureFusedTrack();
-    track.events = result.segments.map(fusedToEvent).sort((a, b) => a.start - b.start);
+    // 审计元数据随事件持久化（fuse_meta 落 .gsa；下次打开工程审计表仍可见）
+    track.events = result.segments
+      .map((seg, i) => ({ ...fusedToEvent(seg), fuse_meta: result.metas?.[i] }))
+      .sort((a, b) => a.start - b.start);
+  }
+
+  // ── 融合审计表（R3）────────────────────────────────
+  /// 审计行 = fused 轨事件 × fuse_meta（数据源已随工程落盘）；
+  /// 跟随 fused 轨与语料自动重算，无融合结果时为空表。
+  const fusedAuditRows = computed(() => {
+    const project = currentProject.value;
+    if (!project) return [];
+    const track = project.tracks.find((t) => t.type === "fused");
+    if (!track) return [];
+    // fused 轨只装 FusedEvent（fuse_meta 随事件持久化），此处类型收窄成立
+    return buildAuditRows(track.events as FusedEvent[], project.corpus.map((c) => c.text));
+  });
+
+  /// 审计四动作入口（保留/替换/不配）。先在克隆上应用，成功才入撤销快照并
+  /// 写回（失败零副作用）；写回后自动保存把 reviewed/改判落盘到 .gsa。
+  function applyFusedAuditDecision(
+    eventId: string,
+    decision: FuseAuditDecision
+  ): string | null {
+    const project = currentProject.value;
+    if (!project) return "当前无项目";
+    const track = project.tracks.find((t) => t.type === "fused");
+    if (!track) return "当前无融合结果";
+    const cloned = JSON.parse(JSON.stringify(track.events)) as FusedEvent[];
+    const err = applyFusedDecision(
+      cloned,
+      eventId,
+      project.corpus.map((c) => c.text),
+      decision
+    );
+    if (err) return err;
+    recordSnapshot();
+    track.events = cloned;
+    return null;
   }
 
   /// 把 IPC/后端错误映射为用户可读的信息，未识别时才回退原文
   function normalizeFuseError(e: unknown): string {
     const msg = String(e);
-    if (msg.includes("未就绪")) return "LLM 运行环境未就绪，请先运行环境引导脚本";
+    // 向量融合（T4）：未就绪来自 EmbedManager 状态（bootstrap_embed.ps1）
+    if (msg.includes("向量融合未配置") || msg.includes("未就绪"))
+      return "向量融合运行环境未就绪，请先运行 scripts/bootstrap_embed.ps1";
     if (msg.includes("没有可用的 OCR")) return "缺少 OCR 字幕文本，请先运行 OCR";
     if (msg.includes("没有可用的游戏内容"))
       return "没有游戏内容 ASR 段，请先运行 ASR 并检查轨道属性（主播语音除外）";
@@ -1385,6 +1420,8 @@ export const useProjectStore = defineStore("project", () => {
     checkLlmRuntime,
     fuseRunning,
     runFuse,
+    fusedAuditRows,
+    applyFusedAuditDecision,
     closeProject,
   };
 });

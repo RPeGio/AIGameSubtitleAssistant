@@ -38,6 +38,7 @@ corpus 语料（CorpusItem{text}，无说话人字段）
  game-ASR 段 + embed_ocr 段 │        只输出 {index, ocr_index, character}
         │  project.ts:71-98 collectGameContentSegments
         │  → {index,start,end,text}（speaker/character 在此丢弃 ★F1）
+        │  2026-10-13：走向量路线后 withSpeakerLine 注入已随 R2 移除（★F14：分块方案实验否决，不做算法侧修复，见 §2 实验收口）
         ▼
  GC[n] 每批 30 条 ──────────┘
         │
@@ -262,8 +263,14 @@ corpus 语料（CorpusItem{text}，无说话人字段）
     或改用"算法预对齐 + LLM 复核"（把 30 选 1 降为验证任务），见下"修复方向"。
   - 注：7B 在本机为 2 分片 GGUF（官方 repo，4.36GB，SHA256 已校验），仅用于对照，
     **未改动产品默认模型**（`runtime/config.json` 仍为 3B）。
-  - 复跑方式：`GSA_BENCH_LLM_MODEL=models/qwen/<model>.gguf cargo test --release --test bench_fusion -- --ignored --nocapture`
-    （路径相对 `runtime/`），结果自动落盘 `temp/bench_output/fusion_capability_<model>.json`。
+  - 复跑方式（原 Rust 基准 `src-tauri/tests/bench_fusion.rs` 已随 T4/R2 删除——它测的是被退役的 LLM 融合路径；
+    LLM 判别器改由 Python 侧承担），现复跑命令：
+    `runtime\python\python.exe src-tauri\tests\fuse_lab\bench_fusion_cases.py`（LLM 判别器）与
+    `runtime\python\python.exe src-tauri\tests\fuse_lab\bench_fusion_recall.py`（向量召回判别器），
+    需要 `PYTHONPATH=runtime\deps_embed`。路径相对 `runtime/`，结果自动落盘
+    `temp/bench_output/fusion_capability_<model>.json`。
+  - 注：Rust 端历史实现（prompt 构建、3B 路径与 LLM 融合基准）已随 2026-10-13 的 T4/R2
+    提交彻底移除；复现 F13 证据请走上述 Python 判别器（证据本身不因删除而失效）。
 - **方法学备注**：本组测试中多数用例 3 次复跑输出**逐字相同**（llama-cli 未固定种子时的实际行为近确定），
   故"3 次"不等于 3 个独立样本；后续复核应显式变种子或更换用例内容（已登记）。
 - **影响（对基准前提）**：
@@ -286,6 +293,36 @@ corpus 语料（CorpusItem{text}，无说话人字段）
   ③ **次选：算法预对齐 + LLM 复核**——用长度比、数字、拉丁词/专名等跨语言不变量做**单调 DP 对齐**，
   产出候选后让模型只做"确认/否决"，把"30 选 1"降为验证任务（不依赖时间轴，也不依赖长列表检索能力）；
   ④ **兜底**：产品定位改为"机器召回 + 人工确认"，并把"未对齐段"作为一等产物交给用户处理。
+- **F14（新，2026-10-13，走向量路线后的已知缺口）：同台词、跨说话人的站桩剧情——向量路线无法区分说话人**。
+  真实案例（用户实测，当前 4 个基准素材未覆盖）：同一句台词由不同角色分多次说出（配相同嵌字），此时语句**文本**相同
+  ⇒ 句向量相同 ⇒ 相似度矩阵对「该配给哪条语料」**单凭正文无法做出正确选择**。LLM 路线原可读 prompt 里的
+  `speaker`/`character`（前端 `withSpeakerLine` 注入，`src/stores/project.ts:70-76`），但 F13 已证 3B 模型不做内容匹配；
+  向量路线编码前剥表头（`split_header`）意味着说话人信息**在编码输入里也不存在**。
+  ⇒ 与 F1 说话人链路丢失的结论一致：说话人信息必须由**结构化输入/输出**承载，而不是指望模型从文本形态里恢复。
+- **R1 决定（2026-10-13，用户确认）**：去掉 `withSpeakerLine` 的 speaker 注入（它只服务 LLM prompt；向量编码剥表头也会把它剥掉，
+  与实验台不同源），**R2 之后必须适配「同台词、跨说话人」层级**（如把说话人作为结构化一侧输入/后验约束，或按对话轮次先分说话人块）。
+  在此适配落地前，**同台词跨说话人素材会被配到同一语料行**，如遇到要靠审计表人工裁决。
+- **实验收口（2026-10-13，用户确认）：拟定的 R4「按说话人分块对齐」方案经数据否决，F14 不做算法侧修复。**
+  依据（`scripts/fuse_speaker_exp.py`，本机 log：`temp/f14_exp3.log`；temp 不入库，按脚本头注释复跑即得）：
+  - flat 基线精确复现硬门（默认 210/236、掩码开 226/236），脚本管道可信；
+  - **分块回归**：真 4 案例总计 149/236（掩码开 165/236）；pierro（交错问答）119→59、moon 15→14，
+    仅单说话人/无名案例（glupov 强分块、vesna 无名）与 flat 等价；
+  - **预期失败场景被实测否决**：合成「异台词文本 + 语料按说话人分组 + 说话全局交错」（s1b）flat 靠 reset 回跳 + E5
+    判异能力 **6/6 全对**——flat 的全局单调并不在异文本交错分组语料上失败；
+  - **分块反而引入系统性错绑**：同台词重复行经 `split_header` 剥头后正文嵌入完全相同，各说话人的独立 DP
+    会互相抢占对方行（合成 s1：分块把桑娜妲段逐段绑到卡侬行）；
+  - flat 唯一失败模式是「同台词跨说话人但语料精确去重后只剩一行」（s2）：错绑行的**文本逐字相同**，
+    融合输出的台词内容无任何实质差异。
+  ⇒ **F14 残留面仅剩审计表的「说话人归属标签展示」（绑定来源行即使错也不改变字幕内容）**，
+  同台词重复行在审计表中本就命中 reused/低分结构信号，走人工裁决；算法侧关闭。
+- **F15（新，2026-10-13，PR43 审查观察项；语义边界，非缺陷）：语料在融合后再编辑 ⇒ 既有审计行指向偏移**。
+  `fuse_meta.ocr_index`/`candidates` 指的是**融合当时**的语料位置；用户随后在语料页增/删/改条目后，
+  审计表展示的"语料原文"（`buildAuditRows` 按当下 corpus 建行）与"融合当时真正命中的行"会分叉。
+  **现有兜底**（不崩、不误写）：候选按钮经 `corpusAt` 实时取值；`applyFusedDecision` 的 replace 对
+  下标做 bounds 校验（越界报错零副作用）；`buildAuditRows` 越界时 `corpusText` 置空串。
+  **处置**：暂不修（兜底已保证安全），但这是**产品级语义待办**——审计语义要与"语料版本化"
+  （fuse_meta 记录融合时的语料快照或版本号）配套后才严格成立；在登记可解之前，融合后大幅
+  改动语料的工程应在审计表里对可疑行人工确认。
 
 ## 3. 实测数据汇总（真实工程 + 真实模型）
 
@@ -355,7 +392,10 @@ $env:PYTHONUTF8=1; & runtime\python\python.exe temp\fuse_probe\probe4.py
 $env:PYTHONUTF8=1; & runtime\python\python.exe temp\fuse_probe\probe5.py
 ```
 
-能力基准（**已入库**）：`src-tauri/tests/bench_fusion.rs`（`cargo test --release --test bench_fusion -- --ignored --nocapture`；`GSA_BENCH_FUSION_REPS` / `GSA_BENCH_FUSION_CASES` / `GSA_BENCH_LLM_MODEL` 可调；结果落盘 `temp/bench_output/fusion_capability_<model>.json`）。
+能力基准：原 `src-tauri/tests/bench_fusion.rs` **已于 2026-10-13 随 T4/R2 删除**（它测的是退役的 LLM 融合路径）；
+判别器复动能迁移到 Python（`src-tauri/tests/fuse_lab/bench_fusion_cases.py` / `bench_fusion_recall.py`），
+F13 与 F14 的最新标定数字可见 `benchmark/FUSE_THRESHOLD_CALIBRATION.md` §7.9（默认 210/236，掩码开 226/236）。
 A/B 与变量隔离探针：`probe7.py`（新契约复跑真实 batch1）、`probe8.py`（Arm B/C 变量隔离）、`probe9.py`（干净判别器用例：无不动点排列）、`probe10.py`（两个对照：语料自然序+GC打乱、同语言逐字相同）、`check_cases.py`（乱序用例真值自洽性干跑校验）、`check_speaker_line.mjs`（说话人行注入规则 4 分支自检）、`check_prompt_parity.py`（从 Rust 源码重建 prompt 与实测稳定臂逐字比对：3275 字符 **IDENTICAL**）。
 落盘的原始输出与统计：`temp/fuse_probe/*.raw.txt`、`probe3_result.json`、`moon_result.json`、`moon_sisters.gsa.prompt_b1.txt`。
-（`temp/`、`examples/` 均在 `.gitignore` 内，探针与素材不入库；如判定有价值，可将 ②③ 的脚本改写为 `src-tauri/tests/bench_fusion.rs` 的对照组。）
+（`temp/`、`examples/` 均在 `.gitignore` 内，探针与素材不入库；`check_prompt_parity.py` 的 **Rust 端重建逻辑也已随 T4/R2 移除**，
+现改为「prompt 构建逻辑已退役，仅作历史证据保留」。）

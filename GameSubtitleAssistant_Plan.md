@@ -393,6 +393,39 @@ GameSubtitleAssistant
 
 **前端形态**（用户决策）：融合跑完后把低置信段罗列出来，逐段可选 **保留当前 / 从候选名单替换 / 在整个语料列表里选择替换 / 不配该条**。
 
+**T4 进度（2026-10-13，本轮）**：
+- ✅ **R1 已落地（Python 侧产品化）**：新增 `scripts/fuse_core.py`（对齐核心单一真源：表头剥离 + E5 编码 +
+  统一转移 DP + 两个掩码）、`scripts/embed_worker.py`（产品侧一次性子进程）、`scripts/fuse_worker_parity.py`
+  （产品 ↔ 实验台逐段对拍门）；`fuse_calib.py`/`tests/fuse_lab/__init__.py` 改为从 `fuse_core` 导入；
+  `bootstrap_embed.ps1` 补 worker 部署与 `embed_worker` 配置键。验收：selfcheck 两项等价通过、
+  `fuse_align_srt` 12 产物与 R0 基线逐字节相同、对拍 8/8 零差异、`cargo test` 287/0。
+  遗留见 [FUSE_PIPELINE_DEFECTS.md](benchmark/FUSE_PIPELINE_DEFECTS.md) F14。
+- ✅ **F14 已实证收口（2026-10-13）**：「同台词、跨说话人」的站桩剧情——拟定的算法修复
+  （R4 按说话人分块对齐）经实验**否决**：真 4 案例回归 pierro 119→59（总 149/236），
+  且 flat 在「异台词 + 语料分组 + 说话交错」合成场景本就全对；flat 唯一失败模式
+  （语料精确去重后同台词重复行）错绑行文本逐字相同 ⇒ **字幕内容不受影响**，
+  残留面仅为审计表的说话人归属展示（重复行本就命中 reused/低分结构信号，人工裁决）。
+  实验依据：`scripts/fuse_speaker_exp.py`（本机 log：`temp/f14_exp3.log`；temp 不入库，按脚本头注释复跑即得），
+  详见 [FUSE_PIPELINE_DEFECTS.md](benchmark/FUSE_PIPELINE_DEFECTS.md) F14 实验收口。
+- ✅ **R2 已落地（Rust 侧接线）**：`RuntimeConfig` 补 4 个 `embed_*` 字段（整组必配或整组为空、防穿越校验）、
+  `ai_runtime/embed.rs` 一次性子进程客户端 + `EmbedManager` + `check_embed_runtime` 命令、
+  `fuse/mod.rs` 重写为向量路径（越界 `ocr_index` 报错不静默降级）+ 契约扩三处
+  （Rust `FuseCandidate`/`FuseMeta`/`FuseStats`、`FusedEvent.fuse_meta`（`#[serde(default)]` 兼容旧工程）、TS 同步）、
+  删除 LLM 融合路径（`bench_fusion.rs` 退役、F13 复现改 Python 判别器）。验收：`cargo test` 250+15+15 全绿、
+  对拍 8/8 零差异、`fuse_e2e`（moon 15/15）通过、`pnpm build` 通过。
+- ✅ **R3 已落地（前端「融合后置信度审计表」）**：FuseView 页内审计栏——风险分层
+  （**A 重点** = 掩码 / 回退 / 复用转移 / 未命中，默认展开；**B 低分** = `score<0.82` 折叠单行标记，
+  仅展示辅助**不是告警**，依据 §7.9⑥；已复核清零为 normal）、四动作（保留 / 候选替换（继承候选实测分）/
+  全语料惰性弹窗选择 / 不配回退融合时转写原文）、`reviewed` 与改判结果随 `fuse_meta` 落 `.gsa`；
+  纯逻辑 `src/stores/fuseAudit.ts` + 自检 `scripts/check_fuse_audit.mjs`（分层/排序/计数/四动作/可逆性全断言通过）。
+  设计记录见 [FUSE_THRESHOLD_CALIBRATION.md](benchmark/FUSE_THRESHOLD_CALIBRATION.md) §八。
+- **收口快照（2026-10-13，PR43 审查独立复现实测；以上各行内数字为各自落地时点）**：
+  `cargo test` 252 lib + 15 bench_corpus + 15 bench_hardsub 全绿（fuse_e2e 等 6 个二进制的
+  `#[ignored]` 项不受影响）、`fuse_e2e --ignored`（moon）15/15、selfcheck 两项等价、
+  对拍 8/8 零差异、`check_fuse_audit` 30 断言、`pnpm build` 通过、clippy 与主基线持平。
+  审查收尾（review-reports/PR43_REVIEW.md 处置记录）：P1-1 配置兑现（embed_model/onnx
+  拆分传入 worker）+ P2-1/P2-2 临时目录唯一化与 120s 超时兜底 + P2-4 候选下标显式校验。
+
 ## Phase 7：高级功能（未来）
 - TTS、声音克隆、自动翻译、游戏角色声音库
 

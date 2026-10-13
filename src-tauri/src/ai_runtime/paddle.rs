@@ -318,6 +318,10 @@ mod tests {
             funasr_device: "cuda".into(),
             funasr_language: "中文".into(),
             funasr_timeout_minutes: 0,
+            embed_worker: String::new(),
+            embed_model: String::new(),
+            embed_tokenizer: String::new(),
+            embed_deps_dir: String::new(),
         };
         assert_eq!(
             runtime.join(&cfg.worker_script),
