@@ -848,7 +848,7 @@
   - 根因：`src-tauri/src/ocr/merge.rs:844-870` 的 `merge_similar_adjacent` 是三个段合并 pass 中**唯一没有空档门**的一个（`merge_contained_adjacent` 有 `CONTIGUOUS_MAX_GAP_SEC.max(interval)`=0.5s，`merge.rs:448`/`merge.rs:479`；`merge_short_fragments_into_next` 有 `SHORT_FRAGMENT_GAP_MAX_SEC`=2.0s，`merge.rs:577`/`merge.rs:803`/`merge.rs:823`）——它只看文本相似，空档不限长。
   - 证据：同日志中 `08:44.908` 之后到 `09:30.421` 之前 **45.5s 无任何 OCR 文本**；帧级打印条件是 `change.is_changed && !text.is_empty()`（`pipeline.rs:515`），而保险丝每 2.0s 仍在触发 ⇒ 中间那些帧读到的是**空**（显示确实消失），两处独立显示被无门合并成一条。
   - ⇒ 上条"判读"的适用范围收窄为**仅此条**；机理是"两处短暂显示之间夹 45.5s 空档 + 文本相同被无门合并"，**不是**"长时间静止文字未断开"。修复候选：给 `merge_similar_adjacent` 加空档门，门限先实测（正例 `08:43.941`/`08:44.908` 这对相隔约 0.97s 的同文本"伪短字幕"必须保留）。
-- **✅ 已修复（2026-10-12，本条以下注明依据；代码待提交，提交号以实际为准）**：
+- **✅ 已修复（2026-10-12，依据提交 `0d8120e`，分支 `docs/sync-current-state`）**：
   - 实现：`merge_similar_adjacent` 增加**时间邻接门** `SIMILAR_MAX_GAP_SEC = 11.0s`
     （`src-tauri/src/ocr/merge.rs:450-461` 常量 + 门判据 `contiguous`；签名补 `interval`，
     与 `merge_contained_adjacent` 同款 `.max(interval)` 缩放，`pipeline.rs:537` 调用点同步）。
