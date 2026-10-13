@@ -827,7 +827,7 @@
   ⇒ 触发条件是**粗略选区**（用户选区 `y` 一直框到 1.0000，高度约为紧框 2 倍）。
 - **方向（用户已认可）**：比照 `min_subtitle_sec` 增设 **`min_text_length`** 参数（按实质字符数过滤），
   标定方式沿用 D17 的"按素材实测 + 基准侧参数分离"。
-- **✅ 已实现（2026-10-12，依据见本分支 T2 提交）**：`OcrRunParams.min_text_length`
+- **✅ 已实现（2026-10-12，依据提交 `8848078`）**：`OcrRunParams.min_text_length`
   （产品默认 1 = 只丢纯符号段；`params::DEFAULT_MIN_TEXT_LENGTH` 注释含标定依据），
   输出层 pass `drop_below_min_text_length`（`merge.rs`，实质字符复用 `norm_chars` 口径：
   Unicode 字母数字含 CJK，标点空白不计），前端默认值与设置面板同步（`ocrDefaults.ts`、
