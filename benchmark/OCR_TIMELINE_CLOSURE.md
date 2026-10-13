@@ -115,7 +115,7 @@
 ### 落地展开（新会话按此执行）
 1. **素材准备**：`examples/benchmark_examples/` 增加预校对 `.gsa` 工程（本地素材不入库，同嵌字做法：工程本地留档、坐标/条目进代码或 `.json` 受控副本）。工程要求：语料轨 = 参考文本全量、转写轨带说话人、时间轴已对齐。
 2. **数据流**：OCR 全量段（含 pierro 噪音行 51 条，作为**容忍度素材**不判败）+ 转写分段轨 → 按段组装 prompt（**注意 OCR 全量入批的上下文占用，需实测**，台账非缺陷项已登记）→ LLM 逐段输出 `{index, action, text, speaker}` → Rust 端校验 `failed_batches`（解析失败/缺 index 的批）。
-3. **评分器**（`src-tauri/tests/bench_fusion.rs`，模式抄嵌字基准）：
+3. **评分器**（`src-tauri/tests/bench_fusion.rs`，模式抄嵌字基准；**该 Rust 基准已随 T4/R2 于 2026-10-13 删除**，判别器改由 `src-tauri/tests/fuse_lab/bench_fusion_*.py` 承担）：
    - 期望侧 = 预校对工程的「正确文本 + 说话人」；产出侧 = 融合输出。
    - 逐段判类打分：replaced 的文本与期望对齐判 `correct_replaced`/`wrong_line`/`character_error`（宽松归一化复用 `normalize_lenient` / `exact_cer`）；`correct_kept` 验证"该替换的没替换"判 `missed_replacement`（这是 LLM 融合的**主考核点**——字幕错字能不能找出来）。
    - 三轴输出照嵌字格式：①逐段判类表 ②角色名准确率与错配明细 ③failed_batches 与耗时。

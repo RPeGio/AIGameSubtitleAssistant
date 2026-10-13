@@ -11,17 +11,17 @@ Video input ──► OCR + timing & transcription (speech ASR / on-screen hards
             ──► AI fusion (text replacement) ──► manual correction ──► SRT / ASS / LRC / TXT
 ```
 
-### **No account, no API keys, no video uploads, no cloud services** — all AI inference (OCR / ASR / speaker diarization / LLM text alignment) runs **locally**.
+### **No account, no API keys, no video uploads, no cloud services** — all AI inference (OCR / ASR / speaker diarization / multilingual vector-recall alignment) runs **locally**.
 ### [(Jump to Usage)](#usage)
 
-> ⚠️ Early-stage project (v0.1.0). Windows only, no installer yet: the AI runtime is set up locally via scripts (see [Quick Start](#quick-start)).
+> ⚠️ Early-stage project (v0.3.0). Windows only, no installer yet: the AI runtime is set up locally via scripts (see [Quick Start](#quick-start)).
 
 ## Features
 
 - **Text corpus collecting (OCR)**: frame a subtitle region on the quest recording; use change detection to skip unchanged frames; PaddleOCR recognition with majority-vote merging produces game text decoupled from the timeline. Subtitle screenshots can also be OCR'd directly, or text can be pasted / imported if text corpuses has already existed in any platform.
 - **Timing & transcription**: the transcript side of the clip (the timing source) has **two parallel options** — they may coexist in one project, and fusion consumes both. **Speech ASR** (voiced quests: timing comes from speech activity): two engines — MOSS-Transcribe-Diarize 0.9B (automatic diarization, the most accurate) or FunASR (Fun-ASR-Nano, fast on a local GPU). Tag each speaker track as "game speech" (provides a timeline for fusion) or "streamer speech" (transcription / export only) in one click.
 - **Hardsub OCR (embed_ocr)** (unvoiced quests: timing comes from on-screen text changes): OCR a framed hardsub region on the clip video to build an embedded-subtitle track, coexisting with ASR tracks and fed to fusion as game-content segments.
-- **AI fusion**: reliable corpus text replaces the transcript-side text while the transcript-side timing is kept. **The current product implementation** is a local LLM (llama.cpp + Qwen2.5-3B) mapping indices — a plain-text contract: the model only outputs the `ocr_index` correspondence and code copies the corpus text verbatim (no character names are produced). Measured behaviour of this 3B model is **alignment by index**, not cross-language semantics (see [benchmark/FUSE_PIPELINE_DEFECTS.md](benchmark/FUSE_PIPELINE_DEFECTS.md) F13); the **verified alternative** is local multilingual vector recall + a unified transition DP (four cases, 226/236 scored segments), planned to land as **T4**.
+- **AI fusion**: reliable corpus text replaces the transcript-side text while the transcript-side timing is kept. It is implemented as **local multilingual vector recall (multilingual-e5-small qint8, ONNX / CPU) + a unified transition DP**: each transcript segment recalls candidates from the corpus, a global monotonic DP (advance / reuse / reset / unmatch) then picks the overall best path, and matched segments copy the corpus text **verbatim** in code (no character names are produced). The four benchmark cases score **210/236** scored segments, rising to **226/236 (95.8%)** with the "should-not-match" mask enabled. After fusion the same page shows a **confidence audit table** listing suspicious segments by risk tier (masked / reset / reused / unmatched / low score) with four manual verdicts (**keep / replace from candidates / pick from the full corpus / mark as unmatched**), persisted with the project. The former LLM route (llama.cpp + Qwen2.5-3B index mapping) measured **no cross-language semantic alignment** (see [benchmark/FUSE_PIPELINE_DEFECTS.md](benchmark/FUSE_PIPELINE_DEFECTS.md) F13) and has been retired.
 - **Timeline editing**: multi-track timeline (split / merge / drag / snap / segment swap), video preview sync, undo & redo, per-event proofreading list.
 - **Export**: single-track export to SRT / ASS / LRC / TXT.
 - **Engineering**: project data (`<project-name>.gsa` — a magic header + JSON) autosaves with a 1-second debounce plus Ctrl+S manual save; recent-projects list.
@@ -49,7 +49,7 @@ A project mounts **two video sources**: `source` (the quest recording — the OC
 | FFmpeg + ffprobe | Install yourself and add to `PATH`; the app never downloads it |
 | NVIDIA GPU (optional) | FunASR defaults to CUDA 12.4; llama.cpp / MOSS support cpu / cuda / vulkan backends — use cpu without a GPU(transcription time increases severalfold) |
 
-The AI modules together occupy about 13.9 GB of disk (models + Python dependencies).
+The AI modules together occupy about 13.9 GB of disk (models + Python dependencies); the E5-small qint8 model used by vector fusion adds about 113 MB.
 
 ## Quick Start
 
@@ -70,7 +70,10 @@ powershell -ExecutionPolicy Bypass -File scripts/bootstrap_moss.ps1 [-Backend cp
 #     or FunASR (defaults to -Device cuda)
 powershell -ExecutionPolicy Bypass -File scripts/bootstrap_funasr.ps1 [-Device cpu]
 
-# ③ LLM (required by AI fusion)
+# ③ Vector fusion (required by AI fusion; CPU inference, model ≈ 113 MB)
+powershell -ExecutionPolicy Bypass -File scripts/bootstrap_embed.ps1
+
+# ④ LLM (optional: only the fusion-capability test bench run_llm uses it; product fusion no longer needs it)
 powershell -ExecutionPolicy Bypass -File scripts/bootstrap_llm.ps1 [-Backend cpu]
 ```
 
@@ -89,7 +92,7 @@ pnpm tauri build   # produce installers (note: runtime-resource bundling is not 
 2. **Import videos**: import the quest recording (source) on the corpus page; import the clip video (clip) on the timing & transcription page.
 3. **① Corpus**: frame the subtitle region and time range, run OCR to collect reliable text — or OCR subtitle screenshots / paste plain text.
 4. **② Timing + transcribe**: pick the option that fits the material (both may be used) — for voiced quests run ASR (engine / speaker cap / language) and tag tracks containing game speech as "game speech"; for unvoiced quests (or clips that already carry hardsubs) frame the hardsub region and run hardsub OCR.
-5. **③ Fuse**: once corpus and timeline are both ready, start fusion to get final subtitle events whose timing comes from the transcript / embed-subtitle and text from the reliable corpus.
+5. **③ Fuse**: once corpus and timeline are both ready, start fusion to get final subtitle events whose timing comes from the transcript / embed-subtitle and text from the reliable corpus; the **audit table** on the same page then reviews them by risk tier (keep / replace from candidates / pick from the full corpus / mark as unmatched).
 6. **④ Edit**: proofread event by event (edit text / character, split, merge, delete) and export SRT / ASS / LRC / TXT.
 
 ## Project layout
@@ -101,8 +104,8 @@ pnpm tauri build   # produce installers (note: runtime-resource bundling is not 
 │       ├── video/          # ffprobe metadata, frame/audio extraction
 │       ├── ocr/            # OCR pipeline (frame → change detection → OCR → merge)
 │       ├── asr/            # ASR dispatch (dual engine)
-│       ├── llm/            # llama.cpp invocation
-│       ├── fuse/           # AI fusion (LLM index mapping + verbatim corpus text)
+│       ├── llm/            # llama.cpp invocation (fusion-capability test bench)
+│       ├── fuse/           # AI fusion (vector recall + unified transition DP)
 │       ├── export/         # SRT/ASS/LRC/TXT export
 │       ├── project/        # project data model & persistence
 │       └── ai_runtime/     # AI runtime (provider abstraction, config, worker subprocesses)
@@ -121,9 +124,9 @@ pnpm tauri build   # produce installers (note: runtime-resource bundling is not 
 
 ## Roadmap
 
-**Done**: the full four-page workbench (corpus → timing + transcribe → fuse → edit/export), the OCR pipeline (region selection / change detection / majority vote / multi-frame merge), FunASR + MOSS dual ASR engines with speaker diarization, the hardsub OCR track, AI fusion (LLM index mapping + verbatim corpus-text carry-over), multi-track timeline editing with undo/redo, single-track multi-format export, autosave.
+**Done**: the full four-page workbench (corpus → timing + transcribe → fuse → edit/export), the OCR pipeline (region selection / change detection / majority vote / multi-frame merge), FunASR + MOSS dual ASR engines with speaker diarization, the hardsub OCR track, AI fusion (local vector recall + unified transition DP, including the **post-fusion confidence audit table**), multi-track timeline editing with undo/redo, single-track multi-format export, autosave.
 
-**In progress / to improve**: **T4** — landing the verified vector recall + unified transition DP in the product, replacing the current LLM fusion, **in the same round** as the frontend "post-fusion confidence audit table" (the two are coupled: the audit table depends on confidence / warning signals produced by fusion); runtime-resource bundling (installer distribution).
+**In progress / to improve**: runtime-resource bundling (installer distribution); further calibration of the fusion confidence signals — `score` is not a correctness signal, so the audit tiers are hints only (see [benchmark/FUSE_THRESHOLD_CALIBRATION.md](benchmark/FUSE_THRESHOLD_CALIBRATION.md) §7.9⑥).
 
 **Planned**: translation assistance and bilingual subtitles, more export formats (Premiere XML / DaVinci Resolve XML / Aegisub), in-app model management, TTS and voice cloning (see Phase 7 of the plan).
 
@@ -132,8 +135,8 @@ pnpm tauri build   # produce installers (note: runtime-resource bundling is not 
 - Windows only; macOS / Linux would require porting the bootstrap scripts and runtime.
 - No installer — the AI environment is set up by scripts; models are downloaded at setup time, not by the app (which only performs readiness checks).
 - FFmpeg must be provided by the user (added to `PATH`).
-- Fusion runs end to end but **does not yet meet the product goal**: defect ledger F13 measured that the local 3B LLM mainly **aligns by index** and does not perform cross-language semantic alignment; the verified alternative (vector recall + unified transition DP, four cases, 226/236 scored segments) is planned to land as T4 — until then, fusion output still needs per-event manual proofreading.
-- The default LLM, Qwen2.5-3B-Instruct, uses the **Qwen Research license** (commercial use requires separate permission) — see [THIRD_PARTY.md](THIRD_PARTY.md).
+- Fusion output still needs per-event manual proofreading: at any threshold the precision of `score` stays close to the error base rate (4.2%), so it is **not a correctness signal** and the audit table only provides structural hints (see [benchmark/FUSE_THRESHOLD_CALIBRATION.md](benchmark/FUSE_THRESHOLD_CALIBRATION.md) §7.9⑥). In the "same line, different speakers" case ([F14](benchmark/FUSE_PIPELINE_DEFECTS.md)) the mis-bound row's text is verbatim identical — subtitle content is unaffected — but the audit table's speaker attribution may be wrong; experiments ruled out an algorithm-side fix, so it is left to human judgement.
+- The default LLM, Qwen2.5-3B-Instruct (**optional**, used only by the fusion-capability test bench), uses the **Qwen Research license** (commercial use requires separate permission) — see [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## License
 
