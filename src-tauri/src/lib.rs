@@ -69,6 +69,7 @@ pub fn run() {
             project::remove_recent_project,
             // video 模块
             video::get_video_metadata,
+            video::waveform::get_audio_peaks,
             // ai_runtime 模块
             ai_runtime::check_ocr_runtime,
             ai_runtime::check_asr_runtime,

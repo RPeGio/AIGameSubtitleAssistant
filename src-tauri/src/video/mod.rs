@@ -14,6 +14,8 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub mod waveform; // 时间轴音频波形峰值提取（get_audio_peaks）
+
 // ─── 公开数据结构 ─────────────────────────────────────────
 
 /// 视频元数据 —— 前端展示和后续处理的基础信息

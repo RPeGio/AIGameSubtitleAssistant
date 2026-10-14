@@ -91,7 +91,7 @@ watch(
       </div>
 
       <div class="timeline-pane">
-        <Timeline />
+        <Timeline show-waveform />
       </div>
     </div>
 
