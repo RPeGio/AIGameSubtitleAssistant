@@ -8,6 +8,7 @@ import TimelineRuler from "./TimelineRuler.vue";
 import TimelineClip from "./TimelineClip.vue";
 import TimelineScrollbar from "./TimelineScrollbar.vue";
 import TimelineToolStrip from "./TimelineToolStrip.vue";
+import TimelineWaveform from "./TimelineWaveform.vue";
 
 /// 支持注入独立 store 实例（页面级迷你时间轴用），未注入时回退全局 store
 const timeline = inject(TIMELINE_STORE_KEY, null) ?? useTimelineStore();
@@ -20,12 +21,14 @@ const props = withDefaults(
     trackFilter?: (t: Track) => boolean;
     /// 是否显示工具条（分割/合并等校对工具；迷你时间轴隐藏）
     showToolStrip?: boolean;
+    /// 是否显示当前项目视频的音频波形行（校对区主时间轴开启；迷你时间轴不需要）
+    showWaveform?: boolean;
     /// 点击 clip 是否跳转播放头到 clip 起点（迷你时间轴场景）
     clickSeeks?: boolean;
     /// 轨道标签列宽度（px）；迷你时间轴可调窄，给时间轴窗口让出更多宽度
     labelWidth?: number;
   }>(),
-  { showToolStrip: true, clickSeeks: false, labelWidth: 220 }
+  { showToolStrip: true, showWaveform: false, clickSeeks: false, labelWidth: 220 }
 );
 
 const emit = defineEmits<{
@@ -472,6 +475,12 @@ onUnmounted(() => {
 
       <!-- Track rows（垂直滚动区：轨道多时滚动，行高固定不被压缩） -->
       <div class="tl-tracks">
+          <!-- 音频波形行：仅校对区主时间轴开启，位于所有轨道之上 -->
+          <TimelineWaveform
+            v-if="props.showWaveform"
+            :video-path="projectStore.currentVideoMeta?.path"
+            :label-width="props.labelWidth"
+          />
           <div
             v-for="(track, ti) in tracks()"
             :key="track.id"

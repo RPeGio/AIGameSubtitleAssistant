@@ -1,8 +1,18 @@
+<div align="center">
+
 # GameSubtitleAssistant
+
+[![Rust](https://img.shields.io/badge/build_with-Rust-orange)](https://rust-lang.org/)
+[![Vue](https://img.shields.io/badge/Vue-3.5+-4FC08D.svg)](https://vuejs.org/)
+[![Tauri](https://img.shields.io/badge/Tauri-2.0-yellow)](https://tauri.app/)
+[![Platform](https://img.shields.io/badge/Platform-Windows-blue.svg)](https://www.microsoft.com/zh-cn/windows/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](https://mit-license.org/)
+
+**A fully offline AI workstation for producing game quest subtitles.**
 
 **English** | [中文](README.md)
 
-> A fully offline AI workstation for producing game quest subtitles.
+</div>
 
 GameSubtitleAssistant is built for game quest fan-translators, clip makers and subtitle groups. It turns the manual workflow — watch the recording → (screenshot OCR → copy text → find character names)(a.k.a. corpus collection) → hand-timed subtitles → translate → export — into a single AI-assisted pipeline:
 

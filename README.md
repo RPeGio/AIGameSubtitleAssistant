@@ -1,7 +1,18 @@
+<div align="center">
+
 # GameSubtitleAssistant
+
+[![Rust](https://img.shields.io/badge/build_with-Rust-orange)](https://rust-lang.org/)
+[![Vue](https://img.shields.io/badge/Vue-3.5+-4FC08D.svg)](https://vuejs.org/)
+[![Tauri](https://img.shields.io/badge/Tauri-2.0-yellow)](https://tauri.app/)
+[![Platform](https://img.shields.io/badge/Platform-Windows-blue.svg)](https://www.microsoft.com/zh-cn/windows/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](https://mit-license.org/)
+
+**完全离线运行的 AI 游戏剧情字幕生产工作站。**
+
 **中文** | [English](README_EN.md)
 
-> 完全离线运行的 AI 游戏剧情字幕生产工作站。
+</div>
 
 GameSubtitleAssistant 面向游戏剧情实况翻译（烤肉）、切片和字幕组创作者，把「观看录播 → （截图 OCR → 复制文本 → 找角色名）（此三步可概括为游戏语料收集） → 人工打轴 → 翻译整理 → 导出字幕」的人工流程，压缩为一条 AI 辅助流水线：
 
