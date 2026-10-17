@@ -579,31 +579,6 @@ function discardDiff(d: Diff) {
   align-content: start;
 }
 
-.sblk {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  border: 1px solid var(--hair);
-  border-radius: 8px;
-}
-
-.sblk .bt {
-  font-size: 11px;
-  letter-spacing: .06em;
-  color: var(--faint);
-}
-
-.kv {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  font: 11px/1.7 var(--mono);
-  color: var(--dim);
-}
-
 .gempty {
   font-size: 11px;
   line-height: 1.6;

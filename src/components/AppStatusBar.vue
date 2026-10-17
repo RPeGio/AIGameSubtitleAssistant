@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onMounted, ref } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import { useProjectStore } from "../stores/project";
+import type { AsrEngineStatus } from "../types";
 
 const projectStore = useProjectStore();
 
@@ -23,6 +25,43 @@ const metaText = computed(() => {
   if (!m) return "";
   return `${m.fps.toFixed(1)}fps · ${m.codec} · ${m.width}×${m.height}`;
 });
+
+// ── 引擎段：显示"当前实际可用的引擎"，只做只读浅探测 ──────────
+/// MOSS 为主力、FunASR 为 fallback，故按此优先级取第一个就绪的
+const ENGINE_PRIORITY = ["moss", "funasr"] as const;
+const ENGINE_LABEL: Record<string, string> = { moss: "MOSS", funasr: "FunASR" };
+
+const asrEngines = ref<AsrEngineStatus[] | null>(null);
+const embedReady = ref<boolean | null>(null);
+
+/// 探测失败（null）如实显示 "—"，不阻塞任何操作；真正运行时由各页探针与后端报错兜底
+async function probe() {
+  try {
+    asrEngines.value = await projectStore.getAsrEngines();
+  } catch {
+    asrEngines.value = null;
+  }
+  try {
+    embedReady.value = (await invoke<{ ready: boolean }>("check_embed_runtime")).ready;
+  } catch {
+    embedReady.value = null;
+  }
+}
+
+onMounted(() => void probe());
+
+const engineText = computed(() => {
+  const list = asrEngines.value;
+  if (list === null) return "ASR: —";
+  const key = ENGINE_PRIORITY.find((k) =>
+    list.some((e) => e.engine === k && e.ready)
+  );
+  return `ASR: ${key ? ENGINE_LABEL[key] : "未就绪"}`;
+});
+
+const vectorText = computed(() =>
+  embedReady.value === null ? "向量: —" : `向量: ${embedReady.value ? "e5-small" : "未就绪"}`
+);
 </script>
 
 <template>
@@ -31,6 +70,7 @@ const metaText = computed(() => {
     <span class="sb">轨道 {{ trackCount }} · 片段 {{ clipCount }}</span>
     <span class="sp" />
     <span v-if="metaText" class="sb">{{ metaText }}</span>
+    <span class="sb">{{ engineText }} · {{ vectorText }}</span>
   </footer>
 </template>
 

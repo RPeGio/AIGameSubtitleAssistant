@@ -278,6 +278,8 @@ textarea.inp { height: auto; padding: 8px 10px; line-height: 1.6; resize: vertic
   gap: 8px;
   padding: 2px 12px 12px;
 }
+/* 卡体内容各自保持自身高度：宁可让卡体滚动，也不要被压缩后裁字 */
+.accb > * { flex-shrink: 0; }
 
 .rh { flex: none; display: flex; align-items: center; gap: 8px; }
 .rh .t { font-size: 12px; font-weight: 600; letter-spacing: .08em; color: var(--dim); }
@@ -294,3 +296,89 @@ textarea.inp { height: auto; padding: 8px 10px; line-height: 1.6; resize: vertic
 
 .hbar { flex: none; height: 8px; border-radius: 4px; background: var(--hover); position: relative; overflow: hidden; }
 .hbar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--accent); }
+
+/* 页内小节块（参数/术语表/说话人标记等同款容器） */
+.sblk {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  min-width: 0;
+}
+
+.sblk .bt { font-size: 11px; letter-spacing: .06em; color: var(--faint); }
+
+.kv {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font: 11px/1.7 var(--mono);
+  color: var(--dim);
+}
+
+/* 扁平下拉：原生 select 重置外观，与无框步进同一层级 */
+.selbox {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--hair-2);
+  border-radius: 6px;
+  background: var(--raised);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12.5px;
+  outline: none;
+  cursor: pointer;
+  appearance: none;
+}
+
+.selbox:focus { border-color: var(--accent); }
+.selbox:disabled { opacity: .45; cursor: not-allowed; }
+
+.selwrap { position: relative; display: inline-flex; align-items: center; min-width: 0; width: 100%; }
+.selwrap .selbox { width: 100%; padding-right: 22px; }
+.selwrap .ic { position: absolute; right: 7px; pointer-events: none; color: var(--faint); }
+
+/* 引擎单选行：点态圆点 + 名称/说明 + 右侧状态 */
+.eng { display: flex; flex-direction: column; gap: 6px; }
+
+.erow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.erow:hover { background: var(--hover); }
+.erow.on { border-color: var(--accent); background: var(--accent-soft); }
+.erow.dis { opacity: .5; cursor: not-allowed; }
+.erow.dis:hover { background: none; }
+
+.erdot {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  border: 1px solid var(--hair-2);
+  border-radius: 50%;
+}
+
+.erow.on .erdot { border-color: var(--accent); box-shadow: inset 0 0 0 3px var(--accent); }
+.erow .en { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.erow .en .t { font-size: 12.5px; }
+.erow .en .s { font-size: 11px; color: var(--dim); }
+.erow .es { margin-left: auto; flex: none; }
+
+.btn.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.btn.on:hover { background: var(--accent-soft); }
+
+.enote { font-size: 11px; color: var(--faint); }
