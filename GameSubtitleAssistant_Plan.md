@@ -378,6 +378,12 @@ GameSubtitleAssistant
 
 ### 6.2 其他
 - 字幕编辑器、双语字幕、翻译辅助
+- 迷你时间轴（语料页「从剧情录屏中截取」/ 打轴页「检测画面变化获取时间轴」）待办（2026-10-18 记录，样式会话，尚未动工）：
+  - 提示行文案失实，计划**整行删除**：`src/components/SourceTimeline.vue:88` 写着
+    `双击空白加选区 · 拖动 clip 调起止 · 点击 clip 跳转 · 滚轮平移 · Ctrl+滚轮缩放`，
+    但 `src/components/timeline/Timeline.vue` 的 `onWheelRoot` 对所有滚轮事件只做平移，
+    **缩放只在滑条上滚轮时生效**（`src/components/timeline/TimelineScrollbar.vue` 的 `onWheelScrollbar`）；
+  - 在空出的位置补迷你时间轴专属控件（拖动添加选区 clip、分割、合并等）。
 
 ### 6.3 ✅ 已完成：T4 落地 + 前端「融合后置信度审计表」（同轮做，2026-10-13）
 

@@ -14,6 +14,9 @@ const props = defineProps<{
   trackId: string;
   /// 同轨全部事件（含自身）：拖动时计算相邻约束
   siblings: TimelineEvent[];
+  /// 本时间轴渲染的全部事件（跨轨吸附候选）。由 Timeline 传「当前显示的轨道」，
+  /// 避免不同视频源的迷你时间轴互相吸附到对方的起止。
+  snapEvents: TimelineEvent[];
   /// 片段配色（按事件类型取主题令牌）
   tone: ClipTone;
   left: number;
@@ -96,19 +99,16 @@ const MERGE_DRAG_PX = 30;
 
 // ── 吸附 ──
 
-/// 收集所有轨道所有事件的 start/end 时间 + 自身原位置边界（移走后可吸回原位）：
+/// 收集本时间轴所有事件的 start/end 时间 + 自身原位置边界（移走后可吸回原位）：
 /// 拖动中候选边界集合静态，首次进入拖动时收集一次
 function collectSnapEdges(): number[] {
   const edges: number[] = [];
   const d = drag.value;
   // 自身原边界：clip 移走后仍能吸附回原位
   edges.push(d?.origStart ?? props.event.start, d?.origEnd ?? props.event.end);
-  const tracks = projectStore.currentProject?.tracks ?? [];
-  for (const track of tracks) {
-    for (const e of track.events) {
-      if (e.id === props.event.id) continue;
-      edges.push(e.start, e.end);
-    }
+  for (const e of props.snapEvents) {
+    if (e.id === props.event.id) continue;
+    edges.push(e.start, e.end);
   }
   return edges;
 }

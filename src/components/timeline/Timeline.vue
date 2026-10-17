@@ -108,6 +108,10 @@ const tracks = () =>
   (projectStore.currentProject?.tracks ?? []).filter(
     props.trackFilter ?? ((t: Track) => t.scope !== "control")
   );
+/// 吸附候选边界 = 本时间轴实际渲染的事件集合。
+/// 不能取全工程事件：语料页与转写页的迷你时间轴各自只显示自己视频源的选区轨，
+/// 取全工程会让两页的 clip 互相吸附到对方的起止（跨源吸附）。
+const snapEvents = computed(() => tracks().flatMap((t) => t.events));
 const rootRef = ref<HTMLElement | null>(null);
 const viewportRef = ref<HTMLElement | null>(null);
 let viewportObserver: ResizeObserver | null = null;
@@ -604,6 +608,7 @@ onUnmounted(() => {
                 :event="event"
                 :track-id="track.id"
                 :siblings="track.events"
+                :snap-events="snapEvents"
                 :tone="clipTone(event.type)"
                 :left="timeline.clipPosition(event).left"
                 :width="timeline.clipPosition(event).width"
