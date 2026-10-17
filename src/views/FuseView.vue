@@ -9,18 +9,8 @@ import {
   type FuseAuditDecision,
   type FuseAuditRow,
 } from "../stores/fuseAudit";
-import {
-  NButton,
-  NCard,
-  NCheckbox,
-  NInput,
-  NModal,
-  NProgress,
-  NTag,
-  NText,
-  NVirtualList,
-  useMessage,
-} from "naive-ui";
+import { NInput, NModal, NVirtualList, useMessage } from "naive-ui";
+import AppIcon from "../components/AppIcon.vue";
 
 const projectStore = useProjectStore();
 const router = useRouter();
@@ -67,6 +57,8 @@ const fuseResult = ref<{
   masked: number;
   reused: number;
 } | null>(null);
+
+const fusePercent = computed(() => Math.round(projectStore.llmProgress * 100));
 
 function goCorpus() {
   const path = router.currentRoute.value.params.path as string | undefined;
@@ -171,176 +163,202 @@ function fmtTime(s: number): string {
 
 <template>
   <div class="page">
-    <h2 class="page-title">AI 融合</h2>
-    <p class="page-desc">
-      用可靠的游戏文本替换转写文本，保留其时间轴（向量召回对齐）
-    </p>
+    <div class="phead">
+      <h2>AI 融合</h2>
+      <p>用可靠的游戏文本替换转写文本，保留其时间轴（向量召回对齐）</p>
+    </div>
 
     <!-- 两张就绪卡片：可点击跳转对应页（无论是否就绪） -->
-    <div class="cards">
-      <NCard
-        class="ready-card"
-        :class="{ ready: corpusReady, empty: !corpusReady }"
-        hoverable
-        @click="goCorpus"
-      >
-        <div class="card-header">
-          <span class="card-title">语料</span>
-          <NTag :type="corpusReady ? 'success' : 'default'" size="small">
+    <div class="engcards">
+      <button type="button" class="engc" :class="{ on: corpusReady }" @click="goCorpus">
+        <span class="ec">
+          <span class="en">语料</span>
+          <span class="es">
+            {{ corpusReady ? `已收集 ${corpusCount} 条可靠文本` : "尚未收集语料（点击前往语料页）" }}
+          </span>
+        </span>
+        <span class="est">
+          <span class="pill" :class="corpusReady ? 'ok' : ''">
             {{ corpusReady ? "就绪" : "未就绪" }}
-          </NTag>
-        </div>
-        <NText depth="3" class="card-desc">
-          {{ corpusReady ? `已收集 ${corpusCount} 条可靠文本` : "尚未收集语料（点击前往语料页）" }}
-        </NText>
-      </NCard>
+          </span>
+        </span>
+      </button>
 
-      <NCard
-        class="ready-card"
-        :class="{ ready: timelineReady, empty: !timelineReady }"
-        hoverable
-        @click="goAsr"
-      >
-        <div class="card-header">
-          <span class="card-title">时间轴</span>
-          <NTag :type="timelineReady ? 'success' : 'default'" size="small">
+      <button type="button" class="engc" :class="{ on: timelineReady }" @click="goAsr">
+        <span class="ec">
+          <span class="en">时间轴</span>
+          <span class="es">
+            {{
+              timelineReady
+                ? `已生成 ${gameContentCount} 段游戏内容文本（语音 + 内嵌字幕）`
+                : "尚无游戏内容：运行 ASR 或对内嵌字幕做 OCR（点击前往转写页）"
+            }}
+          </span>
+        </span>
+        <span class="est">
+          <span class="pill" :class="timelineReady ? 'ok' : ''">
             {{ timelineReady ? "就绪" : "未就绪" }}
-          </NTag>
-        </div>
-        <NText depth="3" class="card-desc">
-          {{
-            timelineReady
-              ? `已生成 ${gameContentCount} 段游戏内容文本（语音 + 内嵌字幕）`
-              : "尚无游戏内容：运行 ASR 或对内嵌字幕做 OCR（点击前往转写页）"
-          }}
-        </NText>
-      </NCard>
+          </span>
+        </span>
+      </button>
     </div>
 
     <!-- 融合操作 -->
-    <div class="fuse-section">
-      <NCheckbox v-model:checked="unmatchFilter" size="small">
-        启用「该不配」掩码
-        <NText depth="3" style="font-size: 11px">
-          （显示语言比语料语言更省内容的素材才适用；误开会把本应命中的段判为不配）
-        </NText>
-      </NCheckbox>
-      <NButton
-        type="primary"
-        size="large"
+    <button
+      type="button"
+      class="chk"
+      role="checkbox"
+      :aria-checked="unmatchFilter ? 'true' : 'false'"
+      @click="unmatchFilter = !unmatchFilter"
+    >
+      <i :class="{ on: unmatchFilter }"></i>启用「该不配」掩码
+    </button>
+    <div class="enote">
+      显示语音比语料语言更省内容的素材才适用；误开会把本应命中的段判为不配
+    </div>
+
+    <div class="arow">
+      <button
+        type="button"
+        class="btn pri"
         :disabled="!canFuse || projectStore.fuseRunning"
         @click="startFuse"
       >
-        {{ projectStore.fuseRunning ? "融合运行中..." : "开始融合" }}
-      </NButton>
-      <template v-if="projectStore.fuseRunning">
-        <NProgress
-          type="line"
-          class="progress"
-          :percentage="Math.round(projectStore.llmProgress * 100)"
-          :show-indicator="false"
-        />
-        <span class="ocr-msg">{{ projectStore.llmMessage }}</span>
-      </template>
-
-      <NText v-if="!canFuse && !projectStore.fuseRunning" depth="3" style="font-size: 12px">
+        <AppIcon name="fuse" :size="14" />
+        {{ projectStore.fuseRunning ? "融合运行中…" : "开始融合" }}
+      </button>
+      <span class="sp"></span>
+      <span
+        v-if="!canFuse && !projectStore.fuseRunning"
+        class="enote"
+      >
         {{
           embedStatus && !embedStatus.ready
             ? `向量运行时未就绪：${embedStatus.message}`
-            : "需语料与时间轴均就绪后方可融合（点击上方卡片前往对应页面准备）"
+            : "需语料与时间轴均就绪（点击上方卡片）"
         }}
-      </NText>
+      </span>
+    </div>
 
-      <div v-if="fuseResult" class="fuse-result">
-        <NText strong>
-          匹配 {{ fuseResult.matched }}/{{ fuseResult.total }} 段
-        </NText>
-        <NText v-if="fuseResult.masked > 0" depth="3" style="font-size: 12px">
-          {{ fuseResult.masked }} 段被「该不配」掩码判为不配，保留转写原文
-        </NText>
-        <NText v-if="fuseResult.reused > 0" depth="3" style="font-size: 12px">
-          {{ fuseResult.reused }} 条语料行被多段命中（候选重要提示，见审计表）
-        </NText>
-      </div>
+    <div v-if="projectStore.fuseRunning" class="arow">
+      <div class="hbar"><i :style="{ width: fusePercent + '%' }"></i></div>
+      <span class="mut h11 nowrap">{{ fusePercent }}% · {{ projectStore.llmMessage }}</span>
+    </div>
+
+    <div v-else-if="fuseResult" class="resbox">
+      <span class="pill ok">匹配 {{ fuseResult.matched }}/{{ fuseResult.total }} 段</span>
+      <span v-if="fuseResult.masked > 0" class="enote">
+        {{ fuseResult.masked }} 段被「该不配」掩码判为不配，保留转写原文
+      </span>
+      <span v-if="fuseResult.reused > 0" class="enote">
+        {{ fuseResult.reused }} 条语料行被多段命中（候选重要提示，见审计表）
+      </span>
     </div>
 
     <!-- 融合审计表：裁决随 .gsa 持久化，重开工程不丢 -->
-    <div v-if="auditCnt.total > 0" class="audit-section">
-      <div class="audit-head">
-        <NText strong>融合审计</NText>
-        <NTag :type="auditCnt.focused > 0 ? 'warning' : 'success'" size="small">
+    <div v-if="auditCnt.total > 0" class="aud">
+      <div class="aud-h">
+        <span class="t">融合审计</span>
+        <span class="pill" :class="auditCnt.focused > 0 ? 'warn' : 'ok'">
           重点 {{ auditCnt.focused }}
-        </NTag>
-        <NTag size="small" :bordered="auditCnt.low > 0">低分 {{ auditCnt.low }}</NTag>
-        <NText depth="3" style="font-size: 12px">
-          已复核 {{ auditCnt.reviewed }}/{{ auditCnt.total }}
-        </NText>
-        <NButton size="tiny" quaternary @click="auditOpen = !auditOpen">
+        </span>
+        <span class="pill">低分 {{ auditCnt.low }}</span>
+        <span class="k">已复核 {{ auditCnt.reviewed }}/{{ auditCnt.total }}</span>
+        <span class="sp"></span>
+        <button
+          type="button"
+          class="chk"
+          role="checkbox"
+          :aria-checked="showNormal ? 'true' : 'false'"
+          @click="showNormal = !showNormal"
+        >
+          <i :class="{ on: showNormal }"></i>显示已复核与正常段
+        </button>
+        <button type="button" class="btn ghost sm" @click="auditOpen = !auditOpen">
           {{ auditOpen ? "收起" : "展开" }}
-        </NButton>
+        </button>
       </div>
-      <div v-if="auditOpen" class="audit-list">
-        <NCheckbox v-model:checked="showNormal" size="small" class="audit-show-normal">
-          显示已复核与正常段
-        </NCheckbox>
+
+      <div v-if="auditOpen" class="audlist">
         <div
           v-for="row in visibleRows"
           :key="row.event.id"
-          class="audit-row"
-          :class="{ 'risk-a': row.risk === 'A' }"
+          class="arow2"
+          :class="{ tall: rowExpanded(row) }"
         >
-          <div
-            class="audit-line"
-            @click="toggleRow(row.event.id, row.risk === 'A')"
-          >
-            <span class="audit-time">{{ fmtTime(row.event.start) }}</span>
-            <NTag v-if="row.risk === 'A'" type="warning" size="small">重点</NTag>
-            <NTag v-else-if="row.risk === 'B'" size="small">
+          <div class="ahd" @click="toggleRow(row.event.id, row.risk === 'A')">
+            <span class="at">{{ fmtTime(row.event.start) }}</span>
+            <span v-if="row.risk === 'A'" class="pill warn">重点</span>
+            <span v-else-if="row.risk === 'B'" class="pill">
               低分 {{ row.meta.score.toFixed(2) }}
-            </NTag>
-            <NTag v-if="row.meta.reviewed" type="success" size="small">已复核</NTag>
-            <span class="audit-text">{{ snippet(row.event.text) }}</span>
-            <span class="audit-caret">{{ rowExpanded(row) ? "▾" : "▸" }}</span>
+            </span>
+            <span v-if="row.meta.reviewed" class="pill ok">已复核</span>
+            <span class="ax">{{ snippet(row.event.text) }}</span>
+            <span class="aa">
+              <AppIcon :name="rowExpanded(row) ? 'chev-d' : 'chev-r'" :size="14" />
+            </span>
           </div>
-          <div v-if="rowExpanded(row)" class="audit-detail">
-            <div class="audit-map">
-              <NText depth="3" style="font-size: 12px">嵌字</NText>
-              <span class="map-src">
+
+          <div v-if="rowExpanded(row)" class="abody">
+            <div class="amap">
+              <span class="atag">嵌字</span>
+              <span class="aen">
                 {{ snippet(row.meta.source_text || "（旧版融合产物，无转写原文）") }}
               </span>
-              <span class="map-arrow">→</span>
-              <NText depth="3" style="font-size: 12px">语料</NText>
-              <span v-if="row.meta.ocr_index > 0" class="map-dst">
-                #{{ row.meta.ocr_index }} {{ snippet(row.corpusText || corpusAt(row.meta.ocr_index)) }}
+              <span>→</span>
+              <span class="atag">语料</span>
+              <span v-if="row.meta.ocr_index > 0">
+                #{{ row.meta.ocr_index }}
+                {{ snippet(row.corpusText || corpusAt(row.meta.ocr_index)) }}
               </span>
-              <NTag v-else size="small">不配</NTag>
+              <span v-else class="pill">不配</span>
             </div>
-            <div v-if="row.meta.candidates.length" class="audit-cands">
-              <NText depth="3" style="font-size: 12px">候选名单（点击替换）</NText>
-              <div class="audit-cand-btns">
-                <NButton
+
+            <template v-if="row.meta.candidates.length">
+              <span class="enote">候选名单（点击替换）</span>
+              <div class="acands">
+                <button
                   v-for="c in row.meta.candidates"
                   :key="c.ocr_index"
-                  size="tiny"
-                  secondary
+                  type="button"
+                  class="acand"
                   @click="decide(row.event.id, { kind: 'replace', ocrIndex: c.ocr_index })"
                 >
-                  #{{ c.ocr_index }} {{ snippet(corpusAt(c.ocr_index), 24) }}（{{ c.score.toFixed(2) }}）
-                </NButton>
+                  #{{ c.ocr_index }} {{ snippet(corpusAt(c.ocr_index), 24) }}（{{
+                    c.score.toFixed(2)
+                  }}）
+                </button>
               </div>
-            </div>
-            <div class="audit-actions">
-              <NButton size="tiny" @click="decide(row.event.id, { kind: 'keep' })">
+            </template>
+
+            <div class="aacts">
+              <button
+                type="button"
+                class="btn ghost sm"
+                @click="decide(row.event.id, { kind: 'keep' })"
+              >
                 保留当前
-              </NButton>
-              <NButton size="tiny" @click="openPicker(row.event.id)">
+              </button>
+              <button
+                type="button"
+                class="btn ghost sm"
+                @click="openPicker(row.event.id)"
+              >
                 从全语料选择…
-              </NButton>
-              <NButton size="tiny" quaternary type="warning" @click="decide(row.event.id, { kind: 'unmatch' })">
+              </button>
+              <button
+                type="button"
+                class="btn ghost sm warn"
+                @click="decide(row.event.id, { kind: 'unmatch' })"
+              >
                 不配该条
-              </NButton>
+              </button>
             </div>
           </div>
+        </div>
+
+        <div v-if="!visibleRows.length" class="aempty">
+          没有需要复核的段落（可勾选上方「显示已复核与正常段」）
         </div>
       </div>
     </div>
@@ -378,238 +396,173 @@ function fmtTime(s: number): string {
 .page {
   flex: 1;
   min-width: 0;
-  padding: 20px 24px;
-  overflow: auto;
-}
-
-.page-title {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--color-text-primary);
-  margin-bottom: 8px;
-}
-
-.page-desc {
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  margin-bottom: 20px;
-}
-
-.cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 16px;
-  margin-bottom: 24px;
-}
-
-.ready-card {
-  cursor: pointer;
-  transition: transform 0.15s;
-}
-
-.ready-card:hover {
-  transform: translateY(-2px);
-}
-
-.ready-card.ready {
-  border-color: var(--color-success, #18a058);
-}
-
-.ready-card.empty {
-  opacity: 0.85;
-}
-
-.card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-
-.card-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--color-text-primary);
-}
-
-.card-desc {
-  font-size: 13px;
-}
-
-.fuse-section {
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
   gap: 12px;
+  padding: 16px 18px;
+  overflow: hidden;
 }
 
-.progress {
-  width: 100%;
-  max-width: 480px;
-}
-
-.ocr-msg {
-  font-size: 12px;
-  color: var(--color-text-secondary);
-}
-
-.fuse-result {
+/* 就绪卡片：整张可点，进对应页去准备 */
+.engcards {
+  flex: none;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 12px 16px;
-  background: var(--color-bg-secondary);
-  border-radius: 8px;
+  gap: 8px;
 }
 
-/* ── 融合审计表 ── */
-.audit-section {
-  margin-top: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.audit-head {
+.engc {
   display: flex;
   align-items: center;
   gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
-.audit-list {
+.engc:hover { border-color: var(--hair-2); }
+.engc.on { border-color: var(--accent); background: var(--accent-soft); }
+
+.engc .ec { min-width: 0; }
+.engc .en { display: block; font-size: 13px; font-weight: 600; letter-spacing: -.01em; }
+.engc .es { display: block; margin-top: 3px; font-size: 11.5px; color: var(--dim); }
+.engc .est { margin-left: auto; flex: none; }
+
+.arow { flex: none; display: flex; align-items: center; gap: 10px; }
+.arow .hbar { flex: 1; }
+.nowrap { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.resbox { flex: none; display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+
+/* 审计表：卡体吃满剩余高度，内部滚动 */
+.aud {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: hidden;
 }
 
-.audit-show-normal {
-  font-size: 12px;
+.aud-h {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--hair);
 }
 
-.audit-row {
-  border: 1px solid var(--color-border, #efeff5);
-  border-radius: 6px;
-}
+.aud-h .t { font-size: 12px; font-weight: 600; letter-spacing: .08em; color: var(--dim); }
+.aud-h .k { font-size: 11px; color: var(--faint); }
 
-.audit-row.risk-a {
-  border-color: var(--color-warning, #f0a020);
-}
+.audlist { flex: 1; min-height: 0; overflow-y: auto; }
 
-.audit-line {
+.arow2 { border-bottom: 1px solid var(--hair); }
+.arow2:last-child { border-bottom: 0; }
+.arow2.tall { background: var(--sel-bg); border-left: 3px solid var(--accent); }
+
+.ahd {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
-  cursor: pointer;
+  padding: 7px 10px;
   min-width: 0;
+  cursor: pointer;
 }
 
-.audit-time {
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  font-variant-numeric: tabular-nums;
-  flex-shrink: 0;
+.ahd:hover { background: var(--hover); }
+.ahd .at { flex: none; font: 11px/1 var(--mono); color: var(--dim); }
+.ahd .ax {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.ahd .aa { flex: none; display: flex; color: var(--faint); }
+
+.abody {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 7px 10px 8px;
+  border-top: 1px solid var(--hair);
 }
 
-.audit-text {
-  font-size: 12px;
-  color: var(--color-text-secondary);
+.amap {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.atag {
+  flex: none;
+  padding: 2px 4px;
+  border: 1px solid var(--hair-2);
+  border-radius: 3px;
+  font: 10.5px/1 var(--mono);
+  color: var(--faint);
+}
+
+.aen { font: 11.5px/1.4 var(--mono); color: var(--dim); }
+
+.acands { display: flex; flex-direction: column; gap: 5px; }
+
+.acand {
+  padding: 5px 8px;
+  border: 1px solid var(--hair-2);
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11.5px;
+  text-align: left;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  min-width: 0;
-  flex: 1;
+  cursor: pointer;
 }
 
-.audit-caret {
-  font-size: 11px;
-  color: var(--color-text-secondary);
-  flex-shrink: 0;
-}
+.acand:hover { border-color: var(--accent); background: var(--raised); }
+.aacts { display: flex; gap: 8px; flex-wrap: wrap; }
+.aempty { padding: 14px 10px; font-size: 11.5px; color: var(--faint); }
 
-.audit-detail {
-  padding: 8px 12px 10px;
-  border-top: 1px dashed var(--color-border, #efeff5);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.audit-map {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  min-width: 0;
-  flex-wrap: wrap;
-}
-
-.map-src {
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  min-width: 0;
-}
-
-.map-arrow {
-  font-weight: 700;
-  color: var(--color-primary, #18a058);
-  flex-shrink: 0;
-}
-
-.map-dst {
-  font-size: 13px;
-  font-weight: 600;
-  min-width: 0;
-}
-
-.audit-cands {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.audit-cand-btns {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.audit-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.picker-body {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.picker-list {
-  height: 420px;
-}
+/* 全语料选择弹窗（naive 负责卡片与虚拟列表，行样式对齐骨架） */
+.picker-body { display: flex; flex-direction: column; gap: 10px; }
+.picker-list { height: 360px; }
 
 .picker-row {
   display: flex;
+  align-items: center;
   gap: 10px;
-  align-items: baseline;
-  padding: 8px 12px;
+  height: 44px;
+  padding: 0 6px;
+  border-radius: 6px;
   cursor: pointer;
-  border-radius: 4px;
 }
 
-.picker-row:hover {
-  background: var(--color-bg-secondary);
-}
-
-.picker-idx {
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  flex-shrink: 0;
-  font-variant-numeric: tabular-nums;
-}
-
+.picker-row:hover { background: var(--hover); }
+.picker-idx { flex: none; font: 11px/1 var(--mono); color: var(--faint); }
 .picker-text {
-  font-size: 13px;
+  flex: 1;
   min-width: 0;
+  font-size: 12.5px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 </style>

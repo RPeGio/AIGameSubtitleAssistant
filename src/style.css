@@ -167,7 +167,7 @@ body {
 .btn.ghost:hover { background: var(--raised); }
 .btn.pri { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 .btn.pri:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
-.btn.warn { color: var(--danger); border-color: var(--danger); }
+.btn.warn { color: var(--warn); border-color: var(--warn); }
 .btn.sm { height: 22px; padding: 0 8px; font-size: 11px; border-radius: 5px; }
 .btn.lg { height: 32px; padding: 0 16px; font-size: 13px; }
 .btn.icb { width: 28px; padding: 0; }
@@ -382,3 +382,61 @@ textarea.inp { height: auto; padding: 8px 10px; line-height: 1.6; resize: vertic
 .btn.on:hover { background: var(--accent-soft); }
 
 .enote { font-size: 11px; color: var(--faint); }
+
+/* 状态胶囊：就绪 / 重点 / 低分 / 已复核 */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--hair-2);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.pill.ok { color: var(--ok); border-color: var(--ok); }
+.pill.warn { color: var(--warn); border-color: var(--warn); }
+.pill.acc { color: var(--accent-ink); border-color: var(--accent); }
+.pill.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-ink); }
+
+/* 方形复选框（原生 input 外观不可控，这里用按钮 + role=checkbox 保住语义） */
+.chk {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chk:hover { color: var(--text); }
+
+.chk i {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  position: relative;
+  border: 1px solid var(--hair-2);
+  border-radius: 3px;
+}
+
+.chk i.on { border-color: var(--accent); background: var(--accent); }
+
+.chk i.on::after {
+  content: "";
+  position: absolute;
+  left: 3.4px;
+  top: .4px;
+  width: 3.6px;
+  height: 7px;
+  border-right: 1.5px solid #fff;
+  border-bottom: 1.5px solid #fff;
+  transform: rotate(42deg);
+}
