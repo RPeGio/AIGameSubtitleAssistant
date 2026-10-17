@@ -50,7 +50,9 @@ function fmtDur(s: number): string {
 
 /// 共享播放状态：视频预览 ↔ 迷你时间轴同步
 const sourceTime = ref(0);
-const sourceDuration = ref(0);
+/// 剧情录屏时长取工程元数据（唯一来源）。此前靠预览组件的 loadedmetadata 回填，
+/// 一旦预览不在渲染树里，迷你时间轴就没有时长（滚动/缩放/双击加选区全失效）。
+const sourceDuration = computed(() => projectStore.sourceVideoMeta?.duration ?? 0);
 
 /// 当前视频源的 OCR 选区控制轨（语料页加工的是剧情录屏，故 video === "source"）
 const regionTrack = computed(() =>
@@ -257,7 +259,7 @@ function discardDiff(d: Diff) {
                 <div class="vid">
                   <SourceVideoPreview
                     v-model:time="sourceTime"
-                    v-model:duration="sourceDuration"
+                    :duration="sourceDuration"
                     :show-header="false"
                   />
                 </div>

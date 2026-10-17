@@ -162,7 +162,9 @@ const clipTime = computed({
     timeline.currentTime = t;
   },
 });
-const clipDuration = ref(0);
+/// 切片视频时长取工程元数据。此前由预览组件的 loadedmetadata 回填，
+/// 预览删掉后它恒为 0 ⇒ 迷你时间轴没有时长（滚动/缩放/双击加选区全失效）。
+const clipDuration = computed(() => projectStore.currentVideoMeta?.duration ?? 0);
 
 const clipFileName = computed(() => {
   const p = projectStore.currentProject?.video ?? "";
