@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from "vue";
+import { computed, onMounted, onUnmounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import AppSidebar from "../components/AppSidebar.vue";
 import AppStatusBar from "../components/AppStatusBar.vue";
@@ -14,6 +14,9 @@ const router = useRouter();
 const projectStore = useProjectStore();
 const timeline = useTimelineStore();
 const { manualSave } = useManualSave();
+
+// 语料页加工的是它自己的剧情录屏（时间轴与校对区不相干），故整页全宽、不挂校对区
+const showReviewPane = computed(() => route.name !== "corpus");
 
 // 直接访问 /project/:path/... 时按路径打开项目；失败则回欢迎页
 onMounted(async () => {
@@ -83,10 +86,10 @@ onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
     <AppToolbar />
     <div class="shell">
       <AppSidebar />
-      <main class="workspace-main">
+      <main class="workspace-main" :class="{ full: !showReviewPane }">
         <router-view />
       </main>
-      <ReviewPane />
+      <ReviewPane v-if="showReviewPane" />
     </div>
     <AppStatusBar />
   </div>
@@ -112,5 +115,10 @@ onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
   display: flex;
   background: var(--color-bg-primary);
   overflow: hidden;
+}
+
+.workspace-main.full {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 </style>

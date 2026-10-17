@@ -21,8 +21,10 @@ const props = withDefaults(
     duration: number;
     /// 绑定视频源："source" 剧情录屏（默认，语料页）| "clip" 切片（转写页嵌字 OCR）
     videoKey?: "source" | "clip";
+    /// 是否显示组件自带的「更换视频」头行（页面已自带文件行时置 false，避免重复按钮）
+    showHeader?: boolean;
   }>(),
-  { videoKey: "source" }
+  { videoKey: "source", showHeader: true }
 );
 
 const emit = defineEmits<{
@@ -273,7 +275,7 @@ onUnmounted(() => {
 
 <template>
   <div class="source-preview">
-    <div class="preview-header">
+    <div v-if="props.showHeader" class="preview-header">
       <NButton
         v-if="props.videoKey === 'source'"
         size="small"

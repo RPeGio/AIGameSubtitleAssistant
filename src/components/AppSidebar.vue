@@ -73,14 +73,15 @@ function handleBack() {
   min-height: 0;
   background: var(--color-bg-secondary);
   border-right: 1px solid var(--color-border);
-  transition: flex-basis 0.12s, width 0.12s;
+  transition: flex-basis 0.12s, width 0.12s, padding 0.12s;
 }
 
+/* 折叠态只用 padding 定位（44 = 5 + 34 + 5）。这里若用 align-items:center，
+   它会与宽度动画错拍：宽度还没收完就先把内容居中，logo 先右跳再随宽度左移 */
 .sidebar.collapsed {
   flex: 0 0 44px;
   width: 44px;
   padding: 8px 5px;
-  align-items: center;
 }
 
 .sbrand {
@@ -91,6 +92,7 @@ function handleBack() {
   padding: 0 4px;
   margin-bottom: 12px;
   min-width: 0;
+  transition: padding 0.12s;
 }
 
 .logo {
@@ -106,6 +108,18 @@ function handleBack() {
   font-family: var(--mono);
   font-size: 15px;
   font-weight: 600;
+  transition: width 0.12s, height 0.12s, font-size 0.12s;
+}
+
+/* 折叠态：logo 收成与导航图标同宽的 34px，左缘与图标列对齐，位置不动 */
+.sidebar.collapsed .sbrand {
+  padding: 0;
+}
+
+.sidebar.collapsed .logo {
+  width: 34px;
+  height: 34px;
+  font-size: 13px;
 }
 
 .bn {

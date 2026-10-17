@@ -127,3 +127,170 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--dim);
 }
+
+/* ============================================================================
+   控件词汇表（取自样稿 06 的全局控件层）
+   骨架类页面用它拼装；复杂控件（下拉/弹窗/虚拟列表/进度）仍走 naive-ui。
+   ========================================================================== */
+.mut, .muted { color: var(--dim); }
+.faint { color: var(--faint); }
+.sp { flex: 1; min-width: 0; }
+.h11 { font-size: 11px; }
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+  flex: none;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.btn:hover { background: var(--hover); }
+.btn.ghost { border-color: var(--hair-2); }
+.btn.ghost:hover { background: var(--raised); }
+.btn.pri { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.btn.pri:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn.warn { color: var(--danger); border-color: var(--danger); }
+.btn.sm { height: 22px; padding: 0 8px; font-size: 11px; border-radius: 5px; }
+.btn.lg { height: 32px; padding: 0 16px; font-size: 13px; }
+.btn.icb { width: 28px; padding: 0; }
+.btn.icb.sm { width: 22px; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn:disabled:hover { background: none; }
+
+.inp {
+  width: 100%;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--hair-2);
+  border-radius: 6px;
+  background: var(--raised);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+
+.inp::placeholder { color: var(--faint); }
+.inp:focus { border-color: var(--accent); }
+textarea.inp { height: auto; padding: 8px 10px; line-height: 1.6; resize: vertical; }
+
+.phead { flex: none; display: flex; flex-direction: column; gap: 4px; }
+.phead h2 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
+.phead p { margin: 0; font-size: 12px; color: var(--dim); }
+
+/* 无框数值步进：左减右加，数值本身单击才变输入框（单击态样式在 ParamStepper 内） */
+.step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  height: 30px;
+}
+
+.step b {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: var(--dim);
+  font-weight: 400;
+  cursor: pointer;
+  user-select: none;
+}
+
+.step b:hover { background: var(--hover); color: var(--text); }
+
+.step .val {
+  flex: 1;
+  min-width: 0;
+  padding: 0 10px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: text;
+}
+
+.pcell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.pcell .pl { font-size: 11px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pcell .step { width: 100%; }
+
+/* 折叠卡：展开的那张吃掉剩余高度，收起只有 34px 标题行 */
+.acc {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.acc.open { flex: 1 1 auto; min-height: 0; }
+.acc.off { flex: none; }
+
+.acch {
+  flex: none;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 12px;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+
+.acc.off .acch { color: var(--dim); }
+.acch .ad { margin-left: auto; display: flex; color: var(--faint); flex: none; }
+
+.accb {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 12px 12px;
+}
+
+.rh { flex: none; display: flex; align-items: center; gap: 8px; }
+.rh .t { font-size: 12px; font-weight: 600; letter-spacing: .08em; color: var(--dim); }
+
+.psrc {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--hair-2);
+  border-radius: 999px;
+  font-size: 10.5px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.hbar { flex: none; height: 8px; border-radius: 4px; background: var(--hover); position: relative; overflow: hidden; }
+.hbar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--accent); }
