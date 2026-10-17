@@ -2,7 +2,6 @@
 import { computed, ref, watch } from "vue";
 import { useProjectStore } from "../stores/project";
 import { useTimelineStore } from "../stores/timeline";
-import SourceVideoPreview from "../components/SourceVideoPreview.vue";
 import SourceTimeline from "../components/SourceTimeline.vue";
 import AppIcon from "../components/AppIcon.vue";
 import ParamStepper from "../components/ParamStepper.vue";
@@ -242,24 +241,16 @@ async function startEmbedOcr() {
             <span class="enote">{{ clipMeta }}</span>
           </div>
 
-          <div class="vrow">
-            <div class="vid">
-              <SourceVideoPreview
-                video-key="clip"
-                v-model:time="clipTime"
-                v-model:duration="clipDuration"
-                :show-header="false"
-                sync-playback
-              />
-            </div>
-          </div>
-
           <SourceTimeline
             video-key="clip"
             v-model:time="clipTime"
             :duration="clipDuration"
             class="mini-timeline"
           />
+
+          <div class="enote">
+            选区直接在校对区画面上拖拽调整：焦点在本页时显示，回到校对区即隐藏
+          </div>
 
           <div class="agrid">
             <ParamStepper
@@ -479,22 +470,6 @@ async function startEmbedOcr() {
 .frow .enote {
   flex: none;
   white-space: nowrap;
-}
-
-.vrow {
-  flex: none;
-  display: flex;
-  gap: 14px;
-}
-
-.vid {
-  flex: none;
-  height: 208px;
-  aspect-ratio: 16 / 9;
-  border: 1px solid var(--hair-2);
-  border-radius: 8px;
-  background: #000;
-  overflow: hidden;
 }
 
 .mini-timeline {

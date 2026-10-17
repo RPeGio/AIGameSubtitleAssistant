@@ -3,13 +3,25 @@ import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useTimelineStore } from "../stores/timeline";
 import { useProjectStore } from "../stores/project";
+import { useVideoContentRect } from "../composables/useVideoContentRect";
 import SubtitleOverlay from "./SubtitleOverlay.vue";
+import RegionOverlay from "./RegionOverlay.vue";
 import AppIcon from "./AppIcon.vue";
 
-const props = defineProps<{ src: string }>();
+const props = withDefaults(
+  defineProps<{
+    src: string;
+    /// 是否叠加 OCR 选区覆盖层（校对区在转写页聚焦时显示）
+    showRegion?: boolean;
+  }>(),
+  { showRegion: false }
+);
 
 const timeline = useTimelineStore();
 const projectStore = useProjectStore();
+
+/// 视频画面实际渲染矩形：选区覆盖层按它定位（letterbox 校正）
+const { containerRef, contentRect } = useVideoContentRect("clip");
 
 const videoRef = ref<HTMLVideoElement | null>(null);
 const currentTime = ref(0);
@@ -167,7 +179,7 @@ onUnmounted(() => {
 
 <template>
   <div class="player-wrapper">
-    <div class="player-container">
+    <div ref="containerRef" class="player-container">
       <video
         ref="videoRef"
         :src="assetUrl"
@@ -181,6 +193,14 @@ onUnmounted(() => {
       />
 
       <SubtitleOverlay />
+
+      <!-- OCR 选区覆盖层：焦点在转写页时显示，可直接在校对区画面里拖拽选区 -->
+      <RegionOverlay
+        v-if="props.showRegion"
+        video-key="clip"
+        :content-rect="contentRect"
+        :time="timeline.currentTime"
+      />
 
       <button
         class="cc-btn"

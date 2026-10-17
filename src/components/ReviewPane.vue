@@ -1,17 +1,27 @@
 <script setup lang="ts">
 import { computed, watch } from "vue";
+import { useRoute } from "vue-router";
 import { useProjectStore } from "../stores/project";
 import { useTimelineStore } from "../stores/timeline";
+import { useUiStore } from "../stores/ui";
 import VideoPlayer from "./VideoPlayer.vue";
 import Timeline from "./timeline/Timeline.vue";
 import TrackOverview from "./TrackOverview.vue";
 import AppIcon from "./AppIcon.vue";
 
+const route = useRoute();
 const projectStore = useProjectStore();
 const timeline = useTimelineStore();
+const ui = useUiStore();
 
 const meta = computed(() => projectStore.currentVideoMeta);
 const hasVideo = computed(() => meta.value !== null);
+
+/// 转写页的 OCR 选区只在校对区画一次：焦点在左列（转写页）时才显示，
+/// 焦点移到校对区即隐藏——同一个选区不在两个画面上重复出现
+const showClipRegion = computed(
+  () => route.name === "asr" && ui.focusedPane === "main"
+);
 
 const displayPath = computed(() => {
   if (!meta.value) return "";
@@ -80,7 +90,7 @@ watch(
       <div class="rvbody">
         <div class="rvtop">
           <div class="player-area">
-            <VideoPlayer :src="meta!.path" />
+            <VideoPlayer :src="meta!.path" :show-region="showClipRegion" />
           </div>
 
           <div class="overview-area">

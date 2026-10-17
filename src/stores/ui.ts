@@ -15,6 +15,13 @@ export const useUiStore = defineStore("ui", () => {
   const theme = ref<ThemeName>(readTheme());
   const isDark = computed(() => theme.value === "dark");
   const sidebarCollapsed = ref(localStorage.getItem(SIDEBAR_KEY) === "1");
+  /// 当前焦点窗格：main = 左侧主列（页面本体），review = 右侧校对区。
+  /// 转写页的 OCR 选区只在校对区画一次，靠它决定"谁在操作选区"。
+  const focusedPane = ref<"main" | "review">("main");
+
+  function setFocusedPane(pane: "main" | "review") {
+    focusedPane.value = pane;
+  }
 
   function setTheme(next: ThemeName) {
     theme.value = next;
@@ -33,5 +40,14 @@ export const useUiStore = defineStore("ui", () => {
 
   document.documentElement.dataset.theme = theme.value;
 
-  return { theme, isDark, sidebarCollapsed, setTheme, toggleTheme, toggleSidebar };
+  return {
+    theme,
+    isDark,
+    sidebarCollapsed,
+    focusedPane,
+    setTheme,
+    toggleTheme,
+    toggleSidebar,
+    setFocusedPane,
+  };
 });

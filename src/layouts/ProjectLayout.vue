@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from "vue";
+import { computed, onMounted, onUnmounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import AppSidebar from "../components/AppSidebar.vue";
 import AppStatusBar from "../components/AppStatusBar.vue";
@@ -7,16 +7,33 @@ import AppToolbar from "../components/AppToolbar.vue";
 import ReviewPane from "../components/ReviewPane.vue";
 import { useProjectStore } from "../stores/project";
 import { useTimelineStore } from "../stores/timeline";
+import { useUiStore } from "../stores/ui";
 import { useManualSave } from "../composables/useManualSave";
 
 const route = useRoute();
 const router = useRouter();
 const projectStore = useProjectStore();
 const timeline = useTimelineStore();
+const ui = useUiStore();
 const { manualSave } = useManualSave();
 
 // 语料页加工的是它自己的剧情录屏（时间轴与校对区不相干），故整页全宽、不挂校对区
 const showReviewPane = computed(() => route.name !== "corpus");
+
+// 焦点窗格：点左列 → focus=main，点校对区 → focus=review。
+// 转写页的 OCR 选区"焦点在 main 时才在校对区显示"，所以拖选区本身不算
+// 把焦点交给校对区（否则选区会在拖拽起点就消失，没法拖）。
+function onReviewMouseDown(e: MouseEvent) {
+  const el = e.target as HTMLElement | null;
+  if (el?.closest(".region-overlay")) return;
+  ui.setFocusedPane("review");
+}
+
+// 切页＝换工作对象：默认焦点回到页面主列（转写页一进来就能看到选区）
+watch(
+  () => route.name,
+  () => ui.setFocusedPane("main")
+);
 
 // 直接访问 /project/:path/... 时按路径打开项目；失败则回欢迎页
 onMounted(async () => {
@@ -86,10 +103,17 @@ onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
     <AppToolbar />
     <div class="shell">
       <AppSidebar />
-      <main class="workspace-main" :class="{ full: !showReviewPane }">
+      <main
+        class="workspace-main"
+        :class="{ full: !showReviewPane }"
+        @mousedown.capture="ui.setFocusedPane('main')"
+      >
         <router-view />
       </main>
-      <ReviewPane v-if="showReviewPane" />
+      <ReviewPane
+        v-if="showReviewPane"
+        @mousedown.capture="onReviewMouseDown"
+      />
     </div>
     <AppStatusBar />
   </div>

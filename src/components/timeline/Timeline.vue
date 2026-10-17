@@ -703,9 +703,14 @@ onUnmounted(() => {
 }
 
 .tl-tracks {
-  /* 滚动容器：block 子行高度由内容决定（行高固定），溢出时垂直滚动 */
+  /* 滚动容器：block 子行高度由内容决定（行高固定），溢出时垂直滚动。
+     横向必须 hidden：这里的横向溢出只会来自 clip 图层（`overflow-y: auto`
+     会把 `overflow-x: visible` 计算成 auto），一旦出现原生横向滚动条，
+     拖动它会连同轨道标签一起横移——而横向滚动本来就由 store.scrollLeft +
+     TimelineScrollbar 虚拟实现，不需要原生滚动。 */
   flex: 1;
   min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
 }
 
