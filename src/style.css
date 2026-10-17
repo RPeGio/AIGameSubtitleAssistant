@@ -99,6 +99,17 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* 图标：sprite 里 35 个 16×16 描边符号，统一走 currentColor */
+.ic {
+  flex: none;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;

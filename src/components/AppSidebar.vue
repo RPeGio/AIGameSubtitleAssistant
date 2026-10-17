@@ -1,19 +1,20 @@
 <script setup lang="ts">
 import { useRoute, useRouter } from "vue-router";
 import { useProjectStore } from "../stores/project";
-import { NButton } from "naive-ui";
-import SaveStatusIndicator from "./SaveStatusIndicator.vue";
+import { useUiStore } from "../stores/ui";
+import AppIcon from "./AppIcon.vue";
 
 const route = useRoute();
 const router = useRouter();
 const projectStore = useProjectStore();
+const ui = useUiStore();
 
-/// 工作流导航项：name = 路由名，path 段 = 子路由路径
+/// 工作流导航项：name = 路由名，segment = 子路由路径
 const NAV_ITEMS = [
-  { name: "corpus", segment: "corpus", icon: "📝", label: "文本语料" },
-  { name: "asr", segment: "asr", icon: "🎙️", label: "打轴+转写" },
-  { name: "fuse", segment: "fuse", icon: "🧩", label: "AI 融合" },
-  { name: "editor", segment: "editor", icon: "📹", label: "时间轴编辑" },
+  { name: "corpus", segment: "corpus", icon: "text", label: "文本语料" },
+  { name: "asr", segment: "asr", icon: "wave", label: "打轴+转写" },
+  { name: "fuse", segment: "fuse", icon: "fuse", label: "AI 融合" },
+  { name: "editor", segment: "editor", icon: "track", label: "时间轴编辑" },
 ];
 
 function isActive(name: string): boolean {
@@ -32,118 +33,183 @@ function handleBack() {
 </script>
 
 <template>
-  <aside class="sidebar">
-    <div class="sidebar-header">
-      <span class="sidebar-logo">GSA</span>
-      <span class="sidebar-title">GameSubtitleAssistant</span>
+  <aside class="sidebar" :class="{ collapsed: ui.sidebarCollapsed }">
+    <div class="sbrand">
+      <span class="logo">GSA</span>
+      <span v-if="!ui.sidebarCollapsed" class="bn">GameSubtitleAssistant</span>
     </div>
 
-    <div class="sidebar-nav">
-      <div
+    <nav class="nav">
+      <button
         v-for="item in NAV_ITEMS"
         :key="item.name"
-        class="nav-item"
-        :class="{ active: isActive(item.name) }"
+        type="button"
+        class="nitem"
+        :class="{ on: isActive(item.name) }"
+        :title="ui.sidebarCollapsed ? item.label : undefined"
         @click="navigate(item.name)"
       >
-        <span class="nav-icon">{{ item.icon }}</span>
-        <span class="nav-label">{{ item.label }}</span>
-      </div>
-    </div>
+        <AppIcon :name="item.icon" />
+        <span v-if="!ui.sidebarCollapsed" class="nl">{{ item.label }}</span>
+      </button>
+    </nav>
 
-    <div class="sidebar-footer">
-      <NButton size="small" quaternary @click="handleBack">
-        ← 返回
-      </NButton>
-      <SaveStatusIndicator />
+    <div class="sf">
+      <button type="button" class="sfrow" title="返回工程列表" @click="handleBack">
+        <AppIcon name="back" />
+        <span v-if="!ui.sidebarCollapsed">返回</span>
+      </button>
     </div>
   </aside>
 </template>
 
 <style scoped>
 .sidebar {
-  width: 220px;
-  background: var(--color-bg-secondary);
-  border-right: 1px solid var(--color-border);
+  flex: 0 0 208px;
+  width: 208px;
   display: flex;
   flex-direction: column;
-  flex-shrink: 0;
+  padding: 8px 6px;
+  min-height: 0;
+  background: var(--color-bg-secondary);
+  border-right: 1px solid var(--color-border);
+  transition: flex-basis 0.12s, width 0.12s;
 }
 
-.sidebar-header {
-  padding: 20px 16px;
-  border-bottom: 1px solid var(--color-border);
+.sidebar.collapsed {
+  flex: 0 0 44px;
+  width: 44px;
+  padding: 8px 5px;
+  align-items: center;
+}
+
+.sbrand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  height: 40px;
+  padding: 0 4px;
+  margin-bottom: 12px;
+  min-width: 0;
 }
 
-.sidebar-logo {
-  width: 32px;
-  height: 32px;
-  background: linear-gradient(135deg, var(--color-accent), #a29bfe);
-  border-radius: 8px;
+.logo {
+  width: 40px;
+  height: 40px;
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
-  font-weight: 800;
-  color: white;
-  flex-shrink: 0;
+  border-radius: 8px;
+  background: var(--color-accent);
+  color: #fff;
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
 }
 
-.sidebar-title {
-  font-size: 14px;
+.bn {
+  font-size: 11px;
   font-weight: 600;
+  letter-spacing: -0.03em;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+}
+
+.nitem {
+  position: relative;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-family: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.nitem:hover {
+  background: var(--color-bg-tertiary);
   color: var(--color-text-primary);
 }
 
-.sidebar-nav {
-  flex: 1;
-  padding: 12px 8px;
+.nitem.on {
+  background: var(--accent-soft);
+  color: var(--color-text-primary);
+}
+
+.nitem.on::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--color-accent);
+}
+
+.sidebar.collapsed .nitem {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  justify-content: center;
+  gap: 0;
+}
+
+.nl {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sf {
+  margin-top: auto;
+  width: 100%;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-.nav-item {
+.sfrow {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  cursor: pointer;
+  gap: 8px;
+  height: 26px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
   color: var(--color-text-secondary);
-  transition: all 0.15s;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
 }
 
-.nav-item:hover {
+.sfrow:hover {
   background: var(--color-bg-tertiary);
   color: var(--color-text-primary);
 }
 
-.nav-item.active {
-  background: var(--color-accent);
-  color: white;
-}
-
-.nav-icon {
-  font-size: 16px;
-  width: 20px;
-  text-align: center;
-}
-
-.nav-label {
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.sidebar-footer {
-  padding: 12px 8px;
-  border-top: 1px solid var(--color-border);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
+.sidebar.collapsed .sfrow {
+  width: 34px;
+  padding: 0;
+  justify-content: center;
 }
 </style>

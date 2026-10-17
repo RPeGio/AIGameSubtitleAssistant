@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { darkTheme, NConfigProvider, NMessageProvider } from "naive-ui";
+import AppIconSprite from "./components/AppIconSprite.vue";
 import { useUiStore } from "./stores/ui";
 
 const ui = useUiStore();
@@ -20,6 +21,7 @@ const themeOverrides = computed(() => ({
 <template>
   <n-config-provider :theme="ui.isDark ? darkTheme : null" :theme-overrides="themeOverrides">
     <n-message-provider placement="top">
+      <AppIconSprite />
       <router-view />
     </n-message-provider>
   </n-config-provider>

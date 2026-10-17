@@ -2,6 +2,8 @@
 import { onMounted, onUnmounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import AppSidebar from "../components/AppSidebar.vue";
+import AppStatusBar from "../components/AppStatusBar.vue";
+import AppToolbar from "../components/AppToolbar.vue";
 import ReviewPane from "../components/ReviewPane.vue";
 import { useProjectStore } from "../stores/project";
 import { useTimelineStore } from "../stores/timeline";
@@ -78,19 +80,30 @@ onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
 
 <template>
   <div class="project-layout">
-    <AppSidebar />
-    <main class="workspace-main">
-      <router-view />
-    </main>
-    <ReviewPane />
+    <AppToolbar />
+    <div class="shell">
+      <AppSidebar />
+      <main class="workspace-main">
+        <router-view />
+      </main>
+      <ReviewPane />
+    </div>
+    <AppStatusBar />
   </div>
 </template>
 
 <style scoped>
 .project-layout {
   display: flex;
+  flex-direction: column;
   height: 100vh;
   overflow: hidden;
+}
+
+.shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
 }
 
 .workspace-main {

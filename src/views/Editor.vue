@@ -1,8 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useRouter } from "vue-router";
-import { invoke } from "@tauri-apps/api/core";
-import { save } from "@tauri-apps/plugin-dialog";
 import { useProjectStore } from "../stores/project";
 import { useTimelineStore } from "../stores/timeline";
 import type { FusedEvent } from "../types";
@@ -10,7 +8,6 @@ import {
   NAlert,
   NButton,
   NInput,
-  NPopselect,
   NVirtualList,
   useMessage,
 } from "naive-ui";
@@ -74,26 +71,6 @@ function updateCharacter(ev: FusedEvent, character: string) {
   }
 }
 
-/// 撤销/重做后聚焦可能悬空（clip/轨道已被快照恢复移除），清理之
-function cleanupFocus() {
-  if (timeline.focusedClipId && !projectStore.findEvent(timeline.focusedClipId)) {
-    timeline.focusClip(null);
-  }
-  if (timeline.focusedTrackId && !projectStore.findTrack(timeline.focusedTrackId)) {
-    timeline.focusTrack(null);
-  }
-}
-
-function onUndo() {
-  projectStore.undo();
-  cleanupFocus();
-}
-
-function onRedo() {
-  projectStore.redo();
-  cleanupFocus();
-}
-
 function removeClip(ev: FusedEvent) {
   projectStore.removeEvent(ev.id);
   if (timeline.focusedClipId === ev.id) timeline.focusClip(null);
@@ -120,34 +97,6 @@ function mergeNext(ev: FusedEvent) {
   }
 }
 
-// ── 导出最终字幕（复用后端 export_track_subtitle，支持 srt/ass/lrc/txt）─────────
-const EXPORT_FORMATS = [
-  { label: "SRT（通用字幕）", value: "srt" },
-  { label: "ASS（带样式）", value: "ass" },
-  { label: "LRC（歌词）", value: "lrc" },
-  { label: "TXT（纯文本）", value: "txt" },
-];
-
-async function onExport(format: string) {
-  const track = fusedTrack.value;
-  if (!track) return;
-  try {
-    const path = await save({
-      defaultPath: `final-subtitle.${format}`,
-      filters: [{ name: `${format.toUpperCase()} 字幕`, extensions: [format] }],
-    });
-    if (!path) return;
-    const count = await invoke<number>("export_track_subtitle", {
-      track,
-      format,
-      destPath: path,
-    });
-    message.success(`已导出 ${count} 条字幕 → ${path}`);
-  } catch (e) {
-    message.error(`导出失败: ${e}`);
-  }
-}
-
 function goFuse() {
   const path = router.currentRoute.value.params.path as string | undefined;
   router.push({ name: "fuse", params: { path } });
@@ -156,66 +105,6 @@ function goFuse() {
 
 <template>
   <div class="workbench">
-    <!-- 工具条：撤销/重做 + 导出最终字幕 -->
-    <div class="toolbar">
-      <button
-        class="history-btn"
-        :disabled="!projectStore.canUndo"
-        title="撤销（Ctrl+Z）"
-        aria-label="撤销"
-        @click="onUndo()"
-      >
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="18"
-          height="18"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <path d="M2.5 2v6h6M2.66 15.57a10 10 0 1 0 .57-8.38" />
-        </svg>
-      </button>
-      <button
-        class="history-btn"
-        :disabled="!projectStore.canRedo"
-        title="重做（Ctrl+Shift+Z / Ctrl+Y）"
-        aria-label="重做"
-        @click="onRedo()"
-      >
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="18"
-          height="18"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38" />
-        </svg>
-      </button>
-
-      <div class="toolbar-spacer" />
-
-      <NPopselect
-        :options="EXPORT_FORMATS"
-        trigger="click"
-        placement="bottom-end"
-        :disabled="!fusedTrack || clips.length === 0"
-        @update:value="onExport"
-      >
-        <NButton type="primary" size="small" secondary :disabled="!fusedTrack || clips.length === 0">
-          导出最终字幕
-        </NButton>
-      </NPopselect>
-    </div>
-
     <!-- 无 fused 轨：引导去融合页 -->
     <div v-if="!fusedTrack" class="workbench-body">
       <div class="empty-icon">🎬</div>
@@ -303,19 +192,6 @@ function goFuse() {
   overflow: hidden;
 }
 
-.toolbar {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 16px 24px 8px;
-  flex-wrap: wrap;
-}
-
-.toolbar-spacer {
-  flex: 1;
-}
-
 .workbench-body {
   flex: 1;
   display: flex;
@@ -338,30 +214,6 @@ function goFuse() {
   margin: 8px 0 24px;
   font-size: 14px;
   line-height: 1.7;
-}
-
-/* 撤销/重做：透明底色，可用时亮色图标，不可用时浅灰 */
-.history-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--color-text-primary);
-  cursor: pointer;
-}
-
-.history-btn:not(:disabled):hover {
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.history-btn:disabled {
-  color: var(--color-text-secondary);
-  cursor: default;
 }
 
 .editor-body {
