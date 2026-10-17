@@ -17,6 +17,9 @@ const isPlaying = ref(false);
 const isLoaded = ref(false);
 const loadError = ref<string | null>(null);
 
+/// 共享播放头时的身份：校对区播放器
+const PLAYER_ID = "review";
+
 const assetUrl = computed(() => convertFileSrc(props.src));
 
 const progressPct = computed(() =>
@@ -76,6 +79,7 @@ function onTimeUpdate() {
 
 function onPlay() {
   isPlaying.value = true;
+  timeline.claimPlayback(PLAYER_ID);
 }
 
 function onPause() {
@@ -86,6 +90,15 @@ function onError() {
   loadError.value = "视频加载失败，请检查文件是否可播放";
   isLoaded.value = false;
 }
+
+/// 另一侧（如打轴页预览）按下播放时让出播放权：只跟随时间，不再出声
+watch(
+  () => timeline.activePlayer,
+  (id) => {
+    const v = videoRef.value;
+    if (v && id !== PLAYER_ID && !v.paused) v.pause();
+  }
+);
 
 function togglePlay() {
   const v = videoRef.value;

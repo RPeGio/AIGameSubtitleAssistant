@@ -2,10 +2,13 @@
 import { computed, onUnmounted, ref, watch } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useProjectStore } from "../stores/project";
+import { useTimelineStore } from "../stores/timeline";
 import { useVideoContentRect } from "../composables/useVideoContentRect";
 import { NButton } from "naive-ui";
 
 const projectStore = useProjectStore();
+/// 全局时间轴 store：仅在 syncPlayback 时用于协调"谁出声"（播放时间本身走 v-model）
+const timeline = useTimelineStore();
 
 /// 视频源独立预览（语料页剧情录屏 / 转写页切片共用）：
 /// - 完全独立于全局时间轴（不写 timeline store、不注册全局空格监听）
@@ -23,8 +26,11 @@ const props = withDefaults(
     videoKey?: "source" | "clip";
     /// 是否显示组件自带的「更换视频」头行（页面已自带文件行时置 false，避免重复按钮）
     showHeader?: boolean;
+    /// 是否参与共享播放权（打轴页与校对区共用播放头时置 true）：
+    /// 另一侧开始播放时本预览只跟随时间、自动暂停，避免同一文件双声道
+    syncPlayback?: boolean;
   }>(),
-  { videoKey: "source", showHeader: true }
+  { videoKey: "source", showHeader: true, syncPlayback: false }
 );
 
 const emit = defineEmits<{
@@ -118,6 +124,25 @@ function onError() {
   loadError.value = "视频加载失败，请检查文件是否可播放";
   isLoaded.value = false;
 }
+
+function onPlay() {
+  isPlaying.value = true;
+  if (props.syncPlayback) timeline.claimPlayback(props.videoKey);
+}
+
+function onPause() {
+  isPlaying.value = false;
+}
+
+/// 另一侧（校对区播放器）按下播放时让出播放权：只跟随时间，不再出声
+watch(
+  () => timeline.activePlayer,
+  (id) => {
+    if (!props.syncPlayback) return;
+    const v = videoRef.value;
+    if (v && id !== props.videoKey && !v.paused) v.pause();
+  }
+);
 
 function togglePlay() {
   const v = videoRef.value;
@@ -302,8 +327,8 @@ onUnmounted(() => {
         preload="metadata"
         @loadedmetadata="onLoadedMeta"
         @timeupdate="onTimeUpdate"
-        @play="isPlaying = true"
-        @pause="isPlaying = false"
+        @play="onPlay"
+        @pause="onPause"
         @error="onError"
       />
 

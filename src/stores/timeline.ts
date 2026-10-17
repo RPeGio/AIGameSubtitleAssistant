@@ -35,6 +35,10 @@ export const useTimelineStore = defineStore("timeline", () => {
   const swapSegments = ref(false);
   /// 吸附标记线位置（内容区像素坐标；null = 不显示）
   const snapGuideX = ref<number | null>(null);
+  /// 当前持有播放权的播放器 id（"review" 校对区 / "clip" 切片预览 / "source" 剧情录屏预览）。
+  /// 打轴页与校对区共用同一条时间轴时间，若两侧 <video> 同时播放会双声道、双解码，
+  /// 故约定：谁按下播放谁持有播放权，另一侧只跟随时间、保持静音暂停。
+  const activePlayer = ref<string | null>(null);
 
   const totalWidth = computed(() => duration.value * pixelsPerSecond.value);
 
@@ -68,6 +72,11 @@ export const useTimelineStore = defineStore("timeline", () => {
 
   function setDuration(d: number) {
     duration.value = d;
+  }
+
+  /// 抢占播放权：调用方开始播放时自报身份，其他播放器监听到后自行暂停（只跟随时间）
+  function claimPlayback(id: string) {
+    activePlayer.value = id;
   }
 
   function playheadX(): number {
@@ -158,6 +167,7 @@ export const useTimelineStore = defineStore("timeline", () => {
     snapEnabled,
     snapGuideX,
     swapSegments,
+    activePlayer,
     tick,
     scrubbing,
     seek,
@@ -177,6 +187,7 @@ export const useTimelineStore = defineStore("timeline", () => {
     setSnapGuide,
     clipPosition,
     jumpTo,
+    claimPlayback,
   };
 });
 

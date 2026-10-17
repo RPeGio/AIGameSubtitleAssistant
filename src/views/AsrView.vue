@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useProjectStore } from "../stores/project";
+import { useTimelineStore } from "../stores/timeline";
 import SourceVideoPreview from "../components/SourceVideoPreview.vue";
 import SourceTimeline from "../components/SourceTimeline.vue";
 import AppIcon from "../components/AppIcon.vue";
@@ -10,6 +11,8 @@ import { usePersistedOcrParams } from "../composables/ocrDefaults";
 import { useMessage } from "naive-ui";
 
 const projectStore = useProjectStore();
+/// 全局时间轴 store（校对区同一个实例）：打轴页的播放头挂在它上面
+const timeline = useTimelineStore();
 const message = useMessage();
 
 // ── 两张折叠卡的展开态（默认全部收起，一次只开一张最大利用高度）──
@@ -150,8 +153,16 @@ const ocrParams = usePersistedOcrParams("asr");
 
 const hasClipVideo = computed(() => projectStore.currentVideoMeta !== null);
 
-/// 共享播放状态：视频预览 ↔ 迷你时间轴同步
-const clipTime = ref(0);
+/// 播放头与校对区共用：预览与迷你时间轴直接读写全局时间轴时间（双向），
+/// 不再各持一份进度——否则同一支切片视频两处播放头会各走各的。
+/// 注意用直接赋值而非 timeline.seek()：seek() 会置 isSeeking，校对区播放器的
+/// tick 会被它挡掉，而迷你时间轴没有配对的 seekDone()。
+const clipTime = computed({
+  get: () => timeline.currentTime,
+  set: (t: number) => {
+    timeline.currentTime = t;
+  },
+});
 const clipDuration = ref(0);
 
 const clipFileName = computed(() => {
@@ -238,6 +249,7 @@ async function startEmbedOcr() {
                 v-model:time="clipTime"
                 v-model:duration="clipDuration"
                 :show-header="false"
+                sync-playback
               />
             </div>
           </div>
