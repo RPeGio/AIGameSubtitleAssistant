@@ -32,6 +32,8 @@
   --ocr-bg: #4a3a1e; --ocr-fg: #f0d9a8; --ocr-line: #5f4a27;
   --fus-bg: #1e4444; --fus-fg: #a8e6e0; --fus-line: #2a5a5a;
   --reg-bg: #3a2a46; --reg-fg: #dcc6ee; --reg-line: #4a365a;
+  --otx-bg: #1f3a2c; --otx-fg: #b3e0c4; --otx-line: #2c523d;
+  --man-bg: #452a26; --man-fg: #eec2b4; --man-line: #5b3a33;
   --sel-bg: rgba(94, 106, 210, .13);
   /* 覆盖在视频画面上的控件条/角标：底色固定为半透明黑，两套主题一致 */
   --v-cap-bg: rgba(0, 0, 0, .55);
@@ -64,6 +66,8 @@
   --ocr-bg: #f7e8cf; --ocr-fg: #8a5a10; --ocr-line: #e0c79a;
   --fus-bg: #d6efe9; --fus-fg: #12604f; --fus-line: #9fd3c8;
   --reg-bg: #ece0f5; --reg-fg: #5b3a75; --reg-line: #cdb4dd;
+  --otx-bg: #dcefe1; --otx-fg: #1c6440; --otx-line: #a9d0b8;
+  --man-bg: #fae3dc; --man-fg: #8f3a26; --man-line: #e2c1b6;
   --sel-bg: rgba(79, 91, 196, .09);
   --v-cap-bg: rgba(0, 0, 0, .55);
   --v-cap-fg: #eceef2;

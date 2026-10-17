@@ -53,9 +53,17 @@ watch(
 );
 
 // 视频播放推进 → 时间轴播放头（tick 在拖动时被 isSeeking 挡掉）
+// 外部大跳（>0.5s）走 jumpTo：它会在必要时做最小滚动让播放头重新可见；
+// 播放中的小步进仍走 tick，避免逐帧触发滚动。
 watch(
   () => props.time,
-  (t) => timeline.tick(t)
+  (t) => {
+    if (!timeline.isSeeking && Math.abs(t - timeline.currentTime) > 0.5) {
+      timeline.jumpTo(t);
+    } else {
+      timeline.tick(t);
+    }
+  }
 );
 
 // 时间轴交互（拖动刻度/点击 clip）→ 同步视频（父级 v-model:time）

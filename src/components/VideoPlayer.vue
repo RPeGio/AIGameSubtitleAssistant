@@ -59,7 +59,7 @@ watch(
     const v = videoRef.value;
     if (!v) return;
     // 拖动中，或与视频实际时间不一致时（外部跳转如轨道总览双击编辑）同步视频
-    if (timeline.isSeeking || Math.abs(v.currentTime - t) > 0.05) {
+    if (timeline.isSeeking || Math.abs(v.currentTime - t) > 0.02) {
       v.currentTime = t;
     }
   }
@@ -83,13 +83,41 @@ function onTimeUpdate() {
   timeline.tick(v.currentTime);
 }
 
+/// 播放中每帧采样：<video> 的 timeupdate 只有约 4Hz，另一侧的播放头会一跳一跳；
+/// 用 rAF 直接读 currentTime 才能线性推进。onTimeUpdate 保留作后台标签页兜底。
+let rafId = 0;
+
+function startRafTicker() {
+  cancelRafTicker();
+  const step = () => {
+    const v = videoRef.value;
+    if (!v || v.paused || v.ended) {
+      rafId = 0;
+      return;
+    }
+    currentTime.value = v.currentTime;
+    if (!timeline.isSeeking) timeline.tick(v.currentTime);
+    rafId = requestAnimationFrame(step);
+  };
+  rafId = requestAnimationFrame(step);
+}
+
+function cancelRafTicker() {
+  if (rafId) {
+    cancelAnimationFrame(rafId);
+    rafId = 0;
+  }
+}
+
 function onPlay() {
   isPlaying.value = true;
   timeline.claimPlayback(PLAYER_ID);
+  startRafTicker();
 }
 
 function onPause() {
   isPlaying.value = false;
+  cancelRafTicker();
 }
 
 function onError() {
@@ -131,7 +159,10 @@ function handleKeydown(e: KeyboardEvent) {
 }
 
 onMounted(() => window.addEventListener("keydown", handleKeydown));
-onUnmounted(() => window.removeEventListener("keydown", handleKeydown));
+onUnmounted(() => {
+  window.removeEventListener("keydown", handleKeydown);
+  cancelRafTicker();
+});
 </script>
 
 <template>

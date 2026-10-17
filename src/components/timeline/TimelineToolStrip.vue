@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { inject } from "vue";
 import { useTimelineStore, TIMELINE_STORE_KEY } from "../../stores/timeline";
+import AppIcon from "../AppIcon.vue";
 
 const timeline = inject(TIMELINE_STORE_KEY, null) ?? useTimelineStore();
 </script>
@@ -10,71 +11,26 @@ const timeline = inject(TIMELINE_STORE_KEY, null) ?? useTimelineStore();
     <button
       class="tool-btn"
       :class="{ active: timeline.activeTool === 'select' }"
-      :title="'选择工具（默认）'"
+      title="选择工具（默认）"
       @click="timeline.setTool('select')"
     >
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="20"
-        height="20"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      >
-        <path d="m3 3 7.07 16.97 2.51-7.39 7.39-2.51L3 3z" />
-        <path d="m13 13 6 6" />
-      </svg>
+      <AppIcon name="cursor" :size="14" />
     </button>
     <button
       class="tool-btn"
       :class="{ active: timeline.activeTool === 'split' }"
-      :title="'分割工具：点击 clip 在光标处分割'"
+      title="分割工具：点击 clip 在光标处分割"
       @click="timeline.setTool('split')"
     >
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="20"
-        height="20"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      >
-        <circle cx="6" cy="6" r="3"></circle>
-        <circle cx="6" cy="18" r="3"></circle>
-        <line x1="20" y1="4" x2="8.12" y2="15.88"></line>
-        <line x1="14.47" y1="14.48" x2="20" y2="20"></line>
-        <line x1="8.12" y1="8.12" x2="12" y2="12"></line>
-      </svg>
+      <AppIcon name="cut" :size="14" />
     </button>
     <button
       class="tool-btn"
       :class="{ active: timeline.activeTool === 'merge' }"
-      :title="'合并工具：点选两个相邻 clip 合并；或按住 clip 边缘拖过相邻边界合并'"
+      title="合并工具：点选两个相邻 clip 合并；或按住 clip 边缘拖过相邻边界合并"
       @click="timeline.setTool('merge')"
     >
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="20"
-        height="20"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      >
-        <line x1="12" y1="3.5" x2="12" y2="20.5" />
-        <rect x="2" y="6" width="6" height="12" rx="1" />
-        <rect x="16" y="6" width="6" height="12" rx="1" />
-        <polyline points="3.5 10 7.5 12 3.5 14" />
-        <polyline points="20.5 10 16.5 12 20.5 14" />
-      </svg>
+      <AppIcon name="merge" :size="14" />
     </button>
     <button
       class="tool-btn"
@@ -82,20 +38,7 @@ const timeline = inject(TIMELINE_STORE_KEY, null) ?? useTimelineStore();
       :title="timeline.swapSegments ? '分段互换：开启（点轨道边界按钮交换分段内片段）' : '分段互换：关闭'"
       @click="timeline.toggleSwapSegments()"
     >
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="20"
-        height="20"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      >
-        <path d="M2.5 2v6h6M21.5 22v-6h-6" />
-        <path d="M22 11.5A10 10 0 0 0 3.2 7.2M2 12.5a10 10 0 0 0 18.8 4.2" />
-      </svg>
+      <AppIcon name="swap" :size="14" />
     </button>
     <button
       class="tool-btn"
@@ -103,54 +46,46 @@ const timeline = inject(TIMELINE_STORE_KEY, null) ?? useTimelineStore();
       :title="timeline.snapEnabled ? '吸附：开启' : '吸附：关闭'"
       @click="timeline.toggleSnap()"
     >
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="20"
-        height="20"
-        viewBox="0 0 24 24"
-        fill="currentColor"
-        stroke="none"
-      >
-        <path d="M14,12a2,2,0,0,1-4,0V2H2V12a10,10,0,0,0,20,0V2H14ZM8,4V6H4V4ZM20,4V6H16V4Zm-4,8V8h4v4A8,8,0,0,1,4,12V8H8v4a4,4,0,0,0,8,0Z" />
-      </svg>
+      <AppIcon name="magnet" :size="14" />
     </button>
   </div>
 </template>
 
 <style scoped>
+/* 工具条：卡片顶部的横条（原为左侧竖排工具列，T7 改为横条以对齐样稿） */
 .tool-strip {
-  width: 40px;
-  flex-shrink: 0;
-  border-right: 1px solid var(--color-border);
-  background: var(--color-bg-tertiary);
+  flex: none;
+  height: 30px;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  padding: 4px 0;
-  gap: 4px;
+  gap: 3px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--color-border);
 }
 
 .tool-btn {
-  width: 32px;
-  height: 32px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--color-text-secondary);
+  width: 24px;
+  height: 22px;
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: none;
+  color: var(--dim);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background 0.12s, color 0.12s;
 }
 
 .tool-btn:hover {
-  background: var(--color-bg-primary);
+  background: var(--hover);
   color: var(--color-text-primary);
 }
 
 .tool-btn.active {
-  background: var(--color-accent);
-  color: #fff;
+  background: var(--accent-soft);
+  border-color: var(--color-accent);
+  color: var(--accent-ink);
 }
 </style>

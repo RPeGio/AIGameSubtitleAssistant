@@ -3,14 +3,33 @@ import { ref, computed } from "vue";
 import type { InjectionKey } from "vue";
 import type { TimelineEvent } from "../types";
 
-export const CLIP_COLORS: Record<string, string> = {
-  ocr_region: "#00b894",
-  ocr_text: "#fdcb6e",
-  embed_ocr: "#e17055",
-  asr: "#0984e3",
-  fused: "#00cec9",
-  manual: "#a29bfe",
+/// 轨道片段配色：bg 底 / fg 文字 / line 描边，三值都指向主题令牌
+export interface ClipTone {
+  bg: string;
+  fg: string;
+  line: string;
+}
+
+/// 未知事件类型的中性回落配色
+const FALLBACK_TONE: ClipTone = {
+  bg: "var(--hover)",
+  fg: "var(--dim)",
+  line: "var(--hair-2)",
 };
+
+export const CLIP_COLORS: Record<string, ClipTone> = {
+  ocr_region: { bg: "var(--reg-bg)", fg: "var(--reg-fg)", line: "var(--reg-line)" },
+  ocr_text: { bg: "var(--otx-bg)", fg: "var(--otx-fg)", line: "var(--otx-line)" },
+  embed_ocr: { bg: "var(--ocr-bg)", fg: "var(--ocr-fg)", line: "var(--ocr-line)" },
+  asr: { bg: "var(--asr-bg)", fg: "var(--asr-fg)", line: "var(--asr-line)" },
+  fused: { bg: "var(--fus-bg)", fg: "var(--fus-fg)", line: "var(--fus-line)" },
+  manual: { bg: "var(--man-bg)", fg: "var(--man-fg)", line: "var(--man-line)" },
+};
+
+/// 取某事件类型的片段配色（未知类型回落中性灰）
+export function clipTone(type: string): ClipTone {
+  return CLIP_COLORS[type] ?? FALLBACK_TONE;
+}
 
 /// 参与字幕预览/文字编辑的轨道类型（眼睛开关与预览渲染共用，防两处漂移）
 export const TEXT_TRACK_TYPES = ["ocr_text", "embed_ocr", "asr", "fused", "manual"];

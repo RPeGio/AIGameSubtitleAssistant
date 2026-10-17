@@ -101,7 +101,7 @@ watch(
   (t) => {
     const v = videoRef.value;
     if (!v || !isLoaded.value) return;
-    if (Math.abs(v.currentTime - t) > 0.05) {
+    if (Math.abs(v.currentTime - t) > 0.02) {
       v.currentTime = t;
     }
   }
@@ -120,6 +120,31 @@ function onTimeUpdate() {
   emit("update:time", v.currentTime);
 }
 
+/// 播放中每帧上报时间：timeupdate 只有约 4Hz，另一侧的播放头会一跳一跳；
+/// 用 rAF 直接读 currentTime 才能线性推进。onTimeUpdate 保留作后台标签页兜底。
+let rafId = 0;
+
+function startRafTicker() {
+  cancelRafTicker();
+  const step = () => {
+    const v = videoRef.value;
+    if (!v || v.paused || v.ended) {
+      rafId = 0;
+      return;
+    }
+    emit("update:time", v.currentTime);
+    rafId = requestAnimationFrame(step);
+  };
+  rafId = requestAnimationFrame(step);
+}
+
+function cancelRafTicker() {
+  if (rafId) {
+    cancelAnimationFrame(rafId);
+    rafId = 0;
+  }
+}
+
 function onError() {
   loadError.value = "视频加载失败，请检查文件是否可播放";
   isLoaded.value = false;
@@ -128,10 +153,12 @@ function onError() {
 function onPlay() {
   isPlaying.value = true;
   if (props.syncPlayback) timeline.claimPlayback(props.videoKey);
+  startRafTicker();
 }
 
 function onPause() {
   isPlaying.value = false;
+  cancelRafTicker();
 }
 
 /// 另一侧（校对区播放器）按下播放时让出播放权：只跟随时间，不再出声
@@ -295,6 +322,7 @@ function onWindowMouseUp() {
 onUnmounted(() => {
   window.removeEventListener("mousemove", onWindowMouseMove);
   window.removeEventListener("mouseup", onWindowMouseUp);
+  cancelRafTicker();
 });
 </script>
 

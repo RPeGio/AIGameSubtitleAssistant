@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { NPopselect, useMessage } from "naive-ui";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
-import { useTimelineStore, CLIP_COLORS } from "../stores/timeline";
+import { useTimelineStore, clipTone } from "../stores/timeline";
 import { useProjectStore } from "../stores/project";
 import AppIcon from "./AppIcon.vue";
 import type { TimelineEvent } from "../types";
@@ -295,7 +295,7 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
         >
           <div
             class="ov-region"
-            :style="{ ...regionStyle(clip), borderColor: CLIP_COLORS.ocr_region }"
+            :style="{ ...regionStyle(clip), borderColor: clipTone('ocr_region').line }"
           />
         </div>
 

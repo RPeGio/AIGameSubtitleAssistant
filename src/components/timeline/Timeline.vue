@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onMounted, onUnmounted, provide, ref, watch } from "vue";
 import { NModal, NPopconfirm, NSelect, NButton } from "naive-ui";
-import { useTimelineStore, TIMELINE_STORE_KEY, CLIP_COLORS, TEXT_TRACK_TYPES } from "../../stores/timeline";
+import { useTimelineStore, TIMELINE_STORE_KEY, clipTone, TEXT_TRACK_TYPES } from "../../stores/timeline";
 import { useProjectStore } from "../../stores/project";
 import type { Track } from "../../types";
 import TimelineRuler from "./TimelineRuler.vue";
@@ -9,6 +9,7 @@ import TimelineClip from "./TimelineClip.vue";
 import TimelineScrollbar from "./TimelineScrollbar.vue";
 import TimelineToolStrip from "./TimelineToolStrip.vue";
 import TimelineWaveform from "./TimelineWaveform.vue";
+import AppIcon from "../AppIcon.vue";
 
 /// 支持注入独立 store 实例（页面级迷你时间轴用），未注入时回退全局 store
 const timeline = inject(TIMELINE_STORE_KEY, null) ?? useTimelineStore();
@@ -28,7 +29,7 @@ const props = withDefaults(
     /// 轨道标签列宽度（px）；迷你时间轴可调窄，给时间轴窗口让出更多宽度
     labelWidth?: number;
   }>(),
-  { showToolStrip: true, showWaveform: false, clickSeeks: false, labelWidth: 220 }
+  { showToolStrip: true, showWaveform: false, clickSeeks: false, labelWidth: 200 }
 );
 
 const emit = defineEmits<{
@@ -36,10 +37,12 @@ const emit = defineEmits<{
   "dblclick-track": [time: number];
 }>();
 
-// 布局常量：工具列宽度 + 轨道标签列宽度
-const TOOL_WIDTH = 40;
-/// 实际工具条宽度：隐藏工具条（迷你时间轴）时为 0，播放头/吸附线偏移随之归零
-const toolWidth = computed(() => (props.showToolStrip ? TOOL_WIDTH : 0));
+// 布局常量：工具条高度（工具条已改为卡片顶部横条，占满整宽）
+const TOOL_HEIGHT = 30;
+/// 播放头/吸附线的横向起点：标签列宽（工具条改顶部横条后不再占横向空间）
+const contentLeft = computed(() => props.labelWidth);
+/// 播放头窗口的纵向起点：显示工具条时让开横条，否则贴顶
+const playheadTop = computed(() => (props.showToolStrip ? TOOL_HEIGHT + "px" : "0"));
 
 /// MOSS ASR 分段间隔（秒）：与后端 SEGMENT_SECONDS 保持一致，
 /// 时间轴上用分割线标出每个 5 分钟分段边界，便于人工修正
@@ -493,7 +496,7 @@ onUnmounted(() => {
             :style="{ minWidth: props.labelWidth + 'px', maxWidth: props.labelWidth + 'px' }"
             @click="onTrackLabelClicked(track)"
           >
-            <div class="label-name">
+            <div class="label-line">
               <input
                 v-if="renameTrackId === track.id"
                 :ref="setRenameInput"
@@ -505,29 +508,38 @@ onUnmounted(() => {
               />
               <span
                 v-else
-                class="label-name-text"
+                class="label-name"
                 title="双击重命名轨道"
                 @dblclick="startRename(track)"
               >
                 {{ track.name }}
               </span>
+              <span v-if="renameTrackId !== track.id" class="label-type">{{ track.type }}</span>
             </div>
-            <div class="label-type">{{ track.type }}</div>
             <div v-if="renameTrackId !== track.id" class="tl-label-actions" @click.stop>
               <button
                 v-if="isTextTrackType(track.type)"
                 class="tl-label-btn"
+                :class="{ off: !track.preview_visible }"
                 :title="track.preview_visible ? '隐藏预览' : '显示预览'"
                 @click="projectStore.toggleTrackPreview(track.id)"
               >
-                {{ track.preview_visible ? "👁" : "🚫" }}
+                <AppIcon name="eye" :size="11" />
               </button>
-              <button class="tl-label-btn" title="上移轨道" @click="onMoveTrack(track, 'up')">↑</button>
-              <button class="tl-label-btn" title="下移轨道" @click="onMoveTrack(track, 'down')">↓</button>
-              <button class="tl-label-btn" title="合并到其他轨道" @click="onMergeOpen(track)">⇄</button>
+              <button class="tl-label-btn" title="上移轨道" @click="onMoveTrack(track, 'up')">
+                <AppIcon name="up" :size="11" />
+              </button>
+              <button class="tl-label-btn" title="下移轨道" @click="onMoveTrack(track, 'down')">
+                <AppIcon name="down" :size="11" />
+              </button>
+              <button class="tl-label-btn" title="合并到其他轨道" @click="onMergeOpen(track)">
+                <AppIcon name="merge" :size="11" />
+              </button>
               <NPopconfirm @positive-click="onDeleteTrack(track)">
                 <template #trigger>
-                  <button class="tl-label-btn tl-label-btn-danger" title="删除轨道">🗑</button>
+                  <button class="tl-label-btn tl-label-btn-danger" title="删除轨道">
+                    <AppIcon name="trash" :size="11" />
+                  </button>
                 </template>
                 删除轨道「{{ track.name }}」？此操作不可恢复
               </NPopconfirm>
@@ -592,7 +604,7 @@ onUnmounted(() => {
                 :event="event"
                 :track-id="track.id"
                 :siblings="track.events"
-                :color="CLIP_COLORS[event.type] ?? '#666'"
+                :tone="clipTone(event.type)"
                 :left="timeline.clipPosition(event).left"
                 :width="timeline.clipPosition(event).width"
                 :focused="timeline.focusedClipId === event.id"
@@ -648,7 +660,7 @@ onUnmounted(() => {
     <!-- Playhead window：仅覆盖内容区，标头越界时被裁剪而不上溢到工具条/标签列 -->
     <div
       class="playhead-window"
-      :style="{ left: toolWidth + props.labelWidth + 'px' }"
+      :style="{ left: contentLeft + 'px', top: playheadTop }"
     >
       <div class="playhead-overlay" :style="{ left: playheadLeft }">
         <div class="playhead-head" />
@@ -661,7 +673,7 @@ onUnmounted(() => {
       v-if="timeline.snapGuideX !== null"
       class="snap-guide"
       :style="{
-        left: toolWidth + props.labelWidth + timeline.snapGuideX - timeline.scrollLeft + 'px',
+        left: contentLeft + timeline.snapGuideX - timeline.scrollLeft + 'px',
       }"
     />
   </div>
@@ -672,7 +684,7 @@ onUnmounted(() => {
   position: relative;
   height: 100%;
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
   background: var(--color-bg-secondary);
   flex-shrink: 0;
   overflow: hidden;
@@ -698,6 +710,7 @@ onUnmounted(() => {
 }
 
 .track-row {
+  height: 48px;
   border-top: 1px solid var(--color-border);
 }
 
@@ -715,26 +728,23 @@ onUnmounted(() => {
 .tl-label-col {
   position: relative;
   z-index: 30;
-  min-width: 220px;
-  max-width: 220px;
+  min-width: 200px;
+  max-width: 200px;
   border-right: 1px solid var(--color-border);
   background: var(--color-bg-secondary);
   display: flex;
   flex-direction: column;
   justify-content: center;
-  padding: 4px 10px;
+  gap: 3px;
+  padding: 4px 8px;
   flex-shrink: 0;
   cursor: pointer;
 }
 
-/* 轨道操作按钮组：hover 显示，右缘垂直居中 */
+/* 轨道操作按钮组：hover 显示，位于轨道名下方一行 */
 .tl-label-actions {
-  position: absolute;
-  right: 6px;
-  top: 50%;
-  transform: translateY(-50%);
   display: flex;
-  gap: 2px;
+  gap: 3px;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.12s;
@@ -746,26 +756,31 @@ onUnmounted(() => {
 }
 
 .tl-label-btn {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   border: none;
   border-radius: 3px;
-  background: var(--color-bg-tertiary);
+  background: none;
   color: var(--color-text-secondary);
-  font-size: 10px;
-  line-height: 1;
   padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
 }
 
 .tl-label-btn:hover {
-  background: var(--color-accent);
-  color: #fff;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+/* 预览开关关闭态（眼睛图标变暗） */
+.tl-label-btn.off {
+  opacity: 0.45;
 }
 
 .tl-label-btn-danger:hover {
-  background: var(--color-error);
-  color: #fff;
+  color: var(--color-error);
 }
 
 .merge-form {
@@ -786,8 +801,18 @@ onUnmounted(() => {
   box-shadow: inset 2px 0 0 var(--color-accent);
 }
 
+/* 轨道名 + 类型标签同一行（类型标签贴右缘） */
+.label-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
 .label-name {
-  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
   font-weight: 600;
   color: var(--color-text-primary);
   white-space: nowrap;
@@ -795,16 +820,10 @@ onUnmounted(() => {
   text-overflow: ellipsis;
 }
 
-.label-name-text {
-  display: block;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .tl-name-input {
-  width: 100%;
-  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
   font-weight: 600;
   font-family: inherit;
   color: var(--color-text-primary);
@@ -817,16 +836,22 @@ onUnmounted(() => {
 }
 
 .label-type {
-  font-size: 10px;
-  color: var(--color-text-secondary);
-  font-variant-numeric: tabular-nums;
+  flex: none;
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  line-height: 1;
+  color: var(--faint);
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  padding: 2px 3px;
 }
 
 .tl-content {
   flex: 1;
   overflow: hidden;
   position: relative;
-  min-height: 40px;
+  min-height: 0;
 }
 
 /* 轨道内容区允许子元素跨行边界显示（分段互换按钮压在行间分割线上） */
@@ -927,7 +952,7 @@ onUnmounted(() => {
 .playhead-head {
   width: 10px;
   height: 10px;
-  background: var(--color-error);
+  background: var(--color-accent);
   border-radius: 3px 3px 0 0;
   margin-left: -5px;
 }
@@ -935,7 +960,7 @@ onUnmounted(() => {
 .playhead-line {
   width: 1px;
   height: 100%;
-  background: var(--color-error);
+  background: var(--color-accent);
   margin-left: -0.5px;
 }
 

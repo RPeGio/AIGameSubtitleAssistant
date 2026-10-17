@@ -129,8 +129,9 @@ function onWheelScrollbar(e: WheelEvent) {
 <style scoped>
 .scrollbar-track {
   flex: 1;
-  height: 14px;
-  background: var(--color-bg-tertiary);
+  height: 8px;
+  border-top: 1px solid var(--color-border);
+  background: transparent;
   position: relative;
   cursor: pointer;
 }
@@ -138,16 +139,15 @@ function onWheelScrollbar(e: WheelEvent) {
 .scrollbar-thumb {
   position: absolute;
   top: 2px;
-  height: 10px;
-  background: var(--color-accent);
-  opacity: 0.6;
-  border-radius: 5px;
+  height: 4px;
+  background: var(--color-border);
+  border-radius: 2px;
   min-width: 20px;
   pointer-events: none;
-  transition: opacity 0.1s;
+  transition: background 0.1s;
 }
 
 .scrollbar-track:hover .scrollbar-thumb {
-  opacity: 1;
+  background: var(--color-text-secondary);
 }
 </style>

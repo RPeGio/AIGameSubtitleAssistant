@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { useTimelineStore, CLIP_COLORS, TEXT_TRACK_TYPES } from "../stores/timeline";
+import { useTimelineStore, clipTone, TEXT_TRACK_TYPES } from "../stores/timeline";
 import { useProjectStore } from "../stores/project";
 import { useVideoContentRect } from "../composables/useVideoContentRect";
 import type { TimelineEvent } from "../types";
@@ -41,7 +41,7 @@ const activeLines = computed<PreviewLine[]>(() => {
       // ocr_region 无 text，排除后其余事件类型均含 text（TS 窄化）
       if (e.start <= t && e.end > t && e.type !== "ocr_region") {
         lines.push({
-          color: CLIP_COLORS[e.type] ?? "#ffffff",
+          color: clipTone(e.type).fg,
           prefix: prefixOf(e),
           text: e.text,
         });
