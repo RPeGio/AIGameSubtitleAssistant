@@ -4,6 +4,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { useTimelineStore } from "../stores/timeline";
 import { useProjectStore } from "../stores/project";
 import SubtitleOverlay from "./SubtitleOverlay.vue";
+import AppIcon from "./AppIcon.vue";
 
 const props = defineProps<{ src: string }>();
 
@@ -25,6 +26,11 @@ const assetUrl = computed(() => convertFileSrc(props.src));
 const progressPct = computed(() =>
   duration.value > 0 ? (currentTime.value / duration.value) * 100 : 0
 );
+
+// range 控件的已播部分（accent）用轨道渐变画出来，未播部分保持 hair-2
+const progressStyle = computed(() => ({
+  background: `linear-gradient(to right, var(--accent) ${progressPct.value}%, var(--hair-2) ${progressPct.value}%)`,
+}));
 
 const timeDisplay = computed(() => {
   const fmt = (s: number) => {
@@ -165,8 +171,8 @@ onUnmounted(() => window.removeEventListener("keydown", handleKeydown));
     </div>
 
     <div class="controls">
-      <button class="ctrl-btn" @click="togglePlay" :disabled="!isLoaded">
-        {{ isPlaying ? "⏸" : "▶" }}
+      <button class="ctrl-btn" @click="togglePlay" :disabled="!isLoaded" title="播放 / 暂停">
+        <AppIcon :name="isPlaying ? 'pause' : 'play'" :size="14" />
       </button>
 
       <input
@@ -176,6 +182,7 @@ onUnmounted(() => window.removeEventListener("keydown", handleKeydown));
         max="100"
         step="0.1"
         :value="progressPct"
+        :style="progressStyle"
         @input="seekTo"
       />
 
@@ -186,9 +193,9 @@ onUnmounted(() => window.removeEventListener("keydown", handleKeydown));
 
 <style scoped>
 .player-wrapper {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 8px;
   height: 100%;
 }
 
@@ -220,29 +227,29 @@ onUnmounted(() => window.removeEventListener("keydown", handleKeydown));
 
 .cc-btn {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: 10px;
+  right: 12px;
   z-index: 20;
-  min-width: 30px;
   height: 22px;
   padding: 0 6px;
-  border: none;
+  border: 1px solid var(--hair-2);
   border-radius: 4px;
-  background: rgba(0, 0, 0, 0.5);
-  color: var(--color-text-secondary);
-  font-size: 11px;
-  font-weight: 700;
+  background: var(--v-cc-bg);
+  color: var(--v-cc-fg);
+  font: 11px/1 var(--mono);
+  letter-spacing: 0.08em;
   cursor: pointer;
   transition: all 0.15s;
 }
 
 .cc-btn:hover {
-  background: rgba(0, 0, 0, 0.75);
-  color: var(--color-text-primary);
+  color: var(--v-cap-fg);
+  border-color: var(--dim);
 }
 
 .cc-btn.active {
-  background: var(--color-accent);
+  background: var(--accent);
+  border-color: var(--accent);
   color: #fff;
 }
 
@@ -252,34 +259,45 @@ onUnmounted(() => window.removeEventListener("keydown", handleKeydown));
 }
 
 .error-text {
-  color: var(--color-error);
+  color: var(--danger);
 }
 
+/* 控件条覆盖在画面底部 32px 上（字幕会整体抬高让开，见 SubtitleOverlay） */
 .controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 15;
+  height: 32px;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 4px;
+  gap: 12px;
+  padding: 0 12px;
+  background: var(--v-cap-bg);
+  border-top: 1px solid var(--hair);
+  border-radius: 0 0 8px 8px;
+  color: var(--v-cap-fg);
 }
 
 .ctrl-btn {
-  width: 32px;
-  height: 32px;
-  border: none;
-  border-radius: 6px;
-  background: var(--color-bg-tertiary);
-  color: var(--color-text-primary);
-  font-size: 14px;
-  cursor: pointer;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  cursor: pointer;
   transition: background 0.15s;
 }
 
 .ctrl-btn:hover {
-  background: var(--color-accent);
+  background: rgba(255, 255, 255, 0.14);
 }
 
 .ctrl-btn:disabled {
@@ -293,34 +311,35 @@ onUnmounted(() => window.removeEventListener("keydown", handleKeydown));
   appearance: none;
   height: 4px;
   border-radius: 2px;
-  background: var(--color-bg-tertiary);
+  background: var(--hair-2);
   outline: none;
+  cursor: pointer;
 }
 
 .progress-bar::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  background: var(--color-accent);
+  background: var(--v-cap-fg);
   cursor: pointer;
 }
 
 .progress-bar::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  background: var(--color-accent);
+  background: var(--v-cap-fg);
   cursor: pointer;
   border: none;
 }
 
 .time-text {
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  font-variant-numeric: tabular-nums;
-  min-width: 80px;
-  text-align: right;
   flex-shrink: 0;
+  min-width: 74px;
+  text-align: center;
+  font: 11px/1 var(--mono);
+  color: inherit;
+  font-variant-numeric: tabular-nums;
 }
 </style>

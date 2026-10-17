@@ -673,7 +673,6 @@ onUnmounted(() => {
   height: 100%;
   display: flex;
   flex-direction: row;
-  border-top: 1px solid var(--color-border);
   background: var(--color-bg-secondary);
   flex-shrink: 0;
   overflow: hidden;

@@ -33,6 +33,11 @@
   --fus-bg: #1e4444; --fus-fg: #a8e6e0; --fus-line: #2a5a5a;
   --reg-bg: #3a2a46; --reg-fg: #dcc6ee; --reg-line: #4a365a;
   --sel-bg: rgba(94, 106, 210, .13);
+  /* 覆盖在视频画面上的控件条/角标：底色固定为半透明黑，两套主题一致 */
+  --v-cap-bg: rgba(0, 0, 0, .55);
+  --v-cap-fg: #eceef2;
+  --v-cc-bg: rgba(0, 0, 0, .45);
+  --v-cc-fg: #cfd3da;
   --sans: system-ui, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
   --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
   --brand: 'Exo', system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
@@ -60,6 +65,10 @@
   --fus-bg: #d6efe9; --fus-fg: #12604f; --fus-line: #9fd3c8;
   --reg-bg: #ece0f5; --reg-fg: #5b3a75; --reg-line: #cdb4dd;
   --sel-bg: rgba(79, 91, 196, .09);
+  --v-cap-bg: rgba(0, 0, 0, .55);
+  --v-cap-fg: #eceef2;
+  --v-cc-bg: rgba(0, 0, 0, .45);
+  --v-cc-fg: #cfd3da;
 }
 
 /* 旧令牌名 → 新令牌的过渡层：组件里 186 处 var(--color-*) 一字不改即可随主题翻转 */

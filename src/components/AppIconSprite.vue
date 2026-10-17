@@ -29,6 +29,7 @@
     <symbol id="ic-track" viewBox="0 0 16 16"><path d="M2 4.4h12v7.2H2zM5.4 4.4v7.2M10.6 4.4v7.2"/></symbol>
     <symbol id="ic-back" viewBox="0 0 16 16"><path d="M7 3 2.5 8 7 13M2.5 8h10.9"/></symbol>
     <symbol id="ic-play" viewBox="0 0 16 16"><path d="M5 3.4 12.4 8 5 12.6z"/></symbol>
+    <symbol id="ic-pause" viewBox="0 0 16 16"><path d="M6 3.4v9.2M10 3.4v9.2"/></symbol>
     <symbol id="ic-folder" viewBox="0 0 16 16"><path d="M2 4.4h4.2L7.4 6.2H14v6.2H2z"/></symbol>
     <symbol id="ic-refresh" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.4V5.2h-2.8"/></symbol>
     <symbol id="ic-split" viewBox="0 0 16 16"><path d="M8 2v12M3.4 5.6 5.6 8l-2.2 2.4M12.6 5.6 10.4 8l2.2 2.4"/></symbol>
