@@ -7,18 +7,75 @@
   font-style: normal;
 }
 
+/* ============================================================================
+   设计令牌（取自 temp/css-preview/styles/06-hybrid.html 的两套 token）
+   深色同时挂在 :root 上：首帧尚未写入 data-theme 时也有令牌可用，不会闪白。
+   ========================================================================== */
+:root, [data-theme="dark"] {
+  --bg: #08090a;
+  --panel: #0d0e10;
+  --raised: #121316;
+  --hair: rgba(255, 255, 255, .07);
+  --hair-2: rgba(255, 255, 255, .13);
+  --text: #e8e9ea;
+  --dim: #9ca0a6;
+  --faint: #6b7076;
+  --accent: #5e6ad2;
+  --accent-hover: #6f7ade;
+  --accent-soft: rgba(94, 106, 210, .16);
+  --accent-ink: #a9b1f0;
+  --ok: #3fb27f;
+  --warn: #d9a441;
+  --danger: #e05555;
+  --hover: rgba(255, 255, 255, .045);
+  --asr-bg: #243a55; --asr-fg: #bcd6f5; --asr-line: #33506f;
+  --ocr-bg: #4a3a1e; --ocr-fg: #f0d9a8; --ocr-line: #5f4a27;
+  --fus-bg: #1e4444; --fus-fg: #a8e6e0; --fus-line: #2a5a5a;
+  --reg-bg: #3a2a46; --reg-fg: #dcc6ee; --reg-line: #4a365a;
+  --sel-bg: rgba(94, 106, 210, .13);
+  --sans: system-ui, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --brand: 'Exo', system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+
+[data-theme="light"] {
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --raised: #ffffff;
+  --hair: rgba(0, 0, 0, .09);
+  --hair-2: rgba(0, 0, 0, .16);
+  --text: #17191c;
+  --dim: #5c6169;
+  --faint: #8b9098;
+  --accent: #4f5bc4;
+  --accent-hover: #5a66cf;
+  --accent-soft: rgba(79, 91, 196, .10);
+  --accent-ink: #3b46a8;
+  --ok: #1f8a5f;
+  --warn: #9a6a10;
+  --danger: #c0392b;
+  --hover: rgba(0, 0, 0, .04);
+  --asr-bg: #dce9f8; --asr-fg: #1f4a78; --asr-line: #a8c4e4;
+  --ocr-bg: #f7e8cf; --ocr-fg: #8a5a10; --ocr-line: #e0c79a;
+  --fus-bg: #d6efe9; --fus-fg: #12604f; --fus-line: #9fd3c8;
+  --reg-bg: #ece0f5; --reg-fg: #5b3a75; --reg-line: #cdb4dd;
+  --sel-bg: rgba(79, 91, 196, .09);
+}
+
+/* 旧令牌名 → 新令牌的过渡层：组件里 186 处 var(--color-*) 一字不改即可随主题翻转 */
 :root {
-  --color-bg-primary: #1a1b2e;
-  --color-bg-secondary: #22243a;
-  --color-bg-tertiary: #2a2d44;
-  --color-accent: #6c5ce7;
-  --color-accent-hover: #7c6df0;
-  --color-text-primary: #e8e8f0;
-  --color-text-secondary: #9899b8;
-  --color-border: #363856;
-  --color-success: #00b894;
-  --color-warning: #fdcb6e;
-  --color-error: #e17055;
+  --color-bg-primary: var(--bg);
+  --color-bg-secondary: var(--panel);
+  --color-bg-tertiary: var(--raised);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-primary: var(--accent);
+  --color-text-primary: var(--text);
+  --color-text-secondary: var(--dim);
+  --color-border: var(--hair-2);
+  --color-success: var(--ok);
+  --color-warning: var(--warn);
+  --color-error: var(--danger);
 }
 
 * {
@@ -31,9 +88,15 @@ html, body, #app {
   height: 100%;
   width: 100%;
   overflow: hidden;
-  font-family: 'Exo', sans-serif;
-  background-color: var(--color-bg-primary);
-  color: var(--color-text-primary);
+  font-family: var(--sans);
+  background-color: var(--bg);
+  color: var(--text);
+}
+
+body {
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
 
 ::-webkit-scrollbar {
@@ -46,10 +109,10 @@ html, body, #app {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border);
+  background: var(--hair-2);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-text-secondary);
+  background: var(--dim);
 }
