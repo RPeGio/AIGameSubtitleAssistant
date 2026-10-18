@@ -76,17 +76,20 @@ export const useTimelineStore = defineStore("timeline", () => {
     currentTime.value = t;
   }
 
-  function scrubbing(value: boolean) {
-    isSeeking.value = value;
+  /// 拖动擦洗开始：期间由鼠标位置驱动时间，视频的 tick 不得回写
+  function beginScrub() {
+    isSeeking.value = true;
   }
 
-  function seek(t: number) {
-    scrubbing(true);
-    currentTime.value = t;
-  }
-
-  function seekDone() {
+  /// 拖动擦洗结束：恢复「视频驱动时间」
+  function endScrub() {
     isSeeking.value = false;
+  }
+
+  /// 瞬时跳转（点 clip、双击总览条目等）：只写时间，不进入擦洗态。
+  /// 若这里置 isSeeking，视频的 tick 会被挡掉 ⇒ 该时间轴的播放头永久停住。
+  function setTime(t: number) {
+    currentTime.value = t;
   }
 
   function setDuration(d: number) {
@@ -188,9 +191,9 @@ export const useTimelineStore = defineStore("timeline", () => {
     swapSegments,
     activePlayer,
     tick,
-    scrubbing,
-    seek,
-    seekDone,
+    beginScrub,
+    endScrub,
+    setTime,
     setDuration,
     setViewportWidth,
     maxScroll,

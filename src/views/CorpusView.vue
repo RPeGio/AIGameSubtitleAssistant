@@ -7,6 +7,7 @@ import ParamStepper from "../components/ParamStepper.vue";
 import AppIcon from "../components/AppIcon.vue";
 import type { Diff, OcrRegionEvent } from "../types";
 import { usePersistedOcrParams } from "../composables/ocrDefaults";
+import { frameDurOf, hitsFrame } from "../composables/useFrameTolerance";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { NVirtualList, useMessage } from "naive-ui";
@@ -68,10 +69,12 @@ const regions = computed<OcrRegionEvent[]>(() =>
 );
 
 /// 播放头所在时间段对应的选区——OCR 实际识别的就是它
+/// （命中判定留一帧容差，理由见 useFrameTolerance.ts）
 const activeRegion = computed(
   () =>
-    regions.value.find((e) => e.start <= sourceTime.value && sourceTime.value < e.end) ??
-    null
+    regions.value.find((e) =>
+      hitsFrame(e.start, e.end, sourceTime.value, frameDurOf(projectStore.sourceVideoMeta))
+    ) ?? null
 );
 
 const regionSize = computed(() =>

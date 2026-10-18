@@ -126,8 +126,8 @@ function onRulerMouseDown(e: MouseEvent) {
   const target = e.currentTarget as HTMLElement;
   e.preventDefault();
   scrubbingBody = target;
-  timeline.scrubbing(true);
-  timeline.seek(timeline.timeAtPixel(e.clientX - target.getBoundingClientRect().left));
+  timeline.beginScrub();
+  timeline.setTime(timeline.timeAtPixel(e.clientX - target.getBoundingClientRect().left));
   window.addEventListener("mousemove", onWindowMouseMove);
   window.addEventListener("mouseup", onWindowMouseUp);
 }
@@ -153,7 +153,7 @@ function onWindowMouseMove(e: MouseEvent) {
 function onWindowMouseUp() {
   if (!scrubbingBody) return;
   scrubbingBody = null;
-  timeline.scrubbing(false);
+  timeline.endScrub();
   window.removeEventListener("mousemove", onWindowMouseMove);
   window.removeEventListener("mouseup", onWindowMouseUp);
 }
@@ -231,7 +231,7 @@ function onClipClicked(track: Track, clipId: string) {
   // 迷你时间轴场景：点击 clip 跳转播放头到其起点（同步视频）
   if (props.clickSeeks) {
     const found = projectStore.findEvent(clipId);
-    if (found) timeline.seek(found.event.start);
+    if (found) timeline.setTime(found.event.start);
   }
 }
 

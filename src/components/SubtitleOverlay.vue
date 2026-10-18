@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { useTimelineStore, clipTone, TEXT_TRACK_TYPES } from "../stores/timeline";
 import { useProjectStore } from "../stores/project";
 import { useVideoContentRect } from "../composables/useVideoContentRect";
+import { frameDurOf, hitsFrame } from "../composables/useFrameTolerance";
 import type { TimelineEvent } from "../types";
 
 const timeline = useTimelineStore();
@@ -32,6 +33,7 @@ function prefixOf(e: TimelineEvent): string {
 const activeLines = computed<PreviewLine[]>(() => {
   if (!projectStore.subtitlePreviewOn) return [];
   const t = timeline.currentTime;
+  const frameDur = frameDurOf(projectStore.currentVideoMeta);
   const tracks = projectStore.currentProject?.tracks ?? [];
   const lines: PreviewLine[] = [];
   for (const track of tracks) {
@@ -39,7 +41,8 @@ const activeLines = computed<PreviewLine[]>(() => {
     if (!TEXT_TRACK_TYPES.includes(track.type)) continue;
     for (const e of track.events) {
       // ocr_region 无 text，排除后其余事件类型均含 text（TS 窄化）
-      if (e.start <= t && e.end > t && e.type !== "ocr_region") {
+      // 命中判定留一帧容差：跳到 clip 起点时时间可能落在 start 之前一帧内
+      if (e.type !== "ocr_region" && hitsFrame(e.start, e.end, t, frameDur)) {
         lines.push({
           color: clipTone(e.type).fg,
           prefix: prefixOf(e),

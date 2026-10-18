@@ -10,7 +10,7 @@
 | # | 任务 | 类型 | 依赖 | 为什么在这个位置 |
 |---|---|---|---|---|
 | 1 | ✅ 切页丢状态（含波形重绘） | 修复·底层 | 无 | 已实现（提交号待补）：KeepAlive 保活页面与校对区 + 全局监听改 activate/deactivate |
-| 2 | 播放头跳转后画面/字幕停在上一帧 | 修复 | 无 | 影响所有「跳过去看画面」的场景，含第 4 项 |
+| 2 | ✅ 播放头跳转后画面/字幕停在上一帧 | 修复 | 无 | 已实现（提交号待补）：命中判定留一帧容差 + 跳转/擦洗两种 API 分开 |
 | 3 | 标尺分度随视口拥挤 | 修复 | 无 | 小、独立、立竿见影；第 8/9 项要在放大的视口上操作 |
 | 4 | 标尺滚轮缩放 | 功能·小 | 与 3 同区 | 与 3 一次改完一次验证 |
 | 5 | 播放键/进度条移出画面 | 修复·布局 | 无 | 与 2 同属「画面区域」正确性，一起验证 |
@@ -49,16 +49,60 @@
 - 语料页展开某张卡 → 切到打轴页 → 切回：折叠态与滚动位置保持。
 - 带着长视频从其它页切回语料页：无可见重绘停顿。
 
-### 2. 播放头跳转到 clip start 后画面仍为前一帧（看不到该 clip 的 CC 字幕）
+### 2. ✅ 播放头跳转到 clip start 后画面仍为前一帧／CC 字幕闪一下就没
 
-**现状依据（强怀疑，需先复现确认）**
+**已实现（2026-10-18，提交号待补）**——两条根因各按方案改掉：
+
+| 改动 | 文件 | 内容 |
+|---|---|---|
+| 命中判定留一帧容差 | 新建 `src/composables/useFrameTolerance.ts` | `frameDurOf(meta)`（`1/fps`，无元数据按 30fps）+ `hitsFrame(start, end, t, frameDur)` = `start < t + frameDur && end > t` |
+| 同上 | `src/components/SubtitleOverlay.vue` | `activeLines` 改用 `hitsFrame`（`frameDurOf(currentVideoMeta)`） |
+| 同上 | `src/components/RegionOverlay.vue` | `regionEvent` 改用 `hitsFrame`（source 用 `sourceVideoMeta`，clip 用 `currentVideoMeta`） |
+| 同上 | `src/views/CorpusView.vue` | `activeRegion` 改用 `hitsFrame`（`sourceVideoMeta`） |
+| 跳转/擦洗 API 分开 | `src/stores/timeline.ts` | 删 `scrubbing()`/`seek()`/`seekDone()`，新增 `beginScrub()`/`endScrub()`（拖动专用）与 `setTime(t)`（瞬时跳转，不置 `isSeeking`） |
+| 同上 | `src/components/timeline/Timeline.vue` | 刻度 mousedown → `beginScrub()` + `setTime()`；mouseup → `endScrub()`；`clickSeeks` 分支 → `setTime()`（`:129-130`、`:156`、`:234`） |
+| 同上 | `src/views/AsrView.vue` | `clipTime` 写回改 `timeline.setTime(t)`，注释同步（不再需要「避开 seek()」的说明） |
+
+**验证（修复后，同一批脚本）**
+- `temp/css-preview/checks/item2f.js`（编辑器页，放大到 pps≈163 后点标尺；目标 start = 3.200）：① 双击总览行 CC 3 行；② 点到 start−20ms（视频回报 3.174）CC 仍 **3 行**（修复前 0）；③ 点到 start（回报 3.199，低 1ms）CC **3 行**（修复前 0）；④ start+20ms CC 3 行。
+- `temp/css-preview/checks/item2.js`（打轴页点 300s 的迷你 clip）：`miniAdvanced` 由 **false → true**；采样序列迷你播放头 815.27 → 817.28 与视频 300 → 301.38、校对区播放头 1918.81 → 1923.28 同步推进。
+- 已知取舍：容差 = 一帧（30fps 时 33ms），意味着时间落在帧内时字幕最多提前一帧出现；换来的是「跳到起点必定显示」。`RegionOverlay`/`CorpusView` 两处同类改动未单独复现（mock 里最后一个选区的兜底会掩盖），但改法与字幕层完全一致。
+- `pnpm build`（`vue-tsc --noEmit && vite build`）通过：2895 模块 / CSS 56.37 kB / JS 638.53 kB。
+
+**根因记录（复现于 2026-10-18，两条独立缺陷）**
+
+**A. 边界精确匹配 + 视频 seek 落点可能低于请求值 ⇒ CC「闪一下就没」**（用户 m02972 观察的主因）
+- `src/components/SubtitleOverlay.vue:42` 的命中条件是硬边界 `if (e.start <= t && e.end > t && e.type !== "ocr_region")`，`t` 即 `timeline.currentTime`。
+- 而 `timeline.currentTime` 会被视频回报的时间覆盖：`src/components/VideoPlayer.vue:94-102 onTimeUpdate` 与 `:106-121` 的 rAF 推进都调 `timeline.tick(v.currentTime)`。
+- `<video>` 的 seek 落点**可能比请求时间早最多一帧**（实测：请求 26.3333 → 回报 26.3，−33.3ms，30fps 一帧 = 33.3ms；`temp/css-preview/checks/item2d.js`）。
+- ⇒ `TrackOverview.vue:300` 双击 → `timeline.jumpTo(clip.start)` 写入精确边界（CC 渲染 ⇒ **闪一下**）→ 视频 seek 回报略小于该边界 → `tick` 把 `currentTime` 压到边界之下 → `start <= t` 判定失败 ⇒ **CC 消失**；再次双击把时间写回精确边界 ⇒ **CC 又出现**（与用户观察完全吻合）。
+- **复现实测**（`temp/css-preview/checks/item2f.js`：先用滑条滚轮把 pps 放大到 ≈163，再用标尺点时间；目标事件 start = 3.200）：
+
+  | 步骤 | 请求时间 | 视频回报 | CC 行数 |
+  |---|---|---|---|
+  | ① 双击轨道总览行 | 3.2 | 3.2 | **3** ✓ |
+  | ② 点到 start−20ms（0.6 帧） | 3.18 | 3.174 | **0** |
+  | ③ 点到 start（精确边界） | 3.2 | **3.199**（低 1ms） | **0** ← 与「双击后 CC 闪一下就没」一致 |
+  | ④ 点到 start+20ms | 3.22 | 3.217 | **3** ✓ ← 与「再双击一次 CC 又出现」一致 |
+
+- 同类硬边界匹配还有两处、同一个坑：`src/components/RegionOverlay.vue:39`（`regions.find((e) => e.start <= t && e.end > t)` ⇒ 选区叠加层会显示「上一个选区」）、`src/views/CorpusView.vue:71-73`（`activeRegion` ⇒ 选区尺寸/坐标读数同理）。
+
+**B. `clickSeeks` 路径泄漏 `isSeeking`**（复现时发现，影响播放头跟随）
 - `src/components/timeline/Timeline.vue:234`（`clickSeeks` 路径）调 `timeline.seek(found.event.start)`；而 `src/stores/timeline.ts:83-86` 的 `seek()` 内部是 `scrubbing(true)` + 赋值 ⇒ 置 `isSeeking = true`。
 - 与之配对的清位只有刻度拖动那条路径：`Timeline.vue:129-130`（`scrubbing(true)` + `seek`）↔ `:153-159`（mouseup 时 `scrubbing(false)`）。**`clickSeeks` 这条路径没有 `seekDone()`**。
-- `isSeeking` 永久为 true 的后果：`src/stores/timeline.ts:74-77` 的 `tick()` 直接 `return`（播放头不再前进）；`src/components/VideoPlayer.vue` 的 rAF 推进里有 `if (!timeline.isSeeking)`；字幕/CC 叠加层仍按被冻结的 `currentTime` 渲染 ⇒ 观感就是「播放头跳过去了，画面/字幕还是上一帧」。
+- `isSeeking` 永久为 true 的后果：`src/stores/timeline.ts:74-77` 的 `tick()` 直接 `return`（播放头不再前进）；`src/components/VideoPlayer.vue` 的 rAF 推进里有 `if (!timeline.isSeeking)` ⇒ 这条时间轴自己的播放头被永久冻住。
+- 复现（`temp/css-preview/checks/item2.js`）：打轴页点迷你时间轴里 start=300s 的选区 clip —— 迷你播放头跳到 815.27px（=300s）、校对区画面确实跟着跳（canvas 亮度 0 → 107.31、`video.currentTime = 300`）；**但随后播放时迷你播放头恒停在 815.27（`miniAdvanced = false`）**，而同一时刻 video 时间 300 → 300.91、校对区播放头 1919 → 1921.75 都在动 ⇒ 泄漏只冻死**这条时间轴自己**的 `tick`。
+- 排查中的假象（不是缺陷）：校对区 `.time-text` 是 mm:ss 粒度，跳到 300s 后直到 300.99s 都显示 `5:00` 属正常。
 
-**要做**
-- 先复现：点 clip / 双击总览条目后观察播放头与画面。
-- 修法二选一：该路径改成**不置 `isSeeking` 的直接赋值**（`AsrView.vue:157-158` 的注释就是为规避这个坑而这么写的），或补上配对的 `seekDone()`。
+**要做**（方案待用户确认）
+- 修 A（**新增，推荐**）：把三处硬边界改成**按当前显示帧容差**命中 —— `src/components/SubtitleOverlay.vue` 内取 `const frameDur = 1 / (currentVideoMeta?.fps || 30)`，条件改 `e.start < t + frameDur && e.end > t`（语义：播放头所在那一帧覆盖 `[t, t + frameDur)`，起始落在这帧里的字幕就该显示）；`src/components/RegionOverlay.vue:39` 与 `src/views/CorpusView.vue:71-73` 同法改。
+- 修 B：**把「瞬时跳转」与「拖动擦洗」两种语义彻底分开**，从 API 上杜绝误用：
+  - `src/stores/timeline.ts`：新增 `setTime(t)`（直接赋值、**不置** `isSeeking`；需要时内部复用 `jumpTo` 的「最小滚动让播放头可见」）；把 `scrubbing()` 从 store 导出里撤掉，只保留给拖动路径的 `beginScrub()`/`endScrub()`（等价于现在的 `seek()`/`seekDone()` 语义）。
+  - `src/components/timeline/Timeline.vue:232-235`：`clickSeeks` 分支改用 `setTime`（或直接 `jumpTo`，点 clip 时滚动让播放头可见正是期望行为）。
+  - `src/views/AsrView.vue:157-158`：绕过注释改成普通说明（改用直接赋值仍是正确写法，但「迷你时间轴没有配对的 seekDone()」这句在修完后不再成立）。
+  - 备选（最小改动，不推荐）：只在 `Timeline.vue:234` 补一个配对的 `timeline.seekDone()`；缺点是把两种语义继续混在同一个 API 里，第三个调用点还会再踩。
+- 验收：双击总览条目／点 clip 跳到 start 时（含时间码不是帧整数倍的情况）CC 与画面都在位，且随后播放继续跟随（`miniAdvanced: true`）；校对区刻度拖动期间仍不被视频 tick 拉回（`isSeeking` 语义不变）。
+
 
 **验收**
 - 点 clip、双击总览条目、以及第 4 项新增的「展开审计条目自动跳转」之后，画面帧与 CC 字幕都跟着跳到位。

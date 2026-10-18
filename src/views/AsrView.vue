@@ -154,12 +154,11 @@ const hasClipVideo = computed(() => projectStore.currentVideoMeta !== null);
 
 /// 播放头与校对区共用：预览与迷你时间轴直接读写全局时间轴时间（双向），
 /// 不再各持一份进度——否则同一支切片视频两处播放头会各走各的。
-/// 注意用直接赋值而非 timeline.seek()：seek() 会置 isSeeking，校对区播放器的
-/// tick 会被它挡掉，而迷你时间轴没有配对的 seekDone()。
+/// 写回走 setTime()（瞬时跳转语义，不置 isSeeking），不会挡住校对区播放器的 tick。
 const clipTime = computed({
   get: () => timeline.currentTime,
   set: (t: number) => {
-    timeline.currentTime = t;
+    timeline.setTime(t);
   },
 });
 /// 切片视频时长取工程元数据。此前由预览组件的 loadedmetadata 回填，
