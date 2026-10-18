@@ -31,6 +31,12 @@ const isLoaded = ref(false);
 const loadError = ref<string | null>(null);
 
 /// 共享播放头时的身份：校对区播放器
+///
+/// ⚠ **前提**：共用一份 `timeline.currentTime` 只在「校对区与打轴页预览加载
+/// 同一支视频」（同一 `currentVideoMeta`）时成立——这是当前的运行时巧合，
+/// 不是代码保证的。若两者变成不同时长的文件，duration 各写各的、currentTime
+/// 超出短视频时长被浏览器钳制 ⇒ 表现为"加载即跳时间"。届时应改为各持独立
+/// 播放头，或给 timeline store 加"时长来源绑定"，不要沿用本共用机制。
 const PLAYER_ID = "review";
 
 const assetUrl = computed(() => convertFileSrc(props.src));

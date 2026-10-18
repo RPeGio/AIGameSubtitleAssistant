@@ -1,6 +1,8 @@
 // 融合审计表纯逻辑自检（R3）。
 //
-// fuseAudit.ts 是 TS，Node 不能直接跑：先用 tsc 转译到 temp/ 再运行本脚本：
+// fuseAudit.ts 是 TS，Node 不能直接跑：先用 tsc 转译到 temp/ 再运行本脚本。
+// 注意产物在 temp/stores/ 下（fuseAudit.ts `import type` 的 ../types 会被拉进
+// 编译程序，rootDir 推断上浮到 src/），导入路径与之一致：
 //   node_modules\.bin\tsc.cmd src/stores/fuseAudit.ts --outDir temp --target es2022 --module esnext --moduleResolution bundler --skipLibCheck
 //   node scripts/check_fuse_audit.mjs
 //
@@ -16,7 +18,7 @@ import {
   applyFusedDecision,
   refreshReused,
   LOW_SCORE_THR,
-} from "../temp/fuseAudit.js";
+} from "../temp/stores/fuseAudit.js";
 
 const CORPUS = ["A句语料", "B句语料", "C句语料"];
 
