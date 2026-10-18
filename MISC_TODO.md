@@ -9,7 +9,7 @@
 
 | # | 任务 | 类型 | 依赖 | 为什么在这个位置 |
 |---|---|---|---|---|
-| 1 | 切页丢状态（含波形重绘） | 修复·底层 | 无 | 后面每项都要反复切页验证，先修性价比最高 |
+| 1 | ✅ 切页丢状态（含波形重绘） | 修复·底层 | 无 | 已实现（提交号待补）：KeepAlive 保活页面与校对区 + 全局监听改 activate/deactivate |
 | 2 | 播放头跳转后画面/字幕停在上一帧 | 修复 | 无 | 影响所有「跳过去看画面」的场景，含第 4 项 |
 | 3 | 标尺分度随视口拥挤 | 修复 | 无 | 小、独立、立竿见影；第 8/9 项要在放大的视口上操作 |
 | 4 | 标尺滚轮缩放 | 功能·小 | 与 3 同区 | 与 3 一次改完一次验证 |
@@ -22,12 +22,20 @@
 | 11 | 欢迎页自检升级（探针 + 静默 bootstrap） | 功能·独立 | 无（可与 8–10 并行） | 独立大件，放中后段不打断时间轴主线 |
 | 12 | CUDA GPU 加速参数化 | 功能·Rust+UI | 7（要带 info 说明）；先看 `feat/ocr-cuda` | 需先勘察既有分支，避免重复造 |
 | 13 | 杂项清理与验证（死代码/参数开关/波形/图标） | 清理·零碎 | 无 | 随时可插入的零碎项，放最后一批 |
+| 14 | 内嵌 ffmpeg/ffprobe + 欢迎页 ffmpeg 自检卡 | 功能·打包 | 11（自检卡复用其探针机制） | 外部依赖一致性；涉及打包策略，宜与 11 一起看 |
 
 ---
 
 ## A 组：打底修复
 
-### 1. 侧边栏切页丢状态（切走再切回恢复默认；从语料区切回时校对区波形 canvas 重绘耗时）
+### 1. ✅ 侧边栏切页丢状态（切走再切回恢复默认；从语料区切回时校对区波形 canvas 重绘耗时）
+
+> **已实现**（2026-10-18，5 文件）：
+> - `src/layouts/ProjectLayout.vue`：页面与校对区都套 `<KeepAlive>`；缓存键必须「工程路径 + 路由名」——只用工程路径会让四个页面共用同一键、被当成同一实例复用（切页不换内容）；`<KeepAlive>` 里不能有注释或多个子节点，否则整棵树渲染不出来。
+> - `src/components/timeline/Timeline.vue` / `VideoPlayer.vue` / `TrackOverview.vue`：全局 `window` 监听从 `onMounted`/`onUnmounted` 改成 `onActivated`/`onDeactivated` 成对，失活时同时摘监听、停播、取消 rAF。
+> - `src/views/FuseView.vue`：融合就绪探针改 `onActivated`，每次回页重探一次。
+>
+> **验证**（evalq 实测，1680×1000 mock）：切页往返后折叠卡展开态、手动文本草稿、迷你时间轴缩放（片段宽 1251.5px 不变）、校对区 `<video>` `currentTime = 42s`、时间轴平移量（播放头 `left = -162.568` 不变）全部保持；校对区 `<video>` 与波形 canvas **复用同一 DOM 节点** ⇒ 无重绘；隐藏期间按 Delete/空格不再作用于校对区（片段仍存活、视频未播放）；语料页仍整页全宽（主列 1472、校对区不渲染）。`pnpm build` 通过。**提交号：待补。**
 
 **现状依据**
 - 全仓 `<KeepAlive>` / `keep-alive` **0 命中** ⇒ 路由视图每次切换都整体卸载重建，页面内 `ref` 状态（如语料页/打轴页的折叠卡 `openCard`、滚动位置、勾选态）全部回到默认。
@@ -219,3 +227,22 @@
 - OCR 参数里后端已有、界面未暴露的开关（如 `src/composables/ocrDefaults.ts` 的 `punctuation.fix_misread_letters`）→ 评估补 UI（当初 T3 因「不想造假控件」未做）。
 - 波形行 `.wf-row`（48px）**从没在有真实波形数据时目视验证过**（mock 无音频）→ 用带音频素材看一眼。
 - 轨道操作图标目前 hover 才显示（样稿是常显淡色）→ 按观感定夺，属风格取舍。
+
+### 14. 内嵌 ffmpeg/ffprobe + 欢迎页 ffmpeg 自检卡
+
+**现状依据**
+- 应用**不内嵌** ffmpeg/ffprobe：`src-tauri/src/video/mod.rs:71` `resolve_ffprobe()` 与 `:201` `resolve_ffmpeg()` 都是两级查找——先 `Command::new("ffprobe"/"ffmpeg")`（系统 PATH），再 `ffmpeg_sidecar::paths::sidecar_dir()`（`src-tauri/Cargo.toml` 的 `ffmpeg-sidecar = "2"` 的 auto_download 目录）；找不到即返回 `FFMPEG_NOT_FOUND`（`mod.rs:194/:320/:495/:573`、`src-tauri/src/video/waveform.rs:33`）。
+- 调用点：元数据 `probe_video()`（`mod.rs:157`）、抽帧（`:293`）、单帧（`:411`）、dhash 9×8 灰度扫描（`:470`）、音频提取（`:573`）、波形（`waveform.rs:35`）。
+- 文档口径：`README.md` / `README_EN.md` 写明「FFmpeg + ffprobe 需自行安装并加入 PATH，应用不会自动下载」；`THIRD_PARTY.md` 已登记 FFmpeg/ffprobe（LGPL-2.1+，构建选项可能致 GPL）与 ffmpeg-sidecar（MIT）。
+- `src-tauri/tauri.conf.json` 的 `bundle` 段目前只有 `active` / `targets` / `icon`，**没有 `resources` 也没有 `externalBin`**。
+
+**要做**
+- 把 ffmpeg 与 ffprobe 内嵌进 `runtime/`（该目录已被 `.gitignore` ⇒ 二进制不入库，需定「随安装包携带」还是「首次运行下载」的策略，并考虑 Tauri `bundle.resources` / `externalBin`）；
+- `resolve_ffmpeg()` / `resolve_ffprobe()` 加一级查找：内嵌目录的位置（**内嵌优先**还是 PATH 优先，实现前与用户对齐——内嵌优先版本可控，PATH 优先便于用户自行升级）；
+- 欢迎页加 **ffmpeg 自检卡**（复用 `src/views/Welcome.vue` 现有 `probes` 机制与状态口径：就绪 / 探测中… / 未就绪 / —，不阻塞其它操作）；
+- 文档与档案同步：`README.md` / `README_EN.md` 的 FFmpeg 前置说明、`THIRD_PARTY.md` 中「Installed by the user; … never downloads it」的表述都要改（项目「档案同步」惯例）。
+
+**验收要点**
+- 一台**没有** ffmpeg 的机器：欢迎页 ffmpeg 卡显示内嵌版本（而非未就绪），元数据/抽帧/波形全部可用；
+- 有 PATH ffmpeg 的机器行为不回退（查找顺序明确、可预期）；
+- 安装包内包含二进制，且许可档案已更新。

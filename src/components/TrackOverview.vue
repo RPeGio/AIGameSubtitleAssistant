@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onActivated, onDeactivated, onUnmounted, ref, watch } from "vue";
 import { NPopselect, useMessage } from "naive-ui";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -227,8 +227,21 @@ function onWindowMouseDown(e: MouseEvent) {
   commitRename();
 }
 
-onMounted(() => window.addEventListener("mousedown", onWindowMouseDown, true));
-onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, true));
+// 组件套了 KeepAlive：全局 mousedown（点外部提交重命名）只在激活期间监听，
+// 失活时顺手提交未落地的行内编辑，避免下次回来还停在编辑态。
+function activate() {
+  window.addEventListener("mousedown", onWindowMouseDown, true);
+}
+
+function deactivate() {
+  window.removeEventListener("mousedown", onWindowMouseDown, true);
+  commitEdit();
+  commitRename();
+}
+
+onActivated(activate);
+onDeactivated(deactivate);
+onUnmounted(deactivate);
 </script>
 
 <template>

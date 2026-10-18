@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from "vue";
+import { ref, computed, onActivated, onDeactivated, onUnmounted, watch } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useTimelineStore } from "../stores/timeline";
 import { useProjectStore } from "../stores/project";
@@ -176,11 +176,22 @@ function handleKeydown(e: KeyboardEvent) {
   }
 }
 
-onMounted(() => window.addEventListener("keydown", handleKeydown));
-onUnmounted(() => {
+// 组件套了 KeepAlive（校对区在语料页会被收起）：全局按键只在激活期间监听，
+// 失活时摘掉并停住播放——否则在别的页面按空格会让隐藏的校对区播放器出声。
+function activate() {
+  window.addEventListener("keydown", handleKeydown);
+}
+
+function deactivate() {
   window.removeEventListener("keydown", handleKeydown);
   cancelRafTicker();
-});
+  const v = videoRef.value;
+  if (v && !v.paused) v.pause();
+}
+
+onActivated(activate);
+onDeactivated(deactivate);
+onUnmounted(deactivate);
 </script>
 
 <template>

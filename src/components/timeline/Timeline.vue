@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, nextTick, onMounted, onUnmounted, provide, ref, watch } from "vue";
+import { computed, inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, provide, ref, watch } from "vue";
 import { NModal, NPopconfirm, NSelect, NButton } from "naive-ui";
 import { useTimelineStore, TIMELINE_STORE_KEY, clipTone, TEXT_TRACK_TYPES } from "../../stores/timeline";
 import { useProjectStore } from "../../stores/project";
@@ -433,6 +433,26 @@ watch(
   { immediate: true }
 );
 
+// 组件可能被 KeepAlive 缓存（校对区时间轴与各页面迷你时间轴都是）：
+// 全局键鼠监听只在「激活」期间挂着。否则隐藏的时间轴仍会响应 Delete/S/M 与
+// 文本输入，作用于它自己 store 的 focusedClipId——在语料页按 Delete 会删掉
+// 校对区时间轴上的片段。
+function activate() {
+  window.addEventListener("mousedown", onWindowMouseDown, true);
+  window.addEventListener("keydown", onKeydown);
+  // 从缓存里恢复时 DOM 刚插回，视口宽度可能还是 0，这里补测一次
+  if (viewportRef.value) {
+    timeline.setViewportWidth(viewportRef.value.getBoundingClientRect().width);
+  }
+}
+
+function deactivate() {
+  window.removeEventListener("mousedown", onWindowMouseDown, true);
+  window.removeEventListener("keydown", onKeydown);
+  window.removeEventListener("mousemove", onWindowMouseMove);
+  window.removeEventListener("mouseup", onWindowMouseUp);
+}
+
 onMounted(() => {
   if (viewportRef.value) {
     const update = () => {
@@ -443,17 +463,15 @@ onMounted(() => {
     viewportObserver.observe(viewportRef.value);
   }
   rootRef.value?.addEventListener("wheel", onWheelRoot, { passive: false });
-  window.addEventListener("mousedown", onWindowMouseDown, true);
-  window.addEventListener("keydown", onKeydown);
 });
+
+onActivated(activate);
+onDeactivated(deactivate);
 
 onUnmounted(() => {
   viewportObserver?.disconnect();
   rootRef.value?.removeEventListener("wheel", onWheelRoot);
-  window.removeEventListener("mousedown", onWindowMouseDown, true);
-  window.removeEventListener("keydown", onKeydown);
-  window.removeEventListener("mousemove", onWindowMouseMove);
-  window.removeEventListener("mouseup", onWindowMouseUp);
+  deactivate();
 });
 </script>
 
