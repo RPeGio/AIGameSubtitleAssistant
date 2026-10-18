@@ -3,27 +3,24 @@ import { computed, ref } from "vue";
 import { useProjectStore } from "../stores/project";
 import SourceVideoPreview from "../components/SourceVideoPreview.vue";
 import SourceTimeline from "../components/SourceTimeline.vue";
-import type { Diff } from "../types";
+import ParamStepper from "../components/ParamStepper.vue";
+import AppIcon from "../components/AppIcon.vue";
+import type { Diff, OcrRegionEvent } from "../types";
 import { usePersistedOcrParams } from "../composables/ocrDefaults";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import {
-  NButton,
-  NCollapse,
-  NCollapseItem,
-  NInput,
-  NInputNumber,
-  NProgress,
-  NText,
-  NVirtualList,
-  useMessage,
-} from "naive-ui";
+import { NVirtualList, useMessage } from "naive-ui";
 
 const projectStore = useProjectStore();
 const message = useMessage();
 
-// ── 三个语料来源折叠标签（默认展开第一个）──────────────
-const activeKeys = ref<string[]>(["recordings"]);
+// ── 三个语料来源折叠卡：一次只展开一张，默认全部收起 ──────────
+type CardName = "recordings" | "screenshot" | "manual";
+const openCard = ref<CardName | null>(null);
+
+function toggleCard(name: CardName) {
+  openCard.value = openCard.value === name ? null : name;
+}
 
 // ── "从剧情录屏中截取" ────────────────────────────────
 // 跨栏目切换保留（此前是组件局部 ref ⇒ 切栏目即静默回到默认，见 ocrDefaults.ts）
@@ -41,9 +38,53 @@ function removeGlossaryTerm(i: number) {
 const sourceMeta = computed(() => projectStore.sourceVideoMeta);
 const hasSourceVideo = computed(() => sourceMeta.value !== null);
 
+const sourceFileName = computed(
+  () => sourceMeta.value?.path.split(/[\\/]/).pop() ?? ""
+);
+
+function fmtDur(s: number): string {
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${String(sec).padStart(2, "0")}`;
+}
+
 /// 共享播放状态：视频预览 ↔ 迷你时间轴同步
 const sourceTime = ref(0);
-const sourceDuration = ref(0);
+/// 剧情录屏时长取工程元数据（唯一来源）。此前靠预览组件的 loadedmetadata 回填，
+/// 一旦预览不在渲染树里，迷你时间轴就没有时长（滚动/缩放/双击加选区全失效）。
+const sourceDuration = computed(() => projectStore.sourceVideoMeta?.duration ?? 0);
+
+/// 当前视频源的 OCR 选区控制轨（语料页加工的是剧情录屏，故 video === "source"）
+const regionTrack = computed(() =>
+  projectStore.currentProject?.tracks.find(
+    (t) => t.type === "ocr_region" && t.video === "source"
+  )
+);
+
+const regions = computed<OcrRegionEvent[]>(() =>
+  (regionTrack.value?.events ?? []).filter(
+    (e): e is OcrRegionEvent => e.type === "ocr_region"
+  )
+);
+
+/// 播放头所在时间段对应的选区——OCR 实际识别的就是它
+const activeRegion = computed(
+  () =>
+    regions.value.find((e) => e.start <= sourceTime.value && sourceTime.value < e.end) ??
+    null
+);
+
+const regionSize = computed(() =>
+  activeRegion.value
+    ? `${Math.round(activeRegion.value.x2 - activeRegion.value.x1)} × ${Math.round(activeRegion.value.y2 - activeRegion.value.y1)}`
+    : "未设置"
+);
+
+const regionPos = computed(() =>
+  activeRegion.value
+    ? `(${Math.round(activeRegion.value.x1)}, ${Math.round(activeRegion.value.y1)})`
+    : "—"
+);
 
 async function startOcr() {
   try {
@@ -82,8 +123,6 @@ async function startImageOcr() {
 const manualText = ref("");
 
 /// 实时解析预览：拆行 → trim → 丢空行（\r 随 trim 去除，兼容 Windows 换行）
-/// 实时解析预览：拆行 → trim → 丢空行（\r 随 trim 去除，兼容 Windows 换行）。
-/// 转成对象数组以便虚拟列表用稳定 key（key-field="id"，id 用序号——预览只读，无编辑重排）
 const parsedLines = computed(() =>
   manualText.value
     .split("\n")
@@ -141,6 +180,16 @@ function addManualCorpus() {
 // ── 语料列表 ──────────────────────────────────────────
 const corpus = computed(() => projectStore.currentProject?.corpus ?? []);
 
+const SOURCE_LABELS: Record<string, string> = {
+  paste: "手动",
+  image_ocr: "截图 OCR",
+  ocr_track: "OCR 轨",
+};
+
+function sourceLabel(s: string): string {
+  return SOURCE_LABELS[s] ?? s;
+}
+
 function removeItem(id: string) {
   projectStore.removeCorpusItem(id);
 }
@@ -167,274 +216,288 @@ function discardDiff(d: Diff) {
 
 <template>
   <div class="page">
-    <h2 class="page-title">文本语料</h2>
-    <p class="page-desc">获取可靠的游戏内文本，作为 AI 融合的语料来源</p>
+    <div class="phead">
+      <h2>文本语料</h2>
+      <p>从剧情录屏截取字幕区域 · 逐条核对后再交给后续步骤</p>
+    </div>
 
-    <NCollapse v-model:expanded-names="activeKeys" class="sources" arrow-placement="right">
-      <!-- ① 从剧情录屏中截取 -->
-      <NCollapseItem name="recordings" title="从剧情录屏中截取">
-        <div class="source-body">
-          <template v-if="!hasSourceVideo">
-            <NButton type="primary" @click="projectStore.importSourceVideo()">
-              导入剧情录屏
-            </NButton>
-            <NText depth="3" style="font-size: 12px">
-              支持 mp4 / mkv / webm / avi / mov / flv
-            </NText>
-          </template>
+    <div class="g2">
+      <!-- ── 左列：三个语料来源 ─────────────────────────── -->
+      <div class="l2">
+        <!-- ① 从剧情录屏中截取 -->
+        <div class="acc" :class="openCard === 'recordings' ? 'open' : 'off'">
+          <div class="acch" @click="toggleCard('recordings')">
+            从剧情录屏中截取
+            <span class="ad">
+              <AppIcon :name="openCard === 'recordings' ? 'chev-d' : 'chev-r'" :size="14" />
+            </span>
+          </div>
+          <div v-if="openCard === 'recordings'" class="accb">
+            <template v-if="!hasSourceVideo">
+              <div class="frow">
+                <button class="btn pri" @click="projectStore.importSourceVideo()">
+                  导入剧情录屏
+                </button>
+                <span class="mut h11">支持 mp4 / mkv / webm / avi / mov / flv</span>
+              </div>
+            </template>
 
-          <template v-else>
-            <!-- 视频选区预览（独立于全局时间轴与全局空格，播放时间与下方迷你时间轴同步） -->
-            <div class="preview-box">
-              <SourceVideoPreview
+            <template v-else>
+              <div class="frow">
+                <button class="btn ghost" @click="projectStore.importSourceVideo()">
+                  <AppIcon name="folder" :size="14" />更换剧情录屏
+                </button>
+                <span class="fname selectable" :title="sourceMeta?.path">{{ sourceFileName }}</span>
+                <span class="sp"></span>
+                <span class="mut h11" v-if="sourceMeta">
+                  {{ sourceMeta.width }}×{{ sourceMeta.height }} · {{ fmtDur(sourceMeta.duration) }}
+                </span>
+              </div>
+
+              <!-- 视频选区预览（独立于全局时间轴，播放时间与下方迷你时间轴同步） -->
+              <div class="vrow">
+                <div class="vid">
+                  <SourceVideoPreview
+                    v-model:time="sourceTime"
+                    :duration="sourceDuration"
+                    :show-header="false"
+                  />
+                </div>
+                <div class="vside">
+                  <div class="sblk">
+                    <span class="bt">选区 · 播放头所在时间段</span>
+                    <span class="kv"><span>尺寸</span><span>{{ regionSize }}</span></span>
+                    <span class="kv"><span>左上角</span><span>{{ regionPos }}</span></span>
+                    <span class="kv"><span>选区数</span><span>{{ regions.length }}</span></span>
+                  </div>
+                  <div class="sblk">
+                    <span class="bt">术语表 · {{ ocrParams.glossary.length }} 条</span>
+                    <span v-if="ocrParams.glossary.length === 0" class="gempty">
+                      未配置。留空即关闭；填入正确词条（角色名/专有名词）后，识别结果中与之相近的文本会被自动纠正
+                    </span>
+                    <div
+                      v-for="(_, gi) in ocrParams.glossary"
+                      :key="gi"
+                      class="glo"
+                    >
+                      <input
+                        v-model="ocrParams.glossary[gi]"
+                        class="glo-inp"
+                        placeholder="正确词条，如 缟玛瑙"
+                      />
+                      <span class="gdel" @click="removeGlossaryTerm(gi)">
+                        <AppIcon name="x" :size="11" />
+                      </span>
+                    </div>
+                    <button class="btn ghost gadd" @click="addGlossaryTerm">
+                      <AppIcon name="plus" :size="13" />添加
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 迷你时间轴：按时间段管理多条选区 -->
+              <SourceTimeline
                 v-model:time="sourceTime"
-                v-model:duration="sourceDuration"
+                :duration="sourceDuration"
+                class="mini-timeline"
               />
-            </div>
 
-            <!-- 迷你时间轴：按时间段管理多条选区 -->
-            <SourceTimeline
-              v-model:time="sourceTime"
-              :duration="sourceDuration"
-              class="mini-timeline"
-            />
-            <NText depth="3" style="font-size: 12px">
-              在预览中拖拽选框框定字幕区域；双击迷你时间轴空白添加不同时间段的选区，
-              拖动 clip 调整起止、点击跳转。OCR 按播放头所在时间段对应的选区识别。
-            </NText>
-
-            <!-- OCR 参数（内联，点击立即执行） -->
-            <div class="params">
-              <div class="cfg-field">
-                <NText depth="2">帧间隔（秒）</NText>
-                <NInputNumber
-                  v-model:value="ocrParams.frame_interval"
+              <!-- OCR 参数（无框步进：单击数值才出现输入框） -->
+              <div class="agrid">
+                <ParamStepper
+                  v-model="ocrParams.frame_interval"
+                  label="帧间隔（秒）"
                   :min="0.1"
                   :step="0.5"
-                  style="width: 100%"
+                  :precision="1"
                 />
-              </div>
-              <div class="cfg-field">
-                <NText depth="2">变化检测阈值</NText>
-                <NInputNumber
-                  v-model:value="ocrParams.dhash_threshold"
+                <ParamStepper
+                  v-model="ocrParams.dhash_threshold"
+                  label="变化检测阈值"
                   :min="0"
                   :max="64"
-                  :precision="0"
                   :step="1"
-                  style="width: 100%"
                 />
-              </div>
-              <div class="cfg-field">
-                <NText depth="2">批大小</NText>
-                <NInputNumber
-                  v-model:value="ocrParams.batch_size"
+                <ParamStepper
+                  v-model="ocrParams.batch_size"
+                  label="批大小"
                   :min="1"
                   :max="128"
-                  :precision="0"
                   :step="1"
-                  style="width: 100%"
                 />
-              </div>
-              <div class="cfg-field">
-                <NText depth="2">合并相似度（0~1，越大越易合并）</NText>
-                <NInputNumber
-                  v-model:value="ocrParams.merge_similarity"
+                <ParamStepper
+                  v-model="ocrParams.merge_similarity"
+                  label="合并相似度"
                   :min="0"
                   :max="1"
                   :step="0.05"
-                  style="width: 100%"
+                  :precision="2"
                 />
-              </div>
-              <div class="cfg-field">
-                <NText depth="2">字幕预估最短长度（秒，越小越少误并）</NText>
-                <NInputNumber
-                  v-model:value="ocrParams.min_subtitle_sec"
+                <ParamStepper
+                  v-model="ocrParams.min_subtitle_sec"
+                  label="字幕预估最短长度（秒）"
                   :min="0"
                   :max="5"
                   :step="0.1"
-                  style="width: 100%"
+                  :precision="1"
                 />
-                <NText depth="3" style="font-size: 12px">
-                  短于此长度的产出段若与后一条同句（前缀/子序列），并入后一条。默认 1.5，
-                  能收掉长打字机/遮挡造成的碎片，但会提高"误吞真实短句"的概率（0 关闭）
-                </NText>
-              </div>
-              <div class="cfg-field">
-                <NText depth="2">单段最少实质字符数（0 关闭过滤）</NText>
-                <NInputNumber
-                  v-model:value="ocrParams.min_text_length"
+                <ParamStepper
+                  v-model="ocrParams.min_text_length"
+                  label="单段最少实质字符数"
                   :min="0"
                   :max="10"
                   :step="1"
-                  style="width: 100%"
                 />
-                <NText depth="3" style="font-size: 12px">
-                  低于此值的产出段直接丢弃（纯符号/单字符垃圾，如画面元素被读成 `6`/`O`/`口`）。
-                  实质字符 = 字母/数字/汉字（标点空白不计）。默认 1 只丢纯符号段；粗略选区常需 2
-                </NText>
               </div>
-              <div class="cfg-field">
-                <div style="display: flex; align-items: center; justify-content: space-between">
-                  <NText depth="2">术语表（可选，用于纠正形近字误读）</NText>
-                  <NButton size="tiny" quaternary @click="addGlossaryTerm">+ 添加</NButton>
-                </div>
-                <div v-if="ocrParams.glossary.length === 0">
-                  <NText depth="3" style="font-size: 12px">
-                    未配置。留空即关闭；填入正确词条（如角色名/专有名词）后，识别结果中与之
-                    相近的文本（形近字误读）会被自动纠正
-                  </NText>
-                </div>
-                <div
-                  v-for="(_, gi) in ocrParams.glossary"
-                  :key="gi"
-                  style="display: flex; gap: 6px; margin-top: 6px"
+
+              <div class="arow">
+                <button
+                  class="btn pri"
+                  :disabled="projectStore.ocrRunning"
+                  @click="startOcr"
                 >
-                  <NInput
-                    v-model:value="ocrParams.glossary[gi]"
-                    placeholder="正确词条，如 缟玛瑙"
-                    size="small"
-                  />
-                  <NButton size="small" quaternary type="error" @click="removeGlossaryTerm(gi)">
-                    删除
-                  </NButton>
-                </div>
+                  {{ projectStore.ocrRunning && projectStore.ocrSource === "video" ? "OCR 运行中…" : "开始 OCR" }}
+                </button>
+                <template v-if="projectStore.ocrRunning && projectStore.ocrSource === 'video'">
+                  <span class="hbar">
+                    <i :style="{ width: Math.round(projectStore.ocrProgress * 100) + '%' }"></i>
+                  </span>
+                  <span class="mut h11">{{ Math.round(projectStore.ocrProgress * 100) }}% · {{ projectStore.ocrMessage }}</span>
+                </template>
               </div>
-            </div>
-
-            <!-- 仅"开始 OCR"按钮，点击立即执行 -->
-            <div class="run-row">
-              <NButton
-                type="primary"
-                :disabled="projectStore.ocrRunning"
-                @click="startOcr"
-              >
-                {{ projectStore.ocrRunning && projectStore.ocrSource === "video" ? "OCR 运行中..." : "开始 OCR" }}
-              </NButton>
-              <template v-if="projectStore.ocrRunning && projectStore.ocrSource === 'video'">
-                <NProgress
-                  type="line"
-                  class="progress"
-                  :percentage="Math.round(projectStore.ocrProgress * 100)"
-                  :show-indicator="false"
-                />
-                <span class="ocr-msg">{{ projectStore.ocrMessage }}</span>
-              </template>
-            </div>
-          </template>
-        </div>
-      </NCollapseItem>
-
-      <!-- ② 从文本截图中截取 -->
-      <NCollapseItem name="screenshot" title="从文本截图中截取">
-        <div class="source-body">
-          <div class="pick-row">
-            <NButton @click="pickImages">选择截图</NButton>
-            <NText v-if="selectedImages.length > 0" depth="3" style="font-size: 12px">
-              已选 {{ selectedImages.length }} 张
-            </NText>
-          </div>
-
-          <div class="run-row">
-            <NButton
-              type="primary"
-              :disabled="selectedImages.length === 0 || projectStore.ocrRunning"
-              @click="startImageOcr"
-            >
-              {{ projectStore.ocrRunning && projectStore.ocrSource === "image" ? "OCR 运行中..." : "开始 OCR" }}
-            </NButton>
-            <template v-if="projectStore.ocrRunning && projectStore.ocrSource === 'image'">
-              <NProgress
-                type="line"
-                class="progress"
-                :percentage="Math.round(projectStore.ocrProgress * 100)"
-                :show-indicator="false"
-              />
-              <span class="ocr-msg">{{ projectStore.ocrMessage }}</span>
             </template>
           </div>
         </div>
-      </NCollapseItem>
 
-      <!-- ③ 手动提供文本 -->
-      <NCollapseItem name="manual" title="手动提供文本">
-        <div class="source-body">
-          <NInput
-            v-model:value="manualText"
-            type="textarea"
-            :rows="6"
-            placeholder="粘贴游戏文本，每行一条；空行自动忽略，重复行自动跳过"
-          />
-
-          <div class="pick-row">
-            <NButton @click="importTxt">导入 .txt</NButton>
-            <NText depth="3" style="font-size: 12px">仅支持 UTF-8 编码的 txt</NText>
+        <!-- ② 从文本截图中截取 -->
+        <div class="acc" :class="openCard === 'screenshot' ? 'open' : 'off'">
+          <div class="acch" @click="toggleCard('screenshot')">
+            从文本截图中截取
+            <span class="ad">
+              <AppIcon :name="openCard === 'screenshot' ? 'chev-d' : 'chev-r'" :size="14" />
+            </span>
           </div>
-
-          <template v-if="parsedLines.length > 0">
-            <NText depth="3" style="font-size: 12px">
-              将新增 {{ previewStats.fresh }} 条<template v-if="previewStats.dup > 0">，跳过重复 {{ previewStats.dup }} 条</template>
-            </NText>
-            <n-virtual-list
-              class="preview-list"
-              :items="previewItems"
-              :item-size="28"
-              item-resizable
-              key-field="id"
-            >
-              <template #default="{ item }">
-                <div class="preview-item">{{ item.text }}</div>
+          <div v-if="openCard === 'screenshot'" class="accb">
+            <div class="frow">
+              <button class="btn ghost" @click="pickImages">
+                <AppIcon name="folder" :size="14" />选择截图
+              </button>
+              <span class="mut h11">
+                {{ selectedImages.length > 0 ? `已选 ${selectedImages.length} 张` : "支持 png / jpg / jpeg / webp / bmp" }}
+              </span>
+            </div>
+            <div class="arow">
+              <button
+                class="btn pri"
+                :disabled="selectedImages.length === 0 || projectStore.ocrRunning"
+                @click="startImageOcr"
+              >
+                {{ projectStore.ocrRunning && projectStore.ocrSource === "image" ? "OCR 运行中…" : "开始 OCR" }}
+              </button>
+              <template v-if="projectStore.ocrRunning && projectStore.ocrSource === 'image'">
+                <span class="hbar">
+                  <i :style="{ width: Math.round(projectStore.ocrProgress * 100) + '%' }"></i>
+                </span>
+                <span class="mut h11">{{ Math.round(projectStore.ocrProgress * 100) }}% · {{ projectStore.ocrMessage }}</span>
               </template>
-            </n-virtual-list>
-          </template>
-
-          <div class="run-row">
-            <NButton
-              type="primary"
-              :disabled="previewStats.fresh === 0"
-              @click="addManualCorpus"
-            >
-              添加到语料
-            </NButton>
+            </div>
           </div>
         </div>
-      </NCollapseItem>
-    </NCollapse>
 
-    <!-- 待审批纠正（语料 OCR 术语表纠错的命中项，逐条独立裁决） -->
-    <div v-if="pendingDiffs.length > 0" class="diff-section">
-      <h3 class="corpus-title">待审批纠正（{{ pendingDiffs.length }}）</h3>
-      <NText depth="3" style="font-size: 12px">
-        采纳 = 对全部语料条目执行「原文 → 纠正文本」替换并移除该条；放弃 = 语料不动，仅移除该条。
-        两者都可用 Ctrl+Z 撤销
-      </NText>
-      <div class="diff-list">
-        <div v-for="(d, di) in pendingDiffs" :key="`${di}-${d.new}`" class="diff-item">
-          <span class="diff-old">{{ d.old.join(" / ") }}</span>
-          <span class="diff-arrow">→</span>
-          <span class="diff-new">{{ d.new }}</span>
-          <NButton size="tiny" type="primary" @click="approveDiff(d)">采纳</NButton>
-          <NButton size="tiny" quaternary @click="discardDiff(d)">放弃</NButton>
+        <!-- ③ 手动提供文本 -->
+        <div class="acc" :class="openCard === 'manual' ? 'open' : 'off'">
+          <div class="acch" @click="toggleCard('manual')">
+            手动提供文本
+            <span class="ad">
+              <AppIcon :name="openCard === 'manual' ? 'chev-d' : 'chev-r'" :size="14" />
+            </span>
+          </div>
+          <div v-if="openCard === 'manual'" class="accb">
+            <textarea
+              v-model="manualText"
+              class="inp wta"
+              rows="6"
+              placeholder="粘贴游戏文本，每行一条；空行自动忽略，重复行自动跳过"
+            ></textarea>
+
+            <div class="frow">
+              <button class="btn ghost" @click="importTxt">
+                <AppIcon name="folder" :size="14" />导入 .txt
+              </button>
+              <span class="mut h11">仅支持 UTF-8 编码的 txt</span>
+            </div>
+
+            <template v-if="parsedLines.length > 0">
+              <span class="mut h11">
+                将新增 {{ previewStats.fresh }} 条<template v-if="previewStats.dup > 0">，跳过重复 {{ previewStats.dup }} 条</template>
+              </span>
+              <n-virtual-list
+                class="preview-list"
+                :items="previewItems"
+                :item-size="28"
+                item-resizable
+                key-field="id"
+              >
+                <template #default="{ item }">
+                  <div class="preview-item selectable">{{ item.text }}</div>
+                </template>
+              </n-virtual-list>
+            </template>
+
+            <div class="arow">
+              <button
+                class="btn pri"
+                :disabled="previewStats.fresh === 0"
+                @click="addManualCorpus"
+              >
+                添加到语料
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── 右列：语料列表 + 待审批纠正 ─────────────────── -->
+      <div class="r2">
+        <div class="rh"><span class="t">语料列表 · {{ corpus.length }} 条</span></div>
+
+        <div v-if="pendingDiffs.length > 0" class="appr">
+          <div class="apprh">
+            <AppIcon name="fuse" :size="13" />待审批纠正 {{ pendingDiffs.length }}
+            <span class="sp"></span>
+            <span class="mut h11">点「采纳」写入语料</span>
+          </div>
+          <div v-for="(d, di) in pendingDiffs" :key="`${di}-${d.new}`" class="ccard">
+            <span class="cn">{{ di + 1 }}</span>
+            <span class="cm">
+              <span class="co selectable" :title="d.old.join(' / ')">{{ d.old.join(" / ") }}</span>
+              <span class="cnw selectable" :title="d.new">{{ d.new }}</span>
+            </span>
+            <span class="ca">
+              <button class="btn pri sm" @click="approveDiff(d)">采纳</button>
+              <button class="btn ghost sm" @click="discardDiff(d)">放弃</button>
+            </span>
+          </div>
+        </div>
+
+        <div class="clist">
+          <div v-if="corpus.length === 0" class="cempty">
+            暂无语料——展开左侧「从剧情录屏中截取」跑一次 OCR，文本会自动进入此列表
+          </div>
+          <div v-for="(item, ci) in corpus" :key="item.id" class="crow">
+            <span class="cn">{{ ci + 1 }}</span>
+            <span class="ct selectable" :title="item.text">{{ item.text }}</span>
+            <span class="psrc">{{ sourceLabel(item.source) }}</span>
+            <button class="btn icb sm ghost" @click="removeItem(item.id)" title="删除该条">
+              <AppIcon name="x" :size="12" />
+            </button>
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- 语料列表 -->
-    <div class="corpus-section">
-      <h3 class="corpus-title">语料列表（{{ corpus.length }}）</h3>
-      <div v-if="corpus.length === 0" class="corpus-empty">
-        暂无语料——运行上方"从剧情录屏中截取"后，OCR 文本将自动进入此列表
-      </div>
-      <div v-else class="corpus-list">
-        <div v-for="item in corpus" :key="item.id" class="corpus-item">
-          <span class="corpus-text">{{ item.text }}</span>
-          <span class="corpus-source">{{ item.source }}</span>
-          <NButton size="tiny" quaternary type="error" @click="removeItem(item.id)">
-            删除
-          </NButton>
-        </div>
-      </div>
-    </div>
+    <div class="wfoot">素材需人工预校对，管线 raw 产物不等于最终字幕</div>
   </div>
 </template>
 
@@ -442,183 +505,306 @@ function discardDiff(d: Diff) {
 .page {
   flex: 1;
   min-width: 0;
-  padding: 20px 24px;
-  overflow: auto;
-}
-
-.page-title {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--color-text-primary);
-  margin-bottom: 8px;
-}
-
-.page-desc {
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  margin-bottom: 16px;
-}
-
-.sources {
-  margin-bottom: 24px;
-}
-
-.source-body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 4px 0;
-}
-
-.preview-box {
-  height: 300px;
-  background: #000;
-  border-radius: 8px;
+  gap: 14px;
+  padding: 16px 18px;
   overflow: hidden;
 }
 
-.mini-timeline {
-  flex-shrink: 0;
+.g2 {
+  flex: 1;
+  min-height: 0;
+  display: flex;
 }
 
-.params {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 12px;
-  padding: 12px;
-  background: var(--color-bg-secondary);
-  border-radius: 8px;
-}
-
-.cfg-field {
+.l2 {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  gap: 8px;
+  padding-right: 20px;
+}
+
+.r2 {
+  flex: 0 0 38%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 20px;
+  border-left: 1px solid var(--hair);
+}
+
+.frow {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 32px;
+}
+
+.fname {
+  min-width: 0;
+  font: 11px/1 var(--mono);
+  color: var(--dim);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.vrow {
+  flex: none;
+  display: flex;
+  gap: 14px;
+}
+
+.vid {
+  flex: none;
+  height: 224px;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--hair-2);
+  border-radius: 8px;
+  background: #000;
+  overflow: hidden;
+}
+
+.vside {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  align-content: start;
+}
+
+.gempty {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--dim);
+}
+
+.glo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--hair);
+  border-radius: 6px;
+  min-width: 0;
+}
+
+.glo-inp {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: 11.5px/1 var(--sans);
+  outline: none;
+}
+
+.glo-inp::placeholder {
+  color: var(--faint);
+}
+
+.gdel {
+  flex: none;
+  display: flex;
+  color: var(--faint);
+  cursor: pointer;
+}
+
+.gdel:hover {
+  color: var(--danger);
+}
+
+.gadd {
+  align-self: flex-start;
+}
+
+.mini-timeline {
+  flex: none;
+}
+
+.agrid {
+  flex: none;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 16px;
+}
+
+.arow {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 36px;
+}
+
+.arow .hbar {
+  width: 170px;
+}
+
+/* 右列 */
+.clist {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  background: var(--panel);
+  overflow-x: hidden;
+}
+
+.cempty {
+  padding: 20px 14px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--dim);
+}
+
+.crow {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--hair);
+}
+
+.crow:last-child {
+  border-bottom: 0;
+}
+
+.crow:hover {
+  background: var(--hover);
+}
+
+.crow .cn {
+  width: 20px;
+  flex: none;
+  font: 11px/1 var(--mono);
+  color: var(--faint);
+}
+
+.crow .ct {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 待审批纠正 */
+.appr {
+  flex: none;
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.apprh {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--hair);
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.ccard {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--hair);
+}
+
+.ccard:last-child {
+  border-bottom: 0;
+}
+
+.ccard .cn {
+  flex: none;
+  font: 11px/1 var(--mono);
+  color: var(--faint);
+}
+
+.ccard .cm {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ccard .co {
+  font-size: 11.5px;
+  color: var(--faint);
+  text-decoration: line-through;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ccard .cnw {
+  font-size: 11.5px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ccard .ca {
+  flex: none;
+  display: flex;
   gap: 6px;
 }
 
-.run-row {
+.wfoot {
+  flex: none;
+  margin-top: auto;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--hair);
+  font-size: 11.5px;
+  color: var(--faint);
 }
 
-.pick-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.progress {
-  flex: 1;
-  max-width: 320px;
-}
-
-.ocr-msg {
-  font-size: 12px;
-  color: var(--color-text-secondary);
+/* 手动输入的文本域与预览列表（虚拟列表需确定高度的滚动容器） */
+.wta {
+  width: 100%;
 }
 
 .preview-list {
-  /* 虚拟列表：需确定高度的滚动容器，固定高度内虚拟渲染预览行 */
   height: 150px;
   overflow: auto;
   padding: 8px 12px;
-  background: var(--color-bg-secondary);
+  border: 1px solid var(--hair);
   border-radius: 8px;
+  background: var(--panel);
 }
 
 .preview-item {
   font-size: 12px;
-  color: var(--color-text-primary);
+  color: var(--text);
   word-break: break-all;
   /* 行间距用 padding：虚拟列表用 borderBoxSize 测量行高，margin 不计入会破坏定位 */
   padding: 4px 0;
   box-sizing: border-box;
-}
-
-.corpus-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--color-text-primary);
-  margin-bottom: 12px;
-}
-
-.diff-section {
-  margin-bottom: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.diff-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.diff-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  background: var(--color-bg-secondary);
-  border-radius: 8px;
-}
-
-.diff-old {
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  text-decoration: line-through;
-  word-break: break-all;
-}
-
-.diff-arrow {
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  flex-shrink: 0;
-}
-
-.diff-new {
-  flex: 1;
-  font-size: 13px;
-  color: var(--color-text-primary);
-  word-break: break-all;
-}
-
-.corpus-empty {
-  padding: 24px;
-  border: 1px dashed var(--color-border);
-  border-radius: 8px;
-  text-align: center;
-  font-size: 13px;
-  color: var(--color-text-secondary);
-}
-
-.corpus-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.corpus-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  background: var(--color-bg-secondary);
-  border-radius: 8px;
-}
-
-.corpus-text {
-  flex: 1;
-  font-size: 13px;
-  color: var(--color-text-primary);
-  word-break: break-all;
-}
-
-.corpus-source {
-  font-size: 11px;
-  color: var(--color-text-secondary);
-  flex-shrink: 0;
 }
 </style>

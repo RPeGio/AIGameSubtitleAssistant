@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import { NButton, NPopselect, NSelect, useMessage } from "naive-ui";
+import { NPopselect, useMessage } from "naive-ui";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
-import { useTimelineStore, CLIP_COLORS } from "../stores/timeline";
+import { useTimelineStore, clipTone } from "../stores/timeline";
 import { useProjectStore } from "../stores/project";
+import AppIcon from "./AppIcon.vue";
 import type { TimelineEvent } from "../types";
 
 const timeline = useTimelineStore();
@@ -20,6 +21,11 @@ const TRACK_ROLE_OPTIONS = [
 function onTrackRoleChange(role: string | null) {
   const track = focusedTrack.value;
   if (track) projectStore.updateTrackRole(track.id, role ?? "game");
+}
+
+// 轨道角色用原生下拉（外观可控、无浮层），事件里取值
+function onRoleChange(e: Event) {
+  onTrackRoleChange((e.target as HTMLSelectElement).value);
 }
 
 // ── 单轨字幕导出 ──
@@ -241,14 +247,14 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
         <span v-else class="ov-track-name" title="双击重命名轨道" @dblclick="startRename">
           {{ focusedTrack.name }}
         </span>
-        <NSelect
-          v-if="focusedTrack.type === 'asr'"
-          :value="focusedTrack.track_role"
-          size="tiny"
-          :options="TRACK_ROLE_OPTIONS"
-          class="ov-track-role-select"
-          @update:value="onTrackRoleChange"
-        />
+        <span v-if="focusedTrack.type === 'asr'" class="ov-role">
+          <select :value="focusedTrack.track_role" @change="onRoleChange">
+            <option v-for="o in TRACK_ROLE_OPTIONS" :key="o.value" :value="o.value">
+              {{ o.label }}
+            </option>
+          </select>
+          <AppIcon name="chev-d" :size="11" class="ov-role-cv" />
+        </span>
         <NPopselect
           v-if="isTextTrack"
           :options="EXPORT_FORMATS"
@@ -256,7 +262,9 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
           placement="bottom-end"
           @update:value="onExport"
         >
-          <NButton size="tiny" secondary title="导出当前轨道字幕">导出</NButton>
+          <button class="btn ghost sm" title="导出当前轨道字幕">
+            <AppIcon name="export" :size="12" />导出
+          </button>
         </NPopselect>
       </div>
       <span v-else class="ov-track-name">轨道总览</span>
@@ -287,7 +295,7 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
         >
           <div
             class="ov-region"
-            :style="{ ...regionStyle(clip), borderColor: CLIP_COLORS.ocr_region }"
+            :style="{ ...regionStyle(clip), borderColor: clipTone('ocr_region').line }"
           />
         </div>
 
@@ -307,10 +315,10 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
             @keydown.esc="cancelEdit"
             @blur="commitEdit"
           />
-          <span v-else class="ov-text">{{ textOf(clip) }}</span>
+          <span v-else class="ov-text selectable">{{ textOf(clip) }}</span>
         </div>
 
-        <span v-else-if="isRegionTrack" class="ov-coords">{{ regionLabel(clip) }}</span>
+        <span v-else-if="isRegionTrack" class="ov-coords selectable">{{ regionLabel(clip) }}</span>
       </div>
 
       <div v-if="clips.length === 0" class="overview-empty">此轨道暂无 clip</div>
@@ -324,65 +332,98 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
+  background: var(--panel);
+  border: 1px solid var(--hair);
   border-radius: 8px;
   overflow: hidden;
 }
 
+/* 面板头 30px：轨道名 · 角色下拉 · 导出 · 类型标签 */
 .overview-header {
-  flex-shrink: 0;
+  flex: none;
+  height: 30px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--color-border);
+  gap: 6px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--hair);
 }
 
 .ov-track-name-wrap {
   flex: 1;
   min-width: 0;
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
 }
 
 .ov-track-name {
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   font-weight: 600;
-  color: var(--color-text-primary);
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  flex: 1;
-  min-width: 0;
 }
 
 .ov-name-input {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   font-weight: 600;
   font-family: inherit;
-  color: var(--color-text-primary);
-  background: var(--color-bg-primary);
-  border: 1px solid var(--color-accent);
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--accent);
   border-radius: 4px;
-  padding: 2px 6px;
+  padding: 1px 6px;
   outline: none;
   box-sizing: border-box;
 }
 
-.ov-track-type {
-  font-size: 10px;
-  color: var(--color-text-secondary);
-  background: var(--color-bg-tertiary);
-  border-radius: 4px;
-  padding: 1px 6px;
-  flex-shrink: 0;
+.ov-role {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
 }
 
-.ov-track-role-select {
-  flex-shrink: 0;
+.ov-role select {
   width: 110px;
+  height: 22px;
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 0 20px 0 7px;
+  border: 1px solid var(--hair-2);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 11px;
+  outline: none;
+  cursor: pointer;
+}
+
+.ov-role select:hover {
+  border-color: var(--dim);
+}
+
+.ov-role-cv {
+  position: absolute;
+  right: 6px;
+  color: var(--faint);
+  pointer-events: none;
+}
+
+.ov-track-type {
+  flex: none;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--faint);
+  border: 1px solid var(--hair-2);
+  border-radius: 4px;
+  padding: 1px 6px;
 }
 
 .overview-body {
@@ -394,30 +435,43 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
 }
 
 .ov-entry {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--hair);
   cursor: pointer;
 }
 
+.ov-entry:last-child {
+  border-bottom: 0;
+}
+
 .ov-entry:hover {
-  background: var(--color-bg-tertiary);
+  background: var(--hover);
 }
 
 .ov-entry.focused {
-  background: var(--color-bg-tertiary);
-  box-shadow: inset 2px 0 0 var(--color-accent);
+  background: var(--sel-bg);
+}
+
+.ov-entry.focused::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
 }
 
 .ov-index {
   flex-shrink: 0;
   width: 20px;
   text-align: center;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--color-text-secondary);
+  font: 600 12px/1 var(--sans);
+  color: var(--dim);
   font-variant-numeric: tabular-nums;
 }
 
@@ -426,7 +480,7 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
   flex-shrink: 0;
   width: 96px;
   background: #000;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--hair-2);
   border-radius: 4px;
   overflow: hidden;
 }
@@ -442,12 +496,13 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
   display: flex;
   flex-direction: column;
   align-items: flex-start;
+  gap: 1px;
   min-width: 84px;
 }
 
 .ov-time {
-  font-size: 11px;
-  color: var(--color-text-secondary);
+  font: 11px/1.35 var(--mono);
+  color: var(--dim);
   font-variant-numeric: tabular-nums;
 }
 
@@ -460,7 +515,7 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
 
 .ov-text {
   font-size: 12px;
-  color: var(--color-text-primary);
+  color: var(--text);
   line-height: 1.4;
   white-space: pre-wrap;
   word-break: break-all;
@@ -472,9 +527,9 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
   font-size: 12px;
   font-family: inherit;
   line-height: 1.4;
-  color: var(--color-text-primary);
-  background: var(--color-bg-primary);
-  border: 1px solid var(--color-accent);
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--accent);
   border-radius: 4px;
   padding: 4px 6px;
   outline: none;
@@ -486,8 +541,8 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
 .ov-coords {
   flex: 1;
   min-width: 0;
-  font-size: 11px;
-  color: var(--color-text-secondary);
+  font: 11px/1.35 var(--mono);
+  color: var(--dim);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   overflow: hidden;
@@ -498,8 +553,7 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
   padding: 32px 12px;
   text-align: center;
   font-size: 12px;
-  color: var(--color-text-secondary);
-  opacity: 0.6;
+  color: var(--faint);
   line-height: 1.8;
 }
 </style>

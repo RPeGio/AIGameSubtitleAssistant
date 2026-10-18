@@ -184,6 +184,7 @@ watch(
   display: flex;
   align-items: stretch;
   min-height: 0;
+  height: 48px;
   flex-shrink: 0;
   border-top: 1px solid var(--color-border);
   background: color-mix(in srgb, var(--color-bg-tertiary) 40%, transparent);
@@ -194,16 +195,19 @@ watch(
   flex-shrink: 0;
   box-sizing: border-box;
   display: flex;
-  flex-direction: column;
-  justify-content: center;
-  padding: 2px 10px;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
   border-right: 1px solid var(--color-border);
   background: var(--color-bg-secondary);
   cursor: default;
 }
 
 .wf-label-name {
-  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
   font-weight: 600;
   color: var(--color-text-primary);
   white-space: nowrap;
@@ -212,17 +216,23 @@ watch(
 }
 
 .wf-label-type {
-  font-size: 10px;
-  color: var(--color-text-secondary);
-  font-variant-numeric: tabular-nums;
+  flex: none;
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  line-height: 1;
+  color: var(--faint);
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  padding: 2px 3px;
 }
 
 /* 内容区：flex:1 撑满剩余宽度 + relative 作为 canvas 的定位基准 */
 .wf-body {
   flex: 1;
   min-width: 0;
-  min-height: 36px;
-  height: 36px;
+  min-height: 48px;
+  height: 48px;
   position: relative;
   overflow: hidden;
 }

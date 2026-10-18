@@ -1,17 +1,39 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from "vue";
+import { computed, onMounted, onUnmounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import AppSidebar from "../components/AppSidebar.vue";
+import AppStatusBar from "../components/AppStatusBar.vue";
+import AppToolbar from "../components/AppToolbar.vue";
 import ReviewPane from "../components/ReviewPane.vue";
 import { useProjectStore } from "../stores/project";
 import { useTimelineStore } from "../stores/timeline";
+import { useUiStore } from "../stores/ui";
 import { useManualSave } from "../composables/useManualSave";
 
 const route = useRoute();
 const router = useRouter();
 const projectStore = useProjectStore();
 const timeline = useTimelineStore();
+const ui = useUiStore();
 const { manualSave } = useManualSave();
+
+// 语料页加工的是它自己的剧情录屏（时间轴与校对区不相干），故整页全宽、不挂校对区
+const showReviewPane = computed(() => route.name !== "corpus");
+
+// 焦点窗格：点左列 → focus=main，点校对区 → focus=review。
+// 转写页的 OCR 选区"焦点在 main 时才在校对区显示"，所以拖选区本身不算
+// 把焦点交给校对区（否则选区会在拖拽起点就消失，没法拖）。
+function onReviewMouseDown(e: MouseEvent) {
+  const el = e.target as HTMLElement | null;
+  if (el?.closest(".region-overlay")) return;
+  ui.setFocusedPane("review");
+}
+
+// 切页＝换工作对象：默认焦点回到页面主列（转写页一进来就能看到选区）
+watch(
+  () => route.name,
+  () => ui.setFocusedPane("main")
+);
 
 // 直接访问 /project/:path/... 时按路径打开项目；失败则回欢迎页
 onMounted(async () => {
@@ -78,19 +100,38 @@ onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
 
 <template>
   <div class="project-layout">
-    <AppSidebar />
-    <main class="workspace-main">
-      <router-view />
-    </main>
-    <ReviewPane />
+    <AppToolbar />
+    <div class="shell">
+      <AppSidebar />
+      <main
+        class="workspace-main"
+        :class="{ full: !showReviewPane, focused: showReviewPane && ui.focusedPane === 'main' }"
+        @mousedown.capture="ui.setFocusedPane('main')"
+      >
+        <router-view />
+      </main>
+      <ReviewPane
+        v-if="showReviewPane"
+        :class="{ focused: ui.focusedPane === 'review' }"
+        @mousedown.capture="onReviewMouseDown"
+      />
+    </div>
+    <AppStatusBar />
   </div>
 </template>
 
 <style scoped>
 .project-layout {
   display: flex;
+  flex-direction: column;
   height: 100vh;
   overflow: hidden;
+}
+
+.shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
 }
 
 .workspace-main {
@@ -99,5 +140,19 @@ onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
   display: flex;
   background: var(--color-bg-primary);
   overflow: hidden;
+}
+
+.workspace-main.full {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 焦点窗格的高亮描边：主列 / 校对区成对出现，改动请同步两处。
+   用 outline 而不是 inset box-shadow——两侧内容都是不透明背景，
+   inset 阴影会被子元素盖住；outline-offset:-1px 让线画在边缘内侧。 */
+.workspace-main.focused,
+.review-pane.focused {
+  outline: 1px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
+  outline-offset: -1px;
 }
 </style>

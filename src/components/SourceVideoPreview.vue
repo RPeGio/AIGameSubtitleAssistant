@@ -2,10 +2,14 @@
 import { computed, onUnmounted, ref, watch } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useProjectStore } from "../stores/project";
+import { useTimelineStore } from "../stores/timeline";
 import { useVideoContentRect } from "../composables/useVideoContentRect";
+import RegionOverlay from "./RegionOverlay.vue";
 import { NButton } from "naive-ui";
 
 const projectStore = useProjectStore();
+/// 全局时间轴 store：仅在 syncPlayback 时用于协调"谁出声"（播放时间本身走 v-model）
+const timeline = useTimelineStore();
 
 /// 视频源独立预览（语料页剧情录屏 / 转写页切片共用）：
 /// - 完全独立于全局时间轴（不写 timeline store、不注册全局空格监听）
@@ -21,8 +25,13 @@ const props = withDefaults(
     duration: number;
     /// 绑定视频源："source" 剧情录屏（默认，语料页）| "clip" 切片（转写页嵌字 OCR）
     videoKey?: "source" | "clip";
+    /// 是否显示组件自带的「更换视频」头行（页面已自带文件行时置 false，避免重复按钮）
+    showHeader?: boolean;
+    /// 是否参与共享播放权（打轴页与校对区共用播放头时置 true）：
+    /// 另一侧开始播放时本预览只跟随时间、自动暂停，避免同一文件双声道
+    syncPlayback?: boolean;
   }>(),
-  { videoKey: "source" }
+  { videoKey: "source", showHeader: true, syncPlayback: false }
 );
 
 const emit = defineEmits<{
@@ -46,25 +55,6 @@ const src = computed(() => {
   return meta?.path ?? "";
 });
 const assetUrl = computed(() => (src.value ? convertFileSrc(src.value) : ""));
-
-/// 该视频源绑定的 OCR 选区控制轨（可能存在多条选区事件）
-const regionTrack = computed(() =>
-  projectStore.currentProject?.tracks.find(
-    (t) => t.type === "ocr_region" && t.video === props.videoKey
-  )
-);
-
-/// 当前播放头所在的选区事件；播放头不在任何 clip 内时取最后一个
-const regionEvent = computed(() => {
-  const track = regionTrack.value;
-  if (!track) return null;
-  const t = props.time;
-  const regions = track.events.filter(
-    (e): e is Extract<typeof e, { type: "ocr_region" }> => e.type === "ocr_region"
-  );
-  const current = regions.find((e) => e.start <= t && e.end > t);
-  return current ?? (regions.length > 0 ? regions[regions.length - 1] : null);
-});
 
 const progressPct = computed(() =>
   props.duration > 0 ? Math.min(100, (props.time / props.duration) * 100) : 0
@@ -93,7 +83,7 @@ watch(
   (t) => {
     const v = videoRef.value;
     if (!v || !isLoaded.value) return;
-    if (Math.abs(v.currentTime - t) > 0.05) {
+    if (Math.abs(v.currentTime - t) > 0.02) {
       v.currentTime = t;
     }
   }
@@ -112,10 +102,56 @@ function onTimeUpdate() {
   emit("update:time", v.currentTime);
 }
 
+/// 播放中每帧上报时间：timeupdate 只有约 4Hz，另一侧的播放头会一跳一跳；
+/// 用 rAF 直接读 currentTime 才能线性推进。onTimeUpdate 保留作后台标签页兜底。
+let rafId = 0;
+
+function startRafTicker() {
+  cancelRafTicker();
+  const step = () => {
+    const v = videoRef.value;
+    if (!v || v.paused || v.ended) {
+      rafId = 0;
+      return;
+    }
+    emit("update:time", v.currentTime);
+    rafId = requestAnimationFrame(step);
+  };
+  rafId = requestAnimationFrame(step);
+}
+
+function cancelRafTicker() {
+  if (rafId) {
+    cancelAnimationFrame(rafId);
+    rafId = 0;
+  }
+}
+
 function onError() {
   loadError.value = "视频加载失败，请检查文件是否可播放";
   isLoaded.value = false;
 }
+
+function onPlay() {
+  isPlaying.value = true;
+  if (props.syncPlayback) timeline.claimPlayback(props.videoKey);
+  startRafTicker();
+}
+
+function onPause() {
+  isPlaying.value = false;
+  cancelRafTicker();
+}
+
+/// 另一侧（校对区播放器）按下播放时让出播放权：只跟随时间，不再出声
+watch(
+  () => timeline.activePlayer,
+  (id) => {
+    if (!props.syncPlayback) return;
+    const v = videoRef.value;
+    if (v && id !== props.videoKey && !v.paused) v.pause();
+  }
+);
 
 function togglePlay() {
   const v = videoRef.value;
@@ -131,149 +167,14 @@ function seekTo(e: Event) {
   v.currentTime = (parseFloat(target.value) / 100) * props.duration;
 }
 
-// ── 选区拖拽（不依赖 timeline store）────────────────────
-let drag: null | {
-  mode: "move" | "resize";
-  handle: string;
-  startX: number;
-  startY: number;
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
-} = null;
-
-const MIN = 0.02;
-
-/// 选区矩形按视频渲染矩形（contentRect）绝对像素定位：
-/// 存储的归一化坐标是相对视频画面的，直接用容器百分比会在
-/// object-fit: contain 的 letterbox 下系统性偏移（语料页 2.39:1 视频尤为明显）
-const rectStyle = computed(() => {
-  const r = regionEvent.value;
-  if (!r) return {};
-  const cr = contentRect.value;
-  return {
-    left: cr.left + r.x1 * cr.width + "px",
-    top: cr.top + r.y1 * cr.height + "px",
-    width: (r.x2 - r.x1) * cr.width + "px",
-    height: (r.y2 - r.y1) * cr.height + "px",
-  };
-});
-
-const dims = computed(() => {
-  const r = regionEvent.value;
-  if (!r) return [];
-  const cr = contentRect.value;
-  const bottomTop = cr.top + cr.height;
-  const rightLeft = cr.left + cr.width;
-  return [
-    { key: "top", style: { left: "0px", top: "0px", width: "100%", height: cr.top + "px" } },
-    {
-      key: "bottom",
-      style: { left: "0px", top: bottomTop + "px", width: "100%", height: `calc(100% - ${bottomTop}px)` },
-    },
-    { key: "left", style: { left: "0px", top: cr.top + "px", width: cr.left + "px", height: cr.height + "px" } },
-    {
-      key: "right",
-      style: { left: rightLeft + "px", top: cr.top + "px", width: `calc(100% - ${rightLeft}px)`, height: cr.height + "px" },
-    },
-  ];
-});
-
-const HANDLES = [
-  { name: "nw", left: "0%", top: "0%", cursor: "nwse-resize" },
-  { name: "n", left: "50%", top: "0%", cursor: "ns-resize" },
-  { name: "ne", left: "100%", top: "0%", cursor: "nesw-resize" },
-  { name: "e", left: "100%", top: "50%", cursor: "ew-resize" },
-  { name: "se", left: "100%", top: "100%", cursor: "nwse-resize" },
-  { name: "s", left: "50%", top: "100%", cursor: "ns-resize" },
-  { name: "sw", left: "0%", top: "100%", cursor: "nesw-resize" },
-  { name: "w", left: "0%", top: "50%", cursor: "ew-resize" },
-];
-
-function clamp(v: number, lo: number, hi: number) {
-  return Math.max(lo, Math.min(hi, v));
-}
-
-function startDrag(e: MouseEvent, mode: "move" | "resize", handle = "") {
-  const r = regionEvent.value;
-  if (!r) return;
-  e.preventDefault();
-  e.stopPropagation();
-  drag = {
-    mode,
-    handle,
-    startX: e.clientX,
-    startY: e.clientY,
-    x1: r.x1,
-    y1: r.y1,
-    x2: r.x2,
-    y2: r.y2,
-  };
-  window.addEventListener("mousemove", onWindowMouseMove);
-  window.addEventListener("mouseup", onWindowMouseUp);
-}
-
-function onWindowMouseMove(e: MouseEvent) {
-  if (!drag) return;
-  const cr = contentRect.value;
-  if (cr.width <= 0 || cr.height <= 0) return;
-  const r = regionEvent.value;
-  if (!r) return;
-
-  const dx = (e.clientX - drag.startX) / cr.width;
-  const dy = (e.clientY - drag.startY) / cr.height;
-  const { x1, y1, x2, y2 } = drag;
-
-  if (drag.mode === "move") {
-    let nx1 = x1 + dx;
-    let nx2 = x2 + dx;
-    if (nx1 < 0) {
-      nx2 -= nx1;
-      nx1 = 0;
-    } else if (nx2 > 1) {
-      nx1 -= nx2 - 1;
-      nx2 = 1;
-    }
-    let ny1 = y1 + dy;
-    let ny2 = y2 + dy;
-    if (ny1 < 0) {
-      ny2 -= ny1;
-      ny1 = 0;
-    } else if (ny2 > 1) {
-      ny1 -= ny2 - 1;
-      ny2 = 1;
-    }
-    projectStore.updateOcrRegion(r.id, { x1: nx1, y1: ny1, x2: nx2, y2: ny2 });
-  } else {
-    const west = drag.handle.includes("w");
-    const east = drag.handle.includes("e");
-    const north = drag.handle.includes("n");
-    const south = drag.handle.includes("s");
-    projectStore.updateOcrRegion(r.id, {
-      x1: west ? clamp(x1 + dx, 0, x2 - MIN) : x1,
-      x2: east ? clamp(x2 + dx, x1 + MIN, 1) : x2,
-      y1: north ? clamp(y1 + dy, 0, y2 - MIN) : y1,
-      y2: south ? clamp(y2 + dy, y1 + MIN, 1) : y2,
-    });
-  }
-}
-
-function onWindowMouseUp() {
-  drag = null;
-  window.removeEventListener("mousemove", onWindowMouseMove);
-  window.removeEventListener("mouseup", onWindowMouseUp);
-}
-
 onUnmounted(() => {
-  window.removeEventListener("mousemove", onWindowMouseMove);
-  window.removeEventListener("mouseup", onWindowMouseUp);
+  cancelRafTicker();
 });
 </script>
 
 <template>
   <div class="source-preview">
-    <div class="preview-header">
+    <div v-if="props.showHeader" class="preview-header">
       <NButton
         v-if="props.videoKey === 'source'"
         size="small"
@@ -300,29 +201,18 @@ onUnmounted(() => {
         preload="metadata"
         @loadedmetadata="onLoadedMeta"
         @timeupdate="onTimeUpdate"
-        @play="isPlaying = true"
-        @pause="isPlaying = false"
+        @play="onPlay"
+        @pause="onPause"
         @error="onError"
       />
 
-      <!-- 选区遮罩：固定显示 source 控制轨的选区，可拖拽调整 -->
-      <div v-if="regionEvent && isLoaded" class="region-overlay">
-        <div
-          v-for="d in dims"
-          :key="d.key"
-          class="dim"
-          :style="d.style"
-        />
-        <div class="region-rect" :style="rectStyle" @mousedown="startDrag($event, 'move')">
-          <div
-            v-for="h in HANDLES"
-            :key="h.name"
-            class="handle"
-            :style="{ left: h.left, top: h.top, cursor: h.cursor }"
-            @mousedown.stop="startDrag($event, 'resize', h.name)"
-          />
-        </div>
-      </div>
+      <!-- 选区遮罩：显示当前播放头所在选区的框与遮罩，可拖拽调整 -->
+      <RegionOverlay
+        v-if="isLoaded"
+        :video-key="props.videoKey"
+        :content-rect="contentRect"
+        :time="props.time"
+      />
 
       <div v-if="loadError" class="player-overlay">
         <span class="error-text">{{ loadError }}</span>
@@ -376,38 +266,6 @@ onUnmounted(() => {
   width: 100%;
   height: 100%;
   object-fit: contain;
-}
-
-.region-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 5;
-  pointer-events: none;
-}
-
-.dim {
-  position: absolute;
-  background: rgba(0, 0, 0, 0.5);
-  pointer-events: none;
-}
-
-.region-rect {
-  position: absolute;
-  box-sizing: border-box;
-  border: 2px solid var(--color-accent);
-  pointer-events: auto;
-  cursor: move;
-}
-
-.handle {
-  position: absolute;
-  width: 10px;
-  height: 10px;
-  background: var(--color-accent);
-  border: 1px solid #fff;
-  border-radius: 2px;
-  transform: translate(-50%, -50%);
-  pointer-events: auto;
 }
 
 .player-overlay {

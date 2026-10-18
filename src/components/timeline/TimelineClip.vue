@@ -2,6 +2,7 @@
 import { computed, inject, ref } from "vue";
 import type { TimelineEvent } from "../../types";
 import { useTimelineStore, TIMELINE_STORE_KEY, SNAP_THRESHOLD_PX } from "../../stores/timeline";
+import type { ClipTone } from "../../stores/timeline";
 import { useProjectStore } from "../../stores/project";
 
 const timeline = inject(TIMELINE_STORE_KEY, null) ?? useTimelineStore();
@@ -13,7 +14,11 @@ const props = defineProps<{
   trackId: string;
   /// 同轨全部事件（含自身）：拖动时计算相邻约束
   siblings: TimelineEvent[];
-  color: string;
+  /// 本时间轴渲染的全部事件（跨轨吸附候选）。由 Timeline 传「当前显示的轨道」，
+  /// 避免不同视频源的迷你时间轴互相吸附到对方的起止。
+  snapEvents: TimelineEvent[];
+  /// 片段配色（按事件类型取主题令牌）
+  tone: ClipTone;
   left: number;
   width: number;
   focused: boolean;
@@ -94,19 +99,16 @@ const MERGE_DRAG_PX = 30;
 
 // ── 吸附 ──
 
-/// 收集所有轨道所有事件的 start/end 时间 + 自身原位置边界（移走后可吸回原位）：
+/// 收集本时间轴所有事件的 start/end 时间 + 自身原位置边界（移走后可吸回原位）：
 /// 拖动中候选边界集合静态，首次进入拖动时收集一次
 function collectSnapEdges(): number[] {
   const edges: number[] = [];
   const d = drag.value;
   // 自身原边界：clip 移走后仍能吸附回原位
   edges.push(d?.origStart ?? props.event.start, d?.origEnd ?? props.event.end);
-  const tracks = projectStore.currentProject?.tracks ?? [];
-  for (const track of tracks) {
-    for (const e of track.events) {
-      if (e.id === props.event.id) continue;
-      edges.push(e.start, e.end);
-    }
+  for (const e of props.snapEvents) {
+    if (e.id === props.event.id) continue;
+    edges.push(e.start, e.end);
   }
   return edges;
 }
@@ -370,7 +372,7 @@ function clipText(): string {
   <div
     v-if="drag && drag.moved"
     class="clip-ghost"
-    :style="{ ...ghostStyle, borderColor: color, color }"
+    :style="{ ...ghostStyle, borderColor: tone.line, color: tone.fg }"
   />
   <div
     class="clip"
@@ -379,8 +381,9 @@ function clipText(): string {
     :style="{
       left: left + 'px',
       width: width + 'px',
-      backgroundColor: color,
-      borderColor: focused ? '#fff' : color,
+      backgroundColor: tone.bg,
+      borderColor: focused ? 'var(--accent)' : tone.line,
+      color: tone.fg,
     }"
     @mousedown="onClipMouseDown($event, 'move')"
     @click.stop="onClick"
@@ -402,10 +405,10 @@ function clipText(): string {
 <style scoped>
 .clip {
   position: absolute;
-  top: 4px;
-  height: 32px;
+  top: 7px;
+  bottom: 7px;
   border-radius: 4px;
-  border: 2px solid;
+  border: 1px solid;
   box-sizing: border-box;
   overflow: hidden;
   cursor: pointer;
@@ -415,9 +418,9 @@ function clipText(): string {
 /* 原位虚影：拖动中显示在原始位置的虚线框 */
 .clip-ghost {
   position: absolute;
-  top: 4px;
-  height: 32px;
-  border: 2px dashed;
+  top: 7px;
+  bottom: 7px;
+  border: 1px dashed;
   border-radius: 4px;
   box-sizing: border-box;
   background: color-mix(in srgb, currentColor 20%, transparent);
@@ -427,11 +430,11 @@ function clipText(): string {
 
 .clip.focused {
   z-index: 5;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.5);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .clip:hover {
-  opacity: 0.9;
+  opacity: 0.92;
 }
 
 .clip.split-tool {
@@ -470,15 +473,16 @@ function clipText(): string {
 }
 
 .resize-handle:hover {
-  background: rgba(255, 255, 255, 0.35);
+  background: color-mix(in srgb, var(--text) 22%, transparent);
 }
 
 .clip-label {
-  display: block;
+  display: flex;
+  align-items: center;
+  height: 100%;
   padding: 0 6px;
   font-size: 11px;
-  line-height: 28px;
-  color: #fff;
+  color: inherit;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
