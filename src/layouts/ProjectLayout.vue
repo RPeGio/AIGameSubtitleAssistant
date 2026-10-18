@@ -105,13 +105,14 @@ onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
       <AppSidebar />
       <main
         class="workspace-main"
-        :class="{ full: !showReviewPane }"
+        :class="{ full: !showReviewPane, focused: showReviewPane && ui.focusedPane === 'main' }"
         @mousedown.capture="ui.setFocusedPane('main')"
       >
         <router-view />
       </main>
       <ReviewPane
         v-if="showReviewPane"
+        :class="{ focused: ui.focusedPane === 'review' }"
         @mousedown.capture="onReviewMouseDown"
       />
     </div>
@@ -144,5 +145,14 @@ onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
 .workspace-main.full {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* 焦点窗格的高亮描边：主列 / 校对区成对出现，改动请同步两处。
+   用 outline 而不是 inset box-shadow——两侧内容都是不透明背景，
+   inset 阴影会被子元素盖住；outline-offset:-1px 让线画在边缘内侧。 */
+.workspace-main.focused,
+.review-pane.focused {
+  outline: 1px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
+  outline-offset: -1px;
 }
 </style>
