@@ -69,23 +69,29 @@ const rectStyle = computed(() => {
   };
 });
 
-/// 画面矩形之外的区域压暗（让选区范围一眼可见）
+/// 选区之外全部压暗：四块矩形拼出一个"挖空"的洞。
+/// 遮罩边界取自**选区矩形**而不是视频画面矩形——后者在 16:9 画面铺满容器时
+/// 四块尺寸都≈0（只剩黑边，肉眼看不见），等于没有遮罩。
+/// 画面外黑边也被同一层覆盖，视觉上只有选区周围变暗。
 const dims = computed(() => {
   const r = regionEvent.value;
   if (!r) return [];
   const cr = props.contentRect;
-  const bottomTop = cr.top + cr.height;
-  const rightLeft = cr.left + cr.width;
+  const selLeft = cr.left + r.x1 * cr.width;
+  const selTop = cr.top + r.y1 * cr.height;
+  const selRight = cr.left + r.x2 * cr.width;
+  const selBottom = cr.top + r.y2 * cr.height;
+  const selHeight = selBottom - selTop + "px";
   return [
-    { key: "top", style: { left: "0px", top: "0px", width: "100%", height: cr.top + "px" } },
+    { key: "top", style: { left: "0px", top: "0px", width: "100%", height: selTop + "px" } },
     {
       key: "bottom",
-      style: { left: "0px", top: bottomTop + "px", width: "100%", height: `calc(100% - ${bottomTop}px)` },
+      style: { left: "0px", top: selBottom + "px", width: "100%", height: `calc(100% - ${selBottom}px)` },
     },
-    { key: "left", style: { left: "0px", top: cr.top + "px", width: cr.left + "px", height: cr.height + "px" } },
+    { key: "left", style: { left: "0px", top: selTop + "px", width: selLeft + "px", height: selHeight } },
     {
       key: "right",
-      style: { left: rightLeft + "px", top: cr.top + "px", width: `calc(100% - ${rightLeft}px)`, height: cr.height + "px" },
+      style: { left: selRight + "px", top: selTop + "px", width: `calc(100% - ${selRight}px)`, height: selHeight },
     },
   ];
 });
@@ -231,8 +237,8 @@ onUnmounted(() => {
 
 .handle {
   position: absolute;
-  width: 10px;
-  height: 10px;
+  width: 7px;
+  height: 7px;
   background: var(--accent);
   border: 1px solid #fff;
   border-radius: 2px;
