@@ -158,6 +158,26 @@ body {
   flex: none;
 }
 
+/* 状态点：探测中 / 未就绪（默认色=就绪） */
+.dot.warn { background: var(--warn); }
+.dot.off { background: var(--faint); }
+
+/* 主题开关胶囊（顶栏与欢迎页共用） */
+.tgl {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;

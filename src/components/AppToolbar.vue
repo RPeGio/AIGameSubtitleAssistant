@@ -222,19 +222,4 @@ async function onExport(format: string) {
   align-items: center;
   gap: 10px;
 }
-
-.tgl {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 22px;
-  padding: 0 9px;
-  border: 1px solid var(--color-accent);
-  border-radius: 999px;
-  background: var(--accent-soft);
-  color: var(--accent-ink);
-  font-size: 11px;
-  white-space: nowrap;
-  cursor: pointer;
-}
 </style>
