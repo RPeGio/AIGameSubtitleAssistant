@@ -6,14 +6,20 @@ build_moss.ps1 —— 从源码构建 moss-transcribe.exe（仅开发者/CI 使�
   - git（clone 源码 + ggml 子模块）
   - cmake（构建系统）
   - Visual Studio 2022 Build Tools（C++ 桌面开发，MSVC 编译器）
-  - nvcc（仅 -Backend cuda 需要，CUDA Toolkit；Vulkan 需要 glslc + Vulkan SDK）
+  - nvcc（仅 -Backend cuda 需要，CUDA Toolkit）
+  - glslc + Vulkan SDK（仅 -Backend vulkan 需要）：ggml-vulkan/CMakeLists.txt 强制要求
+    find_package(Vulkan COMPONENTS glslc REQUIRED) 与 find_package(SPIRV-Headers CONFIG REQUIRED)。
+    运行时不需要 SDK（显卡驱动提供 vulkan-1.dll 即可）。
+    安装：winget install --id KhronosGroup.VulkanSDK -e
 
 参数：
   -Force        强制重新构建（删除现有 runtime/bin/moss-transcribe.exe 后重建）
   -Backend      推理后端：cpu（默认）/ cuda / vulkan。GPU 后端由 ggml 支持
                 （moss-transcribe.cpp 透传 GGML_CUDA / GGML_VULKAN，见官方 README），
-                构建后 runtime/bin/ 会多出 ggml-cuda.dll / ggml-vulkan.dll，
-                运行时 backend 自动选 GPU（MTD_DEVICE=cpu 可强制回退）。
+                构建后 runtime/bin/ 会多出 ggml-cuda.dll（Vulkan 是否产出独立的
+                ggml-vulkan.dll 待实测：上游 GGML_BACKEND_DL 默认 OFF，产物以实际为准），
+                运行时 backend 自动选 GPU（MTD_DEVICE=cpu 可强制回退；注意裸 MTD_DEVICE=vulkan
+                会选中枚举序里的第一块 GPU，本机即 Intel 核显 —— 见 docs/engines_vulkan_design.md §3.3）。
   -GitMirror    源码镜像前缀，如 https://ghproxy.com/ 或 https://gitclone.com/github.com/（网络受限时使用）
 用法：powershell -ExecutionPolicy Bypass -File scripts/build_moss.ps1 -Backend cuda
 #>
@@ -66,6 +72,51 @@ if ($Backend -eq "cuda") {
     }
   } else {
     Write-Host "==> 找到 nvcc（PATH）: $($nvcc.Source)"
+  }
+}
+if ($Backend -eq "vulkan") {
+  # ggml-vulkan 的强制前置（ggml-vulkan/CMakeLists.txt）：
+  #   find_package(Vulkan COMPONENTS glslc REQUIRED)
+  #   find_package(SPIRV-Headers CONFIG REQUIRED)
+  # 缺任一个，cmake 在**配置阶段**就失败。提前给出可执行的修法，不让用户去猜 cmake 报错。
+  $glslcPath = $null
+  $g = Get-Command glslc -ErrorAction SilentlyContinue
+  if ($g) {
+    $glslcPath = $g.Source
+  } else {
+    # 兜底路径：VULKAN_SDK 环境变量 > C:\VulkanSDK\<版本>（LunarG 安装器的默认位置）
+    $sdkRoots = @()
+    if ($env:VULKAN_SDK) { $sdkRoots += $env:VULKAN_SDK }
+    $sdkRoots += @(Get-ChildItem "C:\VulkanSDK" -Directory -ErrorAction SilentlyContinue |
+      Sort-Object Name -Descending | ForEach-Object { $_.FullName })
+    foreach ($r in $sdkRoots) {
+      $cand = Join-Path $r "Bin\glslc.exe"
+      if (Test-Path $cand) {
+        # 设 VULKAN_SDK：ggml 会把它追加进 CMAKE_PREFIX_PATH 供 find_package(Vulkan) 定位
+        $env:VULKAN_SDK = $r
+        $env:PATH = "$(Join-Path $r 'Bin');$env:PATH"
+        $glslcPath = $cand
+        break
+      }
+    }
+  }
+  if (-not $glslcPath) {
+    $missing += "glslc（Vulkan SDK；安装：winget install --id KhronosGroup.VulkanSDK -e）"
+  } else {
+    Write-Host "==> 找到 glslc: $glslcPath"
+    if (-not $env:VULKAN_SDK) {
+      Write-Host "==> 注意：VULKAN_SDK 未设置。cmake 若报找不到 Vulkan，请把它指向 SDK 根目录"
+    } else {
+      # SPIRV-Headers 的 CMake CONFIG 包：LunarG SDK 并不总是提供；缺失时 cmake 会报
+      # "Could not find a package configuration file provided by SPIRV-Headers"。
+      $spirvPkg = Get-ChildItem (Join-Path $env:VULKAN_SDK "share\cmake") -Directory -Filter "SPIRV-Headers*" -ErrorAction SilentlyContinue
+      if (-not $spirvPkg) {
+        Write-Host "==> 警告：未发现 SPIRV-Headers 的 CMake CONFIG 包（$env:VULKAN_SDK\share\cmake\SPIRV-Headers*）"
+        Write-Host "           ggml 的 find_package(SPIRV-Headers CONFIG REQUIRED) 会因此失败。"
+        Write-Host "           修法：取 SPIRV-Headers 的 tag vulkan-sdk-<SDK 版本>，用 cmake --install 装到该前缀"
+        Write-Host "           （见 docs/engines_vulkan_design.md §2.3）。"
+      }
+    }
   }
 }
 if ($missing.Count -gt 0) {

@@ -1,0 +1,217 @@
+# MOSS ASR 的 Vulkan 优化与 GPU 后端回退设计
+
+> 状态：**方案已确认，实现未开始**（2026-10-18 用户确认要点见 §0.2）
+> 本分支范围：**仅 MOSS ASR 的 Vulkan 通路 + 后端探测/回退语义**
+> 分支：`feat/engines-gpu-vulkan`（本 worktree `AIGameSubtitleAssistant-gpu-vulkan`），基线 `7b8e306`
+> 明确**不做**：LLM 的 Vulkan（已有官方通路，用户决定不动）、OCR / 融合嵌入的 GPU（上游无 Vulkan 通路，见 §1）、FunASR（不在本分支范围，见 §7）
+
+---
+
+## 0. 摘要与已确认决策
+
+### 0.1 摘要
+
+1. **只有 MOSS 值得做，而且它确实能做**：`MTD_DEVICE` 是真实生效的指令，`MTD_DEVICE=cpu` 实测能切到 CPU；Vulkan 侧 ggml 支持 `-DMT_GGML_VULKAN=ON`。
+2. **两个真实缺口**：① 本机缺 `glslc`（Vulkan SDK），`scripts/build_moss.ps1 -Backend vulkan` 现在必在 cmake configure 阶段失败；② 项目没有任何"探测已装后端 / 解释为什么没走 GPU"的逻辑。
+3. **危险行为（实测）**：请求一个"合法但不可用"的后端时，`moss-transcribe` **静默降级、退出码 0、无告警**。所以判据只能是"实际生效后端"的文本证据，不能是退出码。
+4. **回退语义 = 方案 A**：资产层同时只能存在一套 ggml 后端（`ggml.dll` 同名互斥），所以"回退"是**探测已装后端 + 告诉用户该装哪个**，不是运行期自动切换。
+
+### 0.2 已确认的决策（2026-10-18）
+
+| # | 决策 | 说明 |
+|---|---|---|
+| ① | **采用方案 A**，理想形态是**首次启动自检时探测用户机器并自动选后端**；但"首次启动自检"由并行会话实现，本分支先交付**探测逻辑本身**（可被自检复用） | 见 §3.1 |
+| ② | **显式指定后端失败 → 直接报错**，让用户取消勾选 GPU 加速；只有 `auto` 才允许自动下沉 | 见 §3.4。GPU 加速参数化（config 字段 + 前端面板）由并行会话实现 |
+| ③ | **不做 LLM 探针**；MOSS 的 `info` 探针零成本，作为主判据 | 见 §3.2 |
+| ④ | **双 GPU（核显 + 独显）是构建后必须专门验证的风险项**，记录备忘 | 见 §3.3 |
+| ⑤ | 对外文案：**Vulkan 优化仅说明作用于 ASR**；OCR 在 CPU 下速度可接受，不做对产品不利的技术披露 | 见 §4.4 |
+
+---
+
+## 1. 为什么范围只能是 MOSS（背景矩阵）
+
+| 组件 | 载体 | 现有 GPU 通路 | Vulkan | 本分支 |
+|---|---|---|---|---|
+| **ASR MOSS** | moss-transcribe.cpp（ggml）自构建 | CUDA（`.backend=cuda`，实跑 `backend: CUDA0`） | ✅ ggml 支持，**本机构建缺 glslc** | **✅ 做** |
+| LLM | llama.cpp 预编译 zip | CUDA（`ggml-cuda.dll` 512.9 MB） | ✅ 官方预编译包（`llama-b10333-bin-win-vulkan-x64.zip` 已核实存在） | ❌ 不做（③） |
+| ASR FunASR（备用） | PyTorch + Fun-ASR-Nano | CUDA cu124 | ❌ torch 无 Vulkan 后端 | ❌ 不做（§7） |
+| OCR | PaddleOCR + PaddleX | CUDA（`deps_gpu` 3.5 GB） | ❌ Paddle Inference 无 Vulkan 后端 | ❌ 不做（⑤） |
+| 融合嵌入 | onnxruntime | 仅 CPU | ❌ ORT 官方 EP 列表无 Vulkan | ❌ 不做 |
+
+> LLM 的 Vulkan 分支**无需改动即可用**：`scripts/bootstrap_llm.ps1:23` 的 `-Version` 默认 `b10333`，`:53` 拼出的 `llama-b10333-bin-win-vulkan-x64.zip` 经 GitHub releases API 核实存在（34,147,775 字节，sha256 `117bca1f594cffd96a77703aa23d98450800bc22022a307d1e3567187fbb50fe`），`:204-207` 的自检匹配 `Vulkan0`。
+
+---
+
+## 2. 已实测的事实（本机，2026-10-18）
+
+### 2.1 环境
+
+| 项 | 值 |
+|---|---|
+| GPU | NVIDIA RTX 4060 Laptop（驱动 572.83，8188 MiB，CC 8.9）+ Intel RaptorLake-S 核显（驱动 101.5542） |
+| 虚拟显示适配器 | OrayIddDriver、Todesk Virtual Display（2 个） |
+| Vulkan 运行时 | `C:\Windows\System32\vulkan-1.dll` 存在；`vulkaninfo --summary` 退出码 0；loader 1.4.303 |
+| Vulkan 枚举结果 | **4 条设备记录**：`DISCRETE_GPU`（NVIDIA，apiVersion 1.4.303）×1 + `INTEGRATED_GPU`（Intel，1.3.280）**×3** |
+| `$env:VULKAN_SDK` / `glslc` | **均为空/不在 PATH**（无 Vulkan SDK） |
+| 可用工具 | `vulkaninfo`（system32）、`cmake`、`ninja`、`nvcc`（`D:\CUDA-Toolkit\bin`）、`winget` |
+| Python | 系统 `D:\Python\python.exe`（3.13）；`py -3.12` 指向主 worktree 的 `runtime\python\python.exe` |
+| PowerShell | **只有 Windows PowerShell 5.1**（`5.1.26100.9711`，无 pwsh 7）⇒ 本仓 `scripts/*.ps1` 必须是 **UTF-8 带 BOM**：5.1 对无 BOM 文件按 GBK 解码，中文注释会崩成语法错误（本轮实测踩过：编辑工具改写后剥掉 BOM，脚本立刻 exit 1） |
+
+### 2.2 MOSS 的后端选择机制（决定性实测）
+
+只读探针（`GSA_RUNTIME_DIR` → 主 worktree `runtime/`，未写任何文件）：
+
+| 探针 | 实际输出 | 退出码 |
+|---|---|---|
+| 不设 `MTD_DEVICE` | `[mt I] backend: CUDA0` | 0 |
+| `MTD_DEVICE=cpu` | `[mt I] CPU threads: 24` + `[mt I] backend: CPU` | 0 |
+| `MTD_DEVICE=vulkan`（CUDA-only 构建上） | **无任何告警**，`[mt I] backend: CUDA0` | **0** |
+| `MTD_DEVICE=bogus` | `[mt W] backend: MTD_DEVICE=bogus requested but no matching device registered — falling back` + `backend: CUDA0` | 0 |
+
+二进制字符串确认存在的环境变量只有 **`MTD_DEVICE`** 与 **`MTD_THREADS`**（正是 `src-tauri/src/ai_runtime/moss.rs:372,376` 传的两个）。
+
+**三条结论**：
+
+1. **`MTD_DEVICE` 是真指令**——`cpu` 确实生效，`cuda`/`vulkan` 是同一个取值空间。所以设计的着力点是"探测 + 选对值 + 让它可见"，而不是新增机制。
+2. **失败静默、退出码不可用**——请求 `vulkan` 却跑在 CUDA 上时没有任何提示。⇒ 必须解析实际生效的后端。
+3. **日志走 stderr**（`moss.rs:3` 注释即"stdout 输出 JSON 段数组，stderr 是日志"）：`info` 的 stdout 实测是**两行**：`arch=…` 与 `audio_token_id=… mel_bins=80 n_fft=400 hop=160`；`backend: <X>` 在 **stderr**。⚠ 反面教训：我早期只截了含 `arch=` 的那一行，就当成"只有一行"，并据此怀疑手上的二进制不是 master——**过滤后的单行会骗人**，`info` 的完整 stdout 才是判据。
+
+**静默的机制（上游源码确证）**：`src/backend.cpp` 的 `name_to_type()`（:34-45）把 `vulkan` 判为**合法名**并映射到 `GGML_BACKEND_DEVICE_TYPE_GPU`；随后 `ggml_backend_dev_by_type(GPU)`（`ggml-backend-reg.cpp:348-356`，**返回第一个匹配**）在 CUDA-only 构建里直接返回 `CUDA0`。`g_backend` 非空 ⇒ 跳过唯一告警点（`backend.cpp:90-92`）。`bogus` 之所以有告警，只因 `name_to_type` 返回 false。⇒ **「vulkan」的真实语义是"任选一块 GPU 类型设备"，不是"必须是 Vulkan"**：静默是设计的必然行为，不是环境问题。
+
+### 2.3 构建前置：`glslc` 与获取途径
+
+- ggml 的 Vulkan 后端在 **configure 阶段**硬性要求 `find_package(Vulkan COMPONENTS glslc REQUIRED)` 与 `find_package(SPIRV-Headers CONFIG REQUIRED)`，着色器生成器要调 `--glslc`。**只在构建期需要 SDK，运行时只需要显卡驱动。**
+- 本机无 SDK。**获取途径已核实：`winget` 里有 `KhronosGroup.VulkanSDK`（1.4.363.0）**，另有 `KhronosGroup.VulkanRT`（仅运行时组件，不含 glslc）。
+- `scripts/build_moss.ps1:9` 的头注释写了"Vulkan 需要 glslc + Vulkan SDK"，但**代码里没有任何检查**（只有 `-Backend cuda` 会找 `nvcc`）⇒ 缺 SDK 时用户在 cmake 的晦涩报错里迷路。**这是本分支第一个要补的东西。**
+
+### 2.4 零成本探测原语（已核实可用）
+
+| 原语 | 用途 | 实测 |
+|---|---|---|
+| `nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader` | CUDA 可用性 | 退出码 0，输出 `NVIDIA GeForce RTX 4060 Laptop GPU, 572.83, 8188 MiB` |
+| `vulkaninfo --summary` | Vulkan 设备数量与类型 | 退出码 0，`deviceType = PHYSICAL_DEVICE_TYPE_{INTEGRATED,DISCRETE}_GPU` 可正则解析 |
+| `moss-transcribe info <model>` 的 stderr | **实际生效后端** | `[mt I] backend: CUDA0` |
+| `Get-CimInstance Win32_VideoController` | 不依赖 Vulkan 的 GPU 清单（兜底/交叉验证） | 列出 4 个适配器（含 2 个虚拟显示） |
+
+---
+
+## 3. 设计
+
+### 3.1 资产层语义：方案 A（探测 + 指路）
+
+**事实约束**：llama.cpp 与 moss 的 `ggml.dll` 同名且互不兼容（DLL 从 exe 同目录优先加载），因此 `runtime/bin/` 同时只能存在一套 ggml 后端。实测现状就是 `.backend=cuda`，全仓无 `ggml-vulkan.dll`。
+
+⇒ **"CUDA 失败自动切 Vulkan"在资产层不成立**（除非把 `bin/` 改成 `bin/<backend>/` 并存，代价：磁盘 ×N、启动探测变慢、构建矩阵翻倍——**本分支不做**）。本分支交付的语义是：
+
+> **探测用户机器能跑什么 → 校验已装二进制是否与之一致 → 不一致时给出"该装哪个后端"的明确指路**。
+
+对最终用户表现为（由并行会话的首次启动自检承载，①）：能自动选则自动选；不能自动选则用人能看懂的话告诉他跑哪条命令。
+
+### 3.2 三级探测与判据
+
+| 级别 | 内容 | 成本 | 用途 |
+|---|---|---|---|
+| **L0 机器能力** | CUDA：`nvidia-smi` 退出码 0；Vulkan：`vulkan-1.dll` 存在 **且** `vulkaninfo --summary` 解析到 ≥1 个 `*_GPU` | 毫秒级 | 与已装二进制比对，产出"该装哪个后端" |
+| **L1 资产一致性** | `moss-transcribe.exe` 是否存在 + `.backend` 标记是否与期望一致（**DLL 名不可当硬判据**：上游默认 `GGML_BACKEND_DL=OFF`，未必产出 `ggml-vulkan.dll`；`ggml-cuda.dll` 的存在只能说明 CUDA 版走的是动态后端） | 文件系统 | 快速发现错配 |
+| **L2 实际生效校验** | 跑 `moss-transcribe info <model>`，解析 **stderr** 的 `[mt I] backend: <X>`，与期望值精确比对（`CUDA0`/`Vulkan0`/`CPU`） | 零成本（③，实测 `info` 很快） | **唯一可信判据**，兜住 §2.2 的静默降级 |
+
+- ⚠ **退出码一律不可作判据**（§2.2 实测 exit 0 却降级）。
+- ⚠ **必须精确匹配全名**（`CUDA0` 而非 `CUDA`）：Rust 侧 `str::contains` 大小写敏感，而 `scripts/bootstrap_moss.ps1:175` 现在靠 PowerShell `-match` 的大小写不敏感侥幸成立——顺手统一。
+- L0 的 Vulkan 判据要考虑 **`vulkaninfo` 会把同一块 Intel 核显报 3 次**（实测 4 条记录对应 2 块物理 GPU）：**按 `deviceType==DISCRETE_GPU` 判断优先，按 `deviceName+driverInfo` 去重后再计数**，别用"记录条数"。
+
+### 3.3 双 GPU（核显 + 独显）——机制已定，构建后按此验证（④）
+
+**上游机制（源码确证）**：ggml 的 Vulkan 后端在 `ggml-vulkan.cpp:6814-6859` 里按 `vkEnumeratePhysicalDevices()` 的**返回顺序递增 push**，**不做"独显优先"重排**；设备名是 `Vulkan0/Vulkan1/…`（`:17779`），设备类型由 `ctx->is_integrated_gpu` 决定（`:16996`，核显 = `IGPU`、独显 = `GPU`）。MOSS 固定的 ggml 是 `ggml-org/ggml` 的 `eced84c8`（**v0.15.3，2026-06-26**），**已包含** llama.cpp PR #15947（2025-09-12）"默认同时暴露 iGPU + dGPU"的行为。
+
+**本机枚举序**：`vulkaninfo --summary` 中 Intel 核显在前、RTX 4060 在后。据此推出四种设置的真实落点：
+
+| `MTD_DEVICE` | 命中路径 | 本机落点 |
+|---|---|---|
+| **不设（auto）** | `ggml_backend_init_best()`，优先级 **GPU → IGPU → CPU** | **RTX 4060**（核显是 `IGPU` 类型，不会被 `GPU` 命中）✅ |
+| `vulkan` | `init_named()` 子串命中设备名 `Vulkan0` | **Intel 核显** ❌ |
+| `Vulkan0` | 子串命中 `Vulkan0` | Intel 核显 ❌ |
+| `Vulkan1` | 子串命中 `Vulkan1` | RTX 4060 ✅（但**索引随机器变化，不可硬编码**） |
+
+**结论（纠正了本设计早先的猜想）**：
+
+1. **不要设裸 `MTD_DEVICE=vulkan`**——在 Vulkan 构建上它会命中枚举序第一块（本机即核显）。它在 CUDA-only 构建上"看起来正常"，只是因为落到了 `dev_by_type(GPU)` = `CUDA0`（§2.2）。
+2. **`auto`（空）才是最优解**：`ggml_backend_init_best()` 的类型优先级天然避开核显。
+3. 需要**硬指定某块卡**时，用 `GGML_VK_VISIBLE_DEVICES=<原始枚举下标>` 把设备裁到只剩目标卡（此后它就是 `Vulkan0`），再配合 `MTD_DEVICE=vulkan`——比 `MTD_DEVICE=Vulkan<N>` 稳，因为后者依赖枚举序。注意它是 `vkEnumeratePhysicalDevices` 的**原始下标**，不是 `vulkaninfo` 的显示名。
+4. **MOSS 只创建一个 backend**（`src/backend.cpp` 的 `g_backend` 单例），不做多设备层切分 ⇒ "模型被劈到两块卡"在 MOSS 上不成立；上游那个 3× 塌陷（llama.cpp #30695）也不会命中，且引入它的 #29741（2026-10-13）晚于本 pin。
+5. MOSS 的 CLI **没有 `--device`**：`MTD_DEVICE` 与 `GGML_VK_VISIBLE_DEVICES` 是仅有的两个通道。
+
+**构建后必须做的验证（④）**：分别在不设 / `vulkan` / `Vulkan1` 三种设置下跑 `transcribe`，解析 stderr 的 `backend: <X>` 并对比耗时。**上表全部是"代码推断 + 本机 `vulkaninfo`"，不是 Vulkan 版 MOSS 的实测输出**——尤其 `vulkan` 落核显这一条，必须实机确认后才敢写进用户文档。
+
+### 3.4 显式指定失败 = 报错（②）
+
+| 用户意图 | 探测结果 | 行为 |
+|---|---|---|
+| `auto`（或空） | 有 CUDA 二进制 | 用 CUDA，记 `reason` |
+| `auto`（或空） | 无 CUDA 二进制但有 Vulkan 二进制 | 用 Vulkan，记 `reason` |
+| `auto`（或空） | 都没有 | 用 CPU，记 `reason`，**在自检面板可见** |
+| 显式 `cuda` / `vulkan` | 该后端不可用（DLL 缺失或 L2 校验失败） | **直接报错**，提示"取消勾选 GPU 加速改用 CPU"或"装对应后端"，**不自动降级** |
+
+理由：MOSS 在 CPU 与 GPU 上的差距是量级级别（canonical 记录 306 s → 50.4 s，约 6×），静默降级会让用户以为在用 GPU。字段与前端开关由并行会话实现（②），本分支只提供判定函数与其返回值。
+
+### 3.5 与并行会话的接口（边界）
+
+- **本分支交付**：`scripts/`（构建前置检查、探测）、Rust 侧的**纯探测/判定逻辑**、`docs/`。
+- **并行会话交付**：`src-tauri/src/ai_runtime/config.rs` 的字段扩展（`auto` 语义、`llm_device` 等）与前端配置面板/自检面板。
+- **需要对齐的契约**（避免两边各写一套）：取值集合 `"" | "auto" | "cuda" | "vulkan" | "cpu"`；判定结果的结构（`{backend, reason, source}`）。
+
+---
+
+## 4. 实施步骤（本分支，逐轮确认）
+
+1. ✅ **已完成**（2026-10-18）：`scripts/build_moss.ps1` 新增 `if ($Backend -eq "vulkan")` 分支 —— `glslc` 按 PATH → `VULKAN_SDK` → `C:\VulkanSDK\<版本>` 三级查找，命中即自动设 `VULKAN_SDK`/PATH 供 cmake 定位；缺失则并入 `$missing`，**在 clone/构建之前** `throw`（附 `winget install --id KhronosGroup.VulkanSDK -e`），并预先警告缺失的 `SPIRV-Headers` CONFIG 包。顺带修正 `scripts/bootstrap_moss.ps1` 就绪自检段的后端断言：改为解析 `[mt I] backend: <设备名>`（原写法靠 `-match` 大小写不敏感侥幸成立，且会把 `[mt W] …requested but no matching device` 降级警告当成结果）。
+   → 验证（已跑通）：`-Backend vulkan` 无 SDK 时于 clone 前报错、零副作用（不产生 `runtime/`）；伪造 SDK 时正确发现 `glslc` 并打出 SPIRV-Headers 警告；真实二进制的 `info` 输出在 cpu/cuda/vulkan 三种请求下分别解析为 `CUDA0`（cuda 命中，cpu/vulkan 正确判为降级）；`MTD_DEVICE=bogus` 时旧写法把警告文本当结果、新写法仍取到 `CUDA0`。**"装了 SDK 后 configure 通过"这一半需等步骤 2 真正构建时才有结论。**
+2. **核对 Vulkan 分支的构建与产物布局**：现状 `cuda` 走 Ninja + vcvars 并探测 `build-cuda/bin/*.dll`，`vulkan` 走 VS 默认生成器 `build-vulkan/`——**产物路径与 DLL 拷贝逻辑未经验证**。
+   → 验证：产出 `runtime/bin/moss-transcribe.exe` 且 `.backend=vulkan`；**DLL 集合以实际产物为准**——上游默认 `GGML_BACKEND_DL=OFF`，很可能没有 `ggml-vulkan.dll` 可拷（§5-4），而现有 CUDA 版却有 `ggml-cuda.dll`。
+3. **实测 Vulkan 版**：先验 §3.3 的双 GPU 落点，再测速（与 CUDA 版、CPU 版对比）。
+   → 验证：确认落在 RTX 4060；记录耗时对比进 `docs/development.md`。
+4. **探测逻辑 + 回退语义**：实现 §3.2 的 L0/L1/L2 与 §3.4 的行为矩阵。
+   → 验证：L2 能识破"配了 vulkan 但实际跑 CUDA0"的静默降级（用现状 CUDA-only 构建复现即可）。
+5. **文档与文案**：`docs/development.md` / `_EN` 增补后端语义；`README.md:59` 与欢迎页文案按 ⑤ 口径校正（只说 ASR）。
+   → 验证：文案不出现对 OCR 的不利表述。
+
+---
+
+## 5. 风险与待验证
+
+| # | 项 | 状态 |
+|---|---|---|
+| 1 | 本机无 Vulkan SDK ⇒ 步骤 1 之前无法构建 MOSS Vulkan | 已实测 |
+| 2 | 请求不可用后端 **静默降级 + exit 0**（`vulkan` 连告警都没有，`bogus` 反而有） | **已定论（上游源码）**：`name_to_type()` 把 `vulkan` 判为合法名并映射到 GPU 类型（`backend.cpp:40`），`dev_by_type(GPU)` 返回第一个匹配（`ggml-backend-reg.cpp:348-356`）⇒ 静默是设计使然。判据只能取"实际生效的后端" |
+| 3 | **双 GPU 落点** | **机制已定、落点待实测**：不设 = GPU→IGPU→CPU（本机 → RTX 4060）；裸 `vulkan` = 枚举序第一块（本机 → 核显）；`GGML_VK_VISIBLE_DEVICES` / `Vulkan<N>` 可定点。**构建后按 §3.3 验证（④）** |
+| 4 | `build_moss.ps1` 的 vulkan 产物布局与 DLL 拷贝路径 | **待构建，且预期与现状假设不符**：上游默认 `GGML_BACKEND_DL=OFF`（`ggml/CMakeLists.txt:86`）⇒ 可能**根本不产出 `ggml-vulkan.dll`**（Vulkan 静态链进 ggml）；但已装的 CUDA 版**确实有** `ggml-cuda.dll`，说明 moss 的 CMake 可能另行打开了它 ⇒ **一切以实际产物为准**。CLI 产物在构建目录根（Ninja / Multi-Config 的 `Release/`） |
+| 5 | Vulkan 相对 CUDA 的真实性能差（第三方数据混杂：有 pp512 −25% 的实测，也有被归因于双 GPU + 老卡的"慢 6 倍"个案；上游 moss issue #4 还显示 Vulkan 路径**连 flash attention 都没启用**，AMD iGPU 上启用后快 13.7×） | 待步骤 3 实测 |
+| 6 | `bootstrap_moss.ps1:175-181` 的后端断言用 `-match` 大小写不敏感侥幸成立 | ✅ **已修**（2026-10-18，步骤 1）：改为 `-cmatch` 解析 `[mt I] backend: <设备名>` 并与 `CPU`/`CUDA`/`Vulkan` 前缀比对；降级警告（`[mt W] …requested but no matching device`）不再被误当成结果 |
+| 7 | Vulkan SDK 安装后 `VULKAN_SDK` / PATH 是否被正确设置（CMake 需找到 glslc 与 `SPIRV-Headers` 的 **CONFIG 包**——后者是否随 SDK 提供未确证） | 安装后验证 |
+| 8 | 手上 `moss-transcribe.exe` 的来源 | ✅ **已澄清（用户）**：上游仓库没有任何 GitHub Release，所以该二进制就是本仓 `scripts/build_moss.ps1` **自构建**的产物（现装的是 `-Backend cuda`，`runtime/bin/.backend=cuda`）——`bootstrap_moss.ps1 -BinaryUrl` 默认空正是为此 |
+| 9 | **MOSS Vulkan 能否在 Windows 上构建成功**未确证：上游无 Windows CI，且 issue #1 显示 Windows + MinGW + GCC 16 在**非 Vulkan** 路径上就已编译失败（修复 PR #3 至今未合并） | 待步骤 1–2 实测 |
+
+---
+
+## 6. 与并行会话的边界（避免改动冲突）
+
+- 主 worktree 分支 `feat/misc-fixes`（`d08219c`）的 `MISC_TODO.md` 第 12 项「CUDA GPU 加速参数化」要改 `src-tauri/src/ai_runtime/config.rs` 并做前端面板，与本设计 §3.5 重叠。
+- 已确认划分：**本分支只碰 `scripts/` + 纯探测逻辑 + `docs/`**；字段与 UI 留给主 worktree。
+- 本 worktree **没有 `runtime/`**；只读使用主 worktree 的 runtime（`GSA_RUNTIME_DIR`），**绝不写主 worktree 的文件**。
+
+---
+
+## 7. 本分支之外：FunASR 字级时间戳（独立验证项）
+
+`scripts/funasr_worker.py:219` 注释称 Fun-ASR-Nano 的 `sentence_info` 含**字级 timestamp** 且断句后处理依赖它，`:243` 直接消费，`:70-73` 用 `len(ts) < 2` 决定"整段不切分"。
+
+**已查明的机制（funasr 1.4.16 源码）**：Nano 只有一条时间戳通路——**CTC 强制对齐**（`fun_asr_nano/model.py:965-966,1057-1071` → `torchaudio.functional.forced_align`），**全仓不存在"按字数均分"的插值代码**。闸门在 `checkpoint_utils.py:22-47 disable_incomplete_ctc()`：checkpoint 缺 `ctc_decoder.*`/`ctc.*` 键时把 CTC 头置空，于是 `result` 连 `timestamps` 键都没有；随后 `auto/auto_model.py:1163-1187`（**本 worker 走这条**：不配 `punc_model` ⇒ 退化到 `vad_segment` 模式）拿不到 ts 时 `logging.error("No timestamp found in ASR result. …")`，令 `ts = []`、`start/end` 退化为 **VAD 段边界**。⇒ 那样的话 `:70-73` 的切分分支就是死代码，字级时间戳只剩段级精度（最长 30 s）。
+
+**⚠ 但"checkpoint 缺 CTC 权重"这个前提已被实测推翻**：对 ModelScope 上 `FunAudioLLM/Fun-ASR-Nano-2512` 的 `model.pt`（revision `db823224e5c2510001b4a3d3ed97f430bd52ac88`，提交信息 **"upload ctc weights"**，2,127,426,538 字节）做 HTTP Range 只取头部 12 MB（`206`，`Content-Range: bytes 0-12582911/2127426538`），其 `merged/data.pkl` 中**逐字含 `ctc_decoder.linear1.weight`（`ctc_decoder` 命中 84 次）与 `ctc.ctc_lo.weight`**。官方 blog 与 issue #106 关于"发布版缺 CTC 权重"的说法**相对当前 checkpoint 已过期**。
+
+⇒ 所以**不能**照搬"ts 必为空"的结论，现在有两种可能：(a) CTC 头可用 ⇒ ts 是**真实**强制对齐（这段代码没问题，台账无需登记）；(b) 仍拿不到 ts，但原因换成了别的（`model.py:810-817` 明确"batched 模式不产 CTC 时间戳"，而本 worker 传 `batch_size_s=120`）⇒ 缺陷依旧。**实测是唯一能分辨的手段。**
+
+**实测的成本已查清**：主 worktree 的 FunASR 运行时已于 2026-09-30 按用户决策清理（实测 `deps_funasr`、`models/funasr`、`worker/funasr_worker.py` **均已不存在**）。要复现需重新安装：
+
+- 走 `scripts/bootstrap_funasr.ps1 -Device cpu`：**只需 CPU 版 torch**（约 200 MB 量级）＋ funasr/modelscope 依赖 ＋ 4 个模型（主模型 Fun-ASR-Nano-2512 约 1.6 GB）≈ **2.5–3 GB**（CUDA 路线约 7 GB）。时间戳语义与设备无关，**cpu 路线即可**。
+- 前置：脚本要求 `runtime/python/python.exe`（复用 OCR 的内嵌解释器，由 `scripts/bootstrap_ocr.ps1` 提供）。替代路线：用 `py -3.12`（指向主 worktree 的 3.12 解释器）在**本 worktree 内**建 venv。
+- 判定方法（比"是否等距"更准）：dump `res[0].get("timestamps")`、`res[0]["sentence_info"][i]["timestamp"]`，并留意 stderr 的 `Disabling CTC timestamps…` / `No timestamp found…`。**空 = 缺陷成立；非空且与音频内容对齐 = 真实强制对齐**——同时验证 `batch_size_s=120` 是否把它推入 batched 模式。

@@ -171,12 +171,18 @@ $infoOut | Select-Object -First 8
 if ($code -ne 0) {
   Write-Host "==> 警告：moss-transcribe info 自检失败（exit=$code），请检查模型与二进制"
 } else {
-  # backend 断言：cpu 期望 CPU；cuda/vulkan 期望对应后端（构建含对应 DLL 时生效）
-  $expected = if ($Backend -eq "cpu") { "CPU" } else { $Backend.ToUpper() }
-  if ($infoOut -match "backend:\s*$expected") {
-    Write-Host "==> MOSS 运行环境就绪：$targetExe + $modelPath（backend=$expected 已确认）"
-  } elseif ($infoOut -match "backend:\s*(.+)") {
-    Write-Host "==> 警告：请求后端 $expected，但实际加载 $($Matches[1])。GPU 后端需 build_moss.ps1 -Backend $Backend 构建对应 DLL"
+  # backend 断言：解析**实际生效的设备名**（日志形如 "[mt I] backend: CUDA0" / "backend: CPU"）。
+  # 两个坑：① 设备名是 CUDA0 / Vulkan0 / CPU，原先拿 $Backend.ToUpper() 去比，只靠 -match 不区分
+  # 大小写才侥幸命中；② 降级时还会有一行 "[mt W] backend: MTD_DEVICE=xxx requested but no matching
+  # device registered" —— 同样含 "backend:" 字样，必须用 [mt I] 限定，否则会把警告当结果。
+  $expected = switch ($Backend) { "cpu" { "CPU" } "cuda" { "CUDA" } default { "Vulkan" } }
+  $actual = $null
+  if ($infoOut -cmatch "\[mt I\] backend:\s*([^\r\n]+)") { $actual = $Matches[1].Trim() }
+  if ($actual -and $actual.StartsWith($expected)) {
+    Write-Host "==> MOSS 运行环境就绪：$targetExe + $modelPath（backend=$actual 已确认）"
+  } elseif ($actual) {
+    Write-Host "==> 警告：请求后端 $expected，但实际加载 $actual —— GPU 后端需 build_moss.ps1 -Backend $Backend 构建；"
+    Write-Host "           ggml 在设备缺失时是**静默降级**（exit code 仍为 0），上面这行才是真实后端。"
   } else {
     Write-Host "==> 警告：未能从 info 输出确认 backend（无法解析）"
   }
