@@ -247,7 +247,7 @@ function discardDiff(d: Diff) {
                 <button class="btn ghost" @click="projectStore.importSourceVideo()">
                   <AppIcon name="folder" :size="14" />更换剧情录屏
                 </button>
-                <span class="fname" :title="sourceMeta?.path">{{ sourceFileName }}</span>
+                <span class="fname selectable" :title="sourceMeta?.path">{{ sourceFileName }}</span>
                 <span class="sp"></span>
                 <span class="mut h11" v-if="sourceMeta">
                   {{ sourceMeta.width }}×{{ sourceMeta.height }} · {{ fmtDur(sourceMeta.duration) }}
@@ -440,7 +440,7 @@ function discardDiff(d: Diff) {
                 key-field="id"
               >
                 <template #default="{ item }">
-                  <div class="preview-item">{{ item.text }}</div>
+                  <div class="preview-item selectable">{{ item.text }}</div>
                 </template>
               </n-virtual-list>
             </template>
@@ -471,8 +471,8 @@ function discardDiff(d: Diff) {
           <div v-for="(d, di) in pendingDiffs" :key="`${di}-${d.new}`" class="ccard">
             <span class="cn">{{ di + 1 }}</span>
             <span class="cm">
-              <span class="co" :title="d.old.join(' / ')">{{ d.old.join(" / ") }}</span>
-              <span class="cnw" :title="d.new">{{ d.new }}</span>
+              <span class="co selectable" :title="d.old.join(' / ')">{{ d.old.join(" / ") }}</span>
+              <span class="cnw selectable" :title="d.new">{{ d.new }}</span>
             </span>
             <span class="ca">
               <button class="btn pri sm" @click="approveDiff(d)">采纳</button>
@@ -487,7 +487,7 @@ function discardDiff(d: Diff) {
           </div>
           <div v-for="(item, ci) in corpus" :key="item.id" class="crow">
             <span class="cn">{{ ci + 1 }}</span>
-            <span class="ct" :title="item.text">{{ item.text }}</span>
+            <span class="ct selectable" :title="item.text">{{ item.text }}</span>
             <span class="psrc">{{ sourceLabel(item.source) }}</span>
             <button class="btn icb sm ghost" @click="removeItem(item.id)" title="删除该条">
               <AppIcon name="x" :size="12" />

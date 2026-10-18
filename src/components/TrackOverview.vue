@@ -315,10 +315,10 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
             @keydown.esc="cancelEdit"
             @blur="commitEdit"
           />
-          <span v-else class="ov-text">{{ textOf(clip) }}</span>
+          <span v-else class="ov-text selectable">{{ textOf(clip) }}</span>
         </div>
 
-        <span v-else-if="isRegionTrack" class="ov-coords">{{ regionLabel(clip) }}</span>
+        <span v-else-if="isRegionTrack" class="ov-coords selectable">{{ regionLabel(clip) }}</span>
       </div>
 
       <div v-if="clips.length === 0" class="overview-empty">此轨道暂无 clip</div>

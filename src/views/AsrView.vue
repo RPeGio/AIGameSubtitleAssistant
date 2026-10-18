@@ -238,7 +238,7 @@ async function startEmbedOcr() {
             <button class="btn ghost" @click="projectStore.importVideo()">
               <AppIcon name="folder" :size="14" />选择切片视频
             </button>
-            <span class="fname">{{ clipFileName }}</span>
+            <span class="fname selectable">{{ clipFileName }}</span>
             <span class="sp"></span>
             <span class="enote">{{ clipMeta }}</span>
           </div>

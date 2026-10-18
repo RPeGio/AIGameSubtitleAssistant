@@ -112,6 +112,28 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* 界面文本默认不可选中：这是一台工具，按钮/标签/表头/时间轴/状态栏被拖动、
+   双击、三击选中只会碍事（拖 clip 时把轨道名选中、双击改名时选中半行）。
+   需要复制的**内容文本**单独放行，见下面两条规则。 */
+html, body {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 表单控件必须能选中（编辑字幕、重命名、行内改参数都靠它） */
+input,
+textarea,
+[contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* 内容文本的显式放行：字幕文本、语料、待审批文本、文件路径等 */
+.selectable {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 /* 图标：sprite 里 35 个 16×16 描边符号，统一走 currentColor */
 .ic {
   flex: none;

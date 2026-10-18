@@ -75,7 +75,7 @@ watch(
 
     <template v-if="hasVideo">
       <div class="rvinfo">
-        <span class="fname" :title="meta!.path">{{ displayPath }}</span>
+        <span class="fname selectable" :title="meta!.path">{{ displayPath }}</span>
         <span class="sp" />
         <span class="pill">{{ meta!.width }}×{{ meta!.height }}</span>
         <span v-if="resolutionLabel" class="pill">{{ resolutionLabel }}</span>
