@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onUnmounted, ref } from "vue";
 import { useProjectStore } from "../stores/project";
 import SourceVideoPreview from "../components/SourceVideoPreview.vue";
 import SourceTimeline from "../components/SourceTimeline.vue";
@@ -247,45 +247,85 @@ function cancelDraft() {
   draftText.value = "";
 }
 
-// 拖动排序：只有左侧点阵手柄按下才允许发起拖动（否则与文本选择冲突）。
-// 语料顺序参与融合 DP 的取舍，所以顺序是数据、要能改。
+// 拖动排序：用指针事件手写，不用 HTML5 拖放。
+// 实测（临时工具 temp/css-preview/drag.mjs 用 CDP 可信鼠标事件驱动）：原生拖放里
+// dragstart 正常触发、源行也能拿到 .dragging，但 dragover 从不下发给目标行、drop 永不触发
+// ⇒ 拖完没有任何变化。指针事件同时能精确控制插入位置与指示线。
+// 只有左侧点阵手柄按下才进入排序态（否则与文本选择冲突）。
 const draggingId = ref<string | null>(null);
-const dropIndex = ref<number | null>(null);
-let canDrag = false;
+const dropAt = ref<{ index: number; before: boolean } | null>(null);
+let reorderRows: { top: number; bottom: number; index: number }[] = [];
 
-function onGripDown() {
-  canDrag = true;
+function rowGeom() {
+  return Array.from(document.querySelectorAll<HTMLElement>(".clist .crow:not(.draft)")).map(
+    (el, index) => {
+      const r = el.getBoundingClientRect();
+      return { top: r.top, bottom: r.bottom, index };
+    }
+  );
 }
 
-function onGripUp() {
-  canDrag = false;
-}
-
-function onRowDragStart(e: DragEvent, id: string) {
-  if (!canDrag) {
-    e.preventDefault();
-    return;
-  }
-  draggingId.value = id;
-  e.dataTransfer?.setData("text/plain", id);
-  if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
-}
-
-function onRowDragOver(e: DragEvent, index: number) {
+function onReorderMove(e: MouseEvent) {
   if (!draggingId.value) return;
-  e.preventDefault();
-  dropIndex.value = index;
+  if (!reorderRows.length) reorderRows = rowGeom();
+  const y = e.clientY;
+  const last = reorderRows[reorderRows.length - 1];
+  let index = last ? last.index : 0;
+  let before = false;
+  for (const r of reorderRows) {
+    if (y < r.bottom) {
+      index = r.index;
+      before = y < (r.top + r.bottom) / 2;
+      break;
+    }
+  }
+  dropAt.value = { index, before };
 }
 
-function onRowDrop(index: number) {
-  if (draggingId.value) projectStore.moveCorpusItem(draggingId.value, index);
-  onRowDragEnd();
+/// 指针落点 → moveCorpusItem 需要的 to（「移除被拖项之后」的插入下标）
+function resolveInsert(at: { index: number; before: boolean }): number | null {
+  const from = corpus.value.findIndex((c) => c.id === draggingId.value);
+  if (from < 0) return null;
+  return at.before ? (at.index > from ? at.index - 1 : at.index) : at.index >= from ? at.index : at.index + 1;
 }
 
-function onRowDragEnd() {
+function onReorderUp() {
+  const id = draggingId.value;
+  const at = dropAt.value;
+  if (id && at) {
+    const to = resolveInsert(at);
+    if (to !== null) projectStore.moveCorpusItem(id, to);
+  }
+  endReorder();
+}
+
+function endReorder() {
   draggingId.value = null;
-  dropIndex.value = null;
-  canDrag = false;
+  dropAt.value = null;
+  reorderRows = [];
+  window.removeEventListener("mousemove", onReorderMove);
+  window.removeEventListener("mouseup", onReorderUp);
+}
+
+function startReorder(e: MouseEvent, index: number) {
+  e.preventDefault();
+  const item = corpus.value[index];
+  if (!item) return;
+  draggingId.value = item.id;
+  dropAt.value = { index, before: true };
+  reorderRows = rowGeom();
+  window.addEventListener("mousemove", onReorderMove);
+  window.addEventListener("mouseup", onReorderUp);
+}
+
+onUnmounted(endReorder);
+
+/// 行上的插入指示线类名（拖到自己身上时不显示）
+function dropClass(ci: number, id: string): string {
+  const at = dropAt.value;
+  if (!at || draggingId.value === null || draggingId.value === id) return "";
+  if (at.index !== ci) return "";
+  return at.before ? "drop-before" : "drop-after";
 }
 
 // ── 待审批纠正 ────────────────────────────────────────
@@ -581,7 +621,7 @@ function discardDiff(d: Diff) {
           </div>
         </div>
 
-        <div class="clist">
+        <div class="clist" :class="{ reordering: draggingId !== null }">
           <div v-if="corpus.length === 0 && !drafting" class="cempty">
             暂无语料——展开左侧「从剧情录屏中截取」跑一次 OCR，文本会自动进入此列表
           </div>
@@ -602,21 +642,12 @@ function discardDiff(d: Diff) {
             v-for="(item, ci) in corpus"
             :key="item.id"
             class="crow"
-            :class="{
-              dragging: draggingId === item.id,
-              'drop-target': dropIndex === ci && !!draggingId && draggingId !== item.id,
-            }"
-            draggable="true"
-            @dragstart="onRowDragStart($event, item.id)"
-            @dragover="onRowDragOver($event, ci)"
-            @drop.prevent="onRowDrop(ci)"
-            @dragend="onRowDragEnd"
+            :class="[dropClass(ci, item.id), { dragging: draggingId === item.id }]"
           >
             <span
               class="grip"
-              title="拖动调整顺序（语料顺序影响融合取舍）"
-              @mousedown="onGripDown"
-              @mouseup="onGripUp"
+              title="按住拖动调整顺序（语料顺序影响融合取舍）"
+              @mousedown="startReorder($event, ci)"
             >
               <svg class="grip-ic" viewBox="0 0 16 16" aria-hidden="true">
                 <circle cx="6" cy="4" r="1.4" />
@@ -906,9 +937,19 @@ function discardDiff(d: Diff) {
   opacity: 0.45;
 }
 
-/* 放置位置指示：用 inset 阴影画线，避免布局跳动 */
-.crow.drop-target {
+/* 插入指示线：用 inset 阴影画线，避免布局跳动 */
+.crow.drop-before {
   box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.crow.drop-after {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+/* 排序进行中：整列显示抓取光标（指针可能已离开手柄） */
+.clist.reordering .crow,
+.clist.reordering .grip {
+  cursor: grabbing;
 }
 
 /* 待审批纠正 */

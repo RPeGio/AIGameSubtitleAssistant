@@ -178,19 +178,26 @@
 | 改动 | 文件 | 内容 |
 |---|---|---|
 | 更新 / 排序两个 store 动作 | `src/stores/project.ts` | `updateCorpusItem(id, text)`（trim 后为空或与原文相同 ⇒ 不入快照直接返回，否则 `recordSnapshot()` 后改写）与 `moveCorpusItem(id, toIndex)`（clamp 到 `[0, len-1]`，`recordSnapshot()` 后 splice 取出再插入——**语料顺序参与融合 DP 的取舍，所以顺序是数据**） |
-| 行内编辑 + 手动新增 + 拖动排序 | `src/views/CorpusView.vue` | `editingId/editText/setEditInput/startEdit/commitEdit/cancelEdit`；`drafting/draftText/startDraft/commitDraft/cancelDraft`（提交非空才 `addCorpusItem`）；`draggingId/dropIndex/canDrag/onGripDown/onGripUp/onRowDragStart/onRowDragOver/onRowDrop/onRowDragEnd`（`canDrag` 为假时 `preventDefault` ⇒ **只有点阵手柄能发起拖动**，文本选择不受影响） |
-| 模板 | 同上 | `.rh` 加「添加」按钮；草稿行与行内编辑共用一个 `<input class="inp ct-edit">`（`@keydown.ctrl.enter`/`@keydown.meta.enter` 提交、`@keydown.esc` 取消、`@blur` 提交）；行 `draggable="true"` + `.dragging`/`.drop-target`；左侧 `.grip` 内联 SVG（2 列 × 3 行共 6 个 `<circle r="1.4">`）；文本旁铅笔按钮 |
+| 行内编辑 + 手动新增 + 拖动排序 | `src/views/CorpusView.vue` | `editingId/editText/setEditInput/startEdit/commitEdit/cancelEdit`；`drafting/draftText/startDraft/commitDraft/cancelDraft`（提交非空才 `addCorpusItem`）；**排序用指针事件手写**（`draggingId/dropAt/rowGeom/startReorder/onReorderMove/onReorderUp/endReorder/resolveInsert/dropClass`，`onUnmounted` 清理 window 监听）——只有点阵手柄按下才进入排序态，文本选择不受影响 |
+| 模板 | 同上 | `.rh` 加「添加」按钮；草稿行与行内编辑共用一个 `<input class="inp ct-edit">`（`@keydown.ctrl.enter`/`@keydown.meta.enter` 提交、`@keydown.esc` 取消、`@blur` 提交）；行 `:class="[dropClass(ci,item.id),{dragging:…}]"`；左侧 `.grip` 内联 SVG（2 列 × 3 行共 6 个 `<circle r="1.4">`，`@mousedown="startReorder($event,ci)"`）；文本旁铅笔按钮 |
 | 图标 | `src/components/AppIconSprite.vue` | 新增 `ic-pencil` |
-| 样式 | `src/views/CorpusView.vue` | `.crow .grip`（14px、`cursor:grab`/`:active grabbing`）、`.grip-ic{fill:currentColor}`、`.crow .ct-edit`、`.crow.draft`、`.crow.dragging{opacity:.45}`、`.crow.drop-target{box-shadow:inset 0 2px 0 var(--accent)}`（inset 阴影画线，不引起布局跳动） |
+| 样式 | `src/views/CorpusView.vue` | `.crow .grip`（14px、`cursor:grab`/`:active grabbing`）、`.grip-ic{fill:currentColor}`、`.crow .ct-edit`、`.crow.draft`、`.crow.dragging{opacity:.45}`、`.crow.drop-before{box-shadow:inset 0 2px 0 var(--accent)}`、`.crow.drop-after{box-shadow:inset 0 -2px 0 var(--accent)}`（inset 阴影画线，不引起布局跳动）、`.clist.reordering .crow/.grip{cursor:grabbing}` |
 
-**验证（修复后实测，`temp/css-preview/checks/item6.js` / `item6b.js` / `item6c.js`，1680×1000）**
+**返工记录：原实现用 HTML5 拖放，用户验收不通过（2026-10-19）**
+- 用户原话：「手柄长按拖动后cursor有拖动显示，但实际拖动后语料条没有任何变动」。
+- 复现工具 `temp/css-preview/drag.mjs`（CDP `Input.dispatchMouseEvent` 派发**可信**鼠标事件，模拟真实拖动；旧的自查脚本用合成 `dragstart/dragover/drop` 手工派发，**绕过了真实握手 ⇒ 假通过**）。实测事件链：`mousedown` ✓ → `dragstart` ✓（源行确实拿到 `.dragging`）→ 之后只有 `dragenter`，**`dragover` 从不下发给目标行**（记录的 `dropTarget` 恒 0）→ **`drop` 永不触发** ⇒ 拖完没有任何变化。
+- 修法：改用指针事件（mousedown/mousemove/mouseup）自己算插入位置——顺带能精确控制插入点（上半区插到该行前、下半区插到该行后）与指示线，并且**可用真实鼠标事件验证**。
+
+**验证（`temp/css-preview/checks/item6.js` / `item6b.js` / `item6c.js` / `item6d.js` + `temp/css-preview/drag.mjs`，1680×1000）**
 - 改：双击第 3 条 → 输入框预填原文 ✓；**普通 Enter 不提交**（`stillEditing: true`）✓；**Ctrl+Enter 提交**（`stillEditing: false`、文本更新、条数不变 14）✓；**失焦提交** ✓（另一行验证：`blur` 后文本已提交、退出编辑态）。
 - 撤销：全局 `Ctrl+Z`（`ProjectLayout.vue:77` 用 `e.code === "KeyZ"` 判定，合成事件必须带 `code`）回退成功 ✓；顶栏撤销按钮同样回退成功 ✓（无历史时按钮 `disabled`）。
 - 增：点「添加」→ 草稿行出现 → `Ctrl+Enter` 提交后条数 15、末条文本正确、来源胶囊显示「手动」✓；**空文本（含纯空格）不入库**（条数不变、草稿行关闭）✓。
-- 排序：拖动第 1 条到第 4 位 → 拖动中 `row0` 带 `dragging`、目标行带 `drop-target` ✓；落下后顺序变为 `[2,3,4,1,…]`（`movedFirstToIndex3: true`、条数 15 不变）✓。
+- 排序（改用指针实现后的复验）：
+  - **可信鼠标事件**（`drag.mjs`，真实拖动第 1 条到第 4 条位置）：顺序由 `[1,2,3,4,5…]` 变为 `[2,3,4,1,5…]` ✓，拖动中源行带 `dragging`、目标行出现过 `drop-before` ✓。
+  - `item6d.js`：原地按下抬起 → 顺序不变且**撤销按钮仍 disabled**（不产生假快照）✓；第 6 条拖到第 2 条**上半区** → 指示线 `drop-before`、顺序 `[1,6,2,3,4,5,…]` ✓；`Ctrl+Z` 恢复原顺序 ✓；第 1 条拖到第 3 条**下半区** → 指示线 `drop-after`、顺序 `[2,3,1,4,…]` ✓；两次移动后撤销按钮可用 ✓。
 - 手柄几何：14×14 方框、6 个圆点、`cursor: grab` ✓；行高 33px ✓；每行一个铅笔按钮（14 个）✓；`pageOverflow: false` ✓。
-- 截图：`temp/css-preview/item6-corpus.png`（整页）与 `temp/css-preview/item6-corpus-zoom.png`（列表区 2× 放大，可看清点阵手柄与行内布局）。
-- `pnpm build`（`vue-tsc --noEmit && vite build`）通过：2895 模块 / CSS 56.91 kB / JS 642.31 kB。
+- 截图：`temp/css-preview/item6-corpus.png`（整页）、`item6-corpus-zoom.png`（列表区 2× 放大）、`item6-drag.png` 与 `item6-drag-zoom.png`（**拖动中间态**：被拖行变淡 + 目标行下方强调色插入线）。
+- `pnpm build`（`vue-tsc --noEmit && vite build`）通过：2895 模块 / CSS 57.08 kB / JS 643.00 kB。
 
 **原始依据（实现前记录）**
 
