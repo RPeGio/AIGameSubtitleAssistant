@@ -351,6 +351,14 @@ function onWheelRoot(e: WheelEvent) {
   // 滑条自己处理缩放；工具条/标签列不响应
   if (t.closest(".scrollbar-track")) return;
   if (t.closest(".tool-strip") || t.closest(".tl-label-col")) return;
+  // 标尺上滚轮也缩放（与滑条一致），锚点取标尺内容区左缘
+  if (t.closest(".ruler")) {
+    e.preventDefault();
+    const body = t.closest(".tl-content") as HTMLElement | null;
+    const rect = (body ?? rootRef.value)?.getBoundingClientRect();
+    if (rect) timeline.zoom(e.deltaY < 0 ? 1.1 : 0.9, e.clientX - rect.left);
+    return;
+  }
   // Shift+滚轮：垂直滚动轨道区
   if (e.shiftKey) {
     const tracksEl = rootRef.value?.querySelector<HTMLElement>(".tl-tracks") ?? null;
