@@ -169,7 +169,7 @@ pub fn parse_vulkaninfo_gpus(summary: &str) -> Vec<String> {
 }
 
 fn value_after_eq(v: &str) -> &str {
-    v.trim_start_matches(|c: char| c == '=' || c == ' ').trim()
+    v.trim_start_matches(['=', ' ']).trim()
 }
 
 // ─── L0 / L1 探测（有子进程/IO，成本：nvidia-smi ~50ms，vulkaninfo ~200ms）──
@@ -292,22 +292,31 @@ fn verify_explicit(
         // 实测后端不符 → 硬报错（ggml 会静默降级，这里必须拦下）
         return Err(reject_message(req_raw, &e.backend, caps));
     }
-    // info 没给 backend 行（老版本二进制）：退回资产推断，能对上就放行
-    let marker_ok = assets
-        .marker
-        .as_deref()
-        .map(|m| m.eq_ignore_ascii_case(req_raw))
-        .unwrap_or(false);
-    if marker_ok || (expect == "CUDA" && assets.has_cuda_dll)
-        || (expect == "Vulkan" && assets.has_vulkan_dll)
-    {
-        Ok(Decision {
+    // info 没给 backend 行（老版本二进制）：退回资产推断，能对上就放行。
+    // 判据优先级：.backend 标记（上次成功构建写入）> DLL 存在性——标记存在但与请求
+    // 不符 ⇒ DLL 可能是切后端时未清的陈旧残留，不得单方放行（PR48 审查）。
+    let dll_ok = (expect == "CUDA" && assets.has_cuda_dll)
+        || (expect == "Vulkan" && assets.has_vulkan_dll);
+    match assets.marker.as_deref() {
+        Some(m) if !m.eq_ignore_ascii_case(req_raw) => Err(reject_message(
+            req_raw,
+            &format!("（info 无 backend 行，.backend 标记为 {m}）"),
+            caps,
+        )),
+        Some(m) => Ok(Decision {
             backend: req_raw.to_string(),
-            reason: format!("info 未实证 backend 行，按已装资产（.backend={}）放行", req_raw),
+            reason: format!("info 未实证 backend 行，按 .backend 标记（{m}）放行"),
             source: "l1",
-        })
-    } else {
-        Err(reject_message(req_raw, "（未实证，info 无 backend 行且资产不符）", caps))
+        }),
+        None if dll_ok => Ok(Decision {
+            backend: req_raw.to_string(),
+            reason: format!(
+                "info 未实证 backend 行，按已装资产（发现 {}）放行",
+                if expect == "CUDA" { "ggml-cuda.dll" } else { "ggml-vulkan.dll" }
+            ),
+            source: "l1",
+        }),
+        None => Err(reject_message(req_raw, "（未实证，info 无 backend 行且无对应资产）", caps)),
     }
 }
 
@@ -489,6 +498,23 @@ mod tests {
         let d = decide(DeviceRequest::Cpu, None, &a, &caps(false, false)).unwrap();
         assert_eq!(d.backend, "CPU");
         assert_eq!(d.source, "requested");
+    }
+
+    #[test]
+    fn decide_explicit_l1_fallback_marker_rules() {
+        // info 无 backend 行（老版本二进制）时的 L1 放行判据（verify_explicit 的
+        // eff=None 路径）：① marker 一致 → 放行；② marker 缺失但 DLL 在 → 放行，
+        // 理由写明依据是 DLL；③ marker 与请求不符 → 拒绝——DLL 可能是切后端时
+        // 未清的陈旧残留，不得单方放行
+        let d = decide(DeviceRequest::Cuda, None, &assets(Some("cuda"), true, false), &caps(true, true)).unwrap();
+        assert_eq!(d.source, "l1");
+        assert!(d.reason.contains(".backend"), "{}", d.reason);
+
+        let d = decide(DeviceRequest::Cuda, None, &assets(None, true, false), &caps(true, true)).unwrap();
+        assert!(d.reason.contains("ggml-cuda.dll"), "{}", d.reason);
+
+        let err = decide(DeviceRequest::Cuda, None, &assets(Some("vulkan"), false, true), &caps(true, true)).unwrap_err();
+        assert!(err.contains(".backend 标记为 vulkan"), "{}", err);
     }
 
     #[test]
