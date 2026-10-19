@@ -13,7 +13,7 @@
 | 2 | ✅ 播放头跳转后画面/字幕停在上一帧 | 修复 | 无 | 已实现（提交号待补）：命中判定留一帧容差 + 跳转/擦洗两种 API 分开 |
 | 3 | ✅ 标尺分度随视口拥挤 | 修复 | 无 | 已实现（提交号待补）：按最小像素间距自适应，删 30s 封顶阶梯 |
 | 4 | ✅ 标尺滚轮缩放 | 功能·小 | 与 3 同区 | 已实现（提交号待补）：标尺滚轮缩放（锚点=光标处），与滑条一致 |
-| 5 | 播放键/进度条移出画面 | 修复·布局 | 无 | 与 2 同属「画面区域」正确性，一起验证 |
+| 5 | ✅ 播放键/进度条移出画面 | 修复·布局 | 无 | 已实现（提交号待补）：控件条改流内 + 画面按 16:9 自定高，字幕回到画面底 |
 | 6 | 语料页语料列表增删改 | 功能 | 无 | 页面级独立高频功能 |
 | 7 | OCR 参数 info 图标 + 悬浮解释 | 功能·基建 | 无 | 基建先落地，第 12 项新参数可自带说明 |
 | 8 | 「分割/合并」倒三角 + 策略小面板 | 功能·核心 | 无 | 时间轴功能扩展第一块，**先与用户对齐策略细节** |
@@ -136,19 +136,27 @@
 - 轨道区滚轮：pps 不变、播放头左移（895.67 → 859.17）⇒ 仍是平移 ✓。
 
 
-### 5. 校对区播放键与进度条下移到画面外
+### 5. ✅ 校对区播放键与进度条下移到画面外
 
-**现状依据**
+**已实现（2026-10-19，提交号待补）**
+
+| 文件 | 改动 |
+|---|---|
+| `src/components/VideoPlayer.vue` | `.controls` 去掉 `position:absolute/left/right/bottom/z-index` 与半透明底、`border-radius`，改流内：`flex:none;height:32px;padding:0 4px;margin-top:6px;color:var(--dim)`；`.player-container` 由 `flex:1` 改 **`flex:0 1 auto` + `aspect-ratio:16/9`**（高度由宽度定，画面尺寸才不会被多出的 32px 压小）；`.ctrl-btn:hover` 改 `var(--hover)`；进度条滑块由 `--v-cap-fg` 改 `var(--accent)` |
+| `src/components/ReviewPane.vue` | `.player-area` 去掉 `aspect-ratio`/`max-height`，改 `flex:0 0 62%; min-width:0; min-height:0; align-self:center; display:flex; flex-direction:column`（高度交给内容：画面 + 6px + 控件条） |
+| `src/components/SubtitleOverlay.vue` | 删 `CONTROL_BAR_H = 32`，`stackStyle.top` 不再减 32 ⇒ 字幕回到画面真实底边 |
+
+**验证（`temp/css-preview/checks/item5.js` / `item5b.js`，编辑器页与打轴页数字一致）**
+- 画面 `.player-container` **577.73×324.97（比例 1.78 = 16:9，与改前逐项相同）**；`.controls` 位于 y478（画面底 472 之下 6px）、`position: static`、`controlsBelowPicture: true` / `controlsInsidePicture: false`。
+- 字幕：3 行，`stackBottom 472 == pictureBottom 472`（贴画面底，不再悬空 32px）。
+- 画面底部 6px 处 `elementFromPoint` = `video.video-el`、`hitIsControls: false` ⇒ 该区域重新可交互；打轴页最低的选区手柄 y365.98 命中 `div.handle`（`lowestHandleReachable: true`）。
+- 布局无回归：`.rvbot`（时间轴卡片）仍 **402.95px**、`.rvtop` 441.05、`pageOverflow: false`。
+- 主题：`.controls` 背景透明、文字取 `--dim`（深 `rgb(156,160,166)` / 浅 `rgb(92,97,105)`）、进度条填充取主题强调色（`rgb(94,106,210)` / `rgb(79,91,196)`）。
+- `pnpm build` 通过（6.19s）。截图 `temp/css-preview/item5-editor-dark.png`、`item5-editor-light.png`。
+
+**原始现状依据（改前）**
 - `src/components/VideoPlayer.vue` 的 `.controls` 是 `position: absolute; bottom: 0; height: 32px`，压在 `.player-container` 的画面上（T6 改动）。
 - 因为控件条压在画面上，`src/components/SubtitleOverlay.vue` 里有 `const CONTROL_BAR_H = 32` 把字幕上抬 32px 让位。
-
-**要做**
-- 控件条移出 `.player-container`（落到画面下方、仍在校对区卡片内）。
-- **同步撤掉** 32px 让位（否则字幕会悬空）。
-- 顺带确认选区交互区仍只限画面（`RegionOverlay` 按 `contentRect` 定位）。
-
-**验收**
-- 画面与选区不再被控件条遮挡；字幕贴画面底；深/浅两主题样式正常。
 
 ---
 

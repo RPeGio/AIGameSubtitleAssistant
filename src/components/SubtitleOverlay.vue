@@ -56,12 +56,10 @@ const activeLines = computed<PreviewLine[]>(() => {
 
 // 字幕堆叠贴视频画面底部（letterbox 校正后），translateY(-100%) 向上生长；
 // max-height 限画面高度，多轨同时命中溢出时裁掉顶部（保留贴底行）
-// 画面底部 32px 被播放控件条覆盖（见 VideoPlayer 的 .controls），整体抬高让开
-const CONTROL_BAR_H = 32;
-
+// 播放控件条已移到画面之外（VideoPlayer 的 .controls），故不再需要上抬让位
 const stackStyle = computed(() => ({
   left: contentRect.value.left + "px",
-  top: contentRect.value.top + contentRect.value.height - CONTROL_BAR_H + "px",
+  top: contentRect.value.top + contentRect.value.height + "px",
   width: contentRect.value.width + "px",
   maxHeight: contentRect.value.height + "px",
 }));

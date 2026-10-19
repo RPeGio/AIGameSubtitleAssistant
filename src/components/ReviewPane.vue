@@ -192,15 +192,14 @@ watch(
   align-items: center;
 }
 
-/* 预览按 16:9 定尺（宽由 62% 决定），窗口矮时收缩并让视频自己加黑边 */
+/* 宽度由 62% 决定，高度交给内容（画面按 16:9 自定高 + 下方控件条），窗口矮时收缩 */
 .player-area {
   flex: 0 0 62%;
-  width: auto;
-  height: auto;
-  aspect-ratio: 16 / 9;
-  max-height: 100%;
   min-width: 0;
+  min-height: 0;
   align-self: center;
+  display: flex;
+  flex-direction: column;
 }
 
 .overview-area {

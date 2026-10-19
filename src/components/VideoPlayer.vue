@@ -264,12 +264,14 @@ onUnmounted(deactivate);
   position: relative;
   display: flex;
   flex-direction: column;
-  height: 100%;
+  min-height: 0;
 }
 
+/* 高度由宽度定（16:9）：控件条移到画面下方后，画面尺寸才不会因为多出 32px 而缩小 */
 .player-container {
   position: relative;
-  flex: 1;
+  flex: 0 1 auto;
+  aspect-ratio: 16 / 9;
   min-height: 0;
   background: #000;
   border-radius: 8px;
@@ -330,22 +332,16 @@ onUnmounted(deactivate);
   color: var(--danger);
 }
 
-/* 控件条覆盖在画面底部 32px 上（字幕会整体抬高让开，见 SubtitleOverlay） */
+/* 控件条在画面之下（不遮挡画面、不遮挡画面底部的选区手柄，见 MISC_TODO 第 5 项） */
 .controls {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 15;
+  flex: none;
   height: 32px;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 0 12px;
-  background: var(--v-cap-bg);
-  border-top: 1px solid var(--hair);
-  border-radius: 0 0 8px 8px;
-  color: var(--v-cap-fg);
+  padding: 0 4px;
+  margin-top: 6px;
+  color: var(--dim);
 }
 
 .ctrl-btn {
@@ -365,7 +361,7 @@ onUnmounted(deactivate);
 }
 
 .ctrl-btn:hover {
-  background: rgba(255, 255, 255, 0.14);
+  background: var(--hover);
 }
 
 .ctrl-btn:disabled {
@@ -389,7 +385,7 @@ onUnmounted(deactivate);
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: var(--v-cap-fg);
+  background: var(--accent);
   cursor: pointer;
 }
 
@@ -397,7 +393,7 @@ onUnmounted(deactivate);
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: var(--v-cap-fg);
+  background: var(--accent);
   cursor: pointer;
   border: none;
 }
