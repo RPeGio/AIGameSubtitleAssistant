@@ -260,19 +260,25 @@ onUnmounted(deactivate);
 </template>
 
 <style scoped>
+/* 网格两行：画面（占剩余高度） + 控件条 32px，行距 6px */
 .player-wrapper {
   position: relative;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) 32px;
+  row-gap: 6px;
+  height: 100%;
   min-height: 0;
 }
 
-/* 高度由宽度定（16:9）：控件条移到画面下方后，画面尺寸才不会因为多出 32px 而缩小 */
+/* 画面：在「剩余高度 × 可用宽度」内取最大的 16:9 框（两轴都 auto + 双 max 约束，
+   由 aspect-ratio 保形）⇒ 窗口变矮/变宽都只缩小画面，不会溢出盖住控件条或信息栏 */
 .player-container {
   position: relative;
-  flex: 0 1 auto;
+  justify-self: center;
+  align-self: center;
   aspect-ratio: 16 / 9;
-  min-height: 0;
+  max-width: 100%;
+  max-height: 100%;
   background: #000;
   border-radius: 8px;
   overflow: hidden;
@@ -334,13 +340,11 @@ onUnmounted(deactivate);
 
 /* 控件条在画面之下（不遮挡画面、不遮挡画面底部的选区手柄，见 MISC_TODO 第 5 项） */
 .controls {
-  flex: none;
   height: 32px;
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 0 4px;
-  margin-top: 6px;
   color: var(--dim);
 }
 

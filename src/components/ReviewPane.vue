@@ -192,12 +192,12 @@ watch(
   align-items: center;
 }
 
-/* 宽度由 62% 决定，高度交给内容（画面按 16:9 自定高 + 下方控件条），窗口矮时收缩 */
+/* 宽度由 62% 决定、高度撑满 .rvtop：画面按可用高度定尺（否则窗口变矮变宽时画面会溢出） */
 .player-area {
   flex: 0 0 62%;
   min-width: 0;
   min-height: 0;
-  align-self: center;
+  align-self: stretch;
   display: flex;
   flex-direction: column;
 }

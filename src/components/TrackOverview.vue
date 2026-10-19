@@ -343,6 +343,8 @@ onUnmounted(deactivate);
 .overview-panel {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-width: 0;
   height: 100%;
   min-height: 0;
   background: var(--panel);

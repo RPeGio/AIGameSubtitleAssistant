@@ -158,6 +158,15 @@
 - `src/components/VideoPlayer.vue` 的 `.controls` 是 `position: absolute; bottom: 0; height: 32px`，压在 `.player-container` 的画面上（T6 改动）。
 - 因为控件条压在画面上，`src/components/SubtitleOverlay.vue` 里有 `const CONTROL_BAR_H = 32` 把字幕上抬 32px 让位。
 
+**补充修复（用户 2026-10-19 验收时发现，同属本项）**
+- 症状：应用高度压到最小 720px、宽度逐渐拉大时，校对区**画面放大溢出**，盖住下方控件条与上方信息栏。
+  根因：首版把画面高度交给「宽度 × 16:9」，宽度变大时高度超出可用空间且无法收缩。
+  改法：`VideoPlayer.vue` 的 `.player-wrapper` 改网格 `grid-template-rows:minmax(0,1fr) 32px; row-gap:6px`，`.player-container` 改「两轴 auto + `max-width:100%` + `max-height:100%` + `aspect-ratio:16/9`」——由 CSS 在「可用高度 × 可用宽度」内取最大的 16:9 框；`ReviewPane.vue` 的 `.player-area` 改 `align-self:stretch`（拿到确定高度）。
+- 症状：未聚焦轨道时右侧「轨道总览」面板不填满容器全宽（右侧留空）。
+  根因：`.overview-panel` 只有 `height:100%`，在 `.overview-area{display:flex}` 里宽度按内容收缩。
+  改法：`TrackOverview.vue` 的 `.overview-panel` 加 `flex:1; min-width:0`。
+- 验证（`temp/css-preview/checks/item5c.js`；1680×1000 / 1900×720 / 1600×720 / 1280×720 / 2400×720 / 2100×760 六种尺寸）：画面比例恒为 **1.78**，`pictureAboveControls`、`pictureInsideRvtop`、`controlsInsideRvtop`、`pictureBelowInfoBar`、`panelFillsAreaWidth` 全 true，`pageOverflow` false；1680×1000 下画面仍 577.73×324.97（与首版一致）。截图 `temp/css-preview/item5c-asr-1900x720.png`、`item5c-editor-1280x720.png`。
+
 ---
 
 ## B 组：页面级功能
