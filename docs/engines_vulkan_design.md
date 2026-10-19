@@ -1,6 +1,6 @@
 # MOSS ASR 的 Vulkan 优化与 GPU 后端回退设计
 
-> 状态：**步骤 1–3 已完成（脚本 + 构建实测 + 三设备基准），步骤 4（探测逻辑 + fallback 语义）未开始**（2026-10-18 用户确认要点见 §0.2）
+> 状态：**步骤 1–4 已完成（脚本 + 构建实测 + 三设备基准 + 探测逻辑/fallback 语义），步骤 5（文档与文案）未开始**（2026-10-18 用户确认要点见 §0.2）
 > 本分支范围：**仅 MOSS ASR 的 Vulkan 通路 + 后端探测/回退语义**
 > 分支：`feat/engines-gpu-vulkan`（本 worktree `AIGameSubtitleAssistant-gpu-vulkan`），基线 `7b8e306`
 > 明确**不做**：LLM 的 Vulkan（已有官方通路，用户决定不动）、OCR / 融合嵌入的 GPU（上游无 Vulkan 通路，见 §1）、FunASR（不在本分支范围，见 §7）
@@ -186,8 +186,12 @@
    → 验证（已跑通）：clone 必败法实测默认根 30 字符无告警、超长根（89 字符）正确告警（估算 297 > 250）、`-WorkDir` 非空守卫生效；落点复核块对真实 `info` 输出解析出 `Vulkan1` = RTX 4060（uma:0）；`cargo check` / `vue-tsc --noEmit` 通过；脚本 BOM/CRLF 复核无恙（§2.1 教训）。
 3. ✅ **已完成**（2026-10-19）：落点确认（§3.3 实测）后用 `quality_bench_test(voiced)_5min.mp4`（提取 5:14.99 / 16kHz mono wav，与 `video::extract_audio` 同参；`moss-transcribe-q5_k.gguf`；`--format json`；未设 `MTD_THREADS`）跑了三设备各一次：**CPU 680.6 s（`backend: CPU`）、Vulkan 134.7 s（`Vulkan1` = RTX 4060）、CUDA 76.2 s（`CUDA0`）**——Vulkan ≈ CUDA 的 1.77×，仍比 CPU 快 5.0×（CUDA 快 8.9×）。转写文本三方一致（总字数 3765/3765/3775，首末段逐字相同；段数 84 vs 90 属分界粒度差异）。耗时对比已记入 `docs/development.md` 的「MOSS 后端与三设备实测」。
    → 验证：三跑 `exit=0` 且 stderr 的 backend 行分别为 `CPU`/`Vulkan1`/`CUDA0`；输出 JSON 同为段数组（`id/start/end/speaker/text`）。
-4. **探测逻辑 + 回退语义**：实现 §3.2 的 L0/L1/L2 与 §3.4 的行为矩阵。
-   → 验证：L2 能识破"配了 vulkan 但实际跑 CUDA0"的静默降级（用现状 CUDA-only 构建复现即可）。
+4. ✅ **已完成**（2026-10-19）：探测逻辑 + 回退语义落地——新模块 `src-tauri/src/ai_runtime/backend_probe.rs`（纯函数解析/判定 + L0/L1 探测，14 个单测；不碰 config.rs）：
+   - **L2 实证**：`parse_info_stderr()` 只认 `[mt I] backend:` 行（`[mt W]` 降级警告不误判）；`parse_vulkan_devices()` 解析 `ggml_vulkan: N = … | uma: …` 枚举表；
+   - **L0/L1**：`probe_machine()`（nvidia-smi -L；System32\vulkan-1.dll + vulkaninfo --summary 按 deviceName+driverInfo 去重——本机核显被枚举 3 次）、`probe_assets()`（`.backend` 标记 + ggml-{cuda,vulkan}.dll）；
+   - **判定**（§3.4 矩阵）：`decide()` —— 显式 cpu 恒可用；显式 cuda/vulkan 与 L2 实测**跨族不符 = 硬报错**（含"build_moss.ps1 -Backend … 重装"或"改回 auto"指引；L2 缺失时退回资产推断）；auto 以 L2 为准，Vulkan 落 `uma:1` 设备时在 reason 附核显提示；`recommend_from_assets()` 给自检"该装哪个后端"提示；
+   - **接线**：`moss.rs` probe() 与 run_transcribe 同参（显式设备才设 MTD_DEVICE）→ L2 实测与转写真实后端一致；判定存 `backend_decision`，经 trait 新默认方法 `effective_backend()`（仅 moss 覆写）导出；`AsrEngineStatus` 新增 `effective_backend` 字段（欢迎页 ASR 卡显示"设备 · <config>（实测 <L2>）"）。
+   → 验证：`cargo test --lib` 273 通过（含 14 个新单测：降级警告不误判、跨族硬报错、同族核显只警告、核显三连枚举去重等）；`vue-tsc --noEmit` 通过。§3.4 全行为矩阵以单测固化（夹具 = §2.2/§2.4 实测 stderr 原文）。
 5. **文档与文案**：`docs/development.md` / `_EN` 增补后端语义；`README.md:59` 与欢迎页文案按 ⑤ 口径校正（只说 ASR）。
    → 验证：文案不出现对 OCR 的不利表述。
 

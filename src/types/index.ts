@@ -213,6 +213,8 @@ export interface AsrEngineStatus {
   message: string;
   /// 配置的推理设备：moss 为 ""（=auto，ggml 自动选优）/ cpu / cuda / vulkan；funasr 为 cpu / cuda
   device: string;
+  /// 实测生效后端（仅 moss 有值，如 "CUDA0"/"Vulkan1"/"CPU"）；与 device 不同：device=vulkan 时 ggml 静默降级后实测可能仍是 CUDA0
+  effective_backend?: string | null;
 }
 
 export interface AsrProgress {
