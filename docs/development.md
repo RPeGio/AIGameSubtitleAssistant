@@ -1,4 +1,4 @@
-# 开发文档
+﻿# 开发文档
 
 [English](development_EN.md) | 中文
 
@@ -93,7 +93,7 @@ runtime/
 | `python_path` / `worker_script` / `deps_dir` / `model_dir` | OCR worker 相关（相对 runtime 目录） |
 | `ocr_model` | `mobile`（默认）或 `server`（PP-OCRv5 档位） |
 | `language` / `dev_debug` | OCR 语言、调试帧落盘（`temp/`） |
-| `moss_binary` / `moss_model` / `moss_threads` / `moss_device` | MOSS 配置；`moss_device`：空=自动 / cpu / cuda / vulkan |
+| `moss_binary` / `moss_model` / `moss_threads` / `moss_device` | MOSS 配置；`moss_device`：空=auto（ggml 自选）/ cpu / cuda / vulkan（显式请求不可用时硬报错，见下节） |
 | `llm_binary` / `llm_model` / `llm_threads` | llama.cpp 配置（可选，仅融合能力测试台） |
 | `asr_provider` | `moss` / `funasr` / 空=自动 |
 | `funasr_worker` / `funasr_deps` / `funasr_model_dir` / `funasr_device` / `funasr_language` / `funasr_timeout_minutes` | FunASR 配置 |
@@ -114,6 +114,16 @@ runtime/
 - Vulkan 比 CUDA 慢 1.77×，但仍比 CPU 快 5 倍——无 NVIDIA 的机器上 Vulkan 构建收益明确。
 - 转写文本三方一致（总字数 3765/3765/3775，首末段逐字相同；段数 84 vs 90 属分界粒度差异）。
 - ⚠ 双 GPU 机器上裸 `MTD_DEVICE=vulkan` 落**核显**（枚举序第一块，`Vulkan0`）；产品侧 vulkan 构建的 `moss_device` 应留空（auto），见 `docs/engines_vulkan_design.md` §3.3/§5-11。
+
+### MOSS 后端语义与回退（`backend_probe.rs`，feat/engines-gpu-vulkan）
+
+`moss_device` 取值与语义：`""`（=auto，ggml 自选，双 GPU 实测偏好独显）/ `cpu` / `cuda` / `vulkan`。判定链三级（`ai_runtime/backend_probe.rs`，15 单测）：
+
+- **L2（唯一可信判据）**：spawn 时以与转写**同参**拉起 `info <model>`（显式设备才设 `MTD_DEVICE`），从 stderr 取 `[mt I] backend:` 行——静默降级（exit 0）只有这行能识破；
+- **L0/L1**：nvidia-smi + vulkaninfo（机器能力）、`.backend` 标记 + `ggml-{cuda,vulkan}.dll`（已装资产），用于报错文案与"该装哪个后端"建议；
+- **回退语义 = 方案 A**：资产层同时只有一套 ggml 后端（`ggml.dll` 同名互斥），故"回退"= 探测已装后端 + 告诉用户装哪个，**不是运行期切换**。显式 cpu/cuda/vulkan 与实测跨族不符 = **硬报错**（提示 `build_moss.ps1 -Backend …` 重装或改回 auto），不自动降级；只有 auto 允许 ggml 下沉（落 `uma:1` 核显时在理由中提示）。
+
+实测生效后端经 `AsrProvider::effective_backend()`（仅 MOSS 实现）→ `check_asr_engines` 的 `effective_backend` 字段 → 欢迎页 ASR 卡显示「设备 · 配置值（实测 …）」。Vulkan 构建：`scripts/build_moss.ps1 -Backend vulkan`（需 Vulkan SDK/glslc；工作根超 ~50 字符会触发 MAX_PATH FTK1011，脚本已默认短根并告警）。详见 `docs/engines_vulkan_design.md`。
 
 ### runtime 目录解析顺序
 

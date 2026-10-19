@@ -1,6 +1,6 @@
-# MOSS ASR 的 Vulkan 优化与 GPU 后端回退设计
+﻿# MOSS ASR 的 Vulkan 优化与 GPU 后端回退设计
 
-> 状态：**步骤 1–4 已完成（脚本 + 构建实测 + 三设备基准 + 探测逻辑/fallback 语义），步骤 5（文档与文案）未开始**（2026-10-18 用户确认要点见 §0.2）
+> 状态：**步骤 1–5 全部完成**（脚本前置检查 / Vulkan 构建实测 / 三设备基准 / 探测与 fallback 语义 / 文档与文案核验）（2026-10-18 用户确认要点见 §0.2）
 > 本分支范围：**仅 MOSS ASR 的 Vulkan 通路 + 后端探测/回退语义**
 > 分支：`feat/engines-gpu-vulkan`（本 worktree `AIGameSubtitleAssistant-gpu-vulkan`），基线 `7b8e306`
 > 明确**不做**：LLM 的 Vulkan（已有官方通路，用户决定不动）、OCR / 融合嵌入的 GPU（上游无 Vulkan 通路，见 §1）、FunASR（不在本分支范围，见 §7）
@@ -191,9 +191,11 @@
    - **L0/L1**：`probe_machine()`（nvidia-smi -L；System32\vulkan-1.dll + vulkaninfo --summary 按 deviceName+driverInfo 去重——本机核显被枚举 3 次）、`probe_assets()`（`.backend` 标记 + ggml-{cuda,vulkan}.dll）；
    - **判定**（§3.4 矩阵）：`decide()` —— 显式 cpu 恒可用；显式 cuda/vulkan 与 L2 实测**跨族不符 = 硬报错**（含"build_moss.ps1 -Backend … 重装"或"改回 auto"指引；L2 缺失时退回资产推断）；auto 以 L2 为准，Vulkan 落 `uma:1` 设备时在 reason 附核显提示；`recommend_from_assets()` 给自检"该装哪个后端"提示；
    - **接线**：`moss.rs` probe() 与 run_transcribe 同参（显式设备才设 MTD_DEVICE）→ L2 实测与转写真实后端一致；判定存 `backend_decision`，经 trait 新默认方法 `effective_backend()`（仅 moss 覆写）导出；`AsrEngineStatus` 新增 `effective_backend` 字段（欢迎页 ASR 卡显示"设备 · <config>（实测 <L2>）"）。
-   → 验证：`cargo test --lib` 273 通过（含 14 个新单测：降级警告不误判、跨族硬报错、同族核显只警告、核显三连枚举去重等）；`vue-tsc --noEmit` 通过。§3.4 全行为矩阵以单测固化（夹具 = §2.2/§2.4 实测 stderr 原文）。
-5. **文档与文案**：`docs/development.md` / `_EN` 增补后端语义；`README.md:59` 与欢迎页文案按 ⑤ 口径校正（只说 ASR）。
-   → 验证：文案不出现对 OCR 的不利表述。
+   → 验证：`cargo test --lib` 273 通过（含 15 个新单测：降级警告不误判、跨族硬报错、同族核显只警告、核显三连枚举去重等）；`vue-tsc --noEmit` 通过。§3.4 全行为矩阵以单测固化（夹具 = §2.2/§2.4 实测 stderr 原文）。
+5. ✅ **已完成**（2026-10-19）：文档与文案——
+   - `docs/development.md` 新增「MOSS 后端语义与回退（`backend_probe.rs`）」小节（`moss_device` 取值语义、L0/L1/L2 判定链、方案 A 回退语义=显式跨族硬报错/auto 允许下沉、`effective_backend` → 欢迎页实测展示、Vulkan 构建入口与 MAX_PATH 提示）；`config.json 关键字段` 表的 `moss_device` 行同步；`docs/development_EN.md` 镜像；
+   - **⑤ 口径核验（README.md:59 / README_EN.md:60 / 欢迎页卡片文案）**：现行文案已合规——GPU 表述只落在 ASR/LLM 事实范围（"转写时间延长数倍"指 ASR；OCR 卡片仅中性描述"本地 Python worker"），无对 OCR 的不利披露，**零改动**。
+   → 验证：全仓 grep `GPU|vulkan|CUDA` 于两版 README 与 Welcome.vue 逐行核对，无 OCR 不利表述。
 
 ---
 

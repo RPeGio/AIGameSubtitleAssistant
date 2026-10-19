@@ -1,4 +1,4 @@
-# Development Guide
+﻿# Development Guide
 
 English | [中文](development.md)
 
@@ -93,7 +93,7 @@ runtime/
 | `python_path` / `worker_script` / `deps_dir` / `model_dir` | OCR worker paths (relative to the runtime dir) |
 | `ocr_model` | `mobile` (default) or `server` (PP-OCRv5 tier) |
 | `language` / `dev_debug` | OCR language; debug frame dump (`temp/`) |
-| `moss_binary` / `moss_model` / `moss_threads` / `moss_device` | MOSS; `moss_device`: empty=auto / cpu / cuda / vulkan |
+| `moss_binary` / `moss_model` / `moss_threads` / `moss_device` | MOSS; `moss_device`: empty=auto (ggml chooses) / cpu / cuda / vulkan (explicit request unavailable = hard error, see below) |
 | `llm_binary` / `llm_model` / `llm_threads` | llama.cpp (optional, fusion-capability test bench only) |
 | `asr_provider` | `moss` / `funasr` / empty=auto |
 | `funasr_worker` / `funasr_deps` / `funasr_model_dir` / `funasr_device` / `funasr_language` / `funasr_timeout_minutes` | FunASR |
@@ -114,6 +114,16 @@ The same benchmark run once per device: the 5:14.99 / 16 kHz mono wav extracted 
 - Vulkan is 1.77× slower than CUDA but still 5× faster than CPU — a clear win on machines without NVIDIA drivers/GPUs.
 - The transcribed text matches across all three (total chars 3765/3765/3775; first and last segments byte-identical; 84 vs 90 segments is a boundary-granularity difference).
 - ⚠ On a dual-GPU machine a bare `MTD_DEVICE=vulkan` lands on the **iGPU** (first in enumeration order, `Vulkan0`); in the product, `moss_device` should stay empty (auto) for the Vulkan build — see `docs/engines_vulkan_design_EN.md` §3.3/§5-11.
+
+### MOSS backend semantics and fallback (`backend_probe.rs`, feat/engines-gpu-vulkan)
+
+`moss_device` values and semantics: `""` (=auto, ggml chooses; on dual-GPU it prefers the discrete card per measurement) / `cpu` / `cuda` / `vulkan`. The decision chain has three levels (`ai_runtime/backend_probe.rs`, 15 unit tests):
+
+- **L2 (the only trustworthy evidence)**: at spawn, `info <model>` is launched with the **same parameters** as transcription (MTD_DEVICE set only for explicit devices); the `[mt I] backend:` line in stderr is taken — silent degradation (exit 0) can only be caught by this line;
+- **L0/L1**: nvidia-smi + vulkaninfo (machine capability), `.backend` marker + `ggml-{cuda,vulkan}.dll` (installed assets), used for error messages and "which backend to install" hints;
+- **Fallback semantics = Option A**: only one ggml backend set can exist at a time (`ggml.dll` collides by name), so "fallback" = probe the installed backend + tell the user which to install, **not runtime switching**. An explicit cpu/cuda/vulkan request that cross-family mismatches the measurement is a **hard error** (hinting `build_moss.ps1 -Backend …` reinstall or switching back to auto), never auto-degrading; only auto lets ggml sink (an `uma:1` iGPU placement gets a hint in the reason).
+
+The measured backend is exported via `AsrProvider::effective_backend()` (only MOSS implements it) → the `effective_backend` field of `check_asr_engines` → the welcome ASR card shows "设备 · <config>（实测 <measured>）". Vulkan build: `scripts/build_moss.ps1 -Backend vulkan` (requires Vulkan SDK/glslc; a working root longer than ~50 chars triggers MAX_PATH FTK1011 — the script defaults to a short root and warns). See `docs/engines_vulkan_design_EN.md` for the full design.
 
 ### Runtime directory resolution order
 
