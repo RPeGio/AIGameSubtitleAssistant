@@ -211,6 +211,8 @@ export interface AsrEngineStatus {
   engine: string;
   ready: boolean;
   message: string;
+  /// 配置的推理设备：moss 为 ""（=auto，ggml 自动选优）/ cpu / cuda / vulkan；funasr 为 cpu / cuda
+  device: string;
 }
 
 export interface AsrProgress {

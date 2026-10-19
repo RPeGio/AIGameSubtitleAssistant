@@ -16,16 +16,20 @@ build_moss.ps1 —— 从源码构建 moss-transcribe.exe（仅开发者/CI 使�
   -Force        强制重新构建（删除现有 runtime/bin/moss-transcribe.exe 后重建）
   -Backend      推理后端：cpu（默认）/ cuda / vulkan。GPU 后端由 ggml 支持
                 （moss-transcribe.cpp 透传 GGML_CUDA / GGML_VULKAN，见官方 README），
-                构建后 runtime/bin/ 会多出 ggml-cuda.dll（Vulkan 是否产出独立的
-                ggml-vulkan.dll 待实测：上游 GGML_BACKEND_DL 默认 OFF，产物以实际为准），
+                构建后 runtime/bin/ 会多出 ggml-cuda.dll / ggml-vulkan.dll
+                （GGML_BACKEND_DL 开启，2026-10-19 实测 vulkan 版产出独立 ggml-vulkan.dll），
                 运行时 backend 自动选 GPU（MTD_DEVICE=cpu 可强制回退；注意裸 MTD_DEVICE=vulkan
                 会选中枚举序里的第一块 GPU，本机即 Intel 核显 —— 见 docs/engines_vulkan_design.md §3.3）。
+  -WorkDir      构建工作目录（默认 <系统盘>\gsa-moss-build\<backend>-<PID>）。
+                **有硬约束**：vulkan 构建树最深的 TryCompile 瞬态尾巴实测 208 字符，工作根
+                超 ~50 字符即触 FileTracker FTK1011；勿挪进仓库（仓库路径本身已 58 字符）。
   -GitMirror    源码镜像前缀，如 https://ghproxy.com/ 或 https://gitclone.com/github.com/（网络受限时使用）
 用法：powershell -ExecutionPolicy Bypass -File scripts/build_moss.ps1 -Backend cuda
 #>
 param(
   [switch]$Force,
   [string]$Backend = "cpu",
+  [string]$WorkDir = "",
   [string]$GitMirror = ""
 )
 
@@ -107,14 +111,21 @@ if ($Backend -eq "vulkan") {
     if (-not $env:VULKAN_SDK) {
       Write-Host "==> 注意：VULKAN_SDK 未设置。cmake 若报找不到 Vulkan，请把它指向 SDK 根目录"
     } else {
-      # SPIRV-Headers 的 CMake CONFIG 包：LunarG SDK 并不总是提供；缺失时 cmake 会报
-      # "Could not find a package configuration file provided by SPIRV-Headers"。
-      $spirvPkg = Get-ChildItem (Join-Path $env:VULKAN_SDK "share\cmake") -Directory -Filter "SPIRV-Headers*" -ErrorAction SilentlyContinue
-      if (-not $spirvPkg) {
-        Write-Host "==> 警告：未发现 SPIRV-Headers 的 CMake CONFIG 包（$env:VULKAN_SDK\share\cmake\SPIRV-Headers*）"
+      # SPIRV-Headers 的 CMake CONFIG 包：LunarG SDK 1.4.363.0 实测放在 <SDK>\Lib\cmake\SPIRV-Headers\
+      # （**不是** share\cmake）。ggml 会把 $VULKAN_SDK 追加进 CMAKE_PREFIX_PATH，CMake 按
+      # <prefix>/[share|lib|Lib]/cmake/<name>/ 搜索，所以这几处都要探，否则对装好的 SDK 误报。
+      $spirvCfg = $null
+      foreach ($sub in @("Lib\cmake", "lib\cmake", "share\cmake")) {
+        $hit = Get-ChildItem (Join-Path $env:VULKAN_SDK $sub) -Recurse -Filter "SPIRV-HeadersConfig.cmake" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($hit) { $spirvCfg = $hit.FullName; break }
+      }
+      if (-not $spirvCfg) {
+        Write-Host "==> 警告：未在 $env:VULKAN_SDK 下找到 SPIRV-Headers 的 CMake CONFIG 包（SPIRV-HeadersConfig.cmake）"
         Write-Host "           ggml 的 find_package(SPIRV-Headers CONFIG REQUIRED) 会因此失败。"
         Write-Host "           修法：取 SPIRV-Headers 的 tag vulkan-sdk-<SDK 版本>，用 cmake --install 装到该前缀"
         Write-Host "           （见 docs/engines_vulkan_design.md §2.3）。"
+      } else {
+        Write-Host "==> 找到 SPIRV-Headers CONFIG 包: $spirvCfg"
       }
     }
   }
@@ -157,9 +168,39 @@ if (Test-Path $targetExe) {
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 
 # ── 3. clone + 构建 ──
-$work = Join-Path $env:TEMP "gsa_moss_build_$PID"
-if (Test-Path $work) { Remove-Item -Recurse -Force $work }
-New-Item -ItemType Directory -Force -Path $work | Out-Null
+# 工作目录有路径长度硬约束：vulkan 构建树的最深处是 ExternalProject 的 TryCompile 瞬态目录，
+#   <work>\src\build-vulkan\vulkan-shaders-gen-prefix\src\vulkan-shaders-gen-build\CMakeFiles\
+#   CMakeScratch\TryCompile-xxxxxx\cmTC_xxxxx.dir\Debug\cmTC_xxxxx.tlog\link-cvtres.read.1.tlog
+# 其与工作根无关的尾巴实测 208 字符，Windows MAX_PATH = 260 ⇒ 工作根超 ~50 字符即报
+# FileTracker error FTK1011（默认 %TEMP%\gsa_moss_build_<PID> 实测 53 字符恰好爆，2026-10-19）。
+# 因此默认放系统盘根下的短目录；**不要**把构建目录挪进仓库（仓库路径本身已 58 字符）。
+if ($WorkDir) {
+  $work = $WorkDir
+} else {
+  $work = "$($env:SystemDrive)\gsa-moss-build\$Backend-$PID"
+}
+# 路径长度告警：留 208 字符瞬态尾巴后，工作根须 ≤ ~50 字符，否则中途 FTK1011
+$deepest = $work.Length + 208
+if ($deepest -gt 250) {
+  Write-Host "==> 警告：工作目录 $work（$($work.Length) 字符）+ 构建瞬态尾巴 208 = $deepest，超过安全线 250 ——"
+  Write-Host "           曾实测触发 FileTracker FTK1011（MSVC BuildTools 的 tlog 路径超 MAX_PATH=260）。"
+  Write-Host "           若构建中途报 FTK1011/找不到文件，请用 -WorkDir 指定更短目录（≤ 50 字符）。"
+}
+if (Test-Path $work) {
+  # 默认目录可整删重用；用户自定义 -WorkDir 只接受空目录（防止误删非本脚本创建的数据）
+  if ($WorkDir) {
+    if ((Get-ChildItem $work -Force -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0) {
+      throw "-WorkDir $work 非空：请指定一个空目录（脚本会以它为构建工作区）"
+    }
+  } else {
+    Remove-Item -Recurse -Force $work
+  }
+}
+try {
+  New-Item -ItemType Directory -Force -Path $work | Out-Null
+} catch {
+  throw "无法创建工作目录 $work（$($_.Exception.Message)）；系统盘根无写权限时可用 -WorkDir 指定可写的短路径（≤ 50 字符）"
+}
 
 # 失败/被中断时保留工作目录，便于人工排查（成功才清理）
 $keepWork = $false

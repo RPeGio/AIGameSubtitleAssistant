@@ -1,6 +1,6 @@
 # Vulkan Optimization for MOSS ASR and the GPU Backend Fallback Design
 
-> Status: **design agreed, implementation not started** (decisions confirmed by the user on 2026-10-18, see §0.2)
+> Status: **steps 1–2 done (script changes + Vulkan build measured), step 3 (transcription benchmark) not started** (decisions confirmed by the user on 2026-10-18, see §0.2)
 > Scope of this branch: **the Vulkan path for MOSS ASR plus backend probing / fallback semantics only**
 > Branch: `feat/engines-gpu-vulkan` (this worktree `AIGameSubtitleAssistant-gpu-vulkan`), baseline `7b8e306`
 > Explicitly **out of scope**: LLM Vulkan (an official path already exists; the user decided to leave it alone), OCR / fusion embeddings on GPU (no upstream Vulkan path, see §1), FunASR (out of scope for this branch, see §7)
@@ -32,7 +32,7 @@
 
 | Component | Carrier | Existing GPU path | Vulkan | This branch |
 |---|---|---|---|---|
-| **ASR MOSS** | moss-transcribe.cpp (ggml), self-built | CUDA (`.backend=cuda`, actually runs `backend: CUDA0`) | ✅ ggml supports it, **but the build here lacks glslc** | **✅ do it** |
+| **ASR MOSS** | moss-transcribe.cpp (ggml), self-built | CUDA (`.backend=cuda`, actually runs `backend: CUDA0`) | ✅ ggml supports it, **the Vulkan build has been built successfully** (§2.5) | **✅ do it** |
 | LLM | llama.cpp prebuilt zip | CUDA (`ggml-cuda.dll`, 512.9 MB) | ✅ official prebuilt (`llama-b10333-bin-win-vulkan-x64.zip`, verified to exist) | ❌ not done (③) |
 | ASR FunASR (fallback) | PyTorch + Fun-ASR-Nano | CUDA cu124 | ❌ no Vulkan backend in torch | ❌ not done (§7) |
 | OCR | PaddleOCR + PaddleX | CUDA (`deps_gpu`, 3.5 GB) | ❌ no Vulkan backend in Paddle Inference | ❌ not done (⑤) |
@@ -81,8 +81,9 @@ The binary contains exactly two custom environment variables: **`MTD_DEVICE`** a
 ### 2.3 Build prerequisite: `glslc` and how to obtain it
 
 - ggml's Vulkan backend hard-requires `find_package(Vulkan COMPONENTS glslc REQUIRED)` and `find_package(SPIRV-Headers CONFIG REQUIRED)` at **configure time**, and the shader generator invokes `--glslc`. **The SDK is needed only to build; at runtime only the graphics driver is needed.**
-- No SDK on this machine. **The acquisition path was verified: `winget` offers `KhronosGroup.VulkanSDK` (1.4.363.0)**; `KhronosGroup.VulkanRT` is runtime-only and does **not** include glslc.
-- `scripts/build_moss.ps1:9` mentions in its header comment that "Vulkan needs glslc + the Vulkan SDK", but **there is no check in the code** (only `-Backend cuda` looks for `nvcc`) ⇒ without the SDK the user gets lost in a cryptic cmake error. **This is the first thing to add on this branch.**
+- ~~No SDK on this machine~~ → **installed `KhronosGroup.VulkanSDK` 1.4.363.0 on 2026-10-19**: the installer already set `VULKAN_SDK=C:\VulkanSDK\1.4.363.0` and put `Bin` on PATH (so `Get-Command glslc` resolves). `winget` also offers `KhronosGroup.VulkanRT`, which is runtime-only and does **not** include glslc.
+- **The `SPIRV-Headers` CMake CONFIG package *is* shipped with the SDK**, but it lives at `<SDK>\Lib\cmake\SPIRV-Headers\SPIRV-HeadersConfig.cmake` — **not** under `share\cmake` (the SDK root also has `cmake\`, `share\`, `Source\`, `Include\spirv-headers\`). CMake expands `CMAKE_PREFIX_PATH=<SDK>` into a search over `<prefix>/[share|lib|Lib]/cmake/<name>/`, so ggml's `find_package(SPIRV-Headers CONFIG REQUIRED)` does resolve. **This branch's prerequisite check originally probed only `share\cmake` and would have raised a false warning on a correctly installed SDK; it now searches `Lib\cmake` / `lib\cmake` / `share\cmake` recursively for `SPIRV-HeadersConfig.cmake`, and the measured output is `找到 SPIRV-Headers CONFIG 包: …\Lib\cmake\SPIRV-Headers\SPIRV-HeadersConfig.cmake`.**
+- `scripts/build_moss.ps1:9` mentions in its header comment that "Vulkan needs glslc + the Vulkan SDK", but **there is no check in the code** (only `-Backend cuda` looks for `nvcc`) ⇒ without the SDK the user gets lost in a cryptic cmake error. **Added in step 1 (see §4-1).**
 
 ### 2.4 Zero-cost probe primitives (verified usable)
 
@@ -92,6 +93,17 @@ The binary contains exactly two custom environment variables: **`MTD_DEVICE`** a
 | `vulkaninfo --summary` | Vulkan device count and types | exits 0; `deviceType = PHYSICAL_DEVICE_TYPE_{INTEGRATED,DISCRETE}_GPU` is regex-parseable |
 | stderr of `moss-transcribe info <model>` | **the actually effective backend** | `[mt I] backend: CUDA0` |
 | `Get-CimInstance Win32_VideoController` | GPU list without depending on Vulkan (fallback / cross-check) | lists 4 adapters (including 2 virtual displays) |
+
+### 2.5 Vulkan build measured (2026-10-19): successful, and the artifact layout matches the CUDA build's shape
+
+- **Environment**: Vulkan SDK 1.4.363.0 + VS2022 BuildTools (MSVC) + cmake 4.3.3 (default VS generator).
+- **Artifacts** (`runtime/bin/`): `moss-transcribe.exe` (274,432 B) + `ggml.dll` (67 KB) + `ggml-base.dll` (639 KB) + `ggml-cpu.dll` (887 KB) + **`ggml-vulkan.dll` (46 MB)**; `.backend=vulkan`. ⇒ moss's CMake **does enable `GGML_BACKEND_DL`** — the §5-4 worry that "there may be no `ggml-vulkan.dll`" does not hold. The DLLs land in `build-vulkan/bin/Release/` (CMake `RUNTIME_OUTPUT_DIRECTORY`), and the script's multi-level probe (`…\Release\ → …\bin\Release → …\bin → next to the exe`) correctly hits it.
+- **Upstream's "Windows build failure" (issue #1: MinGW + GCC 16, non-Vulkan path) does not apply to the MSVC route** (§5-9).
+- **The only obstacle is MAX_PATH, not an upstream defect**:
+  - The deepest transient path in the build tree is `…\build-vulkan\vulkan-shaders-gen-prefix\src\vulkan-shaders-gen-build\CMakeFiles\CMakeScratch\TryCompile-…\cmTC_….dir\Debug\cmTC_….tlog\link-cvtres.read.1.tlog`; the tail measured **208 characters**, independent of the work root; with `MAX_PATH=260` the **work root must be ≤ ~50 characters**, otherwise `FileTracker error FTK1011` (the default `%TEMP%\gsa_moss_build_<PID>`, 53 characters, was measured to cross the line).
+  - ⇒ **the build directory must not be moved into the repo**: the repo path itself is already 58 characters, 58+208=266 ✗.
+  - The CUDA build is unaffected: it uses Ninja, there is no vulkan-shaders-gen ExternalProject layer, and its tail is ~70 characters shorter — which is why CUDA never tripped on this.
+  - Fix already in `build_moss.ps1`: default work root is now `<system drive>\gsa-moss-build\<backend>-<PID>` (30 characters), plus a `-WorkDir` override (accepts an **empty** directory only, to prevent accidental deletion) and a length warning when root length + 208 > 250.
 
 ---
 
@@ -112,8 +124,8 @@ For end users this surfaces through the parallel session's first-launch self-che
 | Level | Content | Cost | Purpose |
 |---|---|---|---|
 | **L0 Machine capability** | CUDA: `nvidia-smi` exits 0; Vulkan: `vulkan-1.dll` exists **and** `vulkaninfo --summary` yields ≥1 `*_GPU` | milliseconds | compared against installed binaries to produce "which backend to install" |
-| **L1 Asset consistency** | does `moss-transcribe.exe` exist, and does the `.backend` marker agree with the expectation (**a DLL name is not a hard criterion**: upstream defaults to `GGML_BACKEND_DL=OFF`, so `ggml-vulkan.dll` may never appear; the presence of `ggml-cuda.dll` only shows the CUDA build uses a dynamic backend) | filesystem | catches mismatches fast |
-| **L2 Effective-backend verification** | run `moss-transcribe info <model>`, parse `[mt I] backend: <X>` from **stderr**, compare exactly against the expectation (`CUDA0`/`Vulkan0`/`CPU`) | zero-cost (③; `info` measured to be fast) | **the only trustworthy criterion**; catches the silent degradation of §2.2 |
+| **L1 Asset consistency** | does `moss-transcribe.exe` exist, and does the `.backend` marker agree with the expectation; a DLL name works as a secondary criterion (measured `GGML_BACKEND_DL=ON`: the Vulkan build has `ggml-vulkan.dll`, the CUDA build has `ggml-cuda.dll`, §2.5) | filesystem | catches mismatches fast |
+| **L2 Effective-backend verification** | run `moss-transcribe info <model>`, parse `[mt I] backend: <X>` from **stderr**, compare exactly against the expectation (`CUDA0`/`Vulkan0`/`CPU`); **on a multi-device backend the placement must be verified too**: `Vulkan<N>` is only an enumeration index — cross-check the `ggml_vulkan: <N> = <device name> \| uma: <0/1>` table on stderr (`uma:0` is usually the dGPU) — the `bootstrap_moss.ps1` self-check now includes this placement check | zero-cost (③; `info` measured to be fast) | **the only trustworthy criterion**; catches the silent degradation of §2.2 |
 
 - ⚠ **The exit code must never be used as a criterion** (measured: exit 0 while degrading).
 - ⚠ **Match the full name** (`CUDA0`, not `CUDA`): Rust's `str::contains` is case-sensitive, whereas `scripts/bootstrap_moss.ps1:175` currently only works by accident because PowerShell's `-match` is case-insensitive — unify this while we are here.
@@ -132,6 +144,8 @@ For end users this surfaces through the parallel session's first-launch self-che
 | `Vulkan0` | substring-matches `Vulkan0` | Intel iGPU ❌ |
 | `Vulkan1` | substring-matches `Vulkan1` | RTX 4060 ✅ (but the **index varies per machine — never hardcode it**) |
 
+**Measured with the Vulkan build (2026-10-19, artifacts of §2.5, `info` stderr)**: the table above is now verified — **unset = `Vulkan1` = RTX 4060** (enumeration shows `uma: 0`); **bare `vulkan` = `Vulkan0` = the Intel iGPU** (`uma: 1`); `Vulkan0`/`Vulkan1` pin their respective cards; `GGML_VK_VISIBLE_DEVICES=1` leaves only `0 = RTX 4060`, at which point bare `vulkan` also lands on the dGPU. ggml's own stderr enumeration (the `ggml_vulkan: Found 2 Vulkan devices:` table) agrees with `vulkaninfo`: iGPU index 0, dGPU index 1, iGPU `uma:1 / bf16:0`, dGPU `uma:0 / warp size:32`.
+
 **Conclusions (this corrects an earlier guess in this design)**:
 
 1. **Do not set a bare `MTD_DEVICE=vulkan`** — on a Vulkan build it hits whichever device is enumerated first (here, the iGPU). It only "looks correct" on a CUDA-only build because it lands on `dev_by_type(GPU)` = `CUDA0` (§2.2).
@@ -140,7 +154,7 @@ For end users this surfaces through the parallel session's first-launch self-che
 4. **MOSS creates a single backend** (the `g_backend` singleton in `src/backend.cpp`) and does no multi-device layer splitting ⇒ "the model is split across two cards" does not apply to MOSS, and the upstream 3× collapse (llama.cpp #30695) cannot hit us either — plus the PR that introduced it (#29741, 2026-10-13) postdates our pin.
 5. MOSS's CLI has **no `--device`**: `MTD_DEVICE` and `GGML_VK_VISIBLE_DEVICES` are the only two channels.
 
-**Verification required after the build (④)**: run `transcribe` with the value unset, with `vulkan`, and with `Vulkan1`, parse `backend: <X>` from stderr, and compare timings. **Everything in the table above is code inference plus local `vulkaninfo` output, not a measurement of a Vulkan MOSS build** — in particular "`vulkan` lands on the iGPU" must be confirmed on the real build before it goes into user-facing docs.
+**Placement verification is done (④, 2026-10-19)**: all four rows above measured to match (see above). The `bootstrap_moss.ps1` readiness check now includes the placement check (enumeration echo + `uma:1` warning; the config value is written as auto, §5-11); the welcome page's ASR self-check card shows the configured device. The only remaining unmeasured item is the **transcription timing comparison** (step 3).
 
 ### 3.4 An explicitly requested backend that fails is an error (②)
 
@@ -164,9 +178,12 @@ Rationale: the MOSS gap between CPU and GPU is an order of magnitude (the canoni
 ## 4. Implementation steps (this branch, confirmed round by round)
 
 1. ✅ **Done** (2026-10-18): `scripts/build_moss.ps1` gained an `if ($Backend -eq "vulkan")` branch — `glslc` is looked up via PATH → `VULKAN_SDK` → `C:\VulkanSDK\<version>`, and on a hit `VULKAN_SDK`/PATH are set so cmake can locate it; on a miss it joins `$missing` and **throws before clone/build** (with the `winget install --id KhronosGroup.VulkanSDK -e` hint), plus a pre-emptive warning about a missing `SPIRV-Headers` CONFIG package. Meanwhile the backend assertion in `scripts/bootstrap_moss.ps1`'s readiness check was corrected to parse `[mt I] backend: <device>` (the old form only worked by accident because `-match` is case-insensitive, and it took the `[mt W] …requested but no matching device` degradation warning for the result).
-   → Verified (all passed): without the SDK, `-Backend vulkan` errors out before cloning with zero side effects (no `runtime/` created); with a fake SDK it finds `glslc` and prints the SPIRV-Headers warning; the real binary's `info` output parses to `CUDA0` for cpu/cuda/vulkan requests (cuda matches, cpu/vulkan are correctly flagged as degraded); with `MTD_DEVICE=bogus` the old form took the warning text as the result while the new one still reads `CUDA0`. **The other half — "configure succeeds once the SDK is installed" — needs step 2 to actually build.**
-2. **Confirm the Vulkan build and its artifact layout**: today `cuda` uses Ninja + vcvars and probes `build-cuda/bin/*.dll`, while `vulkan` uses the default VS generator (`build-vulkan/`) — **the artifact paths and the DLL-copy logic are unverified**.
-   → Verify: produces `runtime/bin/moss-transcribe.exe` with `.backend=vulkan`; **the DLL set is whatever the build actually produces** — upstream defaults to `GGML_BACKEND_DL=OFF`, so there may well be no `ggml-vulkan.dll` to copy (§5-4), even though the installed CUDA build does have `ggml-cuda.dll`.
+   → Verified (all passed): without the SDK, `-Backend vulkan` errors out before cloning with zero side effects (no `runtime/` created); with a fake SDK it finds `glslc` and prints the SPIRV-Headers warning; the real binary's `info` output parses to `CUDA0` for cpu/cuda/vulkan requests (cuda matches, cpu/vulkan are correctly flagged as degraded); with `MTD_DEVICE=bogus` the old form took the warning text as the result while the new one still reads `CUDA0`. **"Configure succeeds once the SDK is installed" is now confirmed by step 2 (✅).**
+2. ✅ **Done** (2026-10-19): `-Backend vulkan` **builds successfully**; artifacts and DLL layout as in §2.5 (`ggml-vulkan.dll` 46 MB is indeed produced = `GGML_BACKEND_DL=ON`; `build-vulkan/bin/Release/` is correctly hit by the script's multi-level probe). Three problems were exposed and fixed along the way:
+   - **MAX_PATH**: the default `%TEMP%` work root (53 chars) plus the 208-char TryCompile tail exceeds MAX_PATH (FTK1011) ⇒ `build_moss.ps1`'s default work root is now `<system drive>\gsa-moss-build\<backend>-<PID>` (30 chars), plus a `-WorkDir` override and a length warning (§2.5);
+   - **`bootstrap_moss.ps1`'s `moss_device` write defect**: the vulkan backend used to write `"vulkan"` ⇒ on a dual-GPU machine it always lands on the iGPU (§3.3 measured) ⇒ now writes `""` (auto, measured to prefer the dGPU); cpu/cuda writes unchanged;
+   - **Placement check in the self-check + welcome-page display**: the bootstrap self-check now echoes the Vulkan enumeration table and warns on a `uma:1` (usually iGPU) placement; the welcome page's ASR self-check card gained a "Device · <device>" row (`AsrEngineStatus.device`, the configured value, `""` shown as "auto (ggml picks the best device)" — it displays the configured value, not the measured backend, since measuring requires spawning a subprocess).
+   → Verified (all passed): with a guaranteed-failing clone, the default root (30 chars) prints no warning, an overly long root (89 chars) warns correctly (estimate 297 > 250), and the `-WorkDir` non-empty guard works; the placement-check block parses the real `info` output into `Vulkan1` = RTX 4060 (uma:0); `cargo check` / `vue-tsc --noEmit` pass; script BOM/CRLF re-checked unharmed (§2.1 lesson).
 3. **Measure the Vulkan build**: first confirm the dual-GPU placement of §3.3, then benchmark (against the CUDA and CPU builds).
    → Verify: it lands on the RTX 4060; record the timing comparison in `docs/development.md`.
 4. **Probing logic + fallback semantics**: implement the L0/L1/L2 of §3.2 and the behaviour matrix of §3.4.
@@ -180,15 +197,17 @@ Rationale: the MOSS gap between CPU and GPU is an order of magnitude (the canoni
 
 | # | Item | Status |
 |---|---|---|
-| 1 | No Vulkan SDK here ⇒ MOSS Vulkan cannot be built before step 1 | measured |
+| 1 | ~~No Vulkan SDK here~~ | ✅ **installed** (2026-10-19, `KhronosGroup.VulkanSDK` 1.4.363.0): `glslc` is on PATH and the prerequisite check passes; whether the build itself succeeds is row 9 |
 | 2 | Requesting an unavailable backend **degrades silently with exit 0** (`vulkan` without even a warning, while `bogus` does warn) | **settled (upstream source)**: `name_to_type()` treats `vulkan` as a valid name and maps it to GPU type (`backend.cpp:40`), and `dev_by_type(GPU)` returns the first match (`ggml-backend-reg.cpp:348-356`) ⇒ the silence is by design. The only usable criterion is the backend that actually took effect |
-| 3 | **Dual-GPU placement** | **mechanism settled, placement still to be measured**: unset = GPU→IGPU→CPU (here → RTX 4060); bare `vulkan` = first in enumeration order (here → iGPU); `GGML_VK_VISIBLE_DEVICES` / `Vulkan<N>` can pin a card. **Verify per §3.3 after the build (④)** |
-| 4 | The Vulkan artifact layout and DLL-copy paths in `build_moss.ps1` | **pending build, and expected to contradict current assumptions**: upstream defaults to `GGML_BACKEND_DL=OFF` (`ggml/CMakeLists.txt:86`) ⇒ it may **not produce `ggml-vulkan.dll` at all** (Vulkan is statically linked into ggml); yet the installed CUDA build **does** have `ggml-cuda.dll`, implying moss's CMake turns it on ⇒ **trust the actual artifacts only**. The CLI lands in the build directory root (or `Release/` under Ninja / multi-config) |
+| 3 | **Dual-GPU placement** | ✅ **measured** (2026-10-19, Vulkan build, §3.3): unset = `Vulkan1` = RTX 4060 (uma:0); bare `vulkan` = `Vulkan0` = the Intel iGPU (uma:1); `Vulkan0`/`Vulkan1` pinning and `GGML_VK_VISIBLE_DEVICES=1` (only the RTX 4060 left) all match. Remaining: transcription timing comparison (step 3) |
+| 4 | The Vulkan artifact layout and DLL-copy paths in `build_moss.ps1` | ✅ **measured** (2026-10-19, §2.5): moss's CMake enables `GGML_BACKEND_DL` and **does produce a standalone `ggml-vulkan.dll`** (46 MB); DLLs land in `build-vulkan/bin/Release/`, correctly hit by the script's multi-level probe |
 | 5 | The real performance gap between Vulkan and CUDA (third-party data is mixed: a measured pp512 −25%, and a "6× slower" case attributed to dual GPU + an old card; upstream moss issue #4 further shows the Vulkan path **has not even enabled flash attention**, worth 13.7× on an AMD iGPU) | pending step 3 |
 | 6 | `bootstrap_moss.ps1:175-181`'s backend assertion only works by accident (`-match` is case-insensitive) | ✅ **fixed** (2026-10-18, step 1): now parses `[mt I] backend: <device>` with `-cmatch` and prefix-matches `CPU`/`CUDA`/`Vulkan`; the degradation warning (`[mt W] …requested but no matching device`) is no longer mistaken for the result |
-| 7 | Whether installing the Vulkan SDK sets `VULKAN_SDK` / PATH correctly (CMake must find glslc and the `SPIRV-Headers` **CONFIG package** — whether the SDK ships it is unconfirmed) | verify after install |
+| 7 | `VULKAN_SDK` / PATH and the `SPIRV-Headers` **CONFIG package** | ✅ **settled** (2026-10-19): the installer set `VULKAN_SDK=C:\VulkanSDK\1.4.363.0` and put `Bin` on PATH; the CONFIG package is at `<SDK>\Lib\cmake\SPIRV-Headers\` (**not** `share\cmake`) — the prerequisite check was corrected accordingly (§2.3) |
 | 8 | The provenance of the local `moss-transcribe.exe` | ✅ **clarified (user)**: the upstream repo has no GitHub Release at all, so this binary is a **self-built** artifact of this repo's `scripts/build_moss.ps1` (currently the `-Backend cuda` build, `runtime/bin/.backend=cuda`) — which is exactly why `bootstrap_moss.ps1 -BinaryUrl` defaults to empty |
-| 9 | **Whether MOSS Vulkan can be built on Windows at all** is unconfirmed: upstream has no Windows CI, and issue #1 shows Windows + MinGW + GCC 16 failing on the **non-Vulkan** path already (its fix, PR #3, is still unmerged) | pending steps 1–2 |
+| 9 | **Whether MOSS Vulkan can be built on Windows at all** is unconfirmed: upstream has no Windows CI, and issue #1 shows Windows + MinGW + GCC 16 failing on the **non-Vulkan** path already (its fix, PR #3, is still unmerged) | ✅ **measured** (2026-10-19, §2.5): the **MSVC + VS2022 BuildTools + cmake 4.3.3 route builds successfully**; issue #1 is the MinGW route, not applicable. The only obstacle was MAX_PATH (row 10), now fixed |
+| 10 | **MAX_PATH**: the Vulkan build's TryCompile transient tail is 208 characters; a work root over ~50 characters hits `FileTracker FTK1011`; the build directory must not live inside the repo | ✅ **fixed** (2026-10-19): `build_moss.ps1`'s default work root is now `<system drive>\gsa-moss-build\<backend>-<PID>` (30 chars), plus `-WorkDir` (empty directories only) and a length warning (root + 208 > 250) (§2.5) |
+| 11 | `bootstrap_moss.ps1` used to write `moss_device = "vulkan"` for the vulkan backend ⇒ on a dual-GPU machine it always lands on the iGPU (§3.3 measured), silently | ✅ **fixed** (2026-10-19): the vulkan backend now writes `""` (auto, measured to prefer the dGPU); the readiness self-check gained the placement check (enumeration table + `uma:1` warning); the welcome page's ASR card shows the configured device |
 
 ---
 

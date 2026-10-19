@@ -527,6 +527,9 @@ pub struct AsrEngineStatus {
     pub engine: String,
     pub ready: bool,
     pub message: String,
+    /// 配置的推理设备：moss 为 ""(=auto，ggml 自动选优)/cpu/cuda/vulkan，funasr 为 cpu/cuda。
+    /// 展示的是配置值而非实测后端——实测需拉起子进程，欢迎页探针只做存在性检查。
+    pub device: String,
 }
 
 /// 全局 ASR 管理器 —— 同时持有 funasr / moss 两个引擎（各自按配置就绪），
@@ -591,10 +594,17 @@ impl AsrManager {
             .iter()
             .map(|key| {
                 let (ready, message) = self.with_engine(key, |p| (p.is_ready(), p.describe()));
+                // 设备值直接取 config：welcome 页展示"当前配置的 moss device"，
+                // 空 = auto（ggml 自动选优，实测偏好独显），由前端转成可读文案
+                let device = match *key {
+                    "moss" => self.config.moss_device.clone(),
+                    _ => self.config.funasr_device.clone(),
+                };
                 AsrEngineStatus {
                     engine: (*key).into(),
                     ready,
                     message,
+                    device,
                 }
             })
             .collect()

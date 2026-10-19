@@ -1,6 +1,6 @@
 # MOSS ASR 的 Vulkan 优化与 GPU 后端回退设计
 
-> 状态：**方案已确认，实现未开始**（2026-10-18 用户确认要点见 §0.2）
+> 状态：**步骤 1–2 已完成（脚本 + Vulkan 构建实测），步骤 3（转写实测）未开始**（2026-10-18 用户确认要点见 §0.2）
 > 本分支范围：**仅 MOSS ASR 的 Vulkan 通路 + 后端探测/回退语义**
 > 分支：`feat/engines-gpu-vulkan`（本 worktree `AIGameSubtitleAssistant-gpu-vulkan`），基线 `7b8e306`
 > 明确**不做**：LLM 的 Vulkan（已有官方通路，用户决定不动）、OCR / 融合嵌入的 GPU（上游无 Vulkan 通路，见 §1）、FunASR（不在本分支范围，见 §7）
@@ -32,7 +32,7 @@
 
 | 组件 | 载体 | 现有 GPU 通路 | Vulkan | 本分支 |
 |---|---|---|---|---|
-| **ASR MOSS** | moss-transcribe.cpp（ggml）自构建 | CUDA（`.backend=cuda`，实跑 `backend: CUDA0`） | ✅ ggml 支持，**本机构建缺 glslc** | **✅ 做** |
+| **ASR MOSS** | moss-transcribe.cpp（ggml）自构建 | CUDA（`.backend=cuda`，实跑 `backend: CUDA0`） | ✅ ggml 支持，**Vulkan 版已构建成功**（§2.5） | **✅ 做** |
 | LLM | llama.cpp 预编译 zip | CUDA（`ggml-cuda.dll` 512.9 MB） | ✅ 官方预编译包（`llama-b10333-bin-win-vulkan-x64.zip` 已核实存在） | ❌ 不做（③） |
 | ASR FunASR（备用） | PyTorch + Fun-ASR-Nano | CUDA cu124 | ❌ torch 无 Vulkan 后端 | ❌ 不做（§7） |
 | OCR | PaddleOCR + PaddleX | CUDA（`deps_gpu` 3.5 GB） | ❌ Paddle Inference 无 Vulkan 后端 | ❌ 不做（⑤） |
@@ -81,8 +81,9 @@
 ### 2.3 构建前置：`glslc` 与获取途径
 
 - ggml 的 Vulkan 后端在 **configure 阶段**硬性要求 `find_package(Vulkan COMPONENTS glslc REQUIRED)` 与 `find_package(SPIRV-Headers CONFIG REQUIRED)`，着色器生成器要调 `--glslc`。**只在构建期需要 SDK，运行时只需要显卡驱动。**
-- 本机无 SDK。**获取途径已核实：`winget` 里有 `KhronosGroup.VulkanSDK`（1.4.363.0）**，另有 `KhronosGroup.VulkanRT`（仅运行时组件，不含 glslc）。
-- `scripts/build_moss.ps1:9` 的头注释写了"Vulkan 需要 glslc + Vulkan SDK"，但**代码里没有任何检查**（只有 `-Backend cuda` 会找 `nvcc`）⇒ 缺 SDK 时用户在 cmake 的晦涩报错里迷路。**这是本分支第一个要补的东西。**
+- ~~本机无 SDK~~ → **2026-10-19 已装 `KhronosGroup.VulkanSDK` 1.4.363.0**：安装器已设好 `VULKAN_SDK=C:\VulkanSDK\1.4.363.0` 并把 `Bin` 加入 PATH（`glslc` 可直接 `Get-Command` 命中）。`winget` 里另有 `KhronosGroup.VulkanRT`（仅运行时组件，不含 glslc）。
+- **`SPIRV-Headers` 的 CMake CONFIG 包确实随 SDK 提供**，但位置是 `<SDK>\Lib\cmake\SPIRV-Headers\SPIRV-HeadersConfig.cmake`，**不是** `share\cmake`（SDK 根下另有 `cmake\`、`share\`、`Source\`、`Include\spirv-headers\`）。CMake 把 `CMAKE_PREFIX_PATH=<SDK>` 展开为 `<prefix>/[share|lib|Lib]/cmake/<name>/` 搜索，故 ggml 的 `find_package(SPIRV-Headers CONFIG REQUIRED)` 能命中。**本分支的前置检查最初只探 `share\cmake`，对装好的 SDK 会误报；已改为在 `Lib\cmake` / `lib\cmake` / `share\cmake` 三处递归找 `SPIRV-HeadersConfig.cmake`，实测输出 `找到 SPIRV-Headers CONFIG 包: …\Lib\cmake\SPIRV-Headers\SPIRV-HeadersConfig.cmake`。**
+- `scripts/build_moss.ps1:9` 的头注释写了"Vulkan 需要 glslc + Vulkan SDK"，但**代码里没有任何检查**（只有 `-Backend cuda` 会找 `nvcc`）⇒ 缺 SDK 时用户在 cmake 的晦涩报错里迷路。**已在步骤 1 补齐（见 §4-1）。**
 
 ### 2.4 零成本探测原语（已核实可用）
 
@@ -92,6 +93,17 @@
 | `vulkaninfo --summary` | Vulkan 设备数量与类型 | 退出码 0，`deviceType = PHYSICAL_DEVICE_TYPE_{INTEGRATED,DISCRETE}_GPU` 可正则解析 |
 | `moss-transcribe info <model>` 的 stderr | **实际生效后端** | `[mt I] backend: CUDA0` |
 | `Get-CimInstance Win32_VideoController` | 不依赖 Vulkan 的 GPU 清单（兜底/交叉验证） | 列出 4 个适配器（含 2 个虚拟显示） |
+
+### 2.5 Vulkan 构建实测（2026-10-19）：成功，产物布局与 CUDA 版同形
+
+- **环境**：Vulkan SDK 1.4.363.0 + VS2022 BuildTools（MSVC）+ cmake 4.3.3（默认 VS 生成器）。
+- **产物**（`runtime/bin/`）：`moss-transcribe.exe`（274,432 B）+ `ggml.dll`（67 KB）+ `ggml-base.dll`（639 KB）+ `ggml-cpu.dll`（887 KB）+ **`ggml-vulkan.dll`（46 MB）**；`.backend=vulkan`。⇒ moss 的 CMake **打开了 `GGML_BACKEND_DL`**——§5-4 原先"可能不产出 ggml-vulkan.dll"的担忧不成立。DLL 落在 `build-vulkan/bin/Release/`（CMake `RUNTIME_OUTPUT_DIRECTORY`），脚本的 `…\Release\ → …\bin\Release → …\bin → exe 同目录`多级探测正确命中。
+- **上游"Windows 编译失败"（issue #1：MinGW + GCC 16，非 Vulkan 路径）不适用于 MSVC 路线**（§5-9）。
+- **唯一障碍是 MAX_PATH，不是上游缺陷**：
+  - 构建树最深瞬态路径是 `…\build-vulkan\vulkan-shaders-gen-prefix\src\vulkan-shaders-gen-build\CMakeFiles\CMakeScratch\TryCompile-…\cmTC_….dir\Debug\cmTC_….tlog\link-cvtres.read.1.tlog`，与工作根无关的尾巴实测 **208 字符**；`MAX_PATH=260` ⇒ **工作根 ≤ ~50 字符**，否则 `FileTracker error FTK1011`（默认 `%TEMP%\gsa_moss_build_<PID>` 实测 53 字符恰好超线）。
+  - ⇒ **构建目录不能挪进仓库**：仓库路径本身已 58 字符，58+208=266 ✗。
+  - CUDA 版不受影响：走 Ninja，没有 vulkan-shaders-gen 这层 ExternalProject，尾巴短约 70 字符——这解释了 CUDA 版一直没踩到。
+  - 修法已进 `build_moss.ps1`：默认工作根改 `<系统盘>\gsa-moss-build\<backend>-<PID>`（30 字符），新增 `-WorkDir` 覆盖参数（只收空目录，防误删），根长+208 > 250 时打印超长告警。
 
 ---
 
@@ -112,8 +124,8 @@
 | 级别 | 内容 | 成本 | 用途 |
 |---|---|---|---|
 | **L0 机器能力** | CUDA：`nvidia-smi` 退出码 0；Vulkan：`vulkan-1.dll` 存在 **且** `vulkaninfo --summary` 解析到 ≥1 个 `*_GPU` | 毫秒级 | 与已装二进制比对，产出"该装哪个后端" |
-| **L1 资产一致性** | `moss-transcribe.exe` 是否存在 + `.backend` 标记是否与期望一致（**DLL 名不可当硬判据**：上游默认 `GGML_BACKEND_DL=OFF`，未必产出 `ggml-vulkan.dll`；`ggml-cuda.dll` 的存在只能说明 CUDA 版走的是动态后端） | 文件系统 | 快速发现错配 |
-| **L2 实际生效校验** | 跑 `moss-transcribe info <model>`，解析 **stderr** 的 `[mt I] backend: <X>`，与期望值精确比对（`CUDA0`/`Vulkan0`/`CPU`） | 零成本（③，实测 `info` 很快） | **唯一可信判据**，兜住 §2.2 的静默降级 |
+| **L1 资产一致性** | `moss-transcribe.exe` 是否存在 + `.backend` 标记是否与期望一致；DLL 名可作辅助判据（实测 `GGML_BACKEND_DL=ON`：vulkan 版有 `ggml-vulkan.dll`、cuda 版有 `ggml-cuda.dll`，§2.5） | 文件系统 | 快速发现错配 |
+| **L2 实际生效校验** | 跑 `moss-transcribe info <model>`，解析 **stderr** 的 `[mt I] backend: <X>`，与期望值精确比对（`CUDA0`/`Vulkan0`/`CPU`）；**多设备后端还要连落点一起核**：`Vulkan<N>` 只是枚举序号，须对照 stderr 的 `ggml_vulkan: <N> = <设备名> \| uma: <0/1>` 表（`uma:0` 通常 = 独显）——`bootstrap_moss.ps1` 自检已内置落点复核 | 零成本（③，实测 `info` 很快） | **唯一可信判据**，兜住 §2.2 的静默降级 |
 
 - ⚠ **退出码一律不可作判据**（§2.2 实测 exit 0 却降级）。
 - ⚠ **必须精确匹配全名**（`CUDA0` 而非 `CUDA`）：Rust 侧 `str::contains` 大小写敏感，而 `scripts/bootstrap_moss.ps1:175` 现在靠 PowerShell `-match` 的大小写不敏感侥幸成立——顺手统一。
@@ -132,6 +144,8 @@
 | `Vulkan0` | 子串命中 `Vulkan0` | Intel 核显 ❌ |
 | `Vulkan1` | 子串命中 `Vulkan1` | RTX 4060 ✅（但**索引随机器变化，不可硬编码**） |
 
+**2026-10-19 Vulkan 构建实测（§2.5 产物，`info` stderr）**：上表已验证——**不设 = `Vulkan1` = RTX 4060**（枚举表 `uma: 0`）；**裸 `vulkan` = `Vulkan0` = Intel 核显**（`uma: 1`）；`Vulkan0`/`Vulkan1` 定点命中各自卡；`GGML_VK_VISIBLE_DEVICES=1` 实测枚举只剩 `0 = RTX 4060`，此时裸 `vulkan` 也落独显。ggml 自己的 stderr 枚举（即 `ggml_vulkan: Found 2 Vulkan devices:` 表）与 `vulkaninfo` 一致：核显枚举 0、独显枚举 1，核显 `uma:1 / bf16:0`、独显 `uma:0 / warp size:32`。
+
 **结论（纠正了本设计早先的猜想）**：
 
 1. **不要设裸 `MTD_DEVICE=vulkan`**——在 Vulkan 构建上它会命中枚举序第一块（本机即核显）。它在 CUDA-only 构建上"看起来正常"，只是因为落到了 `dev_by_type(GPU)` = `CUDA0`（§2.2）。
@@ -140,7 +154,7 @@
 4. **MOSS 只创建一个 backend**（`src/backend.cpp` 的 `g_backend` 单例），不做多设备层切分 ⇒ "模型被劈到两块卡"在 MOSS 上不成立；上游那个 3× 塌陷（llama.cpp #30695）也不会命中，且引入它的 #29741（2026-10-13）晚于本 pin。
 5. MOSS 的 CLI **没有 `--device`**：`MTD_DEVICE` 与 `GGML_VK_VISIBLE_DEVICES` 是仅有的两个通道。
 
-**构建后必须做的验证（④）**：分别在不设 / `vulkan` / `Vulkan1` 三种设置下跑 `transcribe`，解析 stderr 的 `backend: <X>` 并对比耗时。**上表全部是"代码推断 + 本机 `vulkaninfo`"，不是 Vulkan 版 MOSS 的实测输出**——尤其 `vulkan` 落核显这一条，必须实机确认后才敢写进用户文档。
+**落点验证已完成（④，2026-10-19）**：上表四行全部实测命中（见上）。`bootstrap_moss.ps1` 就绪自检已内置落点复核（枚举表回显 + `uma:1` 警告，config 写值改为 auto，§5-11）；欢迎页 ASR 自检卡显示当前配置的 device。剩余待实测只有**转写耗时对比**（步骤 3）。
 
 ### 3.4 显式指定失败 = 报错（②）
 
@@ -164,9 +178,12 @@
 ## 4. 实施步骤（本分支，逐轮确认）
 
 1. ✅ **已完成**（2026-10-18）：`scripts/build_moss.ps1` 新增 `if ($Backend -eq "vulkan")` 分支 —— `glslc` 按 PATH → `VULKAN_SDK` → `C:\VulkanSDK\<版本>` 三级查找，命中即自动设 `VULKAN_SDK`/PATH 供 cmake 定位；缺失则并入 `$missing`，**在 clone/构建之前** `throw`（附 `winget install --id KhronosGroup.VulkanSDK -e`），并预先警告缺失的 `SPIRV-Headers` CONFIG 包。顺带修正 `scripts/bootstrap_moss.ps1` 就绪自检段的后端断言：改为解析 `[mt I] backend: <设备名>`（原写法靠 `-match` 大小写不敏感侥幸成立，且会把 `[mt W] …requested but no matching device` 降级警告当成结果）。
-   → 验证（已跑通）：`-Backend vulkan` 无 SDK 时于 clone 前报错、零副作用（不产生 `runtime/`）；伪造 SDK 时正确发现 `glslc` 并打出 SPIRV-Headers 警告；真实二进制的 `info` 输出在 cpu/cuda/vulkan 三种请求下分别解析为 `CUDA0`（cuda 命中，cpu/vulkan 正确判为降级）；`MTD_DEVICE=bogus` 时旧写法把警告文本当结果、新写法仍取到 `CUDA0`。**"装了 SDK 后 configure 通过"这一半需等步骤 2 真正构建时才有结论。**
-2. **核对 Vulkan 分支的构建与产物布局**：现状 `cuda` 走 Ninja + vcvars 并探测 `build-cuda/bin/*.dll`，`vulkan` 走 VS 默认生成器 `build-vulkan/`——**产物路径与 DLL 拷贝逻辑未经验证**。
-   → 验证：产出 `runtime/bin/moss-transcribe.exe` 且 `.backend=vulkan`；**DLL 集合以实际产物为准**——上游默认 `GGML_BACKEND_DL=OFF`，很可能没有 `ggml-vulkan.dll` 可拷（§5-4），而现有 CUDA 版却有 `ggml-cuda.dll`。
+   → 验证（已跑通）：`-Backend vulkan` 无 SDK 时于 clone 前报错、零副作用（不产生 `runtime/`）；伪造 SDK 时正确发现 `glslc` 并打出 SPIRV-Headers 警告；真实二进制的 `info` 输出在 cpu/cuda/vulkan 三种请求下分别解析为 `CUDA0`（cuda 命中，cpu/vulkan 正确判为降级）；`MTD_DEVICE=bogus` 时旧写法把警告文本当结果、新写法仍取到 `CUDA0`。**"装了 SDK 后 configure 通过"已由步骤 2 确认（✅）。**
+2. ✅ **已完成**（2026-10-19）：`-Backend vulkan` **构建成功**，产物与 DLL 布局见 §2.5（`ggml-vulkan.dll` 46 MB 确实产出 = `GGML_BACKEND_DL=ON`；`build-vulkan/bin/Release/` 被脚本多级探测正确命中）。过程中暴露并修复三个问题：
+   - **MAX_PATH**：默认 `%TEMP%` 工作根（53 字符）+ 208 字符 TryCompile 尾巴超 MAX_PATH（FTK1011）⇒ `build_moss.ps1` 默认工作根改 `<系统盘>\gsa-moss-build\<backend>-<PID>`（30 字符）+ `-WorkDir` 覆盖 + 超长告警（§2.5）；
+   - **`bootstrap_moss.ps1` 的 `moss_device` 写值缺陷**：vulkan 后端原来写 `"vulkan"` ⇒ 双 GPU 机必落核显（§3.3 实测）⇒ 改为写 `""`（auto，实测偏好独显）；cpu/cuda 写值不变；
+   - **落点复核进自检 + 欢迎页展示**：bootstrap 自检新增 Vulkan 枚举表回显与 `uma:1`（多为核显）落点警告；欢迎页 ASR 自检卡新增"设备 · <device>"行（`AsrEngineStatus.device` 取 config 值，`""` 显示为 "auto（ggml 自动选优）"——展示配置值而非实测后端，实测需拉起子进程）。
+   → 验证（已跑通）：clone 必败法实测默认根 30 字符无告警、超长根（89 字符）正确告警（估算 297 > 250）、`-WorkDir` 非空守卫生效；落点复核块对真实 `info` 输出解析出 `Vulkan1` = RTX 4060（uma:0）；`cargo check` / `vue-tsc --noEmit` 通过；脚本 BOM/CRLF 复核无恙（§2.1 教训）。
 3. **实测 Vulkan 版**：先验 §3.3 的双 GPU 落点，再测速（与 CUDA 版、CPU 版对比）。
    → 验证：确认落在 RTX 4060；记录耗时对比进 `docs/development.md`。
 4. **探测逻辑 + 回退语义**：实现 §3.2 的 L0/L1/L2 与 §3.4 的行为矩阵。
@@ -180,15 +197,17 @@
 
 | # | 项 | 状态 |
 |---|---|---|
-| 1 | 本机无 Vulkan SDK ⇒ 步骤 1 之前无法构建 MOSS Vulkan | 已实测 |
+| 1 | ~~本机无 Vulkan SDK~~ | ✅ **已装**（2026-10-19，`KhronosGroup.VulkanSDK` 1.4.363.0）：`glslc` 在 PATH，前置检查通过；构建本身是否成功见行 9 |
 | 2 | 请求不可用后端 **静默降级 + exit 0**（`vulkan` 连告警都没有，`bogus` 反而有） | **已定论（上游源码）**：`name_to_type()` 把 `vulkan` 判为合法名并映射到 GPU 类型（`backend.cpp:40`），`dev_by_type(GPU)` 返回第一个匹配（`ggml-backend-reg.cpp:348-356`）⇒ 静默是设计使然。判据只能取"实际生效的后端" |
-| 3 | **双 GPU 落点** | **机制已定、落点待实测**：不设 = GPU→IGPU→CPU（本机 → RTX 4060）；裸 `vulkan` = 枚举序第一块（本机 → 核显）；`GGML_VK_VISIBLE_DEVICES` / `Vulkan<N>` 可定点。**构建后按 §3.3 验证（④）** |
-| 4 | `build_moss.ps1` 的 vulkan 产物布局与 DLL 拷贝路径 | **待构建，且预期与现状假设不符**：上游默认 `GGML_BACKEND_DL=OFF`（`ggml/CMakeLists.txt:86`）⇒ 可能**根本不产出 `ggml-vulkan.dll`**（Vulkan 静态链进 ggml）；但已装的 CUDA 版**确实有** `ggml-cuda.dll`，说明 moss 的 CMake 可能另行打开了它 ⇒ **一切以实际产物为准**。CLI 产物在构建目录根（Ninja / Multi-Config 的 `Release/`） |
+| 3 | **双 GPU 落点** | ✅ **已实测**（2026-10-19，Vulkan 构建，§3.3）：不设 = `Vulkan1` = RTX 4060（uma:0）；裸 `vulkan` = `Vulkan0` = Intel 核显（uma:1）；`Vulkan0`/`Vulkan1` 定点与 `GGML_VK_VISIBLE_DEVICES=1`（只留 RTX 4060）均命中。剩余：转写耗时对比（步骤 3） |
+| 4 | `build_moss.ps1` 的 vulkan 产物布局与 DLL 拷贝路径 | ✅ **已实测**（2026-10-19，§2.5）：moss 的 CMake 打开了 `GGML_BACKEND_DL`，**产出独立 `ggml-vulkan.dll`**（46 MB）；DLL 在 `build-vulkan/bin/Release/`，脚本多级探测命中 |
 | 5 | Vulkan 相对 CUDA 的真实性能差（第三方数据混杂：有 pp512 −25% 的实测，也有被归因于双 GPU + 老卡的"慢 6 倍"个案；上游 moss issue #4 还显示 Vulkan 路径**连 flash attention 都没启用**，AMD iGPU 上启用后快 13.7×） | 待步骤 3 实测 |
 | 6 | `bootstrap_moss.ps1:175-181` 的后端断言用 `-match` 大小写不敏感侥幸成立 | ✅ **已修**（2026-10-18，步骤 1）：改为 `-cmatch` 解析 `[mt I] backend: <设备名>` 并与 `CPU`/`CUDA`/`Vulkan` 前缀比对；降级警告（`[mt W] …requested but no matching device`）不再被误当成结果 |
-| 7 | Vulkan SDK 安装后 `VULKAN_SDK` / PATH 是否被正确设置（CMake 需找到 glslc 与 `SPIRV-Headers` 的 **CONFIG 包**——后者是否随 SDK 提供未确证） | 安装后验证 |
+| 7 | `VULKAN_SDK` / PATH 与 `SPIRV-Headers` 的 **CONFIG 包** | ✅ **已核实**（2026-10-19）：安装器设好 `VULKAN_SDK=C:\VulkanSDK\1.4.363.0` 并把 `Bin` 入 PATH；CONFIG 包在 `<SDK>\Lib\cmake\SPIRV-Headers\`（**不是** `share\cmake`）——前置检查已按此修正（§2.3） |
 | 8 | 手上 `moss-transcribe.exe` 的来源 | ✅ **已澄清（用户）**：上游仓库没有任何 GitHub Release，所以该二进制就是本仓 `scripts/build_moss.ps1` **自构建**的产物（现装的是 `-Backend cuda`，`runtime/bin/.backend=cuda`）——`bootstrap_moss.ps1 -BinaryUrl` 默认空正是为此 |
-| 9 | **MOSS Vulkan 能否在 Windows 上构建成功**未确证：上游无 Windows CI，且 issue #1 显示 Windows + MinGW + GCC 16 在**非 Vulkan** 路径上就已编译失败（修复 PR #3 至今未合并） | 待步骤 1–2 实测 |
+| 9 | **MOSS Vulkan 能否在 Windows 上构建成功**未确证：上游无 Windows CI，且 issue #1 显示 Windows + MinGW + GCC 16 在**非 Vulkan** 路径上就已编译失败（修复 PR #3 至今未合并） | ✅ **已实测**（2026-10-19，§2.5）：**MSVC + VS2022 BuildTools + cmake 4.3.3 路线构建成功**；issue #1 是 MinGW 路线，不适用。唯一障碍是 MAX_PATH（行 10），已修 |
+| 10 | **MAX_PATH**：vulkan 构建的 TryCompile 瞬态尾巴 208 字符，工作根 > ~50 字符即 `FileTracker FTK1011`；构建目录不能挪进仓库 | ✅ **已修**（2026-10-19）：`build_moss.ps1` 默认工作根改 `<系统盘>\gsa-moss-build\<backend>-<PID>`（30 字符）+ `-WorkDir`（仅收空目录）+ 超长告警（根长+208 > 250）（§2.5） |
+| 11 | `bootstrap_moss.ps1` 曾把 vulkan 后端的 `moss_device` 写成 `"vulkan"` ⇒ 双 GPU 机必落核显（§3.3 实测），且静默无告警 | ✅ **已修**（2026-10-19）：vulkan 后端改写 `""`（auto，实测偏好独显）；就绪自检新增落点复核（枚举表 + `uma:1` 警告）；欢迎页 ASR 卡显示当前 device |
 
 ---
 

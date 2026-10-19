@@ -165,6 +165,8 @@ type ProbeState = "probing" | "ready" | "notready" | "unknown";
 interface Probe {
   state: ProbeState;
   message: string;
+  /// 配置的推理设备（仅 ASR 卡返回）："" = auto（ggml 自动选优）/ cpu / cuda / vulkan
+  device?: string;
 }
 
 const ENV_CARDS = [
@@ -199,10 +201,11 @@ function dotClass(key: EnvKey) {
   return state === "probing" ? "warn" : "off";
 }
 
-function setProbe(key: EnvKey, ready: boolean | null, msg: string) {
+function setProbe(key: EnvKey, ready: boolean | null, msg: string, device = "") {
   probes.value[key] = {
     state: ready === null ? "unknown" : ready ? "ready" : "notready",
     message: msg,
+    device,
   };
 }
 
@@ -223,10 +226,17 @@ async function probeAsr() {
       setProbe("asr", null, "探针未返回 MOSS 引擎信息");
       return;
     }
-    setProbe("asr", moss.ready, moss.message);
+    setProbe("asr", moss.ready, moss.message, moss.device);
   } catch (e) {
     setProbe("asr", null, String(e));
   }
+}
+
+/// 设备展示文案："" = auto（ggml 自动选优，实测偏好独显）
+function deviceText(key: EnvKey): string {
+  const d = probes.value[key].device;
+  if (d === undefined) return "";
+  return d === "" ? "auto（ggml 自动选优）" : d;
 }
 
 async function probeEmbed() {
@@ -362,6 +372,9 @@ onMounted(() => {
               <i class="dot" :class="dotClass(card.key)" />{{ stateText(card.key) }}
             </span>
             <span class="ex">{{ card.desc }}</span>
+            <span v-if="deviceText(card.key)" class="ex">
+              设备 · {{ deviceText(card.key) }}
+            </span>
           </div>
         </div>
       </div>
