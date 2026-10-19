@@ -1,5 +1,7 @@
 import { defineStore } from "pinia";
 import { computed, onScopeDispose, ref, watch } from "vue";
+import { cutIndices, nearestCut, splitTextAtCut } from "../composables/sentenceCuts";
+import type { MergeStrategy, SplitStrategy } from "../composables/sentenceCuts";
 import type {
   Project,
   RecentProject,
@@ -524,8 +526,16 @@ export const useProjectStore = defineStore("project", () => {
     return currentProject.value.tracks.find((t) => t.id === id) ?? null;
   }
 
-  /// 在 time 处把事件切成两段，两段继承全部字段（含矩形坐标），返回右段 id
-  function splitEvent(eventId: string, time: number): string | null {
+  /// 在 time 处把事件切成两段，两段继承全部字段（含矩形坐标）。
+  /// strategy（第 8 项）决定文本怎么分：
+  /// - "raw"：两段都保留原文本（现状，用户随后手工改）
+  /// - "punct" / "space"：文本在「离 time 最近的断点」处切开（断点留在左段）
+  ///   没有可用断点 ⇒ 回落成 raw 并带上 degraded，供上层提示用户
+  function splitEvent(
+    eventId: string,
+    time: number,
+    strategy: SplitStrategy = "raw"
+  ): { rightId: string; degraded: boolean } | null {
     const found = findEvent(eventId);
     if (!found) return null;
     const { track, event } = found;
@@ -533,13 +543,37 @@ export const useProjectStore = defineStore("project", () => {
     const EPS = 0.05;
     if (time <= event.start + EPS || time >= event.end - EPS) return null;
 
+    let leftText = "";
+    let rightText = "";
+    let degraded = false;
+    if (event.type !== "ocr_region" && strategy !== "raw") {
+      // 断点按字符比例映射到时间后等价于「时间上最近的断点」——见 sentenceCuts.ts
+      const cuts = cutIndices(event.text, strategy);
+      const span = event.end - event.start;
+      const cut = nearestCut(cuts, event.text.length, span > 0 ? (time - event.start) / span : 0);
+      if (cut === null) {
+        degraded = true;
+      } else {
+        const parts = splitTextAtCut(event.text, cut);
+        leftText = parts.left;
+        rightText = parts.right;
+      }
+    }
+
     recordSnapshot();
-    const left = { ...event, id: generateId(), end: time };
-    const right = { ...event, id: generateId(), start: time };
+    // 区域事件没有 text：两段只是时间不同，矩形原样继承
+    const left =
+      event.type === "ocr_region"
+        ? { ...event, id: generateId(), end: time }
+        : { ...event, id: generateId(), end: time, text: leftText || event.text };
+    const right =
+      event.type === "ocr_region"
+        ? { ...event, id: generateId(), start: time }
+        : { ...event, id: generateId(), start: time, text: rightText || event.text };
     const idx = track.events.indexOf(event);
     track.events.splice(idx, 1, left, right);
     track.events.sort((a, b) => a.start - b.start);
-    return right.id;
+    return { rightId: right.id, degraded };
   }
 
   /// 更新指定 ocr_region 事件的坐标（就地修改 reactive 对象，时间轴即时刷新）
@@ -1340,11 +1374,17 @@ export const useProjectStore = defineStore("project", () => {
     currentProject.value!.tracks = tracks.filter((t) => t.id !== srcId);
   }
 
-  /// 合并两个同轨事件：时间取并集（end 取较晚）、文本按时间顺序拼接、
+  /// 合并两个同轨事件：时间取并集（end 取较晚）、文本按 strategy 取（第 8 项：
+  /// latter 保留后者文本 | former 保留前者文本 | stack 前后堆叠=现状）、
   /// 保留时间更早事件的 id 与属性，删除另一事件；返回保留的 id。
   /// 条件：同轨、均非 ocr_region；requireAdjacent 时还需按 start 排序相邻。
   /// 不满足返回 null
-  function mergeTwo(idA: string, idB: string, requireAdjacent = true): string | null {
+  function mergeTwo(
+    idA: string,
+    idB: string,
+    requireAdjacent = true,
+    strategy: MergeStrategy = "stack"
+  ): string | null {
     const a = findEvent(idA);
     const b = findEvent(idB);
     if (!a || !b || a.track.id !== b.track.id) return null;
@@ -1361,7 +1401,9 @@ export const useProjectStore = defineStore("project", () => {
     recordSnapshot();
     const [first, second] = ea.start <= eb.start ? [ea, eb] : [eb, ea];
     first.end = Math.max(first.end, second.end);
-    first.text = first.text + "\n" + second.text;
+    if (strategy === "latter") first.text = second.text;
+    else if (strategy === "former") first.text = first.text;
+    else first.text = first.text + "\n" + second.text;
     track.events = track.events.filter((e) => e.id !== second.id);
     track.events.sort((x, y) => x.start - y.start);
     return first.id;
@@ -1369,7 +1411,7 @@ export const useProjectStore = defineStore("project", () => {
 
   /// 合并事件与其同轨排序后紧随其后的下一个事件（M 键），
   /// 语义与 mergeTwo 一致（保留时间更早的事件）
-  function mergeAdjacent(id: string): string | null {
+  function mergeAdjacent(id: string, strategy: MergeStrategy = "stack"): string | null {
     const found = findEvent(id);
     if (!found) return null;
     const { track, event } = found;
@@ -1377,7 +1419,7 @@ export const useProjectStore = defineStore("project", () => {
     const sorted = [...track.events].sort((a, b) => a.start - b.start);
     const idx = sorted.findIndex((e) => e.id === id);
     if (idx < 0 || idx >= sorted.length - 1) return null;
-    return mergeTwo(id, sorted[idx + 1].id);
+    return mergeTwo(id, sorted[idx + 1].id, true, strategy);
   }
 
   function closeProject() {

@@ -78,9 +78,10 @@ function removeClip(ev: FusedEvent) {
 
 /// 分割当前 clip：在播放头位置切开（与校对区 S 键语义一致）
 function splitClip(ev: FusedEvent) {
-  const rightId = projectStore.splitEvent(ev.id, timeline.currentTime);
-  if (rightId) {
-    timeline.focusClip(rightId);
+  const res = projectStore.splitEvent(ev.id, timeline.currentTime, timeline.splitStrategy);
+  if (res?.degraded) message.warning("该 clip 里没有可用断点，已按原文分割");
+  if (res) {
+    timeline.focusClip(res.rightId);
     timeline.focusTrack(fusedTrack.value?.id ?? null);
   } else {
     message.info("播放头不在该字幕区间内，无法分割");
@@ -89,7 +90,7 @@ function splitClip(ev: FusedEvent) {
 
 /// 合并当前 clip 与同轨下一事件（与校对区 M 键语义一致）
 function mergeNext(ev: FusedEvent) {
-  const merged = projectStore.mergeAdjacent(ev.id);
+  const merged = projectStore.mergeAdjacent(ev.id, timeline.mergeStrategy);
   if (merged) {
     timeline.focusClip(merged);
   } else {

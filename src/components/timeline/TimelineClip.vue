@@ -311,7 +311,7 @@ function onWindowMouseMove(e: MouseEvent) {
 // 拖动场景的相邻关系已由 bounds() 保证（最近非重叠邻居），
 // 中间可能有重叠事件打断排序相邻，故不要求严格相邻
 function tryMergeWith(other: TimelineEvent): boolean {
-  const merged = projectStore.mergeTwo(props.event.id, other.id, false);
+  const merged = projectStore.mergeTwo(props.event.id, other.id, false, timeline.mergeStrategy);
   if (!merged) return false;
   timeline.focusClip(merged);
   emit("merged");

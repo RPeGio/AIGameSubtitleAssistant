@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import type { InjectionKey } from "vue";
 import type { TimelineEvent } from "../types";
+import type { MergeStrategy, SplitStrategy } from "../composables/sentenceCuts";
 
 /// 轨道片段配色：bg 底 / fg 文字 / line 描边，三值都指向主题令牌
 export interface ClipTone {
@@ -37,6 +38,17 @@ export const TEXT_TRACK_TYPES = ["ocr_text", "embed_ocr", "asr", "fused", "manua
 /// 统一吸附阈值（像素）：clip 边缘与吸附点距离小于该值即对齐
 export const SNAP_THRESHOLD_PX = 8;
 
+/// 分割/合并策略的持久化键与合法值（第 8 项）；不合法或缺失时回落默认档
+const SPLIT_KEY = "gsa.timeline.splitStrategy";
+const MERGE_KEY = "gsa.timeline.mergeStrategy";
+const SPLIT_VALUES: SplitStrategy[] = ["punct", "space", "raw"];
+const MERGE_VALUES: MergeStrategy[] = ["latter", "former", "stack"];
+
+function readStrategy<T extends string>(key: string, allowed: T[], fallback: T): T {
+  const saved = localStorage.getItem(key);
+  return saved && (allowed as string[]).includes(saved) ? (saved as T) : fallback;
+}
+
 export const useTimelineStore = defineStore("timeline", () => {
   const pixelsPerSecond = ref(100);
   const scrollLeft = ref(0);
@@ -58,6 +70,10 @@ export const useTimelineStore = defineStore("timeline", () => {
   /// 打轴页与校对区共用同一条时间轴时间，若两侧 <video> 同时播放会双声道、双解码，
   /// 故约定：谁按下播放谁持有播放权，另一侧只跟随时间、保持静音暂停。
   const activePlayer = ref<string | null>(null);
+  /// 分割策略（面板可切，持久化）：punct 按断句标点 | space 按空格 | raw 保留原文
+  const splitStrategy = ref<SplitStrategy>(readStrategy(SPLIT_KEY, SPLIT_VALUES, "punct"));
+  /// 合并策略：latter 保留后者文本 | former 保留前者文本 | stack 前后堆叠（现状）
+  const mergeStrategy = ref<MergeStrategy>(readStrategy(MERGE_KEY, MERGE_VALUES, "latter"));
 
   const totalWidth = computed(() => duration.value * pixelsPerSecond.value);
 
@@ -139,6 +155,18 @@ export const useTimelineStore = defineStore("timeline", () => {
     activeTool.value = tool;
   }
 
+  /// 切换分割策略（面板选择后持久化）
+  function setSplitStrategy(next: SplitStrategy) {
+    splitStrategy.value = next;
+    localStorage.setItem(SPLIT_KEY, next);
+  }
+
+  /// 切换合并策略（面板选择后持久化）
+  function setMergeStrategy(next: MergeStrategy) {
+    mergeStrategy.value = next;
+    localStorage.setItem(MERGE_KEY, next);
+  }
+
   function toggleSnap() {
     snapEnabled.value = !snapEnabled.value;
     snapGuideX.value = null;
@@ -190,6 +218,8 @@ export const useTimelineStore = defineStore("timeline", () => {
     snapGuideX,
     swapSegments,
     activePlayer,
+    splitStrategy,
+    mergeStrategy,
     tick,
     beginScrub,
     endScrub,
@@ -204,6 +234,8 @@ export const useTimelineStore = defineStore("timeline", () => {
     focusClip,
     focusTrack,
     setTool,
+    setSplitStrategy,
+    setMergeStrategy,
     toggleSnap,
     toggleSwapSegments,
     setSnapGuide,

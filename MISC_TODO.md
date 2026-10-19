@@ -16,8 +16,11 @@
 | 5 | ✅ 播放键/进度条移出画面 | 修复·布局 | 无 | 已实现（提交号待补）：控件条改流内 + 画面按 16:9 自定高，字幕回到画面底 |
 | 6 | ✅ 语料页语料列表增删改（含拖动排序） | 功能 | 无 | 已实现（提交号待补）：行内编辑（Ctrl+Enter/失焦提交）+ 手动新增 + 2×3 点阵拖动排序 |
 | 7 | ✅ OCR 参数 info 图标 + 悬浮解释 | 功能·基建 | 无 | 已实现（提交号待补）：6 参数 + 术语表各一枚 info 点，hover/聚焦弹出三段式解释；第 12 项新参数可自带说明 |
-| 8 | 「分割/合并」倒三角 + 策略小面板 | 功能·核心 | 无 | 时间轴功能扩展第一块，**先与用户对齐策略细节** |
+| 8 | 🚧 「分割/合并」倒三角 + 策略小面板 | 功能·核心 | 无 | 第一轮已实现（面板 + 三档算法，提交号待补）；第二轮＝被分割态 + 键盘 ⬅️➡️ 移句界 |
 | 9 | 迷你时间轴（复用第 8 项成果） | 功能 | 8 | 用户明确要求：主时间轴功能定稿后再复用 |
+| 15 | clip 拖边（改起止）时显示起止参考线 | 功能·时间轴 | 无（与 8/9 同区） | 拖边时看得见落点；**与第 16 项一起做**（m06103） |
+| 16 | clip 吸附目标新增「播放头」 | 功能·时间轴 | 无（与 8/9 同区） | 用户此前实现过但没成功（原因见条目内）；与第 15 项一起做 |
+| 17 | 去除轨道内 clip 的所有句末标点 | 功能·文本清理 | 8（句界操作会留下句尾逗号） | 面向 ASR 文本的批量清理；用户 m06145 追加 |
 | 10 | 快捷键体系（调研 → 注册表 → 帮助面板） | 功能·跨页 | 8、9 | 键位必须绑在定稿交互上，先做必返工 |
 | 11 | 欢迎页自检升级（探针 + 静默 bootstrap + 后端指引） | 功能·独立 | 7（info 基建）·「并行分支接口」的命令缺口 | 独立大件，放中后段不打断时间轴主线 |
 | 12 | CUDA GPU 加速参数化（设备迁移到 UI） | 功能·Rust+UI | 7（要带 info 说明）+ 11（需 `probe_moss_backend` 命令） | 存储与判定逻辑已随 PR #48 就位，只缺字段迁移与 UI |
@@ -295,6 +298,26 @@
 
 ### 8. 「分割」「合并」按钮加倒三角 + 策略小面板
 
+**🚧 第一轮已实现（2026-10-20，提交号待补）**——策略面板 + 三档算法；第二轮（被分割态 + 键盘 ⬅️➡️ 移句界）待做。
+
+| 改动 | 文件 | 内容 |
+|---|---|---|
+| 句界切分算法（新） | 新建 `src/composables/sentenceCuts.ts` | 类型 `SplitStrategy`/`MergeStrategy`；`cutIndices(text, mode)`（连续断点合并、**丢弃句首/句尾断点**）；`nearestCut(cuts, len, ratio)`（等速率扩散的等价判定，并列取左）；`splitTextAtCut`；`stripTrailingPunctuation`（第 17 项备好）；`SPLIT_OPTIONS`/`MERGE_OPTIONS` |
+| 策略状态 | `src/stores/timeline.ts` | `splitStrategy`（默认 `punct`）/`mergeStrategy`（默认 `latter`）+ `setSplitStrategy`/`setMergeStrategy`，持久化键 `gsa.timeline.splitStrategy` / `gsa.timeline.mergeStrategy`（非法值回落默认） |
+| 分割分档 | `src/stores/project.ts` | `splitEvent(eventId, time, strategy = "raw")` → 返回 `{ rightId, degraded } | null`；`punct`/`space` 走「时间比例最近的断点」，无断点 ⇒ `degraded: true` 且两段保留原文；`ocr_region` 分支不收窄（矩形随 `{...event}` 继承） |
+| 合并分档 | `src/stores/project.ts` | `mergeTwo(idA, idB, requireAdjacent = true, strategy = "stack")`；`latter` 取后者文本、`former` 保留前者、`stack` 现状 `first + "\n" + second`；`mergeAdjacent(id, strategy)` 透传 |
+| 面板 UI | `src/components/timeline/TimelineToolStrip.vue` | 分割/合并按钮 26×24 + 右下角 3px 倒三角（`.has-menu::after`，`currentColor`）；**已选中再点一次**才展开 naive `NPopover trigger="manual"` + `.strategy-pop` 选项列表（选中项带勾 + `--accent-soft` 底）；点面板外/切工具自动收起 |
+| 调用点 | `src/components/timeline/Timeline.vue`、`src/components/timeline/TimelineClip.vue`、`src/views/Editor.vue` | 分割工具 / S 键 / 行内分割传 `timeline.splitStrategy`，合并工具 / M 键 / 拖过边界合并 / 行内合并传 `timeline.mergeStrategy`；`degraded` 时 `message.warning("该 clip 里没有可用断点，已按原文分割")` |
+
+**第一轮验证（`temp/css-preview/checks/item8.js` / `item8b.js`，1680×1000，mock）**
+- 纯函数（对用户给的 47 字样例）：`len 47`、`punctCuts [9,13,23,38]`（47 的句尾标点按规则丢弃）、`spaceCuts [6,12]`、句首句尾标点样例 `[6]`、`stripTrailing("abc，def。  ") = "abc，def"`、`nearestCut` 比例 0.1/0.35/0.6/0.95/并列 → `[9,13,23,38,9]`、`splitAt23` 得 `叙旧…汇报吧。` ｜ `你提前…结论么？`（与图解逐字一致）。
+- 合并三档：`latter` = 后者文本、`former` = 前者文本、`stack` = `前者\n后者` ✓（每次都 `undo()` 复原）。
+- 分割三档：`raw` 两段都保留原文 ✓；`punct` → 左 `【派蒙】这里的风景，` ｜ 右 `和你家乡的一样吗？`（去空白后字符与原文本一致 ✓）；`space` 与 `abc` 两种情形都 `degraded: true` 且保留原文 ✓。
+- 策略持久化：store 与 localStorage 同步 ✓。
+- 面板：5 个工具按钮、分割钮 26×24、倒三角 3px、**首次点击只切工具不弹面板**、第二次点击弹「分割策略」三档、选「按空格」写策略并收起（离场动画约 300–500ms）、合并面板只显示合并三档、点面板外收起 ✓；`pageOverflow false`。
+- `pnpm build`（`vue-tsc --noEmit && vite build`）通过：2900 模块 / CSS 59.05 kB / JS 654.52 kB。
+- 截图 `temp/css-preview/item8-panel.png`（分割策略面板打开态）。
+
 **现状依据**
 - 工具按钮：`src/components/timeline/TimelineToolStrip.vue` 的 5 个 `.tool-btn`（24×22，点击即 `setTool(...)`）。
 - 分割语义：`src/stores/project.ts:528` 的 `splitEvent(eventId, time)`——`{ ...event }` 继承全部字段（含 `x1/y1/x2/y2`）、`EPS = 0.05` 防 sliver、`recordSnapshot()`。
@@ -306,10 +329,31 @@
 - 合并面板三档：`保留后者文本`（默认）、`保留前者文本`、`前后文本堆叠`（现状）。
 - 策略存 `timeline` store（或按项目惯例持久化到 `gsa.*`），`splitEvent` / `mergeTwo` 接受策略参数。
 
-**待与用户讨论（实现前）**
-- 断句标点集合（中英标点表）、找不到标点时如何回退（按空格？整体切成两段？拒绝？）；
-- 「合并」三档对时间轴与 `fuse_meta` 的影响（尤其被丢弃一侧的 `source_text` / 候选信息）；
-- 策略是否需要跨会话记住。
+**用户已定（2026-10-19，m06123 附图解）**
+- **合并三档**（语义简单，不涉及新算法）：`保留后者文本`＝合并后取后者文本、前者文字丢弃；`保留前者文本`＝反之；`前后文本堆叠`＝**现状**（`first.text + "\n" + second.text`）。`mergeTwo` 的快照与「拒绝 `ocr_region`」逻辑保持不变，只在文本取舍分支上分档。
+- **分割 · 按断句标点**（用户给的「扩散算法」）：
+  1. 取 clip 文本中标点的字符序号，比例 `p_k = 序号 / 文本总长`；**句头与句尾的标点不参与**（不当作断点）；
+  2. 映射到时间 `t_k = start + p_k × (end − start)`——每个标点是一个「扩散中心」；
+  3. 每个中心以**相同速率向左右对称扩散**；两个相邻扩散相遇处（速率相同 ⇒ 中点）双方停止，各自另一边继续，扩到 clip 两端也停；
+  4. 全部停止后时间轴被切成若干连续区间（1D Voronoi 单元），每段归属一个标点；
+  5. 在 T 处分割时：**时间在 T 处切断**（与现状一致），**文本在「T 所属标点」之后切断**（标点留在左段）。示例：`叙旧可以之后再叙，米提亚，先继续刚才的汇报吧。` ｜ `你提前进行能源研究的最终实验，有得出什么结论么？`
+- **分割 · 按空格**：与上完全同构，断点集合换成「句内空格」（句首/句尾空格同样不参与）。
+- **分割 · 保留原文**：**现状**（按比例在字符处硬切，不认标点）。
+- **分割态（新交互）**：分割出的两个 clip 进入「被分割态」，保持到失焦、再次分割或 Esc 为止。此状态下按**键盘 ⬅️ / ➡️**（不是鼠标）：
+  - **⬅️（右→左）**：把右侧 clip 的**第一段**（以标点结尾、**保留其标点**）整体接到左侧 clip 句末，左侧原有的句末标点保留：
+    `123，4567，` ｜ `234，5678。` → `123，4567，234，` ｜ `5678。`
+  - **➡️（左→右）**：把左侧 clip 的**最后一段**（同样保留其句末标点）整体接到右侧 clip 句首，是 ⬅️ 的**严格逆操作**：
+    `123，4567，234，` ｜ `5678。` → `123，4567，` ｜ `234，5678。`（逐字复原）
+  - 只改文本（`start`/`end` 不动）；每次按键记一次快照（可 Ctrl+Z）。
+  - 某一侧没有可切的段（例如右侧整段无标点）⇒ 不动作 + toast 提示。
+  - **已知副作用**：⬅️ 后左侧可能以逗号收尾（上例 `123，4567，234，`）⇒ 需要「去除句末标点」的清理功能，已记入**第 17 项**。
+
+**用户已定（2026-10-19，m06138 收尾）**
+- 分割态的「左键/右键」是**键盘 ⬅️ / ➡️**（不是鼠标），**只在被分割态下生效**，退出该态即无动作；⬅️＝把右侧 clip 的第一段（含其标点）移到左侧句末，➡️＝反之。因此**不覆盖**现有的「点 clip 跳播放头」。
+- 移动句子**只改文本**：两个 clip 的 `start`/`end` 不变（时间边界是用户点出来的，不该被句界改写）。
+- 「按断句标点 / 按空格」**找不到可用断点**（全句无标点/空格，或只有句首句尾）⇒ **退化为保留原文分割 + 弹 toast 提示**。
+- 该功能主要面向 **ASR 产出的主播语音**（ASR 断句不准，人工微调句界）。
+- 仍按现状：`mergeTwo` 的快照与「拒绝 `ocr_region`」不变；被丢弃一侧的 `fuse_meta` 字段保留合并后实体上的原值；策略持久化沿用项目惯例（`gsa.*`）。
 
 **验收**
 - 两工具 × 三档策略各自生效；**默认档与现状逐字一致**（回归）；每次操作都能 Ctrl+Z 回退。
@@ -334,6 +378,57 @@
 
 **验收**
 - 语料页与打轴页两处都测：提示行消失、工具条在顶部、壳高收敛、拖动画出的选区起止与鼠标位置一致、分割可用、双击 ±1.5s 仍可用、滚轮平移与刻度拖动无回归、现有 `.mini-timeline` 1px 边框与页面无重边。
+
+### 15. clip 拖边（改 start/end）时显示起止参考线
+
+**现状依据**
+- 拖动逻辑在 `src/components/timeline/TimelineClip.vue` 的 `onWindowMouseMove`（模式 `"l"`/`"r"` 改单边、`"move"` 整体位移；`dt = (dx + (scrollLeft - origScrollLeft)) / pixelsPerSecond`）；**改边期间没有任何落点视觉参考**。
+- 现有唯一的参考线是吸附提示线：`src/stores/timeline.ts` 的 `snapGuideX`（`setSnapGuide`）＋ `src/components/timeline/Timeline.vue:678-681` 的 `.snap-guide`（`v-if="timeline.snapGuideX !== null"`，`left: contentLeft + snapGuideX - scrollLeft`）——它只在吸附命中时出现，且是**贯穿整个轨道区**的长线。
+- 参考线只能在 `Timeline.vue` 的覆盖层里画：clip 位于 `.tl-track-body` 内（`overflow:hidden`，仅分段互换时 `visible`），子元素无法跨出本条轨道行。
+
+**要做**（用户 m06103）
+- 拖动 clip 的**左/右边缘**（改 start/end）期间，在对应边缘的时间位置持续显示一条 1px 垂直细线：**上端自标尺线下部起，下端到水平滑条所在容器上部止**，随鼠标实时更新，松开即消失。
+- **整体位移（mode `"move"`）不显示**。
+- 与吸附提示线**区分开**（长度不同，可再配合颜色/透明度）：两者可能同时出现（拖边时恰好吸附到某个边界）⇒ **不要复用 `snapGuideX` 一个字段**，新增独立字段（如 `edgeGuideX: number | null` + `setEdgeGuide`，或在 store 里把两条线建模成 `{ x, kind }` 列表）。
+- 定位口径与 `.snap-guide` 一致：`left = contentLeft + 时间 × pixelsPerSecond - scrollLeft`。
+
+**验收**
+- 拖左边缘 / 右边缘各一条线，位置与 `start` / `end` 的当前值精确一致（可用 `evalq` 比对线 `left` 与 `clip` 边缘像素）；随鼠标移动实时更新；松开后消失；整体位移时不出现；与吸附线同时出现时两条都能看见且可区分；编辑器时间轴与（第 9 项之后）迷你时间轴都成立；无布局跳动。
+
+### 16. clip 吸附目标新增「播放头」
+
+**现状依据**
+- 吸附候选取自 `src/components/timeline/TimelineClip.vue` 的 `collectSnapEdges()`（`:104-114`，拖动开始时的快照：自身 `origStart/origEnd` + `props.snapEvents` 各事件起止），`props.snapEvents` 由 `src/components/timeline/Timeline.vue:107-110` 的 `snapEvents` computed 提供（= 当前**显示**的轨道的事件集合，跨源吸附就是在这里修掉的）。**`timeline.currentTime`（播放头）不在候选里**。
+- 命中判定在 `snapToEdges(mode, start, end, edges, pps, minStart, maxEnd)`（`:119-157`）：`let bestDist = SNAP_THRESHOLD_PX`（8px），并且要求 `s >= minStart && e <= maxEnd && e - s >= MIN_DUR`（`MIN_DUR = 0.05`）。**播放头是单点候选（start == end），会被 `e - s >= MIN_DUR` 这一条时长校验直接过滤掉**——这很可能就是「之前实现过但没成功」的原因（待实现时先复核这段代码确认）。
+
+**要做**（用户 m06103）
+- 把播放头作为**单点吸附目标**加入候选，且让 `snapToEdges` 支持单点（单点只需落在 `[minStart, maxEnd]` 内、按最近距离参与比较，跳过时长校验）。
+- 播放中播放头在移动 ⇒ 候选在**拖动开始时取一次快照**（与现有 `d.snapEdges` 同时刻），避免拖到一半目标漂移。
+- 吸附命中时给出可辨识的反馈（播放头位置本来就有一条线，建议用颜色/加粗或另一种提示区分「吸到了播放头」）。
+
+**待与用户讨论（实现前）**
+- 播放中拖动 clip 是否也允许吸附播放头（还是只在暂停时）；
+- 命中阈值是否沿用 8px。
+
+**验收**
+- 暂停时把 clip 左/右边缘拖到播放头附近（<8px）→ 精确落在 `timeline.currentTime`；播放中拖动时目标不漂移（用拖动开始时的播放头时间）；与现有「同轴事件边界」吸附不冲突；`Ctrl+Z` 可回退到拖动前。
+
+### 17. 去除轨道内 clip 的所有句末标点
+
+**起因（用户 m06145）**
+- 第 8 项的「被分割态」用 ⬅️ 把右侧一段移到左侧后，左侧可能以逗号收尾（例 `123，4567，234，`）。需要一条批量清理：把**当前轨道内所有 clip 文本的句末标点去掉**。
+
+**现状依据**
+- 单条改文本走 `src/stores/project.ts` 的 `updateEventText(id, text)`；批量变换没有现成 API，需要新增一个「整条轨道遍历 + 一次快照」的 store action。
+- 标点表可复用第 8 项的 `src/composables/sentenceCuts.ts`。
+
+**要做**
+- `src/composables/sentenceCuts.ts` 增加 `stripTrailingPunctuation(text)`（只剥句末连续的标点/空白，句中标点不动）。
+- `src/stores/project.ts` 增加 `stripTrackTrailingPunctuation(trackId)`：遍历该轨道所有**文本事件**逐条处理，**有变化才 `recordSnapshot()`**（一次 Ctrl+Z 还原整批），返回 `{ changed }`。
+- 入口待定：轨道总览头部（与「导出」并列、作用于当前聚焦轨道）或时间轴轨道标签的菜单。**建议前者**，与现有聚焦轨道的操作集中在一起。
+
+**验收**
+- 只影响目标轨道与文本事件（`ocr_region` 不动）；句中标点不受影响；一次 Ctrl+Z 全部还原；无变化时不产生快照。
 
 ---
 

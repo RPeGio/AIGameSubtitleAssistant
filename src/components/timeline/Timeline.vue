@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, provide, ref, watch } from "vue";
-import { NModal, NPopconfirm, NSelect, NButton } from "naive-ui";
+import { NModal, NPopconfirm, NSelect, NButton, useMessage } from "naive-ui";
 import { useTimelineStore, TIMELINE_STORE_KEY, clipTone, TEXT_TRACK_TYPES } from "../../stores/timeline";
 import { useProjectStore } from "../../stores/project";
 import type { Track } from "../../types";
@@ -15,6 +15,10 @@ import AppIcon from "../AppIcon.vue";
 const timeline = inject(TIMELINE_STORE_KEY, null) ?? useTimelineStore();
 provide(TIMELINE_STORE_KEY, timeline);
 const projectStore = useProjectStore();
+const message = useMessage();
+
+/// 分割策略找不到可用断点（退化成分割保留原文）时的提示文案
+const SPLIT_DEGRADED_TEXT = "该 clip 里没有可用断点，已按原文分割";
 
 const props = withDefaults(
   defineProps<{
@@ -169,10 +173,11 @@ function onTrackAreaMouseDown(e: MouseEvent) {
     const eventId = clipEl?.dataset.eventId;
     if (!eventId) return;
     const time = timeline.timeAtPixel(e.clientX - target.getBoundingClientRect().left);
-    const rightId = projectStore.splitEvent(eventId, time);
-    if (rightId) {
-      timeline.focusClip(rightId);
-      const found = projectStore.findEvent(rightId);
+    const res = projectStore.splitEvent(eventId, time, timeline.splitStrategy);
+    if (res?.degraded) message.warning(SPLIT_DEGRADED_TEXT);
+    if (res) {
+      timeline.focusClip(res.rightId);
+      const found = projectStore.findEvent(res.rightId);
       if (found) timeline.focusTrack(found.track.id);
     }
     return;
@@ -215,7 +220,7 @@ function onClipClicked(track: Track, clipId: string) {
     }
     const first = mergeFirstId.value;
     mergeFirstId.value = null;
-    const merged = projectStore.mergeTwo(first, clipId);
+    const merged = projectStore.mergeTwo(first, clipId, true, timeline.mergeStrategy);
     if (merged) {
       timeline.focusClip(merged);
       timeline.focusTrack(track.id);
@@ -400,10 +405,11 @@ function onKeydown(e: KeyboardEvent) {
   // 分割：在播放头处切开聚焦 clip
   if (e.code === "KeyS" && !e.ctrlKey && !e.metaKey && !e.altKey) {
     if (!id) return;
-    const rightId = projectStore.splitEvent(id, timeline.currentTime);
-    if (rightId) {
-      timeline.focusClip(rightId);
-      const right = projectStore.findEvent(rightId);
+    const res = projectStore.splitEvent(id, timeline.currentTime, timeline.splitStrategy);
+    if (res?.degraded) message.warning(SPLIT_DEGRADED_TEXT);
+    if (res) {
+      timeline.focusClip(res.rightId);
+      const right = projectStore.findEvent(res.rightId);
       if (right) timeline.focusTrack(right.track.id);
     }
     return;
@@ -412,7 +418,7 @@ function onKeydown(e: KeyboardEvent) {
   // 合并：聚焦 clip 与同轨下一个事件
   if (e.code === "KeyM" && !e.ctrlKey && !e.metaKey && !e.altKey) {
     if (!id) return;
-    const merged = projectStore.mergeAdjacent(id);
+    const merged = projectStore.mergeAdjacent(id, timeline.mergeStrategy);
     if (merged) timeline.focusClip(merged);
     return;
   }
