@@ -148,8 +148,11 @@ foreach ($prop in @("moss_binary", "moss_model", "moss_threads", "moss_device"))
 $cfg | Add-Member -NotePropertyName "moss_binary"  -NotePropertyValue "bin/moss-transcribe.exe" -Force
 $cfg | Add-Member -NotePropertyName "moss_model"    -NotePropertyValue "models/moss/$modelFile" -Force
 $cfg | Add-Member -NotePropertyName "moss_threads"  -NotePropertyValue 0 -Force
-# moss_device：cpu → "cpu"（明确 CPU）；cuda/vulkan → 对应值；后端由 build_moss.ps1 决定
-$cfg | Add-Member -NotePropertyName "moss_device"  -NotePropertyValue $(if ($Backend -eq "cpu") { "cpu" } else { $Backend }) -Force
+# moss_device：cpu → "cpu"（明确 CPU）；cuda → "cuda"（单设备无歧义）；vulkan → ""（auto）。
+# 依据（2026-10-19 双 GPU 实测：核显枚举 0 / 独显 1）：ggml auto 偏好选独显（backend=Vulkan1），
+# 而裸 "vulkan" 匹配 Vulkan0 = 核显，反而更差；需要定点时用 MTD_DEVICE=Vulkan0|Vulkan1，
+# 或设 GGML_VK_VISIBLE_DEVICES 重排（见 docs/engines_vulkan_design.md §3.3）。
+$cfg | Add-Member -NotePropertyName "moss_device" -NotePropertyValue $(switch ($Backend) { "cpu" { "cpu" } "cuda" { "cuda" } default { "" } }) -Force
 
 # 无 BOM 写入（Rust 端 serde_json 解析需要）
 [System.IO.File]::WriteAllText(
@@ -171,13 +174,41 @@ $infoOut | Select-Object -First 8
 if ($code -ne 0) {
   Write-Host "==> 警告：moss-transcribe info 自检失败（exit=$code），请检查模型与二进制"
 } else {
-  # backend 断言：cpu 期望 CPU；cuda/vulkan 期望对应后端（构建含对应 DLL 时生效）
-  $expected = if ($Backend -eq "cpu") { "CPU" } else { $Backend.ToUpper() }
-  if ($infoOut -match "backend:\s*$expected") {
-    Write-Host "==> MOSS 运行环境就绪：$targetExe + $modelPath（backend=$expected 已确认）"
-  } elseif ($infoOut -match "backend:\s*(.+)") {
-    Write-Host "==> 警告：请求后端 $expected，但实际加载 $($Matches[1])。GPU 后端需 build_moss.ps1 -Backend $Backend 构建对应 DLL"
+  # backend 断言：解析**实际生效的设备名**（日志形如 "[mt I] backend: CUDA0" / "backend: CPU"）。
+  # 两个坑：① 设备名是 CUDA0 / Vulkan0 / CPU，原先拿 $Backend.ToUpper() 去比，只靠 -match 不区分
+  # 大小写才侥幸命中；② 降级时还会有一行 "[mt W] backend: MTD_DEVICE=xxx requested but no matching
+  # device registered" —— 同样含 "backend:" 字样，必须用 [mt I] 限定，否则会把警告当结果。
+  $expected = switch ($Backend) { "cpu" { "CPU" } "cuda" { "CUDA" } default { "Vulkan" } }
+  $actual = $null
+  if ($infoOut -cmatch "\[mt I\] backend:\s*([^\r\n]+)") { $actual = $Matches[1].Trim() }
+  if ($actual -and $actual.StartsWith($expected)) {
+    Write-Host "==> MOSS 运行环境就绪：$targetExe + $modelPath（backend=$actual 已确认）"
+  } elseif ($actual) {
+    Write-Host "==> 警告：请求后端 $expected，但实际加载 $actual —— GPU 后端需 build_moss.ps1 -Backend $Backend 构建；"
+    Write-Host "           ggml 在设备缺失时是**静默降级**（exit code 仍为 0），上面这行才是真实后端。"
   } else {
     Write-Host "==> 警告：未能从 info 输出确认 backend（无法解析）"
+  }
+  # 落点复核：Vulkan 是多设备后端，"backend=VulkanN" 只是枚举序号，落没落到预期显卡要看枚举表。
+  # 本机实测（核显 0 / 独显 1）：auto 选 Vulkan1 = 独显；裸 "vulkan" 会选 Vulkan0 = 核显。
+  if ($Backend -eq "vulkan" -and $actual -and $actual.StartsWith("Vulkan")) {
+    $vkDevs = @($infoOut -split "`r?`n" | Where-Object { $_ -match "^\s*ggml_vulkan:\s+\d+\s*=" })
+    if ($vkDevs.Count -gt 0) {
+      Write-Host "==> Vulkan 设备枚举（共 $($vkDevs.Count) 块）："
+      $vkDevs | ForEach-Object { Write-Host "    $($_.Trim())" }
+    }
+    if ($actual -cmatch "Vulkan(\d+)$") {
+      $idx = [int]$Matches[1]
+      if ($idx -lt $vkDevs.Count) {
+        $picked = $vkDevs[$idx].Trim()
+        if ($picked -match "uma:\s*1") {
+          Write-Host "==> 警告：backend=$actual 选中的是共享内存设备（uma:1，多为核显）。独显通常 uma:0，"
+          Write-Host "           建议把 config.json 的 moss_device 留空（auto，ggml 偏好独显），"
+          Write-Host "           或设环境变量 GGML_VK_VISIBLE_DEVICES=<独显枚举序号> 后重跑。"
+        } else {
+          Write-Host "==> 落点确认：$picked"
+        }
+      }
+    }
   }
 }

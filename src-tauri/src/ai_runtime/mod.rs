@@ -6,6 +6,7 @@
 //
 // 本阶段（2.1）只搭骨架：trait + 管理器 + 配置 + 占位 provider。
 
+pub mod backend_probe;
 pub mod config;
 pub mod dhash;
 pub mod embed;
@@ -406,6 +407,12 @@ pub trait AsrProvider: Send + Sync {
     fn describe(&self) -> String {
         String::new()
     }
+    /// 实测生效的推理后端（如 "CUDA0"/"Vulkan1"/"CPU"），默认空。
+    /// 仅 MOSS 有实证来源（spawn 时 info 的 [mt I] backend 行）；其余引擎
+    /// 实测需拉起重依赖子进程，欢迎页探针不做。
+    fn effective_backend(&self) -> String {
+        String::new()
+    }
     /// 转写整段音频（WAV 文件路径），返回带说话人标签的时间轴段。
     /// options 为本次运行参数（语言/说话人上限等），不支持的引擎应忽略。
     fn transcribe(
@@ -527,6 +534,13 @@ pub struct AsrEngineStatus {
     pub engine: String,
     pub ready: bool,
     pub message: String,
+    /// 配置的推理设备：moss 为 ""(=auto，ggml 自动选优)/cpu/cuda/vulkan，funasr 为 cpu/cuda。
+    /// 展示的是配置值而非实测后端——实测需拉起子进程，欢迎页探针只做存在性检查。
+    pub device: String,
+    /// 实测生效后端（仅 moss 有值，来自 spawn 时 `info` 的 `[mt I] backend:` 行，
+    /// 如 "CUDA0"/"Vulkan1"/"CPU"）。与 device 不同：这是硬判据——device=vulkan
+    /// 时 ggml 静默降级后实测可能仍是 CUDA0。None = 未实证（引擎未配置/探测失败）。
+    pub effective_backend: Option<String>,
 }
 
 /// 全局 ASR 管理器 —— 同时持有 funasr / moss 两个引擎（各自按配置就绪），
@@ -590,11 +604,22 @@ impl AsrManager {
         ["funasr", "moss"]
             .iter()
             .map(|key| {
-                let (ready, message) = self.with_engine(key, |p| (p.is_ready(), p.describe()));
+                let (ready, message, effective) = self.with_engine(key, |p| {
+                    (p.is_ready(), p.describe(), p.effective_backend())
+                });
+                // 设备值直接取 config：welcome 页展示"当前配置的 moss device"，
+                // 空 = auto（ggml 自动选优，实测偏好独显），由前端转成可读文案
+                let device = match *key {
+                    "moss" => self.config.moss_device.clone(),
+                    _ => self.config.funasr_device.clone(),
+                };
                 AsrEngineStatus {
                     engine: (*key).into(),
                     ready,
                     message,
+                    device,
+                    // 实测后端：moss 来自 spawn 时的 L2 实证；空则不展示
+                    effective_backend: if effective.is_empty() { None } else { Some(effective) },
                 }
             })
             .collect()
