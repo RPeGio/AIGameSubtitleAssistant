@@ -200,15 +200,20 @@ function removeItem(id: string) {
 // ── 语料列表：行内编辑 / 手动新增 / 拖动排序 ────────────
 const editingId = ref<string | null>(null);
 const editText = ref("");
-let editInputEl: HTMLInputElement | null = null;
+let editInputEl: HTMLTextAreaElement | null = null;
 
 /// 输入框挂上即聚焦并全选（编辑与新增共用）
 function setEditInput(el: unknown) {
-  editInputEl = (el as HTMLInputElement) ?? null;
+  editInputEl = (el as HTMLTextAreaElement) ?? null;
   if (editInputEl) {
     editInputEl.focus();
     editInputEl.select();
   }
+}
+
+/// 行数跟随内容（至少 2 行、最多 10 行）——语料条目可能是多行文本
+function editRows(text: string) {
+  return Math.min(10, Math.max(2, text.split("\n").length));
 }
 
 function startEdit(item: CorpusItem) {
@@ -216,7 +221,7 @@ function startEdit(item: CorpusItem) {
   editText.value = item.text;
 }
 
-/// Ctrl/Cmd+Enter 或失焦提交；内容未变或 trim 后为空时 store 内部直接返回（不产生空撤销步骤）
+/// Ctrl/Cmd+Enter 或失焦提交；内容未变或全空白时 store 内部直接返回（不产生空撤销步骤）
 function commitEdit() {
   if (!editingId.value) return;
   projectStore.updateCorpusItem(editingId.value, editText.value);
@@ -236,8 +241,8 @@ function startDraft() {
 }
 
 function commitDraft() {
-  const text = draftText.value.trim();
-  if (text) projectStore.addCorpusItem(text);
+  // 原样写入（只拦全空白）：语料是人工校对对象，不能被 trim 吃掉换行/首尾空格
+  if (draftText.value.trim()) projectStore.addCorpusItem(draftText.value);
   drafting.value = false;
   draftText.value = "";
 }
@@ -627,10 +632,11 @@ function discardDiff(d: Diff) {
           </div>
           <div v-if="drafting" class="crow draft">
             <span class="cn">+</span>
-            <input
+            <textarea
               :ref="setEditInput"
               v-model="draftText"
               class="inp ct-edit"
+              :rows="editRows(draftText)"
               placeholder="输入文本，Ctrl+Enter 或失焦提交"
               @keydown.ctrl.enter.prevent="commitDraft"
               @keydown.meta.enter.prevent="commitDraft"
@@ -659,19 +665,18 @@ function discardDiff(d: Diff) {
               </svg>
             </span>
             <span class="cn">{{ ci + 1 }}</span>
-            <input
+            <textarea
               v-if="editingId === item.id"
               :ref="setEditInput"
               v-model="editText"
               class="inp ct-edit"
+              :rows="editRows(editText)"
               @keydown.ctrl.enter.prevent="commitEdit"
               @keydown.meta.enter.prevent="commitEdit"
               @keydown.esc.prevent="cancelEdit"
               @blur="commitEdit"
             />
-            <span v-else class="ct selectable" :title="item.text" @dblclick="startEdit(item)">
-              {{ item.text }}
-            </span>
+            <span v-else class="ct selectable" :title="item.text" @dblclick="startEdit(item)">{{ item.text }}</span>
             <button
               v-if="editingId !== item.id"
               class="btn icb sm ghost"
@@ -891,9 +896,11 @@ function discardDiff(d: Diff) {
   flex: 1;
   min-width: 0;
   font-size: 12.5px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 1.45;
+  /* 语料可能自带换行：原样换行显示，不要压成一行（人工校对要看得出分段） */
+  white-space: pre-wrap;
+  word-break: break-word;
+  cursor: text;
 }
 
 /* 左侧点阵拖动手柄（2 列 × 3 行） */
@@ -921,12 +928,19 @@ function discardDiff(d: Diff) {
   fill: currentColor;
 }
 
-/* 行内编辑 / 新增输入框：占满文本位 */
+/* 行内编辑 / 新增输入框：占满文本位。
+   必须用 textarea——<input> 的取值算法会把换行直接删掉，多行语料一进编辑态就丢分段。 */
 .crow .ct-edit {
   flex: 1;
   min-width: 0;
-  height: 24px;
+  min-height: 26px;
+  padding: 3px 6px;
+  font-family: inherit;
   font-size: 12.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  resize: vertical;
+  box-sizing: border-box;
 }
 
 .crow.draft {

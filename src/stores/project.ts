@@ -823,13 +823,14 @@ export const useProjectStore = defineStore("project", () => {
     pushCorpusTexts(segments.map((s) => s.text), "ocr_track", record);
   }
 
-  /// 手动添加一条语料（粘贴文本）
+  /// 手动添加一条语料（粘贴文本）。原样保存（只拦全空白）：语料是人工校对对象，
+  /// 不能被 trim 吃掉内部换行与首尾空格。
   function addCorpusItem(text: string, source: CorpusItem["source"] = "paste") {
     if (!currentProject.value || !text.trim()) return;
     recordSnapshot();
     currentProject.value.corpus.push({
       id: generateId(),
-      text: text.trim(),
+      text,
       source,
       created_at: new Date().toISOString(),
     });
@@ -842,15 +843,14 @@ export const useProjectStore = defineStore("project", () => {
     currentProject.value.corpus = currentProject.value.corpus.filter((c) => c.id !== id);
   }
 
-  /// 修改一条语料文本（列表行内编辑）。trim 后为空或与原文相同则不入快照。
+  /// 修改一条语料文本（列表行内编辑）。原样保存，仅「全空白」或「与原文相同」时不入快照。
   function updateCorpusItem(id: string, text: string) {
     const project = currentProject.value;
     if (!project) return;
     const item = project.corpus.find((c) => c.id === id);
-    const next = text.trim();
-    if (!item || !next || item.text === next) return;
+    if (!item || !text.trim() || item.text === text) return;
     recordSnapshot();
-    item.text = next;
+    item.text = text;
   }
 
   /// 移动一条语料的位置（拖动排序）。语料顺序参与融合 DP 的取舍，所以顺序是数据。

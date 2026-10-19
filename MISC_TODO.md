@@ -199,6 +199,22 @@
 - 截图：`temp/css-preview/item6-corpus.png`（整页）、`item6-corpus-zoom.png`（列表区 2× 放大）、`item6-drag.png` 与 `item6-drag-zoom.png`（**拖动中间态**：被拖行变淡 + 目标行下方强调色插入线）。
 - `pnpm build`（`vue-tsc --noEmit && vite build`）通过：2895 模块 / CSS 57.08 kB / JS 643.00 kB。
 
+**返工记录②：多行语料被压成一行、编辑态丢换行（用户报告，2026-10-19）**
+- 用户原话：「语料条目进入draft状态后input类型应像轨道总览那边一样变textarea而不是单行text，而且注意到语料条目会将换行trim掉并合并成一行，甚至在变为draft后还会将空格和换行全部删掉，严重影响语料人工校对」。
+- 三个独立原因：
+  1. **`<input>` 的取值算法会删掉换行**——`<input type="text">` 的 value 按 HTML 规范剥离 CR/LF，多行文本塞进去再取出就已经变成一行 ⇒ 编辑态一打开就丢分段（与用户描述完全一致）。轨道总览那边用的是 `<textarea>`，正是这个原因。
+  2. **store 侧 trim**：`addCorpusItem`（`src/stores/project.ts:827`）存 `text.trim()`、`updateCorpusItem`（`:846`）存 `text.trim()` ⇒ 首尾空格/换行被吃掉。OCR 原始文本与人工粘贴的换行都是校对要看的，不该吞。
+  3. 显示侧 `.ct` 用了 `white-space: nowrap`，把多行在视觉上压成一行（数据还在，但看不出分段）。
+- 修法：
+  - `src/views/CorpusView.vue`：草稿行与行内编辑都换成 `<textarea class="inp ct-edit" :rows="editRows(text)">`（`editRows` = `min(10, max(2, 行数))`），提交/取消绑定不变；`setEditInput` 的 el 类型改 `HTMLTextAreaElement`；`.ct` 改 `white-space: pre-wrap; word-break: break-word`（原样换行显示，行高随内容增减）；`.ct-edit` 补 `min-height/padding/line-height/resize: vertical` 等 textarea 专属样式；`.ct` 的插值收紧成单行（否则 `pre-wrap` 会把模板里的缩进当内容显示）。
+  - `src/stores/project.ts`：`addCorpusItem`/`updateCorpusItem` 改为**原样保存**（只拦「全空白」），不再 trim。
+- 验证（`temp/css-preview/checks/item6e.js`，语料页，1680×1000）：
+  - 草稿行是 textarea ✓（`draftIsTextarea: true`）；行数跟随内容：一行 `rows=2`、两行 `2`、三行 `3` ✓。
+  - 写入 `"第一行：こんにちは\n第二行：元気ですか  "`（含换行与结尾两个空格）提交：条数 14 → 15 ✓；`lastText` 与原样一致（**换行与尾部空格都在**）、`lastTextMatchesRaw: true` ✓。
+  - 再进入编辑态：是 textarea ✓，`editValue` 与写入的原文**逐字符相同** ✓（改前会被 `<input>` 吃掉换行）。
+  - 改成三行再提交：条数仍 15（不新增行）✓、文本原样 ✓；该行高度 **64px vs 单行 33px** ⇒ 确实换行显示了 ✓；`pageOverflow: false`、撤销可用 ✓。
+  - 截图：`temp/css-preview/item6e-multiline.png`（提交后的两行条目）、`item6e-edit.png`（三行编辑态 textarea：`rows=3`、值里含 2 个换行）。
+
 **原始依据（实现前记录）**
 
 - store 只有新增与删除：`addCorpusItem(text, source = "paste")`（`src/stores/project.ts:827`）、`removeCorpusItem(id)`（`:839`），**没有更新函数**（`pushCorpusTexts`（`:797`）是批量追加、`writeOcrToCorpus`（`:822`）走 OCR 产物）。
