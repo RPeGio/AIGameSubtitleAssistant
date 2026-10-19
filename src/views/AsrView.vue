@@ -257,6 +257,7 @@ async function startEmbedOcr() {
             <ParamStepper
               v-model="ocrParams.frame_interval"
               label="帧间隔（秒）"
+              param-key="frame_interval"
               :step="0.5"
               :min="0.1"
               :precision="1"
@@ -264,13 +265,21 @@ async function startEmbedOcr() {
             <ParamStepper
               v-model="ocrParams.dhash_threshold"
               label="变化检测阈值"
+              param-key="dhash_threshold"
               :min="0"
               :max="64"
             />
-            <ParamStepper v-model="ocrParams.batch_size" label="批大小" :min="1" :max="128" />
+            <ParamStepper
+              v-model="ocrParams.batch_size"
+              label="批大小"
+              param-key="batch_size"
+              :min="1"
+              :max="128"
+            />
             <ParamStepper
               v-model="ocrParams.merge_similarity"
               label="合并相似度"
+              param-key="merge_similarity"
               :step="0.05"
               :min="0"
               :max="1"
@@ -279,6 +288,7 @@ async function startEmbedOcr() {
             <ParamStepper
               v-model="ocrParams.min_subtitle_sec"
               label="字幕预估最短长度（秒）"
+              param-key="min_subtitle_sec"
               :step="0.1"
               :min="0"
               :max="5"
@@ -287,6 +297,7 @@ async function startEmbedOcr() {
             <ParamStepper
               v-model="ocrParams.min_text_length"
               label="单段最少实质字符数"
+              param-key="min_text_length"
               :min="0"
               :max="10"
             />

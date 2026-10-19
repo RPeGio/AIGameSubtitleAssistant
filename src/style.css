@@ -292,7 +292,9 @@ textarea.inp { height: auto; padding: 8px 10px; line-height: 1.6; resize: vertic
 }
 
 .pcell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.pcell .pl { font-size: 11px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pcell .pl { display: flex; align-items: center; font-size: 11px; color: var(--dim); min-width: 0; }
+/* 省略落在内层文本上：info 图标要始终可见（flex:none），长标签只截文本 */
+.pcell .pl-t { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pcell .step { width: 100%; }
 
 /* 折叠卡：展开的那张吃掉剩余高度，收起只有 34px 标题行 */

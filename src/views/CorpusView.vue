@@ -5,6 +5,8 @@ import SourceVideoPreview from "../components/SourceVideoPreview.vue";
 import SourceTimeline from "../components/SourceTimeline.vue";
 import ParamStepper from "../components/ParamStepper.vue";
 import AppIcon from "../components/AppIcon.vue";
+import InfoDot from "../components/InfoDot.vue";
+import { GLOSSARY_DOC } from "../composables/ocrParamDocs";
 import type { CorpusItem, Diff, OcrRegionEvent } from "../types";
 import { usePersistedOcrParams } from "../composables/ocrDefaults";
 import { frameDurOf, hitsFrame } from "../composables/useFrameTolerance";
@@ -452,7 +454,7 @@ function discardDiff(d: Diff) {
                     <span class="kv"><span>选区数</span><span>{{ regions.length }}</span></span>
                   </div>
                   <div class="sblk">
-                    <span class="bt">术语表 · {{ ocrParams.glossary.length }} 条</span>
+                    <span class="bt">术语表 · {{ ocrParams.glossary.length }} 条<InfoDot :text="GLOSSARY_DOC" title="术语表" /></span>
                     <span v-if="ocrParams.glossary.length === 0" class="gempty">
                       未配置。留空即关闭；填入正确词条（角色名/专有名词）后，识别结果中与之相近的文本会被自动纠正
                     </span>
@@ -489,6 +491,7 @@ function discardDiff(d: Diff) {
                 <ParamStepper
                   v-model="ocrParams.frame_interval"
                   label="帧间隔（秒）"
+                  param-key="frame_interval"
                   :min="0.1"
                   :step="0.5"
                   :precision="1"
@@ -496,6 +499,7 @@ function discardDiff(d: Diff) {
                 <ParamStepper
                   v-model="ocrParams.dhash_threshold"
                   label="变化检测阈值"
+                  param-key="dhash_threshold"
                   :min="0"
                   :max="64"
                   :step="1"
@@ -503,6 +507,7 @@ function discardDiff(d: Diff) {
                 <ParamStepper
                   v-model="ocrParams.batch_size"
                   label="批大小"
+                  param-key="batch_size"
                   :min="1"
                   :max="128"
                   :step="1"
@@ -510,6 +515,7 @@ function discardDiff(d: Diff) {
                 <ParamStepper
                   v-model="ocrParams.merge_similarity"
                   label="合并相似度"
+                  param-key="merge_similarity"
                   :min="0"
                   :max="1"
                   :step="0.05"
@@ -518,6 +524,7 @@ function discardDiff(d: Diff) {
                 <ParamStepper
                   v-model="ocrParams.min_subtitle_sec"
                   label="字幕预估最短长度（秒）"
+                  param-key="min_subtitle_sec"
                   :min="0"
                   :max="5"
                   :step="0.1"
@@ -526,6 +533,7 @@ function discardDiff(d: Diff) {
                 <ParamStepper
                   v-model="ocrParams.min_text_length"
                   label="单段最少实质字符数"
+                  param-key="min_text_length"
                   :min="0"
                   :max="10"
                   :step="1"

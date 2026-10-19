@@ -15,14 +15,38 @@
 | 4 | ✅ 标尺滚轮缩放 | 功能·小 | 与 3 同区 | 已实现（提交号待补）：标尺滚轮缩放（锚点=光标处），与滑条一致 |
 | 5 | ✅ 播放键/进度条移出画面 | 修复·布局 | 无 | 已实现（提交号待补）：控件条改流内 + 画面按 16:9 自定高，字幕回到画面底 |
 | 6 | ✅ 语料页语料列表增删改（含拖动排序） | 功能 | 无 | 已实现（提交号待补）：行内编辑（Ctrl+Enter/失焦提交）+ 手动新增 + 2×3 点阵拖动排序 |
-| 7 | OCR 参数 info 图标 + 悬浮解释 | 功能·基建 | 无 | 基建先落地，第 12 项新参数可自带说明 |
+| 7 | ✅ OCR 参数 info 图标 + 悬浮解释 | 功能·基建 | 无 | 已实现（提交号待补）：6 参数 + 术语表各一枚 info 点，hover/聚焦弹出三段式解释；第 12 项新参数可自带说明 |
 | 8 | 「分割/合并」倒三角 + 策略小面板 | 功能·核心 | 无 | 时间轴功能扩展第一块，**先与用户对齐策略细节** |
 | 9 | 迷你时间轴（复用第 8 项成果） | 功能 | 8 | 用户明确要求：主时间轴功能定稿后再复用 |
 | 10 | 快捷键体系（调研 → 注册表 → 帮助面板） | 功能·跨页 | 8、9 | 键位必须绑在定稿交互上，先做必返工 |
-| 11 | 欢迎页自检升级（探针 + 静默 bootstrap） | 功能·独立 | 无（可与 8–10 并行） | 独立大件，放中后段不打断时间轴主线 |
-| 12 | CUDA GPU 加速参数化 | 功能·Rust+UI | 7（要带 info 说明）；先看 `feat/ocr-cuda` | 需先勘察既有分支，避免重复造 |
+| 11 | 欢迎页自检升级（探针 + 静默 bootstrap + 后端指引） | 功能·独立 | 7（info 基建）·「并行分支接口」的命令缺口 | 独立大件，放中后段不打断时间轴主线 |
+| 12 | CUDA GPU 加速参数化（设备迁移到 UI） | 功能·Rust+UI | 7（要带 info 说明）+ 11（需 `probe_moss_backend` 命令） | 存储与判定逻辑已随 PR #48 就位，只缺字段迁移与 UI |
 | 13 | 杂项清理与验证（死代码/参数开关/波形/图标） | 清理·零碎 | 无 | 随时可插入的零碎项，放最后一批 |
 | 14 | 内嵌 ffmpeg/ffprobe + 欢迎页 ffmpeg 自检卡 | 功能·打包 | 11（自检卡复用其探针机制） | 外部依赖一致性；涉及打包策略，宜与 11 一起看 |
+
+---
+
+## 并行分支接口：引擎后端探测（PR #48，已并入本分支）
+
+**状态**：`feat/engines-gpu-vulkan` 已合入 `feat/misc-fixes`（合并提交 `dcfd661`；PR 提交 `693b5ad` / `5e0d40f` / `77aa553` / `9fc4a58` / `c3594a9`；审查收尾 `8c5af81`；merge-base `7b8e306`）。设计文档：`docs/engines_vulkan_design.md`（本 worktree 只读参考，其 worktree 无 `runtime/`，只经 `GSA_RUNTIME_DIR` 读主 worktree）。
+
+**它交付了什么**
+- 新增 `src-tauri/src/ai_runtime/backend_probe.rs`——MOSS/ggml 后端**纯探测与判定**：`parse_info_stderr()`（只认 `[mt I] backend:` 行，`[mt W]` 降级警告不误判）、`parse_vulkan_devices()`（`ggml_vulkan: N = … | uma:` 枚举表）、`probe_machine()`（L0：`nvidia-smi -L`、`System32\vulkan-1.dll` + `vulkaninfo --summary`，按 deviceName+driverInfo 去重）、`probe_assets()`（L1：`.backend` 标记 + `ggml-{cuda,vulkan}.dll`）、`decide()`（判定矩阵）、`recommend_from_assets()`（「该装哪个后端」）。审查后 L1 回退优先级：**`.backend` 标记 > DLL 存在性**，标记与请求不符即拒绝（DLL 可能是切后端未清的残留）。
+- `moss.rs`：spawn 时 L2 实证存入 `backend_decision`，经 trait 新默认方法 `effective_backend()` 导出（仅 MOSS 覆写；**未跑过转写时为空** ⇒ 卡片不显示「实测 …」）。
+- `AsrEngineStatus` 新增 `device`（配置值）与 `effective_backend`（实测值）：Rust 侧 `ai_runtime/mod.rs` 与前端 `src/types/index.ts:215-217`；`src/views/Welcome.vue` 的 ASR 卡多一行「设备 · <device>（实测 <L2>）」（`deviceText()`/`backendText()`，`""` 显示为「auto（ggml 自动选优）」）。
+- `scripts/bootstrap_moss.ps1`：后端断言改 `-cmatch "[mt I] backend: <设备名>"`；vulkan 后端的 `moss_device` 由 `"vulkan"` 改写 `""`(auto)；新增 Vulkan 枚举表回显与 `uma:1`（多为核显）落点警告。`scripts/build_moss.ps1`：vulkan 分支 `glslc` 三级查找 + clone 前 `throw`；工作根改 `<系统盘>\gsa-moss-build\<backend>-<PID>`（躲 MAX_PATH）。
+
+**分工契约（设计文档 §3.5 / §6，两边约定）**
+- PR #48 只碰 `scripts/` + 纯探测逻辑 + `docs/`；**`src-tauri/src/ai_runtime/config.rs` 的字段扩展与前端配置/自检面板归本分支（我）**。
+- 取值集合：`"" | "auto" | "cuda" | "vulkan" | "cpu"`（`config.rs:306-313` 白名单现为 `空/cpu/cuda/vulkan`）；判定结构：`{ backend, reason, source }`。
+- 行为契约（UI 必须照此）：显式 `cuda`/`vulkan` 不可用 = **硬报错**（提示「取消勾选 GPU 加速改用 CPU」或「装对应后端」），**绝不静默降级**——ggml 自己会静默降级且 exit 0，这正是必须 L2 实证的原因；`auto`（空）= CUDA → Vulkan → CPU，**reason 必须在自检面板可见**。
+
+**本分支要补的缺口 / 注意**
+- **没有 Tauri 命令暴露 `decide()`/`recommend_from_assets()`**（PR #48 未改 `lib.rs`）⇒ 第 11/12 项要在卡片上显示「为什么落到 CPU」「该装哪个后端」，必须先加命令（建议 `probe_moss_backend` → `{backend, reason, source}`，内部调 `backend_probe`）。
+- `config.rs` 已有 `moss_device`（白名单 `空/cpu/cuda/vulkan`）与 `funasr_device`（默认 `cpu`），**尚无 `llm_device`**（LLM 当前不参与融合，见第 12 项）。
+- `temp/css-preview/mock.js` 的引擎对象没有 `device`/`effective_backend` ⇒ 卡片走默认值显示「auto（ggml 自动选优）」；要测「实测 CUDA0」需补字段。
+- 合并后我的独立复核（2026-10-19）：`pnpm build` ✓ 2895 模块；欢迎页三卡 529×112（比 T8 的 89.8 高 22px，正好多一行），ASR 卡四行含「设备 · auto（ggml 自动选优）」，`asrOverflow 0`；1680×1000 / 1680×720 / 1280×720 三尺寸下 `pageOverflow 0`、页脚底 982 / 702 / 702 ✓ 不裁切。
+- 实测数据（写 UI 文案可用）：同一段 5:14.99 音频 → **CPU 680.6s / Vulkan 134.7s / CUDA 76.2s**（Vulkan ≈ CUDA 的 1.77×、比 CPU 快 5.0×、CUDA 快 8.9×）；双 GPU 机器上**裸 `vulkan` 落核显**（`Vulkan0`、`uma:1`），`auto` 才落独显（`Vulkan1`、`uma:0`）⇒ **默认值必须是空/auto，UI 不要引导用户选裸 `vulkan`**。
 
 ---
 
@@ -243,7 +267,16 @@
 **验收**
 - 改字后落盘（`save_project`）、撤销可回退、来源胶囊与序号不错位、编辑态不触发行点击跳转。
 
-### 7. OCR 各参数加 info 小图标 + 悬浮详细解释
+### 7. ✅ OCR 各参数加 info 小图标 + 悬浮详细解释
+
+**已实现（2026-10-19，提交号待补）**
+- 新增 `src/components/InfoDot.vue`（15×15 圆点，内嵌 `AppIcon name="info"`）与 `src/composables/ocrParamDocs.ts`（`OCR_PARAM_DOCS` 六条 + `GLOSSARY_DOC`，每条按「作用 / 调大调小的代价 / 默认值与关闭值」三段、`\n` 分隔，正文上方用 `///` 记证据行号：`params.rs` 字段注释与默认值常量、`pipeline.rs:241-245/306/334/343/350/450`、`merge.rs:129-151/295/364/767-835/906-916`、`correct.rs:232`、`scripts/ocr_worker.py:136-158`、`src/stores/project.ts:710`）。
+- `src/components/ParamStepper.vue`：新增 `paramKey?: string` 与 `doc` computed；`.pl` 改为 `<span class="pl-t">标签</span><InfoDot v-if="doc" :text="doc" :title="label" />`。`src/style.css:295` 的 `.pcell .pl` 改 `display:flex`（`min-width:0`），新增 `.pcell .pl-t{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}`——省略只落在文本上，图标恒可见。
+- 两个页面各 6 处传 `param-key`：`src/views/CorpusView.vue`（约 `:494-536`）与 `src/views/AsrView.vue`（约 `:260-300`）；语料页「术语表 · N 条」也挂一枚（用 `GLOSSARY_DOC`）。`src/components/AppIconSprite.vue` 新增 `ic-info`（第 38 个 symbol）。
+- 用 naive `NTooltip`：popper 挂到 body（**不被 `.accb{overflow-y:auto}` 裁切**）且随 `n-config-provider` 翻转主题；`trigger` 是单值（`'click'|'hover'|'focus'|'manual'`），故取 `manual` + 自接 `mouseenter/mouseleave` 与 `focus/blur`，鼠标与键盘都能看；`whiteSpace:"pre-line"` 让 `\n` 生效；`maxWidth:320px`、`background:var(--panel)`、`border:1px solid var(--hair-2)`。
+- 验证（新工具 `temp/css-preview/hover.mjs`：CDP **可信**鼠标悬停 → dump `.n-tooltip` 与 `.pcell`；`temp/css-preview/checks/item7b.js`）：语料页 `dotCount 7`（6 参数 + 术语表）、ASR 页 6；hover 与 focus 两条路径都弹出（`activeIsDot:true`）；深色 `bg rgb(13,14,16)` / `color rgb(232,233,234)` / `border rgba(255,255,255,.13)`，浅色 `rgb(255,255,255)` / `rgb(23,25,28)` / `rgba(0,0,0,.16)`；父节点 `v-binder-follower-content`（body）⇒ 未裁切；移开鼠标后 `visibleTips 0`；**行高 A/B 相同**（6 个 `.pcell` 隐藏图标前后均 51px、`.agrid` 109px）；长标签压力测试 → 文本截断且图标仍在格内（`gapToCellRight 0`）；`pageOverflow 0`；`pnpm build` ✓ 2899 模块 / CSS 58.13 kB / JS 650.37 kB。
+- 截图：`temp/css-preview/item7-hover.png`（语料页深色，批大小文案）、`item7-asr-light.png`（ASR 页浅色，变化检测阈值文案）。
+- 有意不做（归第 13 项）：标点组（`punctuation`）的说明、以及「六参数抽共享 `OCR_PARAM_FIELDS` 配置」的重构。
 
 **现状依据**
 - 参数行结构：`src/components/ParamStepper.vue` 的 `.pcell > .pl + .step`（标签 + 减号/数值/加号）。
@@ -325,25 +358,32 @@
 
 **现状依据**
 - 现在只做探针：`src/views/Welcome.vue` 的 `probeOcr()`（`invoke("check_ocr_runtime")`）、`probeAsr()`（`projectStore.getAsrEngines()` 取 `moss`）、`probeEmbed()`（`invoke("check_embed_runtime")`），三者不 await、未就绪只显示状态、不阻塞。
+- 合并 PR #48 后，ASR 卡已多一行「设备 · <config>（实测 <L2>）」；`backend_probe` 的 L0/L1 判定与「该装哪个后端」建议**前端目前够不到**（没有对应命令，见「并行分支接口」一节）。
+- bootstrap 脚本**已在 `scripts/`**（不在根目录）：`scripts/bootstrap_moss.ps1`（模型/二进制获取与就绪自检）、`scripts/build_moss.ps1`（自构建，含 vulkan 前置检查）。
 
 **要做**
-- 探测到未就绪时**自动静默跑 bootstrap**（覆盖首次启动完全没有任何环境的情况）；
+- 探测到未就绪时**自动静默跑 bootstrap**（覆盖首次启动完全没有任何环境的情况）——需先定形态：Rust 侧起子进程跑 `scripts/bootstrap_*.ps1`，还是只给「跑哪条命令」的指引文案（前者要进度事件与取消，后者成本低得多，倾向先做指引）；
 - 自检**不阻塞**其它操作，只在真正运行该引擎时才阻拦；
-- 自检卡上显示进度与失败原因。
+- 自检卡上显示进度与失败原因，并给出「该装哪个后端 / 为什么落到 CPU」的指引（需新增 `probe_moss_backend` 命令，见接口一节）。
 
-**依赖/前置**：需要 Rust 侧配合（bootstrap 脚本/清单、进度事件）；先勘察仓库现有 `bootstrap_*.ps1` 与模型清单，产出方案后再动手。
+**依赖/前置**：Rust 侧配合（bootstrap 脚本调用或清单、进度事件）+ 「并行分支接口」一节的判定函数与命令缺口。
 
 **顺序说明**：与 C 组无依赖，可与 8–10 并行；放中后段是为了不打断时间轴主线。
 
 ### 12. CUDA GPU 加速参数化
 
 **现状依据**
-- MOSS 目前是自动判断（欢迎页卡文案「ggml，有 CUDA/Vulkan 即 GPU」），界面无可配项；配置在 `src-tauri/src/ai_runtime/config.rs`（`moss_binary` / `moss_model` / `embed_model` / `model_dir` 等）。
-- **仓库已存在 `feat/ocr-cuda` 分支**——先勘察它做过什么，避免重复造。
+- MOSS 目前是自动判断（欢迎页卡文案「ggml，有 CUDA/Vulkan 即 GPU」），界面无可配项；配置文件字段已存在：`src-tauri/src/ai_runtime/config.rs` 的 `moss_device`（白名单 `空/cpu/cuda/vulkan`，`config.rs:306-313`）与 `funasr_device`（默认 `cpu`）——**只缺 UI，不缺存储**。
+- PR #48（已并入）交付了判定逻辑与展示字段：`backend_probe::decide()` / `recommend_from_assets()`、`AsrEngineStatus.device` 与 `.effective_backend`、ASR 卡「设备 · …（实测 …）」行；契约与缺口见「并行分支接口」一节。
+- **重要实测结论**：双 GPU 机器上裸 `vulkan` 会落到**核显**（`Vulkan0`、`uma:1`），`auto`（空）才落独显（`Vulkan1`、`uma:0`）⇒ UI 默认值必须是「空/auto」，不要引导用户选裸 `vulkan`。
+- `src-tauri/src/lib.rs` 已注册 `check_ocr_runtime` / `check_asr_runtime` / `check_asr_engines` / `check_llm_runtime` / `check_embed_runtime`；LLM 与融合无关（`src-tauri/src/fuse/mod.rs:255-301` 只用 `EmbedManager`），故 `llm_device` 暂不需要。
+- 历史上还有 `feat/ocr-cuda` 分支——本轮体检：其内容已由 PR #48 覆盖（PR #48 的起点即「MOSS 后端三级探测 + CUDA/Vulkan/CPU fallback 语义」），**不需要再翻它**。
 
 **要做**
-- 把设备选择（自动 / CUDA / Vulkan / CPU）与相关参数暴露成可配置项，前端可调、后端落盘；
-- 新增参数**必须同时带 info 说明**（复用第 7 项的基建）。
+- 把设备选择（自动(空) / CUDA / Vulkan / CPU）暴露成可配置项：迁移 `moss_device`（+ 可选 `funasr_device`）到界面，后端落盘走既有 `config.rs` 白名单校验；
+- 显式选择不可用时按契约**硬报错**并给指引（复用 `decide()` 的 reason / `recommend_from_assets()`），不静默降级；
+- 新增参数**必须同时带 info 说明**（复用第 7 项的基建）；
+- 需要先补 `probe_moss_backend` 命令（见「并行分支接口」）才能在界面上拿到判定结果。
 
 ### 13. 杂项清理与验证
 

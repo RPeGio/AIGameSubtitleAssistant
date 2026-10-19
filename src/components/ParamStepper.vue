@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
 import AppIcon from "./AppIcon.vue";
+import InfoDot from "./InfoDot.vue";
+import { OCR_PARAM_DOCS } from "../composables/ocrParamDocs";
 
 /// 无框数值步进：默认只显示数值（左减右加），单击数值才出现输入框。
 /// 样式词汇（.pcell/.step/.pl/.val）在 src/style.css 的全局控件层。
@@ -8,14 +10,18 @@ const props = withDefaults(
   defineProps<{
     label: string;
     modelValue: number;
+    /// 对应 OcrRunParams 的字段名：给了就在标签后挂 info 圆点（文案见 ocrParamDocs.ts）
+    paramKey?: string;
     step?: number;
     min?: number;
     max?: number;
     /// 显示/输入时保留的小数位（0 = 整数）
     precision?: number;
   }>(),
-  { step: 1, min: Number.NEGATIVE_INFINITY, max: Number.POSITIVE_INFINITY, precision: 0 }
+  { paramKey: "", step: 1, min: Number.NEGATIVE_INFINITY, max: Number.POSITIVE_INFINITY, precision: 0 }
 );
+
+const doc = computed(() => (props.paramKey ? OCR_PARAM_DOCS[props.paramKey] ?? "" : ""));
 
 const emit = defineEmits<{ "update:modelValue": [value: number] }>();
 
@@ -58,7 +64,10 @@ function endEdit(ok: boolean) {
 
 <template>
   <div class="pcell">
-    <span class="pl">{{ label }}</span>
+    <span class="pl">
+      <span class="pl-t">{{ label }}</span>
+      <InfoDot v-if="doc" :text="doc" :title="label" />
+    </span>
     <span class="step">
       <b @click="bump(-1)"><AppIcon name="minus" :size="12" /></b>
       <input

@@ -37,6 +37,7 @@
     <symbol id="ic-merge" viewBox="0 0 16 16"><path d="M3.4 3.6 8 8l4.6-4.4M8 8v5.4"/></symbol>
     <symbol id="ic-arrow-r" viewBox="0 0 16 16"><path d="M2.6 8h10.8M9.6 4.6 13 8l-3.4 3.4"/></symbol>
     <symbol id="ic-lock" viewBox="0 0 16 16"><path d="M4.4 7.2h7.2v5.4H4.4zM6 7.2V5.4a2 2 0 0 1 4 0v1.8"/></symbol>
+    <symbol id="ic-info" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.9"/><path d="M8 7.4v3.2"/><path d="M8 5.1h.01"/></symbol>
   </svg>
 </template>
 
