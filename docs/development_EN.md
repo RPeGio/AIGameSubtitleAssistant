@@ -99,6 +99,22 @@ runtime/
 | `funasr_worker` / `funasr_deps` / `funasr_model_dir` / `funasr_device` / `funasr_language` / `funasr_timeout_minutes` | FunASR |
 | `embed_worker` / `embed_model` / `embed_tokenizer` / `embed_deps_dir` | Fusion worker script / E5-small model / tokenizer / deps paths; written by `bootstrap_embed.ps1`, shared by product fusion and the lab; **all four must be set together, or all left empty** |
 
+### MOSS backend and three-device benchmark (2026-10-19)
+
+The backend is chosen by ggml from `MTD_DEVICE` (empty = auto; on a dual-GPU machine auto prefers the dGPU, measured); **the actually effective backend can only be read from the `[mt I] backend:` line on stderr** — requesting an unavailable backend degrades silently (exit 0, no warning; `backend.cpp` does not warn for "valid" names such as `vulkan`).
+
+The same benchmark run once per device: the 5:14.99 / 16 kHz mono wav extracted from `examples/benchmark_examples/quality_bench_test(voiced)_5min.mp4` (same parameters as `video::extract_audio`), `moss-transcribe-q5_k.gguf`, `--format json`, `MTD_THREADS` unset:
+
+| Device (setting) | Effective backend | Wall time | vs CPU |
+|---|---|---|---|
+| CPU (`MTD_DEVICE=cpu`) | `CPU` | 680.6 s | 1× |
+| Vulkan (empty = auto) | `Vulkan1` (RTX 4060) | 134.7 s | 5.0× |
+| CUDA (empty = auto, CUDA build) | `CUDA0` | 76.2 s | 8.9× |
+
+- Vulkan is 1.77× slower than CUDA but still 5× faster than CPU — a clear win on machines without NVIDIA drivers/GPUs.
+- The transcribed text matches across all three (total chars 3765/3765/3775; first and last segments byte-identical; 84 vs 90 segments is a boundary-granularity difference).
+- ⚠ On a dual-GPU machine a bare `MTD_DEVICE=vulkan` lands on the **iGPU** (first in enumeration order, `Vulkan0`); in the product, `moss_device` should stay empty (auto) for the Vulkan build — see `docs/engines_vulkan_design_EN.md` §3.3/§5-11.
+
 ### Runtime directory resolution order
 
 1. `GSA_RUNTIME_DIR` env var (must contain `config.json`)

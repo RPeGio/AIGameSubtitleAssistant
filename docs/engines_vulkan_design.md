@@ -1,6 +1,6 @@
 # MOSS ASR 的 Vulkan 优化与 GPU 后端回退设计
 
-> 状态：**步骤 1–2 已完成（脚本 + Vulkan 构建实测），步骤 3（转写实测）未开始**（2026-10-18 用户确认要点见 §0.2）
+> 状态：**步骤 1–3 已完成（脚本 + 构建实测 + 三设备基准），步骤 4（探测逻辑 + fallback 语义）未开始**（2026-10-18 用户确认要点见 §0.2）
 > 本分支范围：**仅 MOSS ASR 的 Vulkan 通路 + 后端探测/回退语义**
 > 分支：`feat/engines-gpu-vulkan`（本 worktree `AIGameSubtitleAssistant-gpu-vulkan`），基线 `7b8e306`
 > 明确**不做**：LLM 的 Vulkan（已有官方通路，用户决定不动）、OCR / 融合嵌入的 GPU（上游无 Vulkan 通路，见 §1）、FunASR（不在本分支范围，见 §7）
@@ -154,7 +154,7 @@
 4. **MOSS 只创建一个 backend**（`src/backend.cpp` 的 `g_backend` 单例），不做多设备层切分 ⇒ "模型被劈到两块卡"在 MOSS 上不成立；上游那个 3× 塌陷（llama.cpp #30695）也不会命中，且引入它的 #29741（2026-10-13）晚于本 pin。
 5. MOSS 的 CLI **没有 `--device`**：`MTD_DEVICE` 与 `GGML_VK_VISIBLE_DEVICES` 是仅有的两个通道。
 
-**落点验证已完成（④，2026-10-19）**：上表四行全部实测命中（见上）。`bootstrap_moss.ps1` 就绪自检已内置落点复核（枚举表回显 + `uma:1` 警告，config 写值改为 auto，§5-11）；欢迎页 ASR 自检卡显示当前配置的 device。剩余待实测只有**转写耗时对比**（步骤 3）。
+**落点验证已完成（④，2026-10-19）**：上表四行全部实测命中（见上）。`bootstrap_moss.ps1` 就绪自检已内置落点复核（枚举表回显 + `uma:1` 警告，config 写值改为 auto，§5-11）；欢迎页 ASR 自检卡显示当前配置的 device。转写耗时对比也已实测（步骤 3：CPU 680.6 s / Vulkan 134.7 s / CUDA 76.2 s，见 §4-3 与 `docs/development.md`）。
 
 ### 3.4 显式指定失败 = 报错（②）
 
@@ -184,8 +184,8 @@
    - **`bootstrap_moss.ps1` 的 `moss_device` 写值缺陷**：vulkan 后端原来写 `"vulkan"` ⇒ 双 GPU 机必落核显（§3.3 实测）⇒ 改为写 `""`（auto，实测偏好独显）；cpu/cuda 写值不变；
    - **落点复核进自检 + 欢迎页展示**：bootstrap 自检新增 Vulkan 枚举表回显与 `uma:1`（多为核显）落点警告；欢迎页 ASR 自检卡新增"设备 · <device>"行（`AsrEngineStatus.device` 取 config 值，`""` 显示为 "auto（ggml 自动选优）"——展示配置值而非实测后端，实测需拉起子进程）。
    → 验证（已跑通）：clone 必败法实测默认根 30 字符无告警、超长根（89 字符）正确告警（估算 297 > 250）、`-WorkDir` 非空守卫生效；落点复核块对真实 `info` 输出解析出 `Vulkan1` = RTX 4060（uma:0）；`cargo check` / `vue-tsc --noEmit` 通过；脚本 BOM/CRLF 复核无恙（§2.1 教训）。
-3. **实测 Vulkan 版**：先验 §3.3 的双 GPU 落点，再测速（与 CUDA 版、CPU 版对比）。
-   → 验证：确认落在 RTX 4060；记录耗时对比进 `docs/development.md`。
+3. ✅ **已完成**（2026-10-19）：落点确认（§3.3 实测）后用 `quality_bench_test(voiced)_5min.mp4`（提取 5:14.99 / 16kHz mono wav，与 `video::extract_audio` 同参；`moss-transcribe-q5_k.gguf`；`--format json`；未设 `MTD_THREADS`）跑了三设备各一次：**CPU 680.6 s（`backend: CPU`）、Vulkan 134.7 s（`Vulkan1` = RTX 4060）、CUDA 76.2 s（`CUDA0`）**——Vulkan ≈ CUDA 的 1.77×，仍比 CPU 快 5.0×（CUDA 快 8.9×）。转写文本三方一致（总字数 3765/3765/3775，首末段逐字相同；段数 84 vs 90 属分界粒度差异）。耗时对比已记入 `docs/development.md` 的「MOSS 后端与三设备实测」。
+   → 验证：三跑 `exit=0` 且 stderr 的 backend 行分别为 `CPU`/`Vulkan1`/`CUDA0`；输出 JSON 同为段数组（`id/start/end/speaker/text`）。
 4. **探测逻辑 + 回退语义**：实现 §3.2 的 L0/L1/L2 与 §3.4 的行为矩阵。
    → 验证：L2 能识破"配了 vulkan 但实际跑 CUDA0"的静默降级（用现状 CUDA-only 构建复现即可）。
 5. **文档与文案**：`docs/development.md` / `_EN` 增补后端语义；`README.md:59` 与欢迎页文案按 ⑤ 口径校正（只说 ASR）。
@@ -199,9 +199,9 @@
 |---|---|---|
 | 1 | ~~本机无 Vulkan SDK~~ | ✅ **已装**（2026-10-19，`KhronosGroup.VulkanSDK` 1.4.363.0）：`glslc` 在 PATH，前置检查通过；构建本身是否成功见行 9 |
 | 2 | 请求不可用后端 **静默降级 + exit 0**（`vulkan` 连告警都没有，`bogus` 反而有） | **已定论（上游源码）**：`name_to_type()` 把 `vulkan` 判为合法名并映射到 GPU 类型（`backend.cpp:40`），`dev_by_type(GPU)` 返回第一个匹配（`ggml-backend-reg.cpp:348-356`）⇒ 静默是设计使然。判据只能取"实际生效的后端" |
-| 3 | **双 GPU 落点** | ✅ **已实测**（2026-10-19，Vulkan 构建，§3.3）：不设 = `Vulkan1` = RTX 4060（uma:0）；裸 `vulkan` = `Vulkan0` = Intel 核显（uma:1）；`Vulkan0`/`Vulkan1` 定点与 `GGML_VK_VISIBLE_DEVICES=1`（只留 RTX 4060）均命中。剩余：转写耗时对比（步骤 3） |
+| 3 | **双 GPU 落点** | ✅ **已实测并结案**（2026-10-19，§3.3）：不设 = `Vulkan1` = RTX 4060（uma:0）；裸 `vulkan` = `Vulkan0` = Intel 核显（uma:1）；`Vulkan0`/`Vulkan1` 定点与 `GGML_VK_VISIBLE_DEVICES=1`（只留 RTX 4060）均命中 |
 | 4 | `build_moss.ps1` 的 vulkan 产物布局与 DLL 拷贝路径 | ✅ **已实测**（2026-10-19，§2.5）：moss 的 CMake 打开了 `GGML_BACKEND_DL`，**产出独立 `ggml-vulkan.dll`**（46 MB）；DLL 在 `build-vulkan/bin/Release/`，脚本多级探测命中 |
-| 5 | Vulkan 相对 CUDA 的真实性能差（第三方数据混杂：有 pp512 −25% 的实测，也有被归因于双 GPU + 老卡的"慢 6 倍"个案；上游 moss issue #4 还显示 Vulkan 路径**连 flash attention 都没启用**，AMD iGPU 上启用后快 13.7×） | 待步骤 3 实测 |
+| 5 | Vulkan 相对 CUDA 的真实性能差（第三方数据混杂：有 pp512 −25% 的实测，也有被归因于双 GPU + 老卡的"慢 6 倍"个案；上游 moss issue #4 还显示 Vulkan 路径**连 flash attention 都没启用**，AMD iGPU 上启用后快 13.7×） | ✅ **已实测**（2026-10-19，本机 RTX 4060 / q5_k / 5:14.99 音频，§4-3）：**Vulkan 比 CUDA 慢 1.77×**（134.7 s vs 76.2 s），但比 CPU 快 5.0×（680.6 s）——收益成立的场景 = 无 NVIDIA 的机器；追求极致仍应 CUDA |
 | 6 | `bootstrap_moss.ps1:175-181` 的后端断言用 `-match` 大小写不敏感侥幸成立 | ✅ **已修**（2026-10-18，步骤 1）：改为 `-cmatch` 解析 `[mt I] backend: <设备名>` 并与 `CPU`/`CUDA`/`Vulkan` 前缀比对；降级警告（`[mt W] …requested but no matching device`）不再被误当成结果 |
 | 7 | `VULKAN_SDK` / PATH 与 `SPIRV-Headers` 的 **CONFIG 包** | ✅ **已核实**（2026-10-19）：安装器设好 `VULKAN_SDK=C:\VulkanSDK\1.4.363.0` 并把 `Bin` 入 PATH；CONFIG 包在 `<SDK>\Lib\cmake\SPIRV-Headers\`（**不是** `share\cmake`）——前置检查已按此修正（§2.3） |
 | 8 | 手上 `moss-transcribe.exe` 的来源 | ✅ **已澄清（用户）**：上游仓库没有任何 GitHub Release，所以该二进制就是本仓 `scripts/build_moss.ps1` **自构建**的产物（现装的是 `-Backend cuda`，`runtime/bin/.backend=cuda`）——`bootstrap_moss.ps1 -BinaryUrl` 默认空正是为此 |

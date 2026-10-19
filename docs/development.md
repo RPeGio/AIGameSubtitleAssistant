@@ -99,6 +99,22 @@ runtime/
 | `funasr_worker` / `funasr_deps` / `funasr_model_dir` / `funasr_device` / `funasr_language` / `funasr_timeout_minutes` | FunASR 配置 |
 | `embed_worker` / `embed_model` / `embed_tokenizer` / `embed_deps_dir` | 融合 worker 脚本 / E5-small 模型 / 分词器 / 依赖路径；由 `bootstrap_embed.ps1` 写入，产品融合与实验台共用；**四个字段整组必配或整组为空** |
 
+### MOSS 后端与三设备实测（2026-10-19）
+
+后端由 ggml 按 `MTD_DEVICE` 决定（空=自动；双 GPU 实测 auto 偏好独显）；**实际生效后端只认 stderr 的 `[mt I] backend:` 行**——请求不可用的后端会静默降级（exit 0、无警告，`backend.cpp` 对 `vulkan` 这类"合法名"不告警）。
+
+同一基准三设备各跑一次：`examples/benchmark_examples/quality_bench_test(voiced)_5min.mp4` 提取 5:14.99 / 16kHz mono wav（与 `video::extract_audio` 同参），`moss-transcribe-q5_k.gguf`，`--format json`，未设 `MTD_THREADS`：
+
+| 设备（取值） | 实际 backend | 耗时 | 相对 CPU |
+|---|---|---|---|
+| CPU（`MTD_DEVICE=cpu`） | `CPU` | 680.6 s | 1× |
+| Vulkan（空 = auto） | `Vulkan1`（RTX 4060） | 134.7 s | 5.0× |
+| CUDA（空 = auto，CUDA 构建） | `CUDA0` | 76.2 s | 8.9× |
+
+- Vulkan 比 CUDA 慢 1.77×，但仍比 CPU 快 5 倍——无 NVIDIA 的机器上 Vulkan 构建收益明确。
+- 转写文本三方一致（总字数 3765/3765/3775，首末段逐字相同；段数 84 vs 90 属分界粒度差异）。
+- ⚠ 双 GPU 机器上裸 `MTD_DEVICE=vulkan` 落**核显**（枚举序第一块，`Vulkan0`）；产品侧 vulkan 构建的 `moss_device` 应留空（auto），见 `docs/engines_vulkan_design.md` §3.3/§5-11。
+
 ### runtime 目录解析顺序
 
 1. 环境变量 `GSA_RUNTIME_DIR`（必须含 `config.json`）
