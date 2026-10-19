@@ -1,5 +1,6 @@
 <template>
   <svg class="icon-sprite" aria-hidden="true">
+    <symbol id="ic-pencil" viewBox="0 0 16 16"><path d="M11.3 2.6a1.6 1.6 0 0 1 2.1 2.1L6 12.1 3 13l.9-3z"/></symbol>
     <symbol id="ic-export" viewBox="0 0 16 16"><path d="M8 2.2v7.4M5 6.6 8 9.6l3-3M3 12.6h10"/></symbol>
     <symbol id="ic-minus" viewBox="0 0 16 16"><path d="M3 8h10"/></symbol>
     <symbol id="ic-collapse" viewBox="0 0 16 16"><path d="M8 3 4 8l4 5M13.4 3 9.4 8l4 5"/></symbol>

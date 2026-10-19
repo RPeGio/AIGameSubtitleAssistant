@@ -842,6 +842,30 @@ export const useProjectStore = defineStore("project", () => {
     currentProject.value.corpus = currentProject.value.corpus.filter((c) => c.id !== id);
   }
 
+  /// 修改一条语料文本（列表行内编辑）。trim 后为空或与原文相同则不入快照。
+  function updateCorpusItem(id: string, text: string) {
+    const project = currentProject.value;
+    if (!project) return;
+    const item = project.corpus.find((c) => c.id === id);
+    const next = text.trim();
+    if (!item || !next || item.text === next) return;
+    recordSnapshot();
+    item.text = next;
+  }
+
+  /// 移动一条语料的位置（拖动排序）。语料顺序参与融合 DP 的取舍，所以顺序是数据。
+  function moveCorpusItem(id: string, toIndex: number) {
+    const project = currentProject.value;
+    if (!project) return;
+    const from = project.corpus.findIndex((c) => c.id === id);
+    if (from < 0) return;
+    const to = Math.max(0, Math.min(toIndex, project.corpus.length - 1));
+    if (from === to) return;
+    recordSnapshot();
+    const [item] = project.corpus.splice(from, 1);
+    project.corpus.splice(to, 0, item);
+  }
+
   // ── 待审批纠正（语料 OCR 的术语表纠错）─────────────────
   // Rust 侧只标记、不改写语料文本；此处由用户逐条决定。
   // 条目按**对象身份**定位而非下标：连点两次也不会因数组已收缩而误改相邻条目。
@@ -1403,6 +1427,8 @@ export const useProjectStore = defineStore("project", () => {
     addCorpusItem,
     pushCorpusTexts,
     removeCorpusItem,
+    updateCorpusItem,
+    moveCorpusItem,
     approveCorpusOcrDiff,
     discardCorpusOcrDiff,
     corpusReady,

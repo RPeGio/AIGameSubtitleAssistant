@@ -14,7 +14,7 @@
 | 3 | ✅ 标尺分度随视口拥挤 | 修复 | 无 | 已实现（提交号待补）：按最小像素间距自适应，删 30s 封顶阶梯 |
 | 4 | ✅ 标尺滚轮缩放 | 功能·小 | 与 3 同区 | 已实现（提交号待补）：标尺滚轮缩放（锚点=光标处），与滑条一致 |
 | 5 | ✅ 播放键/进度条移出画面 | 修复·布局 | 无 | 已实现（提交号待补）：控件条改流内 + 画面按 16:9 自定高，字幕回到画面底 |
-| 6 | 语料页语料列表增删改 | 功能 | 无 | 页面级独立高频功能 |
+| 6 | ✅ 语料页语料列表增删改（含拖动排序） | 功能 | 无 | 已实现（提交号待补）：行内编辑（Ctrl+Enter/失焦提交）+ 手动新增 + 2×3 点阵拖动排序 |
 | 7 | OCR 参数 info 图标 + 悬浮解释 | 功能·基建 | 无 | 基建先落地，第 12 项新参数可自带说明 |
 | 8 | 「分割/合并」倒三角 + 策略小面板 | 功能·核心 | 无 | 时间轴功能扩展第一块，**先与用户对齐策略细节** |
 | 9 | 迷你时间轴（复用第 8 项成果） | 功能 | 8 | 用户明确要求：主时间轴功能定稿后再复用 |
@@ -171,9 +171,29 @@
 
 ## B 组：页面级功能
 
-### 6. 语料页语料列表增删改
+### 6. ✅ 语料页语料列表增删改（含拖动排序）
 
-**现状依据**
+**已实现（2026-10-19，提交号待补）**
+
+| 改动 | 文件 | 内容 |
+|---|---|---|
+| 更新 / 排序两个 store 动作 | `src/stores/project.ts` | `updateCorpusItem(id, text)`（trim 后为空或与原文相同 ⇒ 不入快照直接返回，否则 `recordSnapshot()` 后改写）与 `moveCorpusItem(id, toIndex)`（clamp 到 `[0, len-1]`，`recordSnapshot()` 后 splice 取出再插入——**语料顺序参与融合 DP 的取舍，所以顺序是数据**） |
+| 行内编辑 + 手动新增 + 拖动排序 | `src/views/CorpusView.vue` | `editingId/editText/setEditInput/startEdit/commitEdit/cancelEdit`；`drafting/draftText/startDraft/commitDraft/cancelDraft`（提交非空才 `addCorpusItem`）；`draggingId/dropIndex/canDrag/onGripDown/onGripUp/onRowDragStart/onRowDragOver/onRowDrop/onRowDragEnd`（`canDrag` 为假时 `preventDefault` ⇒ **只有点阵手柄能发起拖动**，文本选择不受影响） |
+| 模板 | 同上 | `.rh` 加「添加」按钮；草稿行与行内编辑共用一个 `<input class="inp ct-edit">`（`@keydown.ctrl.enter`/`@keydown.meta.enter` 提交、`@keydown.esc` 取消、`@blur` 提交）；行 `draggable="true"` + `.dragging`/`.drop-target`；左侧 `.grip` 内联 SVG（2 列 × 3 行共 6 个 `<circle r="1.4">`）；文本旁铅笔按钮 |
+| 图标 | `src/components/AppIconSprite.vue` | 新增 `ic-pencil` |
+| 样式 | `src/views/CorpusView.vue` | `.crow .grip`（14px、`cursor:grab`/`:active grabbing`）、`.grip-ic{fill:currentColor}`、`.crow .ct-edit`、`.crow.draft`、`.crow.dragging{opacity:.45}`、`.crow.drop-target{box-shadow:inset 0 2px 0 var(--accent)}`（inset 阴影画线，不引起布局跳动） |
+
+**验证（修复后实测，`temp/css-preview/checks/item6.js` / `item6b.js` / `item6c.js`，1680×1000）**
+- 改：双击第 3 条 → 输入框预填原文 ✓；**普通 Enter 不提交**（`stillEditing: true`）✓；**Ctrl+Enter 提交**（`stillEditing: false`、文本更新、条数不变 14）✓；**失焦提交** ✓（另一行验证：`blur` 后文本已提交、退出编辑态）。
+- 撤销：全局 `Ctrl+Z`（`ProjectLayout.vue:77` 用 `e.code === "KeyZ"` 判定，合成事件必须带 `code`）回退成功 ✓；顶栏撤销按钮同样回退成功 ✓（无历史时按钮 `disabled`）。
+- 增：点「添加」→ 草稿行出现 → `Ctrl+Enter` 提交后条数 15、末条文本正确、来源胶囊显示「手动」✓；**空文本（含纯空格）不入库**（条数不变、草稿行关闭）✓。
+- 排序：拖动第 1 条到第 4 位 → 拖动中 `row0` 带 `dragging`、目标行带 `drop-target` ✓；落下后顺序变为 `[2,3,4,1,…]`（`movedFirstToIndex3: true`、条数 15 不变）✓。
+- 手柄几何：14×14 方框、6 个圆点、`cursor: grab` ✓；行高 33px ✓；每行一个铅笔按钮（14 个）✓；`pageOverflow: false` ✓。
+- 截图：`temp/css-preview/item6-corpus.png`（整页）与 `temp/css-preview/item6-corpus-zoom.png`（列表区 2× 放大，可看清点阵手柄与行内布局）。
+- `pnpm build`（`vue-tsc --noEmit && vite build`）通过：2895 模块 / CSS 56.91 kB / JS 642.31 kB。
+
+**原始依据（实现前记录）**
+
 - store 只有新增与删除：`addCorpusItem(text, source = "paste")`（`src/stores/project.ts:827`）、`removeCorpusItem(id)`（`:839`），**没有更新函数**（`pushCorpusTexts`（`:797`）是批量追加、`writeOcrToCorpus`（`:822`）走 OCR 产物）。
 - 列表行在 `src/views/CorpusView.vue` 的 `.clist > .crow`，目前只有序号、文本、来源胶囊、删除按钮。
 

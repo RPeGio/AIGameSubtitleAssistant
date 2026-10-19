@@ -5,7 +5,7 @@ import SourceVideoPreview from "../components/SourceVideoPreview.vue";
 import SourceTimeline from "../components/SourceTimeline.vue";
 import ParamStepper from "../components/ParamStepper.vue";
 import AppIcon from "../components/AppIcon.vue";
-import type { Diff, OcrRegionEvent } from "../types";
+import type { CorpusItem, Diff, OcrRegionEvent } from "../types";
 import { usePersistedOcrParams } from "../composables/ocrDefaults";
 import { frameDurOf, hitsFrame } from "../composables/useFrameTolerance";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -195,6 +195,97 @@ function sourceLabel(s: string): string {
 
 function removeItem(id: string) {
   projectStore.removeCorpusItem(id);
+}
+
+// ── 语料列表：行内编辑 / 手动新增 / 拖动排序 ────────────
+const editingId = ref<string | null>(null);
+const editText = ref("");
+let editInputEl: HTMLInputElement | null = null;
+
+/// 输入框挂上即聚焦并全选（编辑与新增共用）
+function setEditInput(el: unknown) {
+  editInputEl = (el as HTMLInputElement) ?? null;
+  if (editInputEl) {
+    editInputEl.focus();
+    editInputEl.select();
+  }
+}
+
+function startEdit(item: CorpusItem) {
+  editingId.value = item.id;
+  editText.value = item.text;
+}
+
+/// Ctrl/Cmd+Enter 或失焦提交；内容未变或 trim 后为空时 store 内部直接返回（不产生空撤销步骤）
+function commitEdit() {
+  if (!editingId.value) return;
+  projectStore.updateCorpusItem(editingId.value, editText.value);
+  editingId.value = null;
+}
+
+function cancelEdit() {
+  editingId.value = null;
+}
+
+const drafting = ref(false);
+const draftText = ref("");
+
+function startDraft() {
+  drafting.value = true;
+  draftText.value = "";
+}
+
+function commitDraft() {
+  const text = draftText.value.trim();
+  if (text) projectStore.addCorpusItem(text);
+  drafting.value = false;
+  draftText.value = "";
+}
+
+function cancelDraft() {
+  drafting.value = false;
+  draftText.value = "";
+}
+
+// 拖动排序：只有左侧点阵手柄按下才允许发起拖动（否则与文本选择冲突）。
+// 语料顺序参与融合 DP 的取舍，所以顺序是数据、要能改。
+const draggingId = ref<string | null>(null);
+const dropIndex = ref<number | null>(null);
+let canDrag = false;
+
+function onGripDown() {
+  canDrag = true;
+}
+
+function onGripUp() {
+  canDrag = false;
+}
+
+function onRowDragStart(e: DragEvent, id: string) {
+  if (!canDrag) {
+    e.preventDefault();
+    return;
+  }
+  draggingId.value = id;
+  e.dataTransfer?.setData("text/plain", id);
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+}
+
+function onRowDragOver(e: DragEvent, index: number) {
+  if (!draggingId.value) return;
+  e.preventDefault();
+  dropIndex.value = index;
+}
+
+function onRowDrop(index: number) {
+  if (draggingId.value) projectStore.moveCorpusItem(draggingId.value, index);
+  onRowDragEnd();
+}
+
+function onRowDragEnd() {
+  draggingId.value = null;
+  dropIndex.value = null;
+  canDrag = false;
 }
 
 // ── 待审批纠正 ────────────────────────────────────────
@@ -463,7 +554,13 @@ function discardDiff(d: Diff) {
 
       <!-- ── 右列：语料列表 + 待审批纠正 ─────────────────── -->
       <div class="r2">
-        <div class="rh"><span class="t">语料列表 · {{ corpus.length }} 条</span></div>
+        <div class="rh">
+          <span class="t">语料列表 · {{ corpus.length }} 条</span>
+          <span class="sp"></span>
+          <button class="btn ghost sm" @click="startDraft" title="手动添加一条语料">
+            <AppIcon name="plus" :size="12" />添加
+          </button>
+        </div>
 
         <div v-if="pendingDiffs.length > 0" class="appr">
           <div class="apprh">
@@ -485,12 +582,73 @@ function discardDiff(d: Diff) {
         </div>
 
         <div class="clist">
-          <div v-if="corpus.length === 0" class="cempty">
+          <div v-if="corpus.length === 0 && !drafting" class="cempty">
             暂无语料——展开左侧「从剧情录屏中截取」跑一次 OCR，文本会自动进入此列表
           </div>
-          <div v-for="(item, ci) in corpus" :key="item.id" class="crow">
+          <div v-if="drafting" class="crow draft">
+            <span class="cn">+</span>
+            <input
+              :ref="setEditInput"
+              v-model="draftText"
+              class="inp ct-edit"
+              placeholder="输入文本，Ctrl+Enter 或失焦提交"
+              @keydown.ctrl.enter.prevent="commitDraft"
+              @keydown.meta.enter.prevent="commitDraft"
+              @keydown.esc.prevent="cancelDraft"
+              @blur="commitDraft"
+            />
+          </div>
+          <div
+            v-for="(item, ci) in corpus"
+            :key="item.id"
+            class="crow"
+            :class="{
+              dragging: draggingId === item.id,
+              'drop-target': dropIndex === ci && !!draggingId && draggingId !== item.id,
+            }"
+            draggable="true"
+            @dragstart="onRowDragStart($event, item.id)"
+            @dragover="onRowDragOver($event, ci)"
+            @drop.prevent="onRowDrop(ci)"
+            @dragend="onRowDragEnd"
+          >
+            <span
+              class="grip"
+              title="拖动调整顺序（语料顺序影响融合取舍）"
+              @mousedown="onGripDown"
+              @mouseup="onGripUp"
+            >
+              <svg class="grip-ic" viewBox="0 0 16 16" aria-hidden="true">
+                <circle cx="6" cy="4" r="1.4" />
+                <circle cx="10" cy="4" r="1.4" />
+                <circle cx="6" cy="8" r="1.4" />
+                <circle cx="10" cy="8" r="1.4" />
+                <circle cx="6" cy="12" r="1.4" />
+                <circle cx="10" cy="12" r="1.4" />
+              </svg>
+            </span>
             <span class="cn">{{ ci + 1 }}</span>
-            <span class="ct selectable" :title="item.text">{{ item.text }}</span>
+            <input
+              v-if="editingId === item.id"
+              :ref="setEditInput"
+              v-model="editText"
+              class="inp ct-edit"
+              @keydown.ctrl.enter.prevent="commitEdit"
+              @keydown.meta.enter.prevent="commitEdit"
+              @keydown.esc.prevent="cancelEdit"
+              @blur="commitEdit"
+            />
+            <span v-else class="ct selectable" :title="item.text" @dblclick="startEdit(item)">
+              {{ item.text }}
+            </span>
+            <button
+              v-if="editingId !== item.id"
+              class="btn icb sm ghost"
+              @click="startEdit(item)"
+              title="编辑该条"
+            >
+              <AppIcon name="pencil" :size="12" />
+            </button>
             <span class="psrc">{{ sourceLabel(item.source) }}</span>
             <button class="btn icb sm ghost" @click="removeItem(item.id)" title="删除该条">
               <AppIcon name="x" :size="12" />
@@ -705,6 +863,52 @@ function discardDiff(d: Diff) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 左侧点阵拖动手柄（2 列 × 3 行） */
+.crow .grip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  color: var(--faint);
+  cursor: grab;
+}
+
+.crow .grip:hover {
+  color: var(--dim);
+}
+
+.crow .grip:active {
+  cursor: grabbing;
+}
+
+.grip-ic {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+/* 行内编辑 / 新增输入框：占满文本位 */
+.crow .ct-edit {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  font-size: 12.5px;
+}
+
+.crow.draft {
+  background: var(--sel-bg);
+}
+
+.crow.dragging {
+  opacity: 0.45;
+}
+
+/* 放置位置指示：用 inset 阴影画线，避免布局跳动 */
+.crow.drop-target {
+  box-shadow: inset 0 2px 0 var(--accent);
 }
 
 /* 待审批纠正 */
