@@ -215,6 +215,21 @@
   - 改成三行再提交：条数仍 15（不新增行）✓、文本原样 ✓；该行高度 **64px vs 单行 33px** ⇒ 确实换行显示了 ✓；`pageOverflow: false`、撤销可用 ✓。
   - 截图：`temp/css-preview/item6e-multiline.png`（提交后的两行条目）、`item6e-edit.png`（三行编辑态 textarea：`rows=3`、值里含 2 个换行）。
 
+**增补：搜索 / 替换（2026-10-19，用户验收后追加）**
+- 需求（用户原话）：「再在语料列表上方加一个简单的搜索/替换功能，搜索在语料中精确匹配query，替换则直接全部替换语料中匹配到的query」；随后补充：「高亮/过滤时建议直接将整个列表除高亮的位置以外加一层灰度遮罩并禁用双击编辑和拖动排序功能」。
+- 语义（已定）：精确子串、**区分大小写**、不做正则；**不过滤**（列表照常全显示），匹配处高亮、其余压暗；搜索态禁用双击编辑与拖动排序；替换 = 整个语料库所有条目的该子串全部替换（替换框留空即删除），**只记一个撤销步骤**。
+- 落点：
+  - `src/stores/project.ts`：新增并导出 `replaceAllCorpus(query, replacement)`（`text.split(query).join(replacement)`，有命中才 `recordSnapshot()`；返回 `{ hits, items }`）。
+  - `src/views/CorpusView.vue`：`query/replacement` refs、`queryActive/matchCount` computed、`isMatch()`（行级压暗）、`segmentsOf()`（切成匹配/非匹配片段逐段渲染，**不用 `v-html`**）、`onReplaceAll()`（`message` 回执）；`.csearch` 搜索行（两个 `.inp` + 「全部替换」+ 「匹配 N 条」计数）；`.crow.dim` / `.ct .hit` / `.ct .faded` 样式；`startEdit`/`startReorder` 加搜索态守卫；搜索态隐藏点阵手柄、禁用铅笔按钮；`startDraft()` 清空 query（新增后要能立刻看到并编辑）。
+- 验证（`temp/css-preview/checks/item6f.js` + `item6f2.js`，语料页 1680×1000）：
+  - 14 条里 7 条含「派蒙」：`dimRows = 7`（非匹配行压暗）、`.hit = 7`（高亮处）、`.faded = 21`（匹配行内的非匹配片段）、计数「匹配 7 条」✓。
+  - **`textUnchangedBySegments: true`**——分段渲染后 `textContent` 与原文逐字符相同（证明 `pre-wrap` 下模板缩进没混进文本）✓。
+  - 搜索态：双击不进入编辑（`editOpensWhileSearching: false`）、拖动手柄 0 个 ✓。
+  - 替换：回执「已替换 7 处（7 条）」✓、7 条都出现 `[派蒙]` ✓；**一次 `Ctrl+Z` 全部还原**（`undoRestoredAll: true`）✓。
+  - 清空搜索：压暗 0 / 高亮 0 / 手柄回到 14 / 双击可编辑 ✓；`pageOverflow: false` ✓。
+  - 视觉值：`.hit` 底色 `rgba(94,106,210,.16)`、文字 `rgb(169,177,240)`、圆角 2px；`.crow.dim` opacity .38；`.ct .faded` opacity .45；搜索行 525×26，落在 `.r2`（546）内 ✓。
+  - 截图：`temp/css-preview/item6f-search.png`（深色）、`item6f-search-light.png`（浅色）。
+
 **原始依据（实现前记录）**
 
 - store 只有新增与删除：`addCorpusItem(text, source = "paste")`（`src/stores/project.ts:827`）、`removeCorpusItem(id)`（`:839`），**没有更新函数**（`pushCorpusTexts`（`:797`）是批量追加、`writeOcrToCorpus`（`:822`）走 OCR 产物）。

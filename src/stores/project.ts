@@ -853,6 +853,26 @@ export const useProjectStore = defineStore("project", () => {
     item.text = text;
   }
 
+  /// 语料全文搜索替换：把所有条目里匹配的子串全部替换（替换为空串 = 删除该子串）。
+  /// 有实际改动才记一个撤销步骤（整次替换一次回退），返回「替换处数 / 涉及条数」。
+  function replaceAllCorpus(query: string, replacement: string) {
+    const project = currentProject.value;
+    if (!project || !query) return { hits: 0, items: 0 };
+    let hits = 0;
+    let items = 0;
+    const next = project.corpus.map((c) => {
+      if (!c.text.includes(query)) return c;
+      const parts = c.text.split(query);
+      hits += parts.length - 1;
+      items += 1;
+      return { ...c, text: parts.join(replacement) };
+    });
+    if (hits === 0) return { hits: 0, items: 0 };
+    recordSnapshot();
+    project.corpus = next;
+    return { hits, items };
+  }
+
   /// 移动一条语料的位置（拖动排序）。语料顺序参与融合 DP 的取舍，所以顺序是数据。
   function moveCorpusItem(id: string, toIndex: number) {
     const project = currentProject.value;
@@ -1429,6 +1449,7 @@ export const useProjectStore = defineStore("project", () => {
     removeCorpusItem,
     updateCorpusItem,
     moveCorpusItem,
+    replaceAllCorpus,
     approveCorpusOcrDiff,
     discardCorpusOcrDiff,
     corpusReady,

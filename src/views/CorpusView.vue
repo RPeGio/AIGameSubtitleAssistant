@@ -216,7 +216,47 @@ function editRows(text: string) {
   return Math.min(10, Math.max(2, text.split("\n").length));
 }
 
+// ── 语料搜索 / 替换 ────────────────────────────────────
+// 语义：精确子串匹配（区分大小写）。搜索态不做过滤——列表照常显示，
+// 只把「非匹配处」压暗（双击编辑与拖动排序一并停用，见 startEdit/startReorder），
+// 避免过滤视图里序号与插入位置失真。
+const query = ref("");
+const replacement = ref("");
+const queryActive = computed(() => query.value.length > 0);
+const matchCount = computed(() =>
+  queryActive.value ? corpus.value.filter((c) => c.text.includes(query.value)).length : 0
+);
+
+/// 命中该条语料？（未搜索时全部视为正常，不加遮罩）
+function isMatch(text: string, active: boolean) {
+  return !active || text.includes(query.value);
+}
+
+/// 把一条语料切成「匹配 / 非匹配」片段，供模板逐段渲染（不用 v-html）
+function segmentsOf(text: string): { t: string; hit: boolean }[] {
+  const q = query.value;
+  if (!q || !text.includes(q)) return [{ t: text, hit: false }];
+  const parts = text.split(q);
+  const segs: { t: string; hit: boolean }[] = [];
+  parts.forEach((p, i) => {
+    if (i > 0) segs.push({ t: q, hit: true });
+    if (p) segs.push({ t: p, hit: false });
+  });
+  return segs;
+}
+
+function onReplaceAll() {
+  if (!queryActive.value) {
+    message.warning("先在搜索框里填入要查找的内容");
+    return;
+  }
+  const r = projectStore.replaceAllCorpus(query.value, replacement.value);
+  if (r.hits === 0) message.info("没有匹配到可替换的内容");
+  else message.success(`已替换 ${r.hits} 处（${r.items} 条）`);
+}
+
 function startEdit(item: CorpusItem) {
+  if (queryActive.value) return; // 搜索态禁用编辑（用户约定：避免与高亮/遮罩交互冲突）
   editingId.value = item.id;
   editText.value = item.text;
 }
@@ -236,6 +276,7 @@ const drafting = ref(false);
 const draftText = ref("");
 
 function startDraft() {
+  query.value = ""; // 新增后要能立刻看到并编辑这一条，清掉搜索（否则新条目可能被遮罩）
   drafting.value = true;
   draftText.value = "";
 }
@@ -314,6 +355,7 @@ function endReorder() {
 
 function startReorder(e: MouseEvent, index: number) {
   e.preventDefault();
+  if (queryActive.value) return; // 搜索态下「插到第几条」的语义会失真，禁用拖动排序
   const item = corpus.value[index];
   if (!item) return;
   draggingId.value = item.id;
@@ -607,6 +649,15 @@ function discardDiff(d: Diff) {
           </button>
         </div>
 
+        <div class="csearch">
+          <input v-model="query" class="inp cs-in" placeholder="搜索（精确匹配）" />
+          <input v-model="replacement" class="inp cs-in" placeholder="替换为（留空 = 删除）" />
+          <button class="btn ghost sm" @click="onReplaceAll" title="把语料中所有匹配项全部替换">
+            <AppIcon name="swap" :size="12" />全部替换
+          </button>
+          <span class="cscount">{{ queryActive ? `匹配 ${matchCount} 条` : "" }}</span>
+        </div>
+
         <div v-if="pendingDiffs.length > 0" class="appr">
           <div class="apprh">
             <AppIcon name="fuse" :size="13" />待审批纠正 {{ pendingDiffs.length }}
@@ -648,9 +699,13 @@ function discardDiff(d: Diff) {
             v-for="(item, ci) in corpus"
             :key="item.id"
             class="crow"
-            :class="[dropClass(ci, item.id), { dragging: draggingId === item.id }]"
+            :class="[
+              dropClass(ci, item.id),
+              { dragging: draggingId === item.id, dim: !isMatch(item.text, queryActive) },
+            ]"
           >
             <span
+              v-if="!queryActive"
               class="grip"
               title="按住拖动调整顺序（语料顺序影响融合取舍）"
               @mousedown="startReorder($event, ci)"
@@ -676,12 +731,13 @@ function discardDiff(d: Diff) {
               @keydown.esc.prevent="cancelEdit"
               @blur="commitEdit"
             />
-            <span v-else class="ct selectable" :title="item.text" @dblclick="startEdit(item)">{{ item.text }}</span>
+            <span v-else class="ct selectable" :title="item.text" @dblclick="startEdit(item)"><template v-for="(seg, si) in segmentsOf(item.text)" :key="si"><mark v-if="seg.hit" class="hit">{{ seg.t }}</mark><span v-else :class="{ faded: queryActive }">{{ seg.t }}</span></template></span>
             <button
               v-if="editingId !== item.id"
               class="btn icb sm ghost"
+              :disabled="queryActive"
               @click="startEdit(item)"
-              title="编辑该条"
+              :title="queryActive ? '搜索时不可编辑（清空搜索框后恢复）' : '编辑该条'"
             >
               <AppIcon name="pencil" :size="12" />
             </button>
@@ -901,6 +957,44 @@ function discardDiff(d: Diff) {
   white-space: pre-wrap;
   word-break: break-word;
   cursor: text;
+}
+
+/* 搜索态：匹配处高亮、同一条里非匹配片段压暗（不用 v-html，逐段渲染） */
+.ct .hit {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  border-radius: 2px;
+}
+
+.ct .faded {
+  opacity: 0.45;
+}
+
+/* 非匹配条目：整行压暗（灰度遮罩） */
+.crow.dim {
+  opacity: 0.38;
+}
+
+/* 搜索 / 替换行 */
+.csearch {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.csearch .cs-in {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+}
+
+.cscount {
+  flex: none;
+  font: 11px/1 var(--mono);
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
 }
 
 /* 左侧点阵拖动手柄（2 列 × 3 行） */
