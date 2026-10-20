@@ -6,9 +6,20 @@ import { MERGE_OPTIONS, SPLIT_OPTIONS } from "../../composables/sentenceCuts";
 import type { MergeStrategy, SplitStrategy } from "../../composables/sentenceCuts";
 import AppIcon from "../AppIcon.vue";
 
+const props = withDefaults(
+  defineProps<{
+    /// full = 校对区编辑器（选择/分割▾/合并▾/分段互换/吸附）
+    /// mini = 迷你时间轴（选择/加选区/分割/吸附，无合并与分段互换）
+    variant?: "full" | "mini";
+  }>(),
+  { variant: "full" }
+);
+
 const timeline = inject(TIMELINE_STORE_KEY, null) ?? useTimelineStore();
 
-// ── 策略面板（第 8 项）──
+const isMini = computed(() => props.variant === "mini");
+
+// ── 策略面板（第 8 项，仅 full 变体）──
 // 已选中该工具时再点一次才展开；首次点击只切换工具（避免"想切工具却弹出面板"）
 const splitOpen = ref(false);
 const mergeOpen = ref(false);
@@ -85,78 +96,101 @@ const mergeLabel = computed(
       <AppIcon name="cursor" :size="14" />
     </button>
 
-    <NPopover
-      trigger="manual"
-      placement="bottom-start"
-      :show="splitOpen"
-      :show-arrow="false"
-      :style="{ padding: '4px' }"
-    >
-      <template #trigger>
-        <button
-          class="tool-btn has-menu tool-split"
-          :class="{ active: timeline.activeTool === 'split' }"
-          :title="`分割工具（${splitLabel}）：点击 clip 在光标处分割；再点一次切换策略`"
-          @click="onSplitClick"
-        >
-          <AppIcon name="cut" :size="14" />
-        </button>
-      </template>
-      <div class="strategy-pop">
-        <div class="sp-title">分割策略</div>
-        <button
-          v-for="opt in SPLIT_OPTIONS"
-          :key="opt.value"
-          class="sp-opt"
-          :class="{ on: timeline.splitStrategy === opt.value }"
-          @click="pickSplit(opt.value)"
-        >
-          <AppIcon name="check" :size="11" class="sp-ck" />
-          <span class="sp-t">{{ opt.label }}</span>
-        </button>
-      </div>
-    </NPopover>
+    <!-- 迷你时间轴：加选区 + 普通分割（无策略面板：选区没有文本可切） -->
+    <template v-if="isMini">
+      <button
+        class="tool-btn"
+        :class="{ active: timeline.activeTool === 'region' }"
+        title="加选区：在选区轨空白处拖动画出一段"
+        @click="timeline.setTool('region')"
+      >
+        <AppIcon name="region" :size="14" />
+      </button>
+      <button
+        class="tool-btn"
+        :class="{ active: timeline.activeTool === 'split' }"
+        title="分割工具：点击选区在其处一分为二"
+        @click="timeline.setTool('split')"
+      >
+        <AppIcon name="cut" :size="14" />
+      </button>
+    </template>
 
-    <NPopover
-      trigger="manual"
-      placement="bottom-start"
-      :show="mergeOpen"
-      :show-arrow="false"
-      :style="{ padding: '4px' }"
-    >
-      <template #trigger>
-        <button
-          class="tool-btn has-menu tool-merge"
-          :class="{ active: timeline.activeTool === 'merge' }"
-          :title="`合并工具（${mergeLabel}）：点选两个相邻 clip 合并；再点一次切换策略`"
-          @click="onMergeClick"
-        >
-          <AppIcon name="merge" :size="14" />
-        </button>
-      </template>
-      <div class="strategy-pop">
-        <div class="sp-title">合并策略</div>
-        <button
-          v-for="opt in MERGE_OPTIONS"
-          :key="opt.value"
-          class="sp-opt"
-          :class="{ on: timeline.mergeStrategy === opt.value }"
-          @click="pickMerge(opt.value)"
-        >
-          <AppIcon name="check" :size="11" class="sp-ck" />
-          <span class="sp-t">{{ opt.label }}</span>
-        </button>
-      </div>
-    </NPopover>
+    <template v-else>
+      <NPopover
+        trigger="manual"
+        placement="bottom-start"
+        :show="splitOpen"
+        :show-arrow="false"
+        :style="{ padding: '4px' }"
+      >
+        <template #trigger>
+          <button
+            class="tool-btn has-menu tool-split"
+            :class="{ active: timeline.activeTool === 'split' }"
+            :title="`分割工具（${splitLabel}）：点击 clip 在光标处分割；再点一次切换策略`"
+            @click="onSplitClick"
+          >
+            <AppIcon name="cut" :size="14" />
+          </button>
+        </template>
+        <div class="strategy-pop">
+          <div class="sp-title">分割策略</div>
+          <button
+            v-for="opt in SPLIT_OPTIONS"
+            :key="opt.value"
+            class="sp-opt"
+            :class="{ on: timeline.splitStrategy === opt.value }"
+            @click="pickSplit(opt.value)"
+          >
+            <AppIcon name="check" :size="11" class="sp-ck" />
+            <span class="sp-t">{{ opt.label }}</span>
+          </button>
+        </div>
+      </NPopover>
 
-    <button
-      class="tool-btn"
-      :class="{ active: timeline.swapSegments }"
-      :title="timeline.swapSegments ? '分段互换：开启（点轨道边界按钮交换分段内片段）' : '分段互换：关闭'"
-      @click="timeline.toggleSwapSegments()"
-    >
-      <AppIcon name="swap" :size="14" />
-    </button>
+      <NPopover
+        trigger="manual"
+        placement="bottom-start"
+        :show="mergeOpen"
+        :show-arrow="false"
+        :style="{ padding: '4px' }"
+      >
+        <template #trigger>
+          <button
+            class="tool-btn has-menu tool-merge"
+            :class="{ active: timeline.activeTool === 'merge' }"
+            :title="`合并工具（${mergeLabel}）：点选两个相邻 clip 合并；再点一次切换策略`"
+            @click="onMergeClick"
+          >
+            <AppIcon name="merge" :size="14" />
+          </button>
+        </template>
+        <div class="strategy-pop">
+          <div class="sp-title">合并策略</div>
+          <button
+            v-for="opt in MERGE_OPTIONS"
+            :key="opt.value"
+            class="sp-opt"
+            :class="{ on: timeline.mergeStrategy === opt.value }"
+            @click="pickMerge(opt.value)"
+          >
+            <AppIcon name="check" :size="11" class="sp-ck" />
+            <span class="sp-t">{{ opt.label }}</span>
+          </button>
+        </div>
+      </NPopover>
+
+      <button
+        class="tool-btn"
+        :class="{ active: timeline.swapSegments }"
+        :title="timeline.swapSegments ? '分段互换：开启（点轨道边界按钮交换分段内片段）' : '分段互换：关闭'"
+        @click="timeline.toggleSwapSegments()"
+      >
+        <AppIcon name="swap" :size="14" />
+      </button>
+    </template>
+
     <button
       class="tool-btn"
       :class="{ active: timeline.snapEnabled }"

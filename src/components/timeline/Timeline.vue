@@ -34,13 +34,17 @@ const props = withDefaults(
     clickSeeks?: boolean;
     /// 轨道标签列宽度（px）；迷你时间轴可调窄，给时间轴窗口让出更多宽度
     labelWidth?: number;
+    /// 工具条形态：full 校对区编辑器（含合并/分段互换/策略面板）| mini 迷你时间轴
+    toolVariant?: "full" | "mini";
   }>(),
-  { showToolStrip: true, showWaveform: false, clickSeeks: false, labelWidth: 200 }
+  { showToolStrip: true, showWaveform: false, clickSeeks: false, labelWidth: 200, toolVariant: "full" }
 );
 
 const emit = defineEmits<{
   /// 双击轨道空白处（时间秒，内容区坐标换算）；供语料页添加选区
   "dblclick-track": [time: number];
+  /// 加选区工具拖动画出的时间段（松手时才发，落库由调用方决定）
+  "create-track-region": [payload: { trackId: string; start: number; end: number }];
 }>();
 
 // 布局常量：工具条高度（工具条已改为卡片顶部横条，占满整宽）
@@ -164,10 +168,83 @@ function onWindowMouseUp() {
   window.removeEventListener("mouseup", onWindowMouseUp);
 }
 
+// ── 加选区工具：在选区控制轨的空白处拖动画出时间段（松手才落库）──
+
+/// 拖动小于该像素视为误触：不建选区，只把播放头移过去
+const REGION_MIN_DRAG_PX = 3;
+
+const regionDraft = ref<{
+  trackId: string;
+  anchor: number;
+  start: number;
+  end: number;
+  rect: DOMRect;
+} | null>(null);
+
+/// 草稿块位置：内容区坐标 → 相对轨道行左缘（与 clip 同口径，需减 scrollLeft）
+const regionDraftStyle = computed(() => {
+  const d = regionDraft.value;
+  if (!d) return null;
+  const pps = timeline.pixelsPerSecond;
+  return {
+    left: `${d.start * pps - timeline.scrollLeft}px`,
+    width: `${Math.max(1, (d.end - d.start) * pps)}px`,
+  };
+});
+
+function onRegionDraftMove(e: MouseEvent) {
+  const d = regionDraft.value;
+  if (!d) return;
+  const t = Math.max(0, Math.min(timeline.duration, timeline.timeAtPixel(e.clientX - d.rect.left)));
+  // 允许向左右两侧扩展：按锚点排序，保证 start <= end
+  d.start = Math.min(d.anchor, t);
+  d.end = Math.max(d.anchor, t);
+}
+
+function stopRegionDraft() {
+  window.removeEventListener("mousemove", onRegionDraftMove);
+  window.removeEventListener("mouseup", onRegionDraftUp);
+  regionDraft.value = null;
+}
+
+function onRegionDraftUp() {
+  const d = regionDraft.value;
+  stopRegionDraft();
+  if (!d) return;
+  if ((d.end - d.start) * timeline.pixelsPerSecond >= REGION_MIN_DRAG_PX) {
+    emit("create-track-region", { trackId: d.trackId, start: d.start, end: d.end });
+    // 画完即切回选择工具，方便立刻调起止
+    timeline.setTool("select");
+  } else {
+    timeline.setTime(d.start);
+    timeline.focusTrack(d.trackId);
+  }
+}
+
+function startRegionDraft(e: MouseEvent, body: HTMLElement) {
+  const trackId = body.dataset.trackId ?? null;
+  if (!trackId) return;
+  const track = projectStore.currentProject?.tracks.find((t) => t.id === trackId);
+  // 只有选区控制轨能画：文本轨的空白区留给选择/分割
+  if (!track || track.type !== "ocr_region") return;
+  const rect = body.getBoundingClientRect();
+  const t = Math.max(0, Math.min(timeline.duration, timeline.timeAtPixel(e.clientX - rect.left)));
+  regionDraft.value = { trackId, anchor: t, start: t, end: t, rect };
+  e.preventDefault();
+  window.addEventListener("mousemove", onRegionDraftMove);
+  window.addEventListener("mouseup", onRegionDraftUp);
+}
+
 // ── 轨道区域：分割工具 or 只聚焦轨道（不移动播放头）──
 
 function onTrackAreaMouseDown(e: MouseEvent) {
   const target = e.currentTarget as HTMLElement;
+
+  // 加选区工具：空白处按下开始画选区（点在 clip 上交给 clip 自己处理）
+  if (timeline.activeTool === "region") {
+    if (!(e.target as HTMLElement).closest(".clip")) startRegionDraft(e, target);
+    return;
+  }
 
   // 分割工具：在 clip 上按下即分割，空白处不动作
   if (timeline.activeTool === "split") {
@@ -513,6 +590,8 @@ function activate() {
 function deactivate() {
   window.removeEventListener("mousemove", onWindowMouseMove);
   window.removeEventListener("mouseup", onWindowMouseUp);
+  // 失焦（切页/校对区隐藏）即丢弃未完成的选区草稿
+  stopRegionDraft();
   // 失焦（切页/校对区隐藏）即退出「被分割态」
   timeline.clearSplitPair();
 }
@@ -552,7 +631,7 @@ onUnmounted(() => {
 
 <template>
   <div class="timeline-root" ref="rootRef">
-    <TimelineToolStrip v-if="props.showToolStrip" />
+    <TimelineToolStrip v-if="props.showToolStrip" :variant="props.toolVariant" />
 
     <div class="timeline-col">
       <!-- Header: ruler（仅这里可拖动播放头） -->
@@ -712,6 +791,12 @@ onUnmounted(() => {
               />
             </template>
             <div v-else class="empty-hint">此轨道暂无事件</div>
+            <!-- 加选区工具的拖动草稿（松手后才真正建选区） -->
+            <div
+              v-if="regionDraft && regionDraft.trackId === track.id"
+              class="region-draft"
+              :style="regionDraftStyle ?? {}"
+            />
           </div>
         </div>
       </div>
@@ -1085,6 +1170,18 @@ onUnmounted(() => {
   margin-left: -0.5px;
   background: var(--color-accent);
   z-index: 14; /* playhead(15) 之下 */
+  pointer-events: none;
+}
+
+/* 加选区工具的拖动草稿：只出现在选区轨空白处，松手后由 store 生成正式选区 */
+.region-draft {
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  background: var(--accent-soft);
+  z-index: 3;
   pointer-events: none;
 }
 

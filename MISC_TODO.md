@@ -17,7 +17,7 @@
 | 6 | ✅ 语料页语料列表增删改（含拖动排序） | 功能 | 无 | 已实现（提交号待补）：行内编辑（Ctrl+Enter/失焦提交）+ 手动新增 + 2×3 点阵拖动排序 |
 | 7 | ✅ OCR 参数 info 图标 + 悬浮解释 | 功能·基建 | 无 | 已实现（提交号待补）：6 参数 + 术语表各一枚 info 点，hover/聚焦弹出三段式解释；第 12 项新参数可自带说明 |
 | 8 | ✅ 「分割/合并」倒三角 + 策略小面板 | 功能·核心 | 无 | 已实现（提交号待补）：两轮均完成——策略面板 + 三档算法、被分割态 + 键盘 ⬅️➡️ 移句界；顺带修掉 KeepAlive 下 activated 钩子不触发导致快捷键全失效的既有缺陷 |
-| 9 | 迷你时间轴（复用第 8 项成果） | 功能 | 8 | 用户明确要求：主时间轴功能定稿后再复用 |
+| 9 | ✅ 迷你时间轴（复用第 8 项成果） | 功能 | 8 | 已实现（提交号待补）：删提示行、迷你工具条（选择/加选区/分割/吸附）、拖动空白画选区、壳高 200→110px |
 | 15 | ✅ clip 拖边（改起止）时显示起止参考线 | 功能·时间轴 | 无（与 8/9 同区） | 已实现（提交号待补）：独立 `edgeGuideX` + 标尺下沿→滑条上沿的虚线 |
 | 16 | ✅ clip 吸附目标新增「播放头」 | 功能·时间轴 | 无（与 8/9 同区） | 已实现（提交号待补）：`collectSnapEdges` 追加播放头；单点候选本就不过滤 |
 | 17 | ✅ 去除轨道内 clip 的所有句末标点 | 功能·文本清理 | 8（句界操作会留下句尾逗号） | 已实现（提交号待补）：轨道总览「美化」下拉的「去除文本末标点」 |
@@ -385,7 +385,27 @@
 **验收**
 - 两工具 × 三档策略各自生效；**默认档与现状逐字一致**（回归）；每次操作都能 Ctrl+Z 回退。
 
-### 9. 迷你时间轴（复用第 8 项成果）
+### 9. ✅ 迷你时间轴（复用第 8 项成果）
+
+**✅ 已实现（2026-10-20，提交号待补）**
+
+| 改动 | 文件 | 内容 |
+|---|---|---|
+| 工具类型加法 | `src/stores/timeline.ts` | `activeTool` 联合类型与 `setTool` 加 `"region"` |
+| 迷你工具条 | `src/components/timeline/TimelineToolStrip.vue` | 新增 `variant?: "full" \| "mini"`（默认 full）；mini 只渲染 选择 / 加选区 / 分割（无策略面板）/ 吸附，去掉合并与分段互换；full 保持现状（分割▾/合并▾/互换/吸附） |
+| 加选区工具 | `src/components/timeline/Timeline.vue` | `create-track-region` emit；`REGION_MIN_DRAG_PX = 3`；`regionDraft`（起点锚 + 实时区间 + 轨道矩形）+ `regionDraftStyle`；`startRegionDraft`（只允许 `ocr_region` 轨）、`onRegionDraftMove`（按锚点排序并 clamp 0..duration）、`onRegionDraftUp`（≥3px → emit + **自动切回选择**；否则当点击 seek）、`deactivate()` 里 `stopRegionDraft()`；`.region-draft` 半透明草稿块 |
+| 工具条变体透传 | `src/components/timeline/Timeline.vue` | 新增 `toolVariant?: "full" \| "mini"` prop，`<TimelineToolStrip :variant="props.toolVariant" />` |
+| 接线 | `src/components/SourceTimeline.vue` | 删 `.hint` 模板块与样式；`:show-tool-strip="true"` + `tool-variant="mini"`；`@create-track-region` → `addOcrRegionEvent` + `setTime(start)` + `emit("update:time")`；`.tl-shell` 200 → **110px** |
+| 图标 | `src/components/AppIconSprite.vue` | 新增 `ic-region`（四角括号 + 内部虚线框） |
+
+**验证（`temp/css-preview/checks/item9.js`，两页分别跑，1680×1000）**
+- 语料页 `/project/demo/corpus` 与打轴页 `/project/demo/asr` 结果一致：`.hint` = **0**（提示行已删）、工具条 **4 个按钮**、`.tl-shell` 高 **110px**、选区轨 1 条、`pageOverflow false`。
+- 加选区：点工具后 `regionToolActive true`；在轨道空白处拖 100px → 草稿 `.region-draft` 出现且宽 **100px**；松手后选区 2 → **3 条**，工具**自动切回选择** ✓。
+- 分割：切到分割工具点第一个 clip → 2 → **4 条**（在已有 3 条基础上再分一段）✓。
+- `pnpm build` 通过：2904 模块 / CSS 59.46 kB / JS 660.62 kB。
+- 截图：`temp/css-preview/item9-corpus.png`、`item9-asr.png`（工具条在卡片顶部、壳高明显收紧、下方空白留在卡内——即用户要求的「腾出的 90px 留给卡内」）。
+
+> 与「要做」中原文的一处偏差：原文写「创建后停留在该工具便于连画」，用户 m06763 明确改为「**可以自动切回选择**」，实现按用户口径（松手即回到选择工具）。
 
 **现状依据**
 - `src/components/SourceTimeline.vue`：提示行在 `:87-89`（文案里只有 `Ctrl+滚轮缩放` 失实），`Timeline` 传 `:show-tool-strip="false"`（`:93`），外壳 `.tl-shell { height: 200px }`（`:124-127`）。

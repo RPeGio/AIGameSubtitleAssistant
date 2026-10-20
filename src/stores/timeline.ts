@@ -57,7 +57,8 @@ export const useTimelineStore = defineStore("timeline", () => {
   const isSeeking = ref(false);
   const focusedClipId = ref<string | null>(null);
   const focusedTrackId = ref<string | null>(null);
-  const activeTool = ref<"select" | "split" | "merge">("select");
+  /// 当前工具：select 选择 | split 分割 | merge 合并 | region 拖动画选区（迷你时间轴）
+  const activeTool = ref<"select" | "split" | "merge" | "region">("select");
   const viewportWidth = ref(0);
   /// 吸附开关（默认开启）
   const snapEnabled = ref(true);
@@ -153,8 +154,8 @@ export const useTimelineStore = defineStore("timeline", () => {
     focusedTrackId.value = id;
   }
 
-  /// 切换时间轴工具：select 选择/擦动 | split 分割 | merge 合并
-  function setTool(tool: "select" | "split" | "merge") {
+  /// 切换时间轴工具：select 选择/擦动 | split 分割 | merge 合并 | region 拖动画选区
+  function setTool(tool: "select" | "split" | "merge" | "region") {
     activeTool.value = tool;
   }
 
