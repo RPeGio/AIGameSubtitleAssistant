@@ -66,6 +66,9 @@ export const useTimelineStore = defineStore("timeline", () => {
   const swapSegments = ref(false);
   /// 吸附标记线位置（内容区像素坐标；null = 不显示）
   const snapGuideX = ref<number | null>(null);
+  /// 「被分割态」：刚分割出的一对 clip（同轨相邻）。存在期间键盘 ⬅️➡️ 可整段搬句界；
+  /// 失焦、Esc、换工具或再次分割都会清掉。
+  const splitPair = ref<{ trackId: string; leftId: string; rightId: string } | null>(null);
   /// 当前持有播放权的播放器 id（"review" 校对区 / "clip" 切片预览 / "source" 剧情录屏预览）。
   /// 打轴页与校对区共用同一条时间轴时间，若两侧 <video> 同时播放会双声道、双解码，
   /// 故约定：谁按下播放谁持有播放权，另一侧只跟随时间、保持静音暂停。
@@ -167,6 +170,16 @@ export const useTimelineStore = defineStore("timeline", () => {
     localStorage.setItem(MERGE_KEY, next);
   }
 
+  /// 进入「被分割态」（记下刚分割出的一对 clip id）
+  function setSplitPair(pair: { trackId: string; leftId: string; rightId: string } | null) {
+    splitPair.value = pair;
+  }
+
+  /// 退出「被分割态」
+  function clearSplitPair() {
+    splitPair.value = null;
+  }
+
   function toggleSnap() {
     snapEnabled.value = !snapEnabled.value;
     snapGuideX.value = null;
@@ -220,6 +233,7 @@ export const useTimelineStore = defineStore("timeline", () => {
     activePlayer,
     splitStrategy,
     mergeStrategy,
+    splitPair,
     tick,
     beginScrub,
     endScrub,
@@ -236,6 +250,8 @@ export const useTimelineStore = defineStore("timeline", () => {
     setTool,
     setSplitStrategy,
     setMergeStrategy,
+    setSplitPair,
+    clearSplitPair,
     toggleSnap,
     toggleSwapSegments,
     setSnapGuide,

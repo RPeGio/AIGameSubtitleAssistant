@@ -82,3 +82,42 @@ export const MERGE_OPTIONS: { value: MergeStrategy; label: string }[] = [
   { value: "former", label: "保留前者文本" },
   { value: "stack", label: "前后文本堆叠" },
 ];
+
+/// 把文本按「标点结尾」切成若干段，每段**原样保留**它自己的标点。
+/// 例：`123，4567，234，` → ["123，", "4567，", "234，"]。
+/// 句首标点产生的空片并入下一片（不丢字符），整段无标点时返回单段。
+/// 供「被分割态」下键盘 ⬅️➡️ 整段搬家使用（搬家逐字进行，不 trim）。
+export function textSegments(text: string): string[] {
+  if (!text) return [];
+  const cuts: number[] = [];
+  let i = 0;
+  while (i < text.length) {
+    if (!SENTENCE_PUNCT.test(text[i])) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j + 1 < text.length && SENTENCE_PUNCT.test(text[j + 1])) j++;
+    cuts.push(j + 1);
+    i = j + 1;
+  }
+  if (cuts.length === 0) return [text];
+
+  const pieces: string[] = [];
+  let from = 0;
+  for (const cut of cuts) {
+    pieces.push(text.slice(from, cut));
+    from = cut;
+  }
+  if (from < text.length) pieces.push(text.slice(from));
+
+  // 空片（句首标点造成）并入相邻片：头部并入下一片、尾部并入上一片
+  const merged: string[] = [];
+  for (const piece of pieces) {
+    if (piece === "") continue;
+    if (merged.length === 0) merged.push(piece);
+    else if (piece.trim() === "" && merged.length > 0) merged[merged.length - 1] += piece;
+    else merged.push(piece);
+  }
+  return merged.length > 0 ? merged : [text];
+}

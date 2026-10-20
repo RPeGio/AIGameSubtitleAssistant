@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { computed, onScopeDispose, ref, watch } from "vue";
-import { cutIndices, nearestCut, splitTextAtCut } from "../composables/sentenceCuts";
+import { cutIndices, nearestCut, splitTextAtCut, textSegments } from "../composables/sentenceCuts";
 import type { MergeStrategy, SplitStrategy } from "../composables/sentenceCuts";
 import type {
   Project,
@@ -535,7 +535,7 @@ export const useProjectStore = defineStore("project", () => {
     eventId: string,
     time: number,
     strategy: SplitStrategy = "raw"
-  ): { rightId: string; degraded: boolean } | null {
+  ): { leftId: string; rightId: string; degraded: boolean } | null {
     const found = findEvent(eventId);
     if (!found) return null;
     const { track, event } = found;
@@ -573,7 +573,42 @@ export const useProjectStore = defineStore("project", () => {
     const idx = track.events.indexOf(event);
     track.events.splice(idx, 1, left, right);
     track.events.sort((a, b) => a.start - b.start);
-    return { rightId: right.id, degraded };
+    return { leftId: left.id, rightId: right.id, degraded };
+  }
+
+  /// 「被分割态」：把右段的首个句界段整段搬到左段句末（dir = "left"），
+  /// 或把左段的最后一个句界段整段搬到右段句首（dir = "right"）。
+  /// 只改文本、时间边界不动；搬家逐字进行（不 trim），故 ⬅️ 再 ➡️ 可逐字复原。
+  /// 每次成功记一次快照（可 Ctrl+Z）。
+  function adjustSplitBoundary(
+    leftId: string,
+    rightId: string,
+    dir: "left" | "right"
+  ): { ok: boolean; reason: "none" | "no-pair" | "no-boundary" } {
+    const a = findEvent(leftId);
+    const b = findEvent(rightId);
+    if (!a || !b || a.track.id !== b.track.id) return { ok: false, reason: "no-pair" };
+    if (a.event.type === "ocr_region" || b.event.type === "ocr_region") {
+      return { ok: false, reason: "no-pair" };
+    }
+    // 必须是同轨相邻的一对（分割的产物）
+    const [left, right] = a.event.start <= b.event.start ? [a.event, b.event] : [b.event, a.event];
+    if (Math.abs(left.end - right.start) > 0.001) return { ok: false, reason: "no-pair" };
+
+    if (dir === "left") {
+      const segments = textSegments(right.text);
+      if (segments.length < 2) return { ok: false, reason: "no-boundary" };
+      recordSnapshot();
+      left.text = left.text + segments[0];
+      right.text = segments.slice(1).join("");
+    } else {
+      const segments = textSegments(left.text);
+      if (segments.length < 2) return { ok: false, reason: "no-boundary" };
+      recordSnapshot();
+      left.text = segments.slice(0, -1).join("");
+      right.text = segments[segments.length - 1] + right.text;
+    }
+    return { ok: true, reason: "none" };
   }
 
   /// 更新指定 ocr_region 事件的坐标（就地修改 reactive 对象，时间轴即时刷新）
@@ -1465,6 +1500,7 @@ export const useProjectStore = defineStore("project", () => {
     mergeTwo,
     mergeAdjacent,
     splitEvent,
+    adjustSplitBoundary,
     updateOcrRegion,
     addOcrRegionEvent,
     updateEventText,

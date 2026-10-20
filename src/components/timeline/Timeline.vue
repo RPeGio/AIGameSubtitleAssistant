@@ -19,6 +19,8 @@ const message = useMessage();
 
 /// 分割策略找不到可用断点（退化成分割保留原文）时的提示文案
 const SPLIT_DEGRADED_TEXT = "该 clip 里没有可用断点，已按原文分割";
+/// 被分割态下 ⬅️/➡️ 撞到"该侧只有一段"时的提示
+const SPLIT_ARROW_NO_BOUNDARY_TEXT = "该侧没有可搬的句界段";
 
 const props = withDefaults(
   defineProps<{
@@ -176,8 +178,14 @@ function onTrackAreaMouseDown(e: MouseEvent) {
     const res = projectStore.splitEvent(eventId, time, timeline.splitStrategy);
     if (res?.degraded) message.warning(SPLIT_DEGRADED_TEXT);
     if (res) {
-      timeline.focusClip(res.rightId);
       const found = projectStore.findEvent(res.rightId);
+      // 进入「被分割态」：键盘 ⬅️➡️ 可整段搬句界（仅文本事件有意义）
+      timeline.setSplitPair(
+        found && found.event.type !== "ocr_region"
+          ? { trackId: found.track.id, leftId: res.leftId, rightId: res.rightId }
+          : null
+      );
+      timeline.focusClip(res.rightId);
       if (found) timeline.focusTrack(found.track.id);
     }
     return;
@@ -210,6 +218,9 @@ const mergeFirstId = ref<string | null>(null);
 
 function onClipClicked(track: Track, clipId: string) {
   if (timeline.activeTool === "split") return;
+  // 点到「被分割态」这对之外的 clip ⇒ 退出该状态
+  const pair = timeline.splitPair;
+  if (pair && clipId !== pair.leftId && clipId !== pair.rightId) timeline.clearSplitPair();
   if (timeline.activeTool === "merge") {
     if (!mergeFirstId.value) {
       // 第一选择：聚焦高亮，等待第二次点击
@@ -288,6 +299,7 @@ function cancelRename() {
 // WebView 点击不可聚焦元素可能不移焦，blur 兜底不可靠；
 // 捕获阶段注册，先于 clip 拖动 mousedown 的 stopPropagation 执行
 function onWindowMouseDown(e: MouseEvent) {
+  if (!isAttached()) return;
   if (!renameTrackId.value) return;
   if ((e.target as HTMLElement).closest(".tl-name-input")) return;
   commitRename();
@@ -389,15 +401,40 @@ function onWheelRoot(e: WheelEvent) {
 // 用注入的独立 store），输入框内不响应。这样聚焦迷你时间轴 clip 后，
 // 快捷键作用于该时间轴而非全局校对区时间轴，与 Delete 行为一致。
 function onKeydown(e: KeyboardEvent) {
+  // 被 KeepAlive 暂存的页面/校对区不响应键盘（其 DOM 已脱离文档）
+  if (!isAttached()) return;
   const t = e.target as HTMLElement;
   if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
   const id = timeline.focusedClipId;
+  const pair = timeline.splitPair;
+
+  // 被分割态：⬅️➡️ 把整段句界从左/右搬到另一边（只改文本）
+  if (pair && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+    e.preventDefault();
+    const res = projectStore.adjustSplitBoundary(
+      pair.leftId,
+      pair.rightId,
+      e.key === "ArrowLeft" ? "left" : "right"
+    );
+    if (!res.ok) {
+      if (res.reason === "no-boundary") message.warning(SPLIT_ARROW_NO_BOUNDARY_TEXT);
+      if (res.reason === "no-pair") timeline.clearSplitPair();
+    }
+    return;
+  }
+
+  // Esc：退出被分割态
+  if (e.key === "Escape" && pair) {
+    timeline.clearSplitPair();
+    return;
+  }
 
   if (e.key === "Delete") {
     if (!id) return;
     const foundTrack = projectStore.findEvent(id);
     projectStore.removeEvent(id);
     timeline.focusClip(null);
+    timeline.clearSplitPair();
     if (foundTrack) timeline.focusTrack(foundTrack.track.id);
     return;
   }
@@ -408,8 +445,13 @@ function onKeydown(e: KeyboardEvent) {
     const res = projectStore.splitEvent(id, timeline.currentTime, timeline.splitStrategy);
     if (res?.degraded) message.warning(SPLIT_DEGRADED_TEXT);
     if (res) {
-      timeline.focusClip(res.rightId);
       const right = projectStore.findEvent(res.rightId);
+      timeline.setSplitPair(
+        right && right.event.type !== "ocr_region"
+          ? { trackId: right.track.id, leftId: res.leftId, rightId: res.rightId }
+          : null
+      );
+      timeline.focusClip(res.rightId);
       if (right) timeline.focusTrack(right.track.id);
     }
     return;
@@ -420,6 +462,7 @@ function onKeydown(e: KeyboardEvent) {
     if (!id) return;
     const merged = projectStore.mergeAdjacent(id, timeline.mergeStrategy);
     if (merged) timeline.focusClip(merged);
+    timeline.clearSplitPair();
     return;
   }
 }
@@ -451,9 +494,16 @@ watch(
 // 全局键鼠监听只在「激活」期间挂着。否则隐藏的时间轴仍会响应 Delete/S/M 与
 // 文本输入，作用于它自己 store 的 focusedClipId——在语料页按 Delete 会删掉
 // 校对区时间轴上的片段。
+/// 是否"挂载在活动树上"：KeepAlive 暂存的子树会被移到脱离文档的容器里，
+/// 此时 isConnected 为 false。用它当活动闸门，比依赖 onActivated 可靠
+/// （实测 Vue 只为 KeepAlive 的直接子组件触发 activated/deactivated，
+/// 而本组件在校对区里是 ReviewPane 的子组件，钩子不会触发）。
+function isAttached(): boolean {
+  const el = rootRef.value as HTMLElement | null;
+  return !!el && el.isConnected;
+}
+
 function activate() {
-  window.addEventListener("mousedown", onWindowMouseDown, true);
-  window.addEventListener("keydown", onKeydown);
   // 从缓存里恢复时 DOM 刚插回，视口宽度可能还是 0，这里补测一次
   if (viewportRef.value) {
     timeline.setViewportWidth(viewportRef.value.getBoundingClientRect().width);
@@ -461,11 +511,17 @@ function activate() {
 }
 
 function deactivate() {
-  window.removeEventListener("mousedown", onWindowMouseDown, true);
-  window.removeEventListener("keydown", onKeydown);
   window.removeEventListener("mousemove", onWindowMouseMove);
   window.removeEventListener("mouseup", onWindowMouseUp);
+  // 失焦（切页/校对区隐藏）即退出「被分割态」
+  timeline.clearSplitPair();
 }
+
+// 换工具也退出「被分割态」（⬅️➡️ 只在刚分割完、工具未变时生效）
+watch(
+  () => timeline.activeTool,
+  () => timeline.clearSplitPair()
+);
 
 onMounted(() => {
   if (viewportRef.value) {
@@ -477,6 +533,9 @@ onMounted(() => {
     viewportObserver.observe(viewportRef.value);
   }
   rootRef.value?.addEventListener("wheel", onWheelRoot, { passive: false });
+  // 与挂载同生命周期注册（不能只靠 activate：KeepAlive 下孙组件收不到 activated）
+  window.addEventListener("mousedown", onWindowMouseDown, true);
+  window.addEventListener("keydown", onKeydown);
 });
 
 onActivated(activate);
@@ -485,6 +544,8 @@ onDeactivated(deactivate);
 onUnmounted(() => {
   viewportObserver?.disconnect();
   rootRef.value?.removeEventListener("wheel", onWheelRoot);
+  window.removeEventListener("mousedown", onWindowMouseDown, true);
+  window.removeEventListener("keydown", onKeydown);
   deactivate();
 });
 </script>

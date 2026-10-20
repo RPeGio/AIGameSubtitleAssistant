@@ -210,6 +210,8 @@ const mergeLabel = computed(
   border-left: 3px solid transparent;
   border-top: 3px solid currentColor;
   opacity: 0.75;
+  /* 顺时针转 90°：斜面朝向按钮左上角 */
+  transform: rotate(90deg);
 }
 
 .tool-btn:hover {

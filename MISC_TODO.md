@@ -16,7 +16,7 @@
 | 5 | ✅ 播放键/进度条移出画面 | 修复·布局 | 无 | 已实现（提交号待补）：控件条改流内 + 画面按 16:9 自定高，字幕回到画面底 |
 | 6 | ✅ 语料页语料列表增删改（含拖动排序） | 功能 | 无 | 已实现（提交号待补）：行内编辑（Ctrl+Enter/失焦提交）+ 手动新增 + 2×3 点阵拖动排序 |
 | 7 | ✅ OCR 参数 info 图标 + 悬浮解释 | 功能·基建 | 无 | 已实现（提交号待补）：6 参数 + 术语表各一枚 info 点，hover/聚焦弹出三段式解释；第 12 项新参数可自带说明 |
-| 8 | 🚧 「分割/合并」倒三角 + 策略小面板 | 功能·核心 | 无 | 第一轮已实现（面板 + 三档算法，提交号待补）；第二轮＝被分割态 + 键盘 ⬅️➡️ 移句界 |
+| 8 | ✅ 「分割/合并」倒三角 + 策略小面板 | 功能·核心 | 无 | 已实现（提交号待补）：两轮均完成——策略面板 + 三档算法、被分割态 + 键盘 ⬅️➡️ 移句界；顺带修掉 KeepAlive 下 activated 钩子不触发导致快捷键全失效的既有缺陷 |
 | 9 | 迷你时间轴（复用第 8 项成果） | 功能 | 8 | 用户明确要求：主时间轴功能定稿后再复用 |
 | 15 | clip 拖边（改起止）时显示起止参考线 | 功能·时间轴 | 无（与 8/9 同区） | 拖边时看得见落点；**与第 16 项一起做**（m06103） |
 | 16 | clip 吸附目标新增「播放头」 | 功能·时间轴 | 无（与 8/9 同区） | 用户此前实现过但没成功（原因见条目内）；与第 15 项一起做 |
@@ -298,7 +298,7 @@
 
 ### 8. 「分割」「合并」按钮加倒三角 + 策略小面板
 
-**🚧 第一轮已实现（2026-10-20，提交号待补）**——策略面板 + 三档算法；第二轮（被分割态 + 键盘 ⬅️➡️ 移句界）待做。
+**✅ 两轮均已实现（2026-10-20，提交号待补）**——第一轮＝策略面板 + 三档算法；第二轮＝被分割态 + 键盘 ⬅️➡️ 整段搬句界。
 
 | 改动 | 文件 | 内容 |
 |---|---|---|
@@ -317,6 +317,33 @@
 - 面板：5 个工具按钮、分割钮 26×24、倒三角 3px、**首次点击只切工具不弹面板**、第二次点击弹「分割策略」三档、选「按空格」写策略并收起（离场动画约 300–500ms）、合并面板只显示合并三档、点面板外收起 ✓；`pageOverflow false`。
 - `pnpm build`（`vue-tsc --noEmit && vite build`）通过：2900 模块 / CSS 59.05 kB / JS 654.52 kB。
 - 截图 `temp/css-preview/item8-panel.png`（分割策略面板打开态）。
+
+**第二轮（被分割态 + 键盘 ⬅️➡️ 整段搬句界）——已实现**
+
+| 改动 | 文件 | 内容 |
+|---|---|---|
+| 段落切分（新） | `src/composables/sentenceCuts.ts` | `textSegments(text)`：按「标点串末尾」切段，**每段原样保留自己的标点**；空片并入邻片；整体无标点 ⇒ `[text]`（供整段搬家，逐字不 trim） |
+| 搬运 API | `src/stores/project.ts` | `adjustSplitBoundary(leftId, rightId, "left" \| "right")` → `{ ok, reason: "none" \| "no-pair" \| "no-boundary" }`；要求同轨且两段相邻（`|left.end − right.start| ≤ 0.001`）；⬅️ 把右段首个句界段**整段**追加到左段末尾、➡️ 把左段末段整段前置到右段开头；逐字不 trim ⇒ 可逆；每次成功一次快照 |
+| 被分割态 | `src/stores/timeline.ts` | `splitPair = ref<{ trackId; leftId; rightId } \| null>` + `setSplitPair` / `clearSplitPair` |
+| 状态维护 | `src/components/timeline/Timeline.vue` | 分割工具与 S 键成功后设对；`ArrowLeft`/`ArrowRight` → `adjustSplitBoundary`（`no-boundary` ⇒ toast「该侧没有可搬的句界段」，`no-pair` ⇒ 清态）；`Escape` / `Delete` / `M` / 点其它 clip / 换工具 / 失焦 均清态 |
+| 视觉 | `src/components/timeline/TimelineClip.vue` | 配对 clip 加 `.split-pair` 内描边（`inset 0 0 0 1px var(--accent-ink)`），聚焦时叠外框 |
+| 倒三角朝向 | `src/components/timeline/TimelineToolStrip.vue` | `.has-menu::after` 加 `transform: rotate(90deg)`（斜面朝左上，用户指定） |
+| 行内分割 | `src/views/Editor.vue` | 行内「分割」成功后同样设对（与校对区一致）；行内「合并」成功后清态 |
+
+**第二轮验证（`temp/css-preview/checks/item8c.js`，1680×1000，mock）**
+- mock 把首个 fused 文本换成与用户图解同构的长句（`【派蒙】叙旧可以之后再叙，旅行者，先继续刚才的汇报吧。你提前进行能源研究的最终实验，有得出什么结论么？`），使右段在分割后仍留 ≥2 个句界段。
+- 分割（punct）→ 左 `…先继续刚才的汇报吧。` ｜ 右 `你提前进行能源研究的最终实验，有得出什么结论么？`；`.split-pair` 标记 2 个 ✓。
+- ⬅️ → 左 `…汇报吧。你提前进行能源研究的最终实验，` ｜ 右 `有得出什么结论么？`（**整段带标点**搬家，与 m06145 示例一致）✓。
+- ➡️ → 逐字复原 ✓（`restored: true`）。
+- 连续 ⬅️ 撞边界：文本不再变化 + toast「该侧没有可搬的句界段」出现 11 次 ✓。
+- 清态四条路径：`Escape` → 0、换工具 → 0、点其它 clip → 0、失焦（KeepAlive 暂存）→ 0 ✓。
+- `pageOverflow false`、无 console 错误 ✓；`pnpm build` ✓。
+- 截图 `temp/css-preview/item8-splitpair.png`（分割后：左列两行 + 总览两条 + 右段聚焦）。
+
+**顺手修掉的既有缺陷（重要）**
+- 现象：时间轴的 `Delete`/`S`/`M` 快捷键与「点别处提交轨道重命名」在校对区**完全无反应**。
+- 根因：`onActivated`/`onDeactivated` **只对 KeepAlive 的直接子组件触发**（校对区里 `Timeline` 是 `ReviewPane` 的子组件 ⇒ 钩子从不触发），而 T1（切页保活）把 window 监听移进了 `activate()` ⇒ 监听从未注册（实测：挂载计数 2、激活计数 0）。
+- 修法：监听回到 `onMounted` 注册 / `onUnmounted` 注销；新增 `isAttached()`（`rootRef.isConnected`）作活动闸门——被 KeepAlive 暂存的页面/校对区 DOM 已脱离文档，故不会抢键盘。
 
 **现状依据**
 - 工具按钮：`src/components/timeline/TimelineToolStrip.vue` 的 5 个 `.tool-btn`（24×22，点击即 `setTool(...)`）。

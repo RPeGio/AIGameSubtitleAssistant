@@ -34,6 +34,12 @@ const emit = defineEmits<{
 
 // ── 拖动：整段移动 / 左右边界改起止 / 垂直换轨 ──
 const MIN_DUR = 0.05; // 与 splitEvent 的 EPS 一致，避免零长度 sliver
+
+/// 是否属于刚分割出的一对（被分割态：键盘 ⬅️➡️ 可整段搬句界）
+const isSplitPair = computed(() => {
+  const pair = timeline.splitPair;
+  return !!pair && (pair.leftId === props.event.id || pair.rightId === props.event.id);
+});
 const DRAG_THRESHOLD = 3; // 位移超过该像素才视为拖动（区分点击）
 const V_DRAG_THRESHOLD = 12; // 垂直位移超过该像素才进入换轨模式（asr 事件专属）
 
@@ -376,7 +382,7 @@ function clipText(): string {
   />
   <div
     class="clip"
-    :class="{ focused, dragging: drag !== null, 'v-dragging': drag?.vMode, 'split-tool': timeline.activeTool === 'split' }"
+    :class="{ focused, dragging: drag !== null, 'v-dragging': drag?.vMode, 'split-tool': timeline.activeTool === 'split', 'split-pair': isSplitPair }"
     :data-event-id="event.id"
     :style="{
       left: left + 'px',
@@ -439,6 +445,15 @@ function clipText(): string {
 
 .clip.split-tool {
   cursor: crosshair;
+}
+
+/* 被分割态：这对 clip 用内描边标一下，提示 ⬅️➡️ 可用（不改变外框聚焦样式） */
+.clip.split-pair {
+  box-shadow: inset 0 0 0 1px var(--accent-ink);
+}
+
+.clip.split-pair.focused {
+  box-shadow: inset 0 0 0 1px var(--accent-ink), 0 0 0 1px var(--accent);
 }
 
 .clip.dragging {
