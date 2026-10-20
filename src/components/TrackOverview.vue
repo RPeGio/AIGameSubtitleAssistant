@@ -36,6 +36,19 @@ const EXPORT_FORMATS = [
   { label: "TXT（纯文本）", value: "txt" },
 ];
 
+// ── 文本美化（第 17 项）：把文本处理动作集中成一个下拉，后续新增动作直接加条目 ──
+const BEAUTIFY_ACTIONS = [{ label: "去除文本末标点", value: "strip-trailing-punct" }];
+
+function onBeautify(action: string) {
+  const track = focusedTrack.value;
+  if (!track) return;
+  if (action === "strip-trailing-punct") {
+    const n = projectStore.stripTrackTrailingPunctuation(track.id);
+    if (n > 0) message.success(`已去除 ${n} 条的末尾标点`);
+    else message.info("没有需要去除的末尾标点");
+  }
+}
+
 /// 选定格式 → 保存对话框选路径 → 后端生成内容并写文件
 async function onExport(format: string) {
   const track = focusedTrack.value;
@@ -268,6 +281,17 @@ onUnmounted(deactivate);
           </select>
           <AppIcon name="chev-d" :size="11" class="ov-role-cv" />
         </span>
+        <NPopselect
+          v-if="isTextTrack"
+          :options="BEAUTIFY_ACTIONS"
+          trigger="click"
+          placement="bottom-end"
+          @update:value="onBeautify"
+        >
+          <button class="btn ghost sm" title="文本美化">
+            <AppIcon name="sparkle" :size="12" />美化
+          </button>
+        </NPopselect>
         <NPopselect
           v-if="isTextTrack"
           :options="EXPORT_FORMATS"

@@ -18,9 +18,9 @@
 | 7 | ✅ OCR 参数 info 图标 + 悬浮解释 | 功能·基建 | 无 | 已实现（提交号待补）：6 参数 + 术语表各一枚 info 点，hover/聚焦弹出三段式解释；第 12 项新参数可自带说明 |
 | 8 | ✅ 「分割/合并」倒三角 + 策略小面板 | 功能·核心 | 无 | 已实现（提交号待补）：两轮均完成——策略面板 + 三档算法、被分割态 + 键盘 ⬅️➡️ 移句界；顺带修掉 KeepAlive 下 activated 钩子不触发导致快捷键全失效的既有缺陷 |
 | 9 | 迷你时间轴（复用第 8 项成果） | 功能 | 8 | 用户明确要求：主时间轴功能定稿后再复用 |
-| 15 | clip 拖边（改起止）时显示起止参考线 | 功能·时间轴 | 无（与 8/9 同区） | 拖边时看得见落点；**与第 16 项一起做**（m06103） |
-| 16 | clip 吸附目标新增「播放头」 | 功能·时间轴 | 无（与 8/9 同区） | 用户此前实现过但没成功（原因见条目内）；与第 15 项一起做 |
-| 17 | 去除轨道内 clip 的所有句末标点 | 功能·文本清理 | 8（句界操作会留下句尾逗号） | 面向 ASR 文本的批量清理；用户 m06145 追加 |
+| 15 | ✅ clip 拖边（改起止）时显示起止参考线 | 功能·时间轴 | 无（与 8/9 同区） | 已实现（提交号待补）：独立 `edgeGuideX` + 标尺下沿→滑条上沿的虚线 |
+| 16 | ✅ clip 吸附目标新增「播放头」 | 功能·时间轴 | 无（与 8/9 同区） | 已实现（提交号待补）：`collectSnapEdges` 追加播放头；单点候选本就不过滤 |
+| 17 | ✅ 去除轨道内 clip 的所有句末标点 | 功能·文本清理 | 8（句界操作会留下句尾逗号） | 已实现（提交号待补）：轨道总览「美化」下拉的「去除文本末标点」 |
 | 10 | 快捷键体系（调研 → 注册表 → 帮助面板） | 功能·跨页 | 8、9 | 键位必须绑在定稿交互上，先做必返工 |
 | 11 | 欢迎页自检升级（探针 + 静默 bootstrap + 后端指引） | 功能·独立 | 7（info 基建）·「并行分支接口」的命令缺口 | 独立大件，放中后段不打断时间轴主线 |
 | 12 | CUDA GPU 加速参数化（设备迁移到 UI） | 功能·Rust+UI | 7（要带 info 说明）+ 11（需 `probe_moss_backend` 命令） | 存储与判定逻辑已随 PR #48 就位，只缺字段迁移与 UI |
@@ -406,9 +406,16 @@
 **验收**
 - 语料页与打轴页两处都测：提示行消失、工具条在顶部、壳高收敛、拖动画出的选区起止与鼠标位置一致、分割可用、双击 ±1.5s 仍可用、滚轮平移与刻度拖动无回归、现有 `.mini-timeline` 1px 边框与页面无重边。
 
-### 15. clip 拖边（改 start/end）时显示起止参考线
+### 15. ✅ clip 拖边（改起止）时显示起止参考线
 
-**现状依据**
+**✅ 已实现（2026-10-20，提交号待补）**
+- `src/stores/timeline.ts`：新增 `edgeGuideX = ref<number | null>(null)` + `setEdgeGuide(x)`（与 `snapGuideX` 并列、互不影响 ⇒ 两条线可同时显示）；已加入 return。
+- `src/components/timeline/TimelineClip.vue`：`onWindowMouseMove` 在吸附块之后、`updateEventTime` 之前调 `timeline.setEdgeGuide(d.mode === "move" ? null : (d.mode === "l" ? start : end) * timeline.pixelsPerSecond)`；`onWindowMouseUp` 与 `setSnapGuide(null)` 一起置 null。
+- `src/components/timeline/Timeline.vue`：`.snap-guide` 之前新增 `.edge-guide` 覆盖层——`left: contentLeft + edgeGuideX - scrollLeft`、`top: calc(playheadTop + 20px)`（标尺下沿）、`bottom: 8px`（滑条容器上沿），`repeating-linear-gradient` 虚线 + `opacity .85` + `z-index 14`（playhead 15 之下、轨道内容之上）。
+- 实测（`temp/css-preview/checks/item15.js`，编辑器页 1680×1000）：拖右边缘时 `.edge-guide` 1 条，`top 610.05` = 标尺下沿、`bottom 953` = 滑条上沿（高 342.95）**精确对齐**；松手后 0 条；拖左边缘同样显示且可与吸附线并存；整体位移不显示；`pageOverflow false`。
+- 视觉证据：`temp/css-preview/item15-edge-only.png`（吸附关闭、拖边到 ≈26.4s：播放头实线在 1002px、拖边虚线在 1023px，两者可辨）与 `item15-guides-zoom.png`（5 倍放大对照：左＝实线吸附与虚线拖边重合，右＝只有虚线拖边）。
+
+**现状依据（实现前）**
 - 拖动逻辑在 `src/components/timeline/TimelineClip.vue` 的 `onWindowMouseMove`（模式 `"l"`/`"r"` 改单边、`"move"` 整体位移；`dt = (dx + (scrollLeft - origScrollLeft)) / pixelsPerSecond`）；**改边期间没有任何落点视觉参考**。
 - 现有唯一的参考线是吸附提示线：`src/stores/timeline.ts` 的 `snapGuideX`（`setSnapGuide`）＋ `src/components/timeline/Timeline.vue:678-681` 的 `.snap-guide`（`v-if="timeline.snapGuideX !== null"`，`left: contentLeft + snapGuideX - scrollLeft`）——它只在吸附命中时出现，且是**贯穿整个轨道区**的长线。
 - 参考线只能在 `Timeline.vue` 的覆盖层里画：clip 位于 `.tl-track-body` 内（`overflow:hidden`，仅分段互换时 `visible`），子元素无法跨出本条轨道行。
@@ -422,9 +429,15 @@
 **验收**
 - 拖左边缘 / 右边缘各一条线，位置与 `start` / `end` 的当前值精确一致（可用 `evalq` 比对线 `left` 与 `clip` 边缘像素）；随鼠标移动实时更新；松开后消失；整体位移时不出现；与吸附线同时出现时两条都能看见且可区分；编辑器时间轴与（第 9 项之后）迷你时间轴都成立；无布局跳动。
 
-### 16. clip 吸附目标新增「播放头」
+### 16. ✅ clip 吸附目标新增「播放头」
 
-**现状依据**
+**✅ 已实现（2026-10-20，提交号待补）**
+- `src/components/timeline/TimelineClip.vue` 的 `collectSnapEdges()` 末尾追加播放头：`const playhead = timeline.currentTime; if (playhead > 0 && playhead <= timeline.duration) edges.push(playhead);`——随 `d.snapEdges` 在拖动开始时快照一次，拖动中播放头移动不会让目标漂移。
+- **复核「当年为什么没成功」**：`snapToEdges` 的 `e - s >= MIN_DUR` 校验作用于**吸附后的结果跨度**（clip 时长），候选本身只是数字 ⇒ **单点候选不会被过滤**，`snapToEdges` 无需改动（下面「要做」里那条担心不成立）。
+- 实测（同一脚本）：播放头设到 21.96s，把宽 clip 左边缘拖到 8px 窗口内（目标 22.7s）→ clip 起点**精确落在 21.96s**（= 播放头实际时间）、`.snap-guide` 同时出现；把磁铁关掉后同样落点停在 23.79s 且**无吸附线** ⇒ 吸附确由播放头候选驱动。
+- 验收：暂停时拖边 <8px 精确落在 `currentTime` ✓；播放中拖动不漂移 ✓；与同轴事件边界吸附并存（最近者胜）✓；`Ctrl+Z` 可回退（沿用拖动开始时的快照）✓。
+
+**现状依据（实现前）**
 - 吸附候选取自 `src/components/timeline/TimelineClip.vue` 的 `collectSnapEdges()`（`:104-114`，拖动开始时的快照：自身 `origStart/origEnd` + `props.snapEvents` 各事件起止），`props.snapEvents` 由 `src/components/timeline/Timeline.vue:107-110` 的 `snapEvents` computed 提供（= 当前**显示**的轨道的事件集合，跨源吸附就是在这里修掉的）。**`timeline.currentTime`（播放头）不在候选里**。
 - 命中判定在 `snapToEdges(mode, start, end, edges, pps, minStart, maxEnd)`（`:119-157`）：`let bestDist = SNAP_THRESHOLD_PX`（8px），并且要求 `s >= minStart && e <= maxEnd && e - s >= MIN_DUR`（`MIN_DUR = 0.05`）。**播放头是单点候选（start == end），会被 `e - s >= MIN_DUR` 这一条时长校验直接过滤掉**——这很可能就是「之前实现过但没成功」的原因（待实现时先复核这段代码确认）。
 
@@ -440,7 +453,13 @@
 **验收**
 - 暂停时把 clip 左/右边缘拖到播放头附近（<8px）→ 精确落在 `timeline.currentTime`；播放中拖动时目标不漂移（用拖动开始时的播放头时间）；与现有「同轴事件边界」吸附不冲突；`Ctrl+Z` 可回退到拖动前。
 
-### 17. 去除轨道内 clip 的所有句末标点
+### 17. ✅ 去除轨道内 clip 的所有句末标点
+
+**✅ 已实现（2026-10-20，提交号待补）**
+- `src/stores/project.ts`：新增并导出 `stripTrackTrailingPunctuation(trackId: string): number`——先收集待改条目、**改动前** `recordSnapshot()`（一次撤销还原整批）、跳过 `ocr_region` 与无 `text` 事件，返回改动条数。
+- `src/components/AppIconSprite.vue`：新增 `ic-sparkle` 图标。
+- `src/components/TrackOverview.vue`：新增「文本美化」下拉（`BEAUTIFY_ACTIONS` + `onBeautify`，`NPopselect` 包 `.btn.ghost.sm`），位置在**「导出」左边**，仅文本轨显示；回执「已去除 N 条的末尾标点」/「没有需要去除的末尾标点」。
+- 实测（`temp/css-preview/checks/item17.js`）：表头按钮 `["美化","导出"]`；下拉选项 `["去除文本末标点"]`；执行后 11 条变化（如 `…似てる？`→`…似てる`）；回执「已去除 11 条的末尾标点」；**一次 Ctrl+Z 整批还原**；`pageOverflow false`。
 
 **起因（用户 m06145）**
 - 第 8 项的「被分割态」用 ⬅️ 把右侧一段移到左侧后，左侧可能以逗号收尾（例 `123，4567，234，`）。需要一条批量清理：把**当前轨道内所有 clip 文本的句末标点去掉**。

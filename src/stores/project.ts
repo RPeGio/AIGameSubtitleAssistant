@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { computed, onScopeDispose, ref, watch } from "vue";
-import { cutIndices, nearestCut, splitTextAtCut, textSegments } from "../composables/sentenceCuts";
+import { cutIndices, nearestCut, splitTextAtCut, stripTrailingPunctuation, textSegments } from "../composables/sentenceCuts";
 import type { MergeStrategy, SplitStrategy } from "../composables/sentenceCuts";
 import type {
   Project,
@@ -609,6 +609,24 @@ export const useProjectStore = defineStore("project", () => {
       right.text = segments[segments.length - 1] + right.text;
     }
     return { ok: true, reason: "none" };
+  }
+
+  /// 文本美化（第 17 项）：去掉轨道内每条文本末尾的标点。
+  /// 只改文本、不动时间；整批一次快照（可一次 Ctrl+Z 回退）。返回实际改动的条数。
+  function stripTrackTrailingPunctuation(trackId: string): number {
+    const track = currentProject.value?.tracks.find((t) => t.id === trackId);
+    if (!track) return 0;
+    const changes: { event: { text: string }; next: string }[] = [];
+    for (const e of track.events) {
+      if (e.type === "ocr_region" || !("text" in e) || typeof e.text !== "string") continue;
+      const next = stripTrailingPunctuation(e.text);
+      if (next !== e.text) changes.push({ event: e, next });
+    }
+    if (changes.length === 0) return 0;
+    // 快照必须在改动之前（与 splitEvent/adjustSplitBoundary 一致）
+    recordSnapshot();
+    for (const c of changes) c.event.text = c.next;
+    return changes.length;
   }
 
   /// 更新指定 ocr_region 事件的坐标（就地修改 reactive 对象，时间轴即时刷新）
@@ -1501,6 +1519,7 @@ export const useProjectStore = defineStore("project", () => {
     mergeAdjacent,
     splitEvent,
     adjustSplitBoundary,
+    stripTrackTrailingPunctuation,
     updateOcrRegion,
     addOcrRegionEvent,
     updateEventText,

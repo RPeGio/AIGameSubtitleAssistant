@@ -766,6 +766,16 @@ onUnmounted(() => {
       </div>
     </div>
 
+    <!-- 拖边参考线：拖动 clip 起止期间显示，起于标尺线下、止于滑条容器上（虚线以区别于吸附实线） -->
+    <div
+      v-if="timeline.edgeGuideX !== null"
+      class="edge-guide"
+      :style="{
+        left: contentLeft + timeline.edgeGuideX - timeline.scrollLeft + 'px',
+        top: `calc(${playheadTop} + 20px)`,
+      }"
+    />
+
     <!-- 吸附标记线：贯穿轨道区，拖动吸附时显示（虚拟滚动，需减 scrollLeft） -->
     <div
       v-if="timeline.snapGuideX !== null"
@@ -1075,6 +1085,22 @@ onUnmounted(() => {
   margin-left: -0.5px;
   background: var(--color-accent);
   z-index: 14; /* playhead(15) 之下 */
+  pointer-events: none;
+}
+
+/* 拖边参考线：不贯穿标尺与滑条（起止时间由 top/bottom 限定），虚线区别于吸附实线 */
+.edge-guide {
+  position: absolute;
+  bottom: 8px;
+  width: 1px;
+  margin-left: -0.5px;
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--color-accent) 0 4px,
+    transparent 4px 8px
+  );
+  opacity: 0.85;
+  z-index: 14; /* playhead(15) 之下、轨道内容之上 */
   pointer-events: none;
 }
 </style>

@@ -116,6 +116,10 @@ function collectSnapEdges(): number[] {
     if (e.id === props.event.id) continue;
     edges.push(e.start, e.end);
   }
+  // 播放头也作为吸附点：拖边时能把边界对齐到当前位置（第 16 项，
+  // 取拖动开始时刻的时间值，拖动中播放头移动不影响本次拖动）
+  const playhead = timeline.currentTime;
+  if (playhead > 0 && playhead <= timeline.duration) edges.push(playhead);
   return edges;
 }
 
@@ -310,6 +314,12 @@ function onWindowMouseMove(e: MouseEvent) {
     }
   }
 
+  // 拖边参考线（第 15 项）：正在拖起止时把被拖的那条边标在轨道区上，
+  // 与吸附线（虚线/实线不同长度）区分；整段移动时不显示
+  timeline.setEdgeGuide(
+    d.mode === "move" ? null : (d.mode === "l" ? start : end) * timeline.pixelsPerSecond,
+  );
+
   projectStore.updateEventTime(props.event.id, start, end);
 }
 
@@ -328,8 +338,9 @@ function tryMergeWith(other: TimelineEvent): boolean {
 function onWindowMouseUp() {
   const d = drag.value;
   drag.value = null;
-  // 拖动结束：吸附标记线立即消失
+  // 拖动结束：吸附标记线与拖边参考线立即消失
   timeline.setSnapGuide(null);
+  timeline.setEdgeGuide(null);
   window.removeEventListener("mousemove", onWindowMouseMove);
   window.removeEventListener("mouseup", onWindowMouseUp);
   // 垂直换轨：释放时若有有效目标轨道则移动事件，并清除悬停高亮

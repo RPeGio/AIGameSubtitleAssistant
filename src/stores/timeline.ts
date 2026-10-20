@@ -191,6 +191,13 @@ export const useTimelineStore = defineStore("timeline", () => {
   }
 
   /// 设置吸附标记线位置（内容区像素坐标）；null 清除
+  /// 拖边参考线（第 15 项）：拖动 clip 起止期间持续显示的一条细线。
+  /// 存像素位置（相对内容区，未减 scrollLeft），与 snapGuideX 同口径但互不影响。
+  const edgeGuideX = ref<number | null>(null);
+  function setEdgeGuide(x: number | null) {
+    edgeGuideX.value = x;
+  }
+
   function setSnapGuide(x: number | null) {
     snapGuideX.value = x;
   }
@@ -255,6 +262,8 @@ export const useTimelineStore = defineStore("timeline", () => {
     toggleSnap,
     toggleSwapSegments,
     setSnapGuide,
+    edgeGuideX,
+    setEdgeGuide,
     clipPosition,
     jumpTo,
     claimPlayback,
