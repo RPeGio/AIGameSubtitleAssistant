@@ -1,8 +1,8 @@
-# 开发文档
+﻿# 开发文档
 
 [English](development_EN.md) | 中文
 
-本文面向想理解代码结构或参与开发的协作者。项目愿景与分阶段计划见 [GameSubtitleAssistant_Plan.md](../GameSubtitleAssistant_Plan.md)，上手使用见 [README](../README.md)。
+本文面向想理解代码结构或参与开发的协作者。项目愿景与分阶段计划见 [GameSubtitleAssistant_Plan.md](GameSubtitleAssistant_Plan.md)，上手使用见 [README](../README.md)。
 
 ## 技术栈
 
@@ -93,11 +93,37 @@ runtime/
 | `python_path` / `worker_script` / `deps_dir` / `model_dir` | OCR worker 相关（相对 runtime 目录） |
 | `ocr_model` | `mobile`（默认）或 `server`（PP-OCRv5 档位） |
 | `language` / `dev_debug` | OCR 语言、调试帧落盘（`temp/`） |
-| `moss_binary` / `moss_model` / `moss_threads` / `moss_device` | MOSS 配置；`moss_device`：空=自动 / cpu / cuda / vulkan |
+| `moss_binary` / `moss_model` / `moss_threads` / `moss_device` | MOSS 配置；`moss_device`：空=auto（ggml 自选）/ cpu / cuda / vulkan（显式请求不可用时硬报错，见下节） |
 | `llm_binary` / `llm_model` / `llm_threads` | llama.cpp 配置（可选，仅融合能力测试台） |
 | `asr_provider` | `moss` / `funasr` / 空=自动 |
 | `funasr_worker` / `funasr_deps` / `funasr_model_dir` / `funasr_device` / `funasr_language` / `funasr_timeout_minutes` | FunASR 配置 |
 | `embed_worker` / `embed_model` / `embed_tokenizer` / `embed_deps_dir` | 融合 worker 脚本 / E5-small 模型 / 分词器 / 依赖路径；由 `bootstrap_embed.ps1` 写入，产品融合与实验台共用；**四个字段整组必配或整组为空** |
+
+### MOSS 后端与三设备实测（2026-10-19）
+
+后端由 ggml 按 `MTD_DEVICE` 决定（空=自动；双 GPU 实测 auto 偏好独显）；**实际生效后端只认 stderr 的 `[mt I] backend:` 行**——请求不可用的后端会静默降级（exit 0、无警告，`backend.cpp` 对 `vulkan` 这类"合法名"不告警）。
+
+同一基准三设备各跑一次：`examples/benchmark_examples/quality_bench_test(voiced)_5min.mp4` 提取 5:14.99 / 16kHz mono wav（与 `video::extract_audio` 同参），`moss-transcribe-q5_k.gguf`，`--format json`，未设 `MTD_THREADS`：
+
+| 设备（取值） | 实际 backend | 耗时 | 相对 CPU |
+|---|---|---|---|
+| CPU（`MTD_DEVICE=cpu`） | `CPU` | 680.6 s | 1× |
+| Vulkan（空 = auto） | `Vulkan1`（RTX 4060） | 134.7 s | 5.0× |
+| CUDA（空 = auto，CUDA 构建） | `CUDA0` | 76.2 s | 8.9× |
+
+- Vulkan 比 CUDA 慢 1.77×，但仍比 CPU 快 5 倍——无 NVIDIA 的机器上 Vulkan 构建收益明确。
+- 转写文本三方一致（总字数 3765/3765/3775，首末段逐字相同；段数 84 vs 90 属分界粒度差异）。
+- ⚠ 双 GPU 机器上裸 `MTD_DEVICE=vulkan` 落**核显**（枚举序第一块，`Vulkan0`）；产品侧 vulkan 构建的 `moss_device` 应留空（auto），见 `docs/engines_vulkan_design.md` §3.3/§5-11。
+
+### MOSS 后端语义与回退（`backend_probe.rs`，feat/engines-gpu-vulkan）
+
+`moss_device` 取值与语义：`""`（=auto，ggml 自选，双 GPU 实测偏好独显）/ `cpu` / `cuda` / `vulkan`。判定链三级（`ai_runtime/backend_probe.rs`，15 单测）：
+
+- **L2（唯一可信判据）**：spawn 时以与转写**同参**拉起 `info <model>`（显式设备才设 `MTD_DEVICE`），从 stderr 取 `[mt I] backend:` 行——静默降级（exit 0）只有这行能识破；
+- **L0/L1**：nvidia-smi + vulkaninfo（机器能力）、`.backend` 标记 + `ggml-{cuda,vulkan}.dll`（已装资产），用于报错文案与"该装哪个后端"建议；
+- **回退语义 = 方案 A**：资产层同时只有一套 ggml 后端（`ggml.dll` 同名互斥），故"回退"= 探测已装后端 + 告诉用户装哪个，**不是运行期切换**。显式 cpu/cuda/vulkan 与实测跨族不符 = **硬报错**（提示 `build_moss.ps1 -Backend …` 重装或改回 auto），不自动降级；只有 auto 允许 ggml 下沉（落 `uma:1` 核显时在理由中提示）。
+
+实测生效后端经 `AsrProvider::effective_backend()`（仅 MOSS 实现）→ `check_asr_engines` 的 `effective_backend` 字段 → 欢迎页 ASR 卡显示「设备 · 配置值（实测 …）」。Vulkan 构建：`scripts/build_moss.ps1 -Backend vulkan`（需 Vulkan SDK/glslc；工作根超 ~50 字符会触发 MAX_PATH FTK1011，脚本已默认短根并告警）。详见 `docs/engines_vulkan_design.md`。
 
 ### runtime 目录解析顺序
 

@@ -20,6 +20,13 @@ const { manualSave } = useManualSave();
 // 语料页加工的是它自己的剧情录屏（时间轴与校对区不相干），故整页全宽、不挂校对区
 const showReviewPane = computed(() => route.name !== "corpus");
 
+// 页面与校对区都套了 KeepAlive（切页不重建：保住折叠卡/草稿/滚动/时间轴缩放，
+// 也避免校对区波形 canvas 每次从语料页回来都整幅重绘）。缓存键取工程路径：
+// 同一工程内切页继续复用，换工程才整棵重建。
+const projectKey = computed(
+  () => projectStore.currentProject?.path ?? (route.params.path as string) ?? "none"
+);
+
 // 焦点窗格：点左列 → focus=main，点校对区 → focus=review。
 // 转写页的 OCR 选区"焦点在 main 时才在校对区显示"，所以拖选区本身不算
 // 把焦点交给校对区（否则选区会在拖拽起点就消失，没法拖）。
@@ -108,13 +115,23 @@ onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
         :class="{ full: !showReviewPane, focused: showReviewPane && ui.focusedPane === 'main' }"
         @mousedown.capture="ui.setFocusedPane('main')"
       >
-        <router-view />
+        <!-- KeepAlive 只接受单个子节点，注释放在外面。
+             key 必须「页面 + 工程」都在：只用工程路径的话四个页面会共用同一个
+             缓存键，KeepAlive 会把它们当成同一个实例复用（切页不换内容）。 -->
+        <router-view v-slot="{ Component }">
+          <KeepAlive>
+            <component :is="Component" :key="projectKey + ':' + String(route.name)" />
+          </KeepAlive>
+        </router-view>
       </main>
-      <ReviewPane
-        v-if="showReviewPane"
-        :class="{ focused: ui.focusedPane === 'review' }"
-        @mousedown.capture="onReviewMouseDown"
-      />
+      <KeepAlive>
+        <ReviewPane
+          v-if="showReviewPane"
+          :key="projectKey"
+          :class="{ focused: ui.focusedPane === 'review' }"
+          @mousedown.capture="onReviewMouseDown"
+        />
+      </KeepAlive>
     </div>
     <AppStatusBar />
   </div>

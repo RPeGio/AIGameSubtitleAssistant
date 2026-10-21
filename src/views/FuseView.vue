@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onActivated, ref } from "vue";
 import { useRouter } from "vue-router";
 import { invoke } from "@tauri-apps/api/core";
 import { useProjectStore } from "../stores/project";
@@ -36,13 +36,17 @@ const gameContentCount = computed(() => {
 
 /// 向量融合运行时就绪（bootstrap_embed.ps1 后就绪；未就绪给引导提示）
 const embedStatus = ref<{ ready: boolean; message: string } | null>(null);
-onMounted(async () => {
+
+/// 页面套了 KeepAlive：onActivated 首次挂载也会触发，所以每次回到本页都重探一次
+/// （一次 invoke，成本可忽略），免得运行时状态变了卡片还显示旧结论。
+async function probeEmbedRuntime() {
   try {
     embedStatus.value = await invoke("check_embed_runtime");
   } catch (e) {
     embedStatus.value = { ready: false, message: String(e) };
   }
-});
+}
+onActivated(() => void probeEmbedRuntime());
 /// 「该不配」掩码开关（按素材，默认关；见标定 §7.6/§7.9）
 const unmatchFilter = ref(false);
 

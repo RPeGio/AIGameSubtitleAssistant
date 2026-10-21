@@ -378,12 +378,13 @@ GameSubtitleAssistant
 
 ### 6.2 其他
 - 字幕编辑器、双语字幕、翻译辅助
-- 迷你时间轴（语料页「从剧情录屏中截取」/ 打轴页「检测画面变化获取时间轴」）待办（2026-10-18 记录，样式会话，尚未动工）：
-  - 提示行文案失实，计划**整行删除**：`src/components/SourceTimeline.vue:88` 写着
-    `双击空白加选区 · 拖动 clip 调起止 · 点击 clip 跳转 · 滚轮平移 · Ctrl+滚轮缩放`，
-    但 `src/components/timeline/Timeline.vue` 的 `onWheelRoot` 对所有滚轮事件只做平移，
-    **缩放只在滑条上滚轮时生效**（`src/components/timeline/TimelineScrollbar.vue` 的 `onWheelScrollbar`）；
-  - 在空出的位置补迷你时间轴专属控件（拖动添加选区 clip、分割、合并等）。
+- 杂项功能与修复待办（2026-10-18 会话记录的全部条目，按建议实现顺序）→ **[MISC_TODO.md](MISC_TODO.md)**（分支 `feat/misc-fixes`，自 dev `7b8e306` 拉出）。
+- 迷你时间轴（语料页「从剧情录屏中截取」/ 打轴页「检测画面变化获取时间轴」）待办：详见 [MISC_TODO.md](MISC_TODO.md) 第 9 项。要点（2026-10-18 用户已定，样式会话记录、尚未动工）：
+  - 提示行只有「Ctrl+滚轮缩放」失实：`src/components/timeline/Timeline.vue` 的 `onWheelRoot` 对所有滚轮事件只做平移，
+    **缩放只在滑条上滚轮时生效**（`src/components/timeline/TimelineScrollbar.vue` 的 `onWheelScrollbar`）⇒ 该行**整行删除**；
+  - 工具条放**顶部**（占原提示行位置，与编辑器时间轴同款同位），并把 200px 壳高收到 ≈110px（只留刻度 + 车道，不留空白）；
+  - **选区不做合并**：`src/stores/project.ts:1310` 的 `mergeTwo` 继续拒绝 `ocr_region`，store 保持现状；
+  - 「拖动空白加选区 / 分割 / 合并」等交互**等主时间轴功能定稿后再复用**（见 MISC_TODO.md 第 8 项）。
 
 ### 6.3 ✅ 已完成：T4 落地 + 前端「融合后置信度审计表」（同轮做，2026-10-13）
 

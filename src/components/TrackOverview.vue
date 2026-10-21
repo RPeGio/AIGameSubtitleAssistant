@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import { NPopselect, useMessage } from "naive-ui";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -35,6 +36,19 @@ const EXPORT_FORMATS = [
   { label: "LRC（歌词）", value: "lrc" },
   { label: "TXT（纯文本）", value: "txt" },
 ];
+
+// ── 文本美化（第 17 项）：把文本处理动作集中成一个下拉，后续新增动作直接加条目 ──
+const BEAUTIFY_ACTIONS = [{ label: "去除文本末标点", value: "strip-trailing-punct" }];
+
+function onBeautify(action: string) {
+  const track = focusedTrack.value;
+  if (!track) return;
+  if (action === "strip-trailing-punct") {
+    const n = projectStore.stripTrackTrailingPunctuation(track.id);
+    if (n > 0) message.success(`已去除 ${n} 条的末尾标点`);
+    else message.info("没有需要去除的末尾标点");
+  }
+}
 
 /// 选定格式 → 保存对话框选路径 → 后端生成内容并写文件
 async function onExport(format: string) {
@@ -220,8 +234,19 @@ function cancelRename() {
 
 // 轨道名编辑时点击输入框外任意处即提交：
 // 时间轴 clip 的 mousedown preventDefault/stopPropagation 会挡住 blur 与冒泡，
-// 捕获阶段注册先于其执行（与时间轴标签列一致的兜底）
+// 捕获阶段注册先于其执行（与时间轴标签列一致的兜底）。
+// 组件在 ReviewPane 内（KeepAlive 的孙组件，收不到 activated/deactivated 钩子，
+// 见 Timeline.vue 同款注释）：监听挂在 mount 生命周期上，
+// 用 DOM 是否仍连接文档当激活闸门；失活时未落地的编辑由路由变化信号补提交。
+const panelRef = ref<HTMLElement | null>(null);
+
+function isAttached(): boolean {
+  const el = panelRef.value;
+  return !!el && el.isConnected;
+}
+
 function onWindowMouseDown(e: MouseEvent) {
+  if (!isAttached()) return;
   if (!renamingTrackId.value) return;
   if ((e.target as HTMLElement).closest(".ov-name-input")) return;
   commitRename();
@@ -229,10 +254,22 @@ function onWindowMouseDown(e: MouseEvent) {
 
 onMounted(() => window.addEventListener("mousedown", onWindowMouseDown, true));
 onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, true));
+
+// 切页（含切到语料页收起校对区）时顺手提交未落地的行内编辑/重命名——
+// 未改动或未在编辑态时是无害 no-op
+const route = useRoute();
+
+watch(
+  () => route.name,
+  () => {
+    commitEdit();
+    commitRename();
+  }
+);
 </script>
 
 <template>
-  <div class="overview-panel">
+  <div class="overview-panel" ref="panelRef">
     <div class="overview-header">
       <div v-if="focusedTrack" class="ov-track-name-wrap">
         <input
@@ -255,6 +292,17 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
           </select>
           <AppIcon name="chev-d" :size="11" class="ov-role-cv" />
         </span>
+        <NPopselect
+          v-if="isTextTrack"
+          :options="BEAUTIFY_ACTIONS"
+          trigger="click"
+          placement="bottom-end"
+          @update:value="onBeautify"
+        >
+          <button class="btn ghost sm" title="文本美化">
+            <AppIcon name="sparkle" :size="12" />美化
+          </button>
+        </NPopselect>
         <NPopselect
           v-if="isTextTrack"
           :options="EXPORT_FORMATS"
@@ -330,6 +378,8 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
 .overview-panel {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-width: 0;
   height: 100%;
   min-height: 0;
   background: var(--panel);

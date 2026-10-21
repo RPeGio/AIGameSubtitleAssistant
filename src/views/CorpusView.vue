@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onUnmounted, ref } from "vue";
 import { useProjectStore } from "../stores/project";
 import SourceVideoPreview from "../components/SourceVideoPreview.vue";
 import SourceTimeline from "../components/SourceTimeline.vue";
 import ParamStepper from "../components/ParamStepper.vue";
 import AppIcon from "../components/AppIcon.vue";
-import type { Diff, OcrRegionEvent } from "../types";
+import InfoDot from "../components/InfoDot.vue";
+import { GLOSSARY_DOC } from "../composables/ocrParamDocs";
+import type { CorpusItem, Diff, OcrRegionEvent } from "../types";
 import { usePersistedOcrParams } from "../composables/ocrDefaults";
+import { frameDurOf, hitsFrame } from "../composables/useFrameTolerance";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { NVirtualList, useMessage } from "naive-ui";
@@ -68,10 +71,12 @@ const regions = computed<OcrRegionEvent[]>(() =>
 );
 
 /// 播放头所在时间段对应的选区——OCR 实际识别的就是它
+/// （命中判定留一帧容差，理由见 useFrameTolerance.ts）
 const activeRegion = computed(
   () =>
-    regions.value.find((e) => e.start <= sourceTime.value && sourceTime.value < e.end) ??
-    null
+    regions.value.find((e) =>
+      hitsFrame(e.start, e.end, sourceTime.value, frameDurOf(projectStore.sourceVideoMeta))
+    ) ?? null
 );
 
 const regionSize = computed(() =>
@@ -194,6 +199,184 @@ function removeItem(id: string) {
   projectStore.removeCorpusItem(id);
 }
 
+// ── 语料列表：行内编辑 / 手动新增 / 拖动排序 ────────────
+const editingId = ref<string | null>(null);
+const editText = ref("");
+let editInputEl: HTMLTextAreaElement | null = null;
+
+/// 输入框挂上即聚焦并全选（编辑与新增共用）
+function setEditInput(el: unknown) {
+  editInputEl = (el as HTMLTextAreaElement) ?? null;
+  if (editInputEl) {
+    editInputEl.focus();
+    editInputEl.select();
+  }
+}
+
+/// 行数跟随内容（至少 2 行、最多 10 行）——语料条目可能是多行文本
+function editRows(text: string) {
+  return Math.min(10, Math.max(2, text.split("\n").length));
+}
+
+// ── 语料搜索 / 替换 ────────────────────────────────────
+// 语义：精确子串匹配（区分大小写）。搜索态不做过滤——列表照常显示，
+// 只把「非匹配处」压暗（双击编辑与拖动排序一并停用，见 startEdit/startReorder），
+// 避免过滤视图里序号与插入位置失真。
+const query = ref("");
+const replacement = ref("");
+const queryActive = computed(() => query.value.length > 0);
+const matchCount = computed(() =>
+  queryActive.value ? corpus.value.filter((c) => c.text.includes(query.value)).length : 0
+);
+
+/// 命中该条语料？（未搜索时全部视为正常，不加遮罩）
+function isMatch(text: string, active: boolean) {
+  return !active || text.includes(query.value);
+}
+
+/// 把一条语料切成「匹配 / 非匹配」片段，供模板逐段渲染（不用 v-html）
+function segmentsOf(text: string): { t: string; hit: boolean }[] {
+  const q = query.value;
+  if (!q || !text.includes(q)) return [{ t: text, hit: false }];
+  const parts = text.split(q);
+  const segs: { t: string; hit: boolean }[] = [];
+  parts.forEach((p, i) => {
+    if (i > 0) segs.push({ t: q, hit: true });
+    if (p) segs.push({ t: p, hit: false });
+  });
+  return segs;
+}
+
+function onReplaceAll() {
+  if (!queryActive.value) {
+    message.warning("先在搜索框里填入要查找的内容");
+    return;
+  }
+  const r = projectStore.replaceAllCorpus(query.value, replacement.value);
+  if (r.hits === 0) message.info("没有匹配到可替换的内容");
+  else message.success(`已替换 ${r.hits} 处（${r.items} 条）`);
+}
+
+function startEdit(item: CorpusItem) {
+  if (queryActive.value) return; // 搜索态禁用编辑（用户约定：避免与高亮/遮罩交互冲突）
+  editingId.value = item.id;
+  editText.value = item.text;
+}
+
+/// Ctrl/Cmd+Enter 或失焦提交；内容未变或全空白时 store 内部直接返回（不产生空撤销步骤）
+function commitEdit() {
+  if (!editingId.value) return;
+  projectStore.updateCorpusItem(editingId.value, editText.value);
+  editingId.value = null;
+}
+
+function cancelEdit() {
+  editingId.value = null;
+}
+
+const drafting = ref(false);
+const draftText = ref("");
+
+function startDraft() {
+  query.value = ""; // 新增后要能立刻看到并编辑这一条，清掉搜索（否则新条目可能被遮罩）
+  drafting.value = true;
+  draftText.value = "";
+}
+
+function commitDraft() {
+  // 原样写入（只拦全空白）：语料是人工校对对象，不能被 trim 吃掉换行/首尾空格
+  if (draftText.value.trim()) projectStore.addCorpusItem(draftText.value);
+  drafting.value = false;
+  draftText.value = "";
+}
+
+function cancelDraft() {
+  drafting.value = false;
+  draftText.value = "";
+}
+
+// 拖动排序：用指针事件手写，不用 HTML5 拖放。
+// 实测（临时工具 temp/css-preview/drag.mjs 用 CDP 可信鼠标事件驱动）：原生拖放里
+// dragstart 正常触发、源行也能拿到 .dragging，但 dragover 从不下发给目标行、drop 永不触发
+// ⇒ 拖完没有任何变化。指针事件同时能精确控制插入位置与指示线。
+// 只有左侧点阵手柄按下才进入排序态（否则与文本选择冲突）。
+const draggingId = ref<string | null>(null);
+const dropAt = ref<{ index: number; before: boolean } | null>(null);
+let reorderRows: { top: number; bottom: number; index: number }[] = [];
+
+function rowGeom() {
+  return Array.from(document.querySelectorAll<HTMLElement>(".clist .crow:not(.draft)")).map(
+    (el, index) => {
+      const r = el.getBoundingClientRect();
+      return { top: r.top, bottom: r.bottom, index };
+    }
+  );
+}
+
+function onReorderMove(e: MouseEvent) {
+  if (!draggingId.value) return;
+  if (!reorderRows.length) reorderRows = rowGeom();
+  const y = e.clientY;
+  const last = reorderRows[reorderRows.length - 1];
+  let index = last ? last.index : 0;
+  let before = false;
+  for (const r of reorderRows) {
+    if (y < r.bottom) {
+      index = r.index;
+      before = y < (r.top + r.bottom) / 2;
+      break;
+    }
+  }
+  dropAt.value = { index, before };
+}
+
+/// 指针落点 → moveCorpusItem 需要的 to（「移除被拖项之后」的插入下标）
+function resolveInsert(at: { index: number; before: boolean }): number | null {
+  const from = corpus.value.findIndex((c) => c.id === draggingId.value);
+  if (from < 0) return null;
+  return at.before ? (at.index > from ? at.index - 1 : at.index) : at.index >= from ? at.index : at.index + 1;
+}
+
+function onReorderUp() {
+  const id = draggingId.value;
+  const at = dropAt.value;
+  if (id && at) {
+    const to = resolveInsert(at);
+    if (to !== null) projectStore.moveCorpusItem(id, to);
+  }
+  endReorder();
+}
+
+function endReorder() {
+  draggingId.value = null;
+  dropAt.value = null;
+  reorderRows = [];
+  window.removeEventListener("mousemove", onReorderMove);
+  window.removeEventListener("mouseup", onReorderUp);
+}
+
+function startReorder(e: MouseEvent, index: number) {
+  e.preventDefault();
+  if (queryActive.value) return; // 搜索态下「插到第几条」的语义会失真，禁用拖动排序
+  const item = corpus.value[index];
+  if (!item) return;
+  draggingId.value = item.id;
+  dropAt.value = { index, before: true };
+  reorderRows = rowGeom();
+  window.addEventListener("mousemove", onReorderMove);
+  window.addEventListener("mouseup", onReorderUp);
+}
+
+onUnmounted(endReorder);
+
+/// 行上的插入指示线类名（拖到自己身上时不显示）
+function dropClass(ci: number, id: string): string {
+  const at = dropAt.value;
+  if (!at || draggingId.value === null || draggingId.value === id) return "";
+  if (at.index !== ci) return "";
+  return at.before ? "drop-before" : "drop-after";
+}
+
 // ── 待审批纠正 ────────────────────────────────────────
 // 术语表纠错在 Rust 侧只标记不改写语料文本，命中项在此逐条由用户裁决
 const pendingDiffs = computed(
@@ -271,7 +454,7 @@ function discardDiff(d: Diff) {
                     <span class="kv"><span>选区数</span><span>{{ regions.length }}</span></span>
                   </div>
                   <div class="sblk">
-                    <span class="bt">术语表 · {{ ocrParams.glossary.length }} 条</span>
+                    <span class="bt">术语表 · {{ ocrParams.glossary.length }} 条<InfoDot :text="GLOSSARY_DOC" title="术语表" /></span>
                     <span v-if="ocrParams.glossary.length === 0" class="gempty">
                       未配置。留空即关闭；填入正确词条（角色名/专有名词）后，识别结果中与之相近的文本会被自动纠正
                     </span>
@@ -308,6 +491,7 @@ function discardDiff(d: Diff) {
                 <ParamStepper
                   v-model="ocrParams.frame_interval"
                   label="帧间隔（秒）"
+                  param-key="frame_interval"
                   :min="0.1"
                   :step="0.5"
                   :precision="1"
@@ -315,6 +499,7 @@ function discardDiff(d: Diff) {
                 <ParamStepper
                   v-model="ocrParams.dhash_threshold"
                   label="变化检测阈值"
+                  param-key="dhash_threshold"
                   :min="0"
                   :max="64"
                   :step="1"
@@ -322,6 +507,7 @@ function discardDiff(d: Diff) {
                 <ParamStepper
                   v-model="ocrParams.batch_size"
                   label="批大小"
+                  param-key="batch_size"
                   :min="1"
                   :max="128"
                   :step="1"
@@ -329,6 +515,7 @@ function discardDiff(d: Diff) {
                 <ParamStepper
                   v-model="ocrParams.merge_similarity"
                   label="合并相似度"
+                  param-key="merge_similarity"
                   :min="0"
                   :max="1"
                   :step="0.05"
@@ -337,6 +524,7 @@ function discardDiff(d: Diff) {
                 <ParamStepper
                   v-model="ocrParams.min_subtitle_sec"
                   label="字幕预估最短长度（秒）"
+                  param-key="min_subtitle_sec"
                   :min="0"
                   :max="5"
                   :step="0.1"
@@ -345,6 +533,7 @@ function discardDiff(d: Diff) {
                 <ParamStepper
                   v-model="ocrParams.min_text_length"
                   label="单段最少实质字符数"
+                  param-key="min_text_length"
                   :min="0"
                   :max="10"
                   :step="1"
@@ -460,7 +649,22 @@ function discardDiff(d: Diff) {
 
       <!-- ── 右列：语料列表 + 待审批纠正 ─────────────────── -->
       <div class="r2">
-        <div class="rh"><span class="t">语料列表 · {{ corpus.length }} 条</span></div>
+        <div class="rh">
+          <span class="t">语料列表 · {{ corpus.length }} 条</span>
+          <span class="sp"></span>
+          <button class="btn ghost sm" @click="startDraft" title="手动添加一条语料">
+            <AppIcon name="plus" :size="12" />添加
+          </button>
+        </div>
+
+        <div class="csearch">
+          <input v-model="query" class="inp cs-in" placeholder="搜索（精确匹配）" />
+          <input v-model="replacement" class="inp cs-in" placeholder="替换为（留空 = 删除）" />
+          <button class="btn ghost sm" @click="onReplaceAll" title="把语料中所有匹配项全部替换">
+            <AppIcon name="swap" :size="12" />全部替换
+          </button>
+          <span class="cscount">{{ queryActive ? `匹配 ${matchCount} 条` : "" }}</span>
+        </div>
 
         <div v-if="pendingDiffs.length > 0" class="appr">
           <div class="apprh">
@@ -481,13 +685,70 @@ function discardDiff(d: Diff) {
           </div>
         </div>
 
-        <div class="clist">
-          <div v-if="corpus.length === 0" class="cempty">
+        <div class="clist" :class="{ reordering: draggingId !== null }">
+          <div v-if="corpus.length === 0 && !drafting" class="cempty">
             暂无语料——展开左侧「从剧情录屏中截取」跑一次 OCR，文本会自动进入此列表
           </div>
-          <div v-for="(item, ci) in corpus" :key="item.id" class="crow">
+          <div v-if="drafting" class="crow draft">
+            <span class="cn">+</span>
+            <textarea
+              :ref="setEditInput"
+              v-model="draftText"
+              class="inp ct-edit"
+              :rows="editRows(draftText)"
+              placeholder="输入文本，Ctrl+Enter 或失焦提交"
+              @keydown.ctrl.enter.prevent="commitDraft"
+              @keydown.meta.enter.prevent="commitDraft"
+              @keydown.esc.prevent="cancelDraft"
+              @blur="commitDraft"
+            />
+          </div>
+          <div
+            v-for="(item, ci) in corpus"
+            :key="item.id"
+            class="crow"
+            :class="[
+              dropClass(ci, item.id),
+              { dragging: draggingId === item.id, dim: !isMatch(item.text, queryActive) },
+            ]"
+          >
+            <span
+              v-if="!queryActive"
+              class="grip"
+              title="按住拖动调整顺序（语料顺序影响融合取舍）"
+              @mousedown="startReorder($event, ci)"
+            >
+              <svg class="grip-ic" viewBox="0 0 16 16" aria-hidden="true">
+                <circle cx="6" cy="4" r="1.4" />
+                <circle cx="10" cy="4" r="1.4" />
+                <circle cx="6" cy="8" r="1.4" />
+                <circle cx="10" cy="8" r="1.4" />
+                <circle cx="6" cy="12" r="1.4" />
+                <circle cx="10" cy="12" r="1.4" />
+              </svg>
+            </span>
             <span class="cn">{{ ci + 1 }}</span>
-            <span class="ct selectable" :title="item.text">{{ item.text }}</span>
+            <textarea
+              v-if="editingId === item.id"
+              :ref="setEditInput"
+              v-model="editText"
+              class="inp ct-edit"
+              :rows="editRows(editText)"
+              @keydown.ctrl.enter.prevent="commitEdit"
+              @keydown.meta.enter.prevent="commitEdit"
+              @keydown.esc.prevent="cancelEdit"
+              @blur="commitEdit"
+            />
+            <span v-else class="ct selectable" :title="item.text" @dblclick="startEdit(item)"><template v-for="(seg, si) in segmentsOf(item.text)" :key="si"><mark v-if="seg.hit" class="hit">{{ seg.t }}</mark><span v-else :class="{ faded: queryActive }">{{ seg.t }}</span></template></span>
+            <button
+              v-if="editingId !== item.id"
+              class="btn icb sm ghost"
+              :disabled="queryActive"
+              @click="startEdit(item)"
+              :title="queryActive ? '搜索时不可编辑（清空搜索框后恢复）' : '编辑该条'"
+            >
+              <AppIcon name="pencil" :size="12" />
+            </button>
             <span class="psrc">{{ sourceLabel(item.source) }}</span>
             <button class="btn icb sm ghost" @click="removeItem(item.id)" title="删除该条">
               <AppIcon name="x" :size="12" />
@@ -699,9 +960,112 @@ function discardDiff(d: Diff) {
   flex: 1;
   min-width: 0;
   font-size: 12.5px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 1.45;
+  /* 语料可能自带换行：原样换行显示，不要压成一行（人工校对要看得出分段） */
+  white-space: pre-wrap;
+  word-break: break-word;
+  cursor: text;
+}
+
+/* 搜索态：匹配处高亮、同一条里非匹配片段压暗（不用 v-html，逐段渲染） */
+.ct .hit {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  border-radius: 2px;
+}
+
+.ct .faded {
+  opacity: 0.45;
+}
+
+/* 非匹配条目：整行压暗（灰度遮罩） */
+.crow.dim {
+  opacity: 0.38;
+}
+
+/* 搜索 / 替换行 */
+.csearch {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.csearch .cs-in {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+}
+
+.cscount {
+  flex: none;
+  font: 11px/1 var(--mono);
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 左侧点阵拖动手柄（2 列 × 3 行） */
+.crow .grip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  color: var(--faint);
+  cursor: grab;
+}
+
+.crow .grip:hover {
+  color: var(--dim);
+}
+
+.crow .grip:active {
+  cursor: grabbing;
+}
+
+.grip-ic {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+/* 行内编辑 / 新增输入框：占满文本位。
+   必须用 textarea——<input> 的取值算法会把换行直接删掉，多行语料一进编辑态就丢分段。 */
+.crow .ct-edit {
+  flex: 1;
+  min-width: 0;
+  min-height: 26px;
+  padding: 3px 6px;
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.crow.draft {
+  background: var(--sel-bg);
+}
+
+.crow.dragging {
+  opacity: 0.45;
+}
+
+/* 插入指示线：用 inset 阴影画线，避免布局跳动 */
+.crow.drop-before {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.crow.drop-after {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+/* 排序进行中：整列显示抓取光标（指针可能已离开手柄） */
+.clist.reordering .crow,
+.clist.reordering .grip {
+  cursor: grabbing;
 }
 
 /* 待审批纠正 */

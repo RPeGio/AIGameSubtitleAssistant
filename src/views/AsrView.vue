@@ -154,12 +154,11 @@ const hasClipVideo = computed(() => projectStore.currentVideoMeta !== null);
 
 /// 播放头与校对区共用：预览与迷你时间轴直接读写全局时间轴时间（双向），
 /// 不再各持一份进度——否则同一支切片视频两处播放头会各走各的。
-/// 注意用直接赋值而非 timeline.seek()：seek() 会置 isSeeking，校对区播放器的
-/// tick 会被它挡掉，而迷你时间轴没有配对的 seekDone()。
+/// 写回走 setTime()（瞬时跳转语义，不置 isSeeking），不会挡住校对区播放器的 tick。
 const clipTime = computed({
   get: () => timeline.currentTime,
   set: (t: number) => {
-    timeline.currentTime = t;
+    timeline.setTime(t);
   },
 });
 /// 切片视频时长取工程元数据。此前由预览组件的 loadedmetadata 回填，
@@ -258,6 +257,7 @@ async function startEmbedOcr() {
             <ParamStepper
               v-model="ocrParams.frame_interval"
               label="帧间隔（秒）"
+              param-key="frame_interval"
               :step="0.5"
               :min="0.1"
               :precision="1"
@@ -265,13 +265,21 @@ async function startEmbedOcr() {
             <ParamStepper
               v-model="ocrParams.dhash_threshold"
               label="变化检测阈值"
+              param-key="dhash_threshold"
               :min="0"
               :max="64"
             />
-            <ParamStepper v-model="ocrParams.batch_size" label="批大小" :min="1" :max="128" />
+            <ParamStepper
+              v-model="ocrParams.batch_size"
+              label="批大小"
+              param-key="batch_size"
+              :min="1"
+              :max="128"
+            />
             <ParamStepper
               v-model="ocrParams.merge_similarity"
               label="合并相似度"
+              param-key="merge_similarity"
               :step="0.05"
               :min="0"
               :max="1"
@@ -280,6 +288,7 @@ async function startEmbedOcr() {
             <ParamStepper
               v-model="ocrParams.min_subtitle_sec"
               label="字幕预估最短长度（秒）"
+              param-key="min_subtitle_sec"
               :step="0.1"
               :min="0"
               :max="5"
@@ -288,6 +297,7 @@ async function startEmbedOcr() {
             <ParamStepper
               v-model="ocrParams.min_text_length"
               label="单段最少实质字符数"
+              param-key="min_text_length"
               :min="0"
               :max="10"
             />

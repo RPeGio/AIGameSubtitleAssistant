@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { useRoute } from "vue-router";
 import { useTimelineStore } from "../stores/timeline";
 import { useProjectStore } from "../stores/project";
 import { useVideoContentRect } from "../composables/useVideoContentRect";
@@ -167,6 +168,11 @@ function seekTo(e: Event) {
 }
 
 function handleKeydown(e: KeyboardEvent) {
+  // 被 KeepAlive 暂存（校对区收起）时 DOM 已脱离文档：不响应。
+  // 孙组件收不到 activated/deactivated 钩子（Vue 只对 <KeepAlive> 的直接子组件
+  // 触发，见 Timeline.vue 同款注释）⇒ 监听必须挂在 mount 生命周期上，用
+  // DOM 是否仍连接文档当激活闸门。
+  if (!(containerRef.value?.isConnected ?? false)) return;
   // 编辑文字时（输入框/contentEditable）不拦截空格，避免吞掉输入
   const t = e.target as HTMLElement;
   if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
@@ -176,11 +182,24 @@ function handleKeydown(e: KeyboardEvent) {
   }
 }
 
+// KeepAlive 收起（切到语料页）时停住播放：失活钩子收不到（见 handleKeydown 注释），
+// 用路由当信号——校对区仅在非语料页显示（ProjectLayout 的 showReviewPane），
+// 故切到语料页即视为被收起，摘掉 rAF 采样并暂停出声。
+const route = useRoute();
+
+watch(
+  () => route.name,
+  (n) => {
+    if (n === "corpus") {
+      cancelRafTicker();
+      const v = videoRef.value;
+      if (v && !v.paused) v.pause();
+    }
+  }
+);
+
 onMounted(() => window.addEventListener("keydown", handleKeydown));
-onUnmounted(() => {
-  window.removeEventListener("keydown", handleKeydown);
-  cancelRafTicker();
-});
+onUnmounted(() => window.removeEventListener("keydown", handleKeydown));
 </script>
 
 <template>
@@ -249,17 +268,25 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* 网格两行：画面（占剩余高度） + 控件条 32px，行距 6px */
 .player-wrapper {
   position: relative;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) 32px;
+  row-gap: 6px;
   height: 100%;
+  min-height: 0;
 }
 
+/* 画面：在「剩余高度 × 可用宽度」内取最大的 16:9 框（两轴都 auto + 双 max 约束，
+   由 aspect-ratio 保形）⇒ 窗口变矮/变宽都只缩小画面，不会溢出盖住控件条或信息栏 */
 .player-container {
   position: relative;
-  flex: 1;
-  min-height: 0;
+  justify-self: center;
+  align-self: center;
+  aspect-ratio: 16 / 9;
+  max-width: 100%;
+  max-height: 100%;
   background: #000;
   border-radius: 8px;
   overflow: hidden;
@@ -319,22 +346,14 @@ onUnmounted(() => {
   color: var(--danger);
 }
 
-/* 控件条覆盖在画面底部 32px 上（字幕会整体抬高让开，见 SubtitleOverlay） */
+/* 控件条在画面之下（不遮挡画面、不遮挡画面底部的选区手柄，见 docs/MISC_TODO 第 5 项） */
 .controls {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 15;
   height: 32px;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 0 12px;
-  background: var(--v-cap-bg);
-  border-top: 1px solid var(--hair);
-  border-radius: 0 0 8px 8px;
-  color: var(--v-cap-fg);
+  padding: 0 4px;
+  color: var(--dim);
 }
 
 .ctrl-btn {
@@ -354,7 +373,7 @@ onUnmounted(() => {
 }
 
 .ctrl-btn:hover {
-  background: rgba(255, 255, 255, 0.14);
+  background: var(--hover);
 }
 
 .ctrl-btn:disabled {
@@ -378,7 +397,7 @@ onUnmounted(() => {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: var(--v-cap-fg);
+  background: var(--accent);
   cursor: pointer;
 }
 
@@ -386,7 +405,7 @@ onUnmounted(() => {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: var(--v-cap-fg);
+  background: var(--accent);
   cursor: pointer;
   border: none;
 }

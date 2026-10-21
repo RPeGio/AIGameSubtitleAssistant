@@ -10,6 +10,7 @@
 // 防残留叠加：每次转写前用 tasklist/taskkill 清理系统上历史残留的
 // moss-transcribe 孤儿进程（异常崩溃等可能绕过退出钩子，导致多实例抢 CPU）。
 
+use crate::ai_runtime::backend_probe;
 use crate::ai_runtime::{
     resolve_path, AsrError, AsrProvider, AsrSegment, AsrTranscribeOptions, RuntimeConfig,
 };
@@ -219,7 +220,8 @@ pub struct MossProvider {
     model: PathBuf,
     /// 推理线程数：0 = 不设置 MTD_THREADS（CLI 默认全核）
     threads: u32,
-    /// 推理后端设备：空 = 不设置 MTD_DEVICE（ggml 自动选最优）| "cpu" | "cuda" | "vulkan"
+    /// 推理后端设备：空/"auto" = 不设置 MTD_DEVICE（ggml 自动选最优）| "cpu" | "cuda" | "vulkan"
+    /// 可用性判定见 backend_probe（§3.4）：显式请求不可用 = 硬报错，不静默降级
     device: String,
     /// 转写超时（分钟）：0 = 不限；超时终止子进程并报错
     timeout_minutes: u32,
@@ -228,6 +230,8 @@ pub struct MossProvider {
     cancelled: AtomicBool,
     /// 最近一次错误（供 describe() 向状态探测展示）
     last_error: Mutex<Option<String>>,
+    /// 最近一次探测的后端判定（供欢迎页自检/设置页显示实际生效后端）
+    backend_decision: Mutex<Option<backend_probe::Decision>>,
     /// 当前活动的转写子进程（供取消/退出钩子终止）
     active_child: Mutex<Option<Child>>,
     /// 开发调试：打印运行时细节日志
@@ -262,6 +266,7 @@ impl MossProvider {
             ready: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
             last_error: Mutex::new(None),
+            backend_decision: Mutex::new(None),
             active_child: Mutex::new(None),
             dev_debug: config.dev_debug,
         };
@@ -273,11 +278,20 @@ impl MossProvider {
         Ok(provider)
     }
 
-    /// 探测：`info <model>` 成功说明 GGUF 元数据可加载
+    /// 探测：`info <model>` 成功说明 GGUF 元数据可加载；同时用 stderr 的
+    /// `[mt I] backend:` 行实证实际生效后端（§3.2 L2，唯一可信判据），并按
+    /// §3.4 矩阵判定设备请求是否可用——显式 cpu/cuda/vulkan 不可用 = 硬报错
+    ///（不自动降级，ggml 的静默降级 exit code 为 0，必须在这里拦下）。
     fn probe(&self) -> Result<(), AsrError> {
-        let output = Command::new(&self.binary)
-            .arg("info")
-            .arg(&self.model)
+        let req = backend_probe::normalize_device_request(&self.device);
+        let mut cmd = Command::new(&self.binary);
+        cmd.arg("info").arg(&self.model);
+        // 与 run_transcribe 同参：显式设备才设 MTD_DEVICE——这样 L2 实测的
+        // backend 与转写时真实生效的后端一致（auto 时不设，两者都由 ggml 自选）
+        if req != backend_probe::DeviceRequest::Auto {
+            cmd.env("MTD_DEVICE", &self.device);
+        }
+        let output = cmd
             .output()
             .map_err(|e| AsrError::Worker(format!("无法启动 MOSS: {}", e)))?;
         if !output.status.success() {
@@ -288,7 +302,31 @@ impl MossProvider {
                 stderr.trim()
             )));
         }
-        Ok(())
+        // L2 解析 + 三级判定（L0 探测 ~0.5s 仅在 spawn 时发生一次）
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let eff = backend_probe::parse_info_stderr(&stderr);
+        let assets = backend_probe::probe_assets(&self.binary);
+        let caps = backend_probe::probe_machine();
+        match backend_probe::decide(req, eff.as_ref(), &assets, &caps) {
+            Ok(decision) => {
+                if self.dev_debug {
+                    eprintln!(
+                        "[moss] 后端判定: {}（{}: {}）",
+                        decision.backend, decision.source, decision.reason
+                    );
+                }
+                if let Ok(mut slot) = self.backend_decision.lock() {
+                    *slot = Some(decision);
+                }
+                Ok(())
+            }
+            Err(msg) => Err(AsrError::Worker(msg)),
+        }
+    }
+
+    /// 后端判定详情（backend/reason/source，给自检面板展示）；probe 失败时为 None
+    pub fn backend_decision(&self) -> Option<backend_probe::Decision> {
+        self.backend_decision.lock().ok().and_then(|g| g.clone())
     }
 
     fn set_error(&self, msg: &str) {
@@ -493,6 +531,15 @@ impl AsrProvider for MossProvider {
 
     fn describe(&self) -> String {
         self.last_error.lock().ok().and_then(|g| g.clone()).unwrap_or_default()
+    }
+
+    /// 实测生效后端（L2 实证，如 "CUDA0"/"Vulkan1"/"CPU"）；probe 未完成或失败时为空
+    fn effective_backend(&self) -> String {
+        self.backend_decision
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|d| d.backend.clone()))
+            .unwrap_or_default()
     }
 
     fn transcribe(

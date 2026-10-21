@@ -34,6 +34,12 @@ const emit = defineEmits<{
 
 // ── 拖动：整段移动 / 左右边界改起止 / 垂直换轨 ──
 const MIN_DUR = 0.05; // 与 splitEvent 的 EPS 一致，避免零长度 sliver
+
+/// 是否属于刚分割出的一对（被分割态：键盘 ⬅️➡️ 可整段搬句界）
+const isSplitPair = computed(() => {
+  const pair = timeline.splitPair;
+  return !!pair && (pair.leftId === props.event.id || pair.rightId === props.event.id);
+});
 const DRAG_THRESHOLD = 3; // 位移超过该像素才视为拖动（区分点击）
 const V_DRAG_THRESHOLD = 12; // 垂直位移超过该像素才进入换轨模式（asr 事件专属）
 
@@ -110,6 +116,10 @@ function collectSnapEdges(): number[] {
     if (e.id === props.event.id) continue;
     edges.push(e.start, e.end);
   }
+  // 播放头也作为吸附点：拖边时能把边界对齐到当前位置（第 16 项，
+  // 取拖动开始时刻的时间值，拖动中播放头移动不影响本次拖动）
+  const playhead = timeline.currentTime;
+  if (playhead > 0 && playhead <= timeline.duration) edges.push(playhead);
   return edges;
 }
 
@@ -304,6 +314,12 @@ function onWindowMouseMove(e: MouseEvent) {
     }
   }
 
+  // 拖边参考线（第 15 项）：正在拖起止时把被拖的那条边标在轨道区上，
+  // 与吸附线（虚线/实线不同长度）区分；整段移动时不显示
+  timeline.setEdgeGuide(
+    d.mode === "move" ? null : (d.mode === "l" ? start : end) * timeline.pixelsPerSecond,
+  );
+
   projectStore.updateEventTime(props.event.id, start, end);
 }
 
@@ -311,7 +327,7 @@ function onWindowMouseMove(e: MouseEvent) {
 // 拖动场景的相邻关系已由 bounds() 保证（最近非重叠邻居），
 // 中间可能有重叠事件打断排序相邻，故不要求严格相邻
 function tryMergeWith(other: TimelineEvent): boolean {
-  const merged = projectStore.mergeTwo(props.event.id, other.id, false);
+  const merged = projectStore.mergeTwo(props.event.id, other.id, false, timeline.mergeStrategy);
   if (!merged) return false;
   timeline.focusClip(merged);
   emit("merged");
@@ -322,8 +338,9 @@ function tryMergeWith(other: TimelineEvent): boolean {
 function onWindowMouseUp() {
   const d = drag.value;
   drag.value = null;
-  // 拖动结束：吸附标记线立即消失
+  // 拖动结束：吸附标记线与拖边参考线立即消失
   timeline.setSnapGuide(null);
+  timeline.setEdgeGuide(null);
   window.removeEventListener("mousemove", onWindowMouseMove);
   window.removeEventListener("mouseup", onWindowMouseUp);
   // 垂直换轨：释放时若有有效目标轨道则移动事件，并清除悬停高亮
@@ -376,7 +393,7 @@ function clipText(): string {
   />
   <div
     class="clip"
-    :class="{ focused, dragging: drag !== null, 'v-dragging': drag?.vMode, 'split-tool': timeline.activeTool === 'split' }"
+    :class="{ focused, dragging: drag !== null, 'v-dragging': drag?.vMode, 'split-tool': timeline.activeTool === 'split', 'split-pair': isSplitPair }"
     :data-event-id="event.id"
     :style="{
       left: left + 'px',
@@ -439,6 +456,15 @@ function clipText(): string {
 
 .clip.split-tool {
   cursor: crosshair;
+}
+
+/* 被分割态：这对 clip 用内描边标一下，提示 ⬅️➡️ 可用（不改变外框聚焦样式） */
+.clip.split-pair {
+  box-shadow: inset 0 0 0 1px var(--accent-ink);
+}
+
+.clip.split-pair.focused {
+  box-shadow: inset 0 0 0 1px var(--accent-ink), 0 0 0 1px var(--accent);
 }
 
 .clip.dragging {

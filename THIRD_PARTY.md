@@ -90,7 +90,7 @@ Components are grouped by how they are consumed:
 | [huggingface_hub](https://github.com/huggingface/huggingface_hub) | Model / config download | Apache-2.0 | PyPI `huggingface_hub` |
 | [multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-small) (ONNX qint8 variant) | Multilingual sentence embeddings for the vector-recall alignment route | MIT | Hugging Face / [intfloat](https://huggingface.co/intfloat) |
 
-> These components are consumed by the **product fusion pipeline** (local vector recall + unified transition DP, landed as T4 in 2026-10) as well as by the offline fusion-alignment lab; `scripts/bootstrap_embed.ps1` installs them into `runtime/deps_embed/` and `runtime/models/embed/`. See `GameSubtitleAssistant_Plan.md` §6.3.
+> These components are consumed by the **product fusion pipeline** (local vector recall + unified transition DP, landed as T4 in 2026-10) as well as by the offline fusion-alignment lab; `scripts/bootstrap_embed.ps1` installs them into `runtime/deps_embed/` and `runtime/models/embed/`. See `docs/GameSubtitleAssistant_Plan.md` §6.3.
 
 ---
 

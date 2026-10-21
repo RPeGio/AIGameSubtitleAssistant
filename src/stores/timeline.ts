@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import type { InjectionKey } from "vue";
 import type { TimelineEvent } from "../types";
+import type { MergeStrategy, SplitStrategy } from "../composables/sentenceCuts";
 
 /// 轨道片段配色：bg 底 / fg 文字 / line 描边，三值都指向主题令牌
 export interface ClipTone {
@@ -37,6 +38,17 @@ export const TEXT_TRACK_TYPES = ["ocr_text", "embed_ocr", "asr", "fused", "manua
 /// 统一吸附阈值（像素）：clip 边缘与吸附点距离小于该值即对齐
 export const SNAP_THRESHOLD_PX = 8;
 
+/// 分割/合并策略的持久化键与合法值（第 8 项）；不合法或缺失时回落默认档
+const SPLIT_KEY = "gsa.timeline.splitStrategy";
+const MERGE_KEY = "gsa.timeline.mergeStrategy";
+const SPLIT_VALUES: SplitStrategy[] = ["punct", "space", "raw"];
+const MERGE_VALUES: MergeStrategy[] = ["latter", "former", "stack"];
+
+function readStrategy<T extends string>(key: string, allowed: T[], fallback: T): T {
+  const saved = localStorage.getItem(key);
+  return saved && (allowed as string[]).includes(saved) ? (saved as T) : fallback;
+}
+
 export const useTimelineStore = defineStore("timeline", () => {
   const pixelsPerSecond = ref(100);
   const scrollLeft = ref(0);
@@ -45,7 +57,8 @@ export const useTimelineStore = defineStore("timeline", () => {
   const isSeeking = ref(false);
   const focusedClipId = ref<string | null>(null);
   const focusedTrackId = ref<string | null>(null);
-  const activeTool = ref<"select" | "split" | "merge">("select");
+  /// 当前工具：select 选择 | split 分割 | merge 合并 | region 拖动画选区（迷你时间轴）
+  const activeTool = ref<"select" | "split" | "merge" | "region">("select");
   const viewportWidth = ref(0);
   /// 吸附开关（默认开启）
   const snapEnabled = ref(true);
@@ -54,10 +67,17 @@ export const useTimelineStore = defineStore("timeline", () => {
   const swapSegments = ref(false);
   /// 吸附标记线位置（内容区像素坐标；null = 不显示）
   const snapGuideX = ref<number | null>(null);
+  /// 「被分割态」：刚分割出的一对 clip（同轨相邻）。存在期间键盘 ⬅️➡️ 可整段搬句界；
+  /// 失焦、Esc、换工具或再次分割都会清掉。
+  const splitPair = ref<{ trackId: string; leftId: string; rightId: string } | null>(null);
   /// 当前持有播放权的播放器 id（"review" 校对区 / "clip" 切片预览 / "source" 剧情录屏预览）。
   /// 打轴页与校对区共用同一条时间轴时间，若两侧 <video> 同时播放会双声道、双解码，
   /// 故约定：谁按下播放谁持有播放权，另一侧只跟随时间、保持静音暂停。
   const activePlayer = ref<string | null>(null);
+  /// 分割策略（面板可切，持久化）：punct 按断句标点 | space 按空格 | raw 保留原文
+  const splitStrategy = ref<SplitStrategy>(readStrategy(SPLIT_KEY, SPLIT_VALUES, "punct"));
+  /// 合并策略：latter 保留后者文本 | former 保留前者文本 | stack 前后堆叠（现状）
+  const mergeStrategy = ref<MergeStrategy>(readStrategy(MERGE_KEY, MERGE_VALUES, "latter"));
 
   const totalWidth = computed(() => duration.value * pixelsPerSecond.value);
 
@@ -76,17 +96,20 @@ export const useTimelineStore = defineStore("timeline", () => {
     currentTime.value = t;
   }
 
-  function scrubbing(value: boolean) {
-    isSeeking.value = value;
+  /// 拖动擦洗开始：期间由鼠标位置驱动时间，视频的 tick 不得回写
+  function beginScrub() {
+    isSeeking.value = true;
   }
 
-  function seek(t: number) {
-    scrubbing(true);
-    currentTime.value = t;
-  }
-
-  function seekDone() {
+  /// 拖动擦洗结束：恢复「视频驱动时间」
+  function endScrub() {
     isSeeking.value = false;
+  }
+
+  /// 瞬时跳转（点 clip、双击总览条目等）：只写时间，不进入擦洗态。
+  /// 若这里置 isSeeking，视频的 tick 会被挡掉 ⇒ 该时间轴的播放头永久停住。
+  function setTime(t: number) {
+    currentTime.value = t;
   }
 
   function setDuration(d: number) {
@@ -131,9 +154,31 @@ export const useTimelineStore = defineStore("timeline", () => {
     focusedTrackId.value = id;
   }
 
-  /// 切换时间轴工具：select 选择/擦动 | split 分割 | merge 合并
-  function setTool(tool: "select" | "split" | "merge") {
+  /// 切换时间轴工具：select 选择/擦动 | split 分割 | merge 合并 | region 拖动画选区
+  function setTool(tool: "select" | "split" | "merge" | "region") {
     activeTool.value = tool;
+  }
+
+  /// 切换分割策略（面板选择后持久化）
+  function setSplitStrategy(next: SplitStrategy) {
+    splitStrategy.value = next;
+    localStorage.setItem(SPLIT_KEY, next);
+  }
+
+  /// 切换合并策略（面板选择后持久化）
+  function setMergeStrategy(next: MergeStrategy) {
+    mergeStrategy.value = next;
+    localStorage.setItem(MERGE_KEY, next);
+  }
+
+  /// 进入「被分割态」（记下刚分割出的一对 clip id）
+  function setSplitPair(pair: { trackId: string; leftId: string; rightId: string } | null) {
+    splitPair.value = pair;
+  }
+
+  /// 退出「被分割态」
+  function clearSplitPair() {
+    splitPair.value = null;
   }
 
   function toggleSnap() {
@@ -147,6 +192,13 @@ export const useTimelineStore = defineStore("timeline", () => {
   }
 
   /// 设置吸附标记线位置（内容区像素坐标）；null 清除
+  /// 拖边参考线（第 15 项）：拖动 clip 起止期间持续显示的一条细线。
+  /// 存像素位置（相对内容区，未减 scrollLeft），与 snapGuideX 同口径但互不影响。
+  const edgeGuideX = ref<number | null>(null);
+  function setEdgeGuide(x: number | null) {
+    edgeGuideX.value = x;
+  }
+
   function setSnapGuide(x: number | null) {
     snapGuideX.value = x;
   }
@@ -187,10 +239,13 @@ export const useTimelineStore = defineStore("timeline", () => {
     snapGuideX,
     swapSegments,
     activePlayer,
+    splitStrategy,
+    mergeStrategy,
+    splitPair,
     tick,
-    scrubbing,
-    seek,
-    seekDone,
+    beginScrub,
+    endScrub,
+    setTime,
     setDuration,
     setViewportWidth,
     maxScroll,
@@ -201,9 +256,15 @@ export const useTimelineStore = defineStore("timeline", () => {
     focusClip,
     focusTrack,
     setTool,
+    setSplitStrategy,
+    setMergeStrategy,
+    setSplitPair,
+    clearSplitPair,
     toggleSnap,
     toggleSwapSegments,
     setSnapGuide,
+    edgeGuideX,
+    setEdgeGuide,
     clipPosition,
     jumpTo,
     claimPlayback,

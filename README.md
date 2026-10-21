@@ -120,12 +120,13 @@ pnpm tauri build   # 产出安装包（注：运行时资源打包尚未配置�
 │       └── ai_runtime/     # AI 运行时（provider 抽象、配置、worker 子进程）
 ├── scripts/                # 环境引导脚本（bootstrap_*.ps1）与 Python worker
 ├── runtime/                # 本地 AI 运行环境（脚本生成，gitignored）
-└── GameSubtitleAssistant_Plan.md  # 项目计划书
+└── docs/
+│   ├── GameSubtitleAssistant_Plan.md  # 项目计划书
 ```
 
 ## 文档
 
-- [GameSubtitleAssistant_Plan.md](GameSubtitleAssistant_Plan.md) — 项目定位、架构设计与分阶段计划
+- [GameSubtitleAssistant_Plan.md](docs/GameSubtitleAssistant_Plan.md) — 项目定位、架构设计与分阶段计划
 - [docs/development.md](docs/development.md) — 开发文档（架构 / 数据模型 / 流水线细节 / 测试）
 - [benchmark/README.md](benchmark/README.md) — 质量基准与融合对齐路线的验证记录
 - [CONTRIBUTING.md](CONTRIBUTING.md) — 参与贡献

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, inject, nextTick, onMounted, onUnmounted, provide, ref, watch } from "vue";
-import { NModal, NPopconfirm, NSelect, NButton } from "naive-ui";
+import { computed, inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, provide, ref, watch } from "vue";
+import { NModal, NPopconfirm, NSelect, NButton, useMessage } from "naive-ui";
 import { useTimelineStore, TIMELINE_STORE_KEY, clipTone, TEXT_TRACK_TYPES } from "../../stores/timeline";
 import { useProjectStore } from "../../stores/project";
 import type { Track } from "../../types";
@@ -15,6 +15,12 @@ import AppIcon from "../AppIcon.vue";
 const timeline = inject(TIMELINE_STORE_KEY, null) ?? useTimelineStore();
 provide(TIMELINE_STORE_KEY, timeline);
 const projectStore = useProjectStore();
+const message = useMessage();
+
+/// 分割策略找不到可用断点（退化成分割保留原文）时的提示文案
+const SPLIT_DEGRADED_TEXT = "该 clip 里没有可用断点，已按原文分割";
+/// 被分割态下 ⬅️/➡️ 撞到"该侧只有一段"时的提示
+const SPLIT_ARROW_NO_BOUNDARY_TEXT = "该侧没有可搬的句界段";
 
 const props = withDefaults(
   defineProps<{
@@ -28,13 +34,17 @@ const props = withDefaults(
     clickSeeks?: boolean;
     /// 轨道标签列宽度（px）；迷你时间轴可调窄，给时间轴窗口让出更多宽度
     labelWidth?: number;
+    /// 工具条形态：full 校对区编辑器（含合并/分段互换/策略面板）| mini 迷你时间轴
+    toolVariant?: "full" | "mini";
   }>(),
-  { showToolStrip: true, showWaveform: false, clickSeeks: false, labelWidth: 200 }
+  { showToolStrip: true, showWaveform: false, clickSeeks: false, labelWidth: 200, toolVariant: "full" }
 );
 
 const emit = defineEmits<{
   /// 双击轨道空白处（时间秒，内容区坐标换算）；供语料页添加选区
   "dblclick-track": [time: number];
+  /// 加选区工具拖动画出的时间段（松手时才发，落库由调用方决定）
+  "create-track-region": [payload: { trackId: string; start: number; end: number }];
 }>();
 
 // 布局常量：工具条高度（工具条已改为卡片顶部横条，占满整宽）
@@ -126,8 +136,8 @@ function onRulerMouseDown(e: MouseEvent) {
   const target = e.currentTarget as HTMLElement;
   e.preventDefault();
   scrubbingBody = target;
-  timeline.scrubbing(true);
-  timeline.seek(timeline.timeAtPixel(e.clientX - target.getBoundingClientRect().left));
+  timeline.beginScrub();
+  timeline.setTime(timeline.timeAtPixel(e.clientX - target.getBoundingClientRect().left));
   window.addEventListener("mousemove", onWindowMouseMove);
   window.addEventListener("mouseup", onWindowMouseUp);
 }
@@ -153,9 +163,76 @@ function onWindowMouseMove(e: MouseEvent) {
 function onWindowMouseUp() {
   if (!scrubbingBody) return;
   scrubbingBody = null;
-  timeline.scrubbing(false);
+  timeline.endScrub();
   window.removeEventListener("mousemove", onWindowMouseMove);
   window.removeEventListener("mouseup", onWindowMouseUp);
+}
+
+// ── 加选区工具：在选区控制轨的空白处拖动画出时间段（松手才落库）──
+
+/// 拖动小于该像素视为误触：不建选区，只把播放头移过去
+const REGION_MIN_DRAG_PX = 3;
+
+const regionDraft = ref<{
+  trackId: string;
+  anchor: number;
+  start: number;
+  end: number;
+  rect: DOMRect;
+} | null>(null);
+
+/// 草稿块位置：内容区坐标 → 相对轨道行左缘（与 clip 同口径，需减 scrollLeft）
+const regionDraftStyle = computed(() => {
+  const d = regionDraft.value;
+  if (!d) return null;
+  const pps = timeline.pixelsPerSecond;
+  return {
+    left: `${d.start * pps - timeline.scrollLeft}px`,
+    width: `${Math.max(1, (d.end - d.start) * pps)}px`,
+  };
+});
+
+function onRegionDraftMove(e: MouseEvent) {
+  const d = regionDraft.value;
+  if (!d) return;
+  const t = Math.max(0, Math.min(timeline.duration, timeline.timeAtPixel(e.clientX - d.rect.left)));
+  // 允许向左右两侧扩展：按锚点排序，保证 start <= end
+  d.start = Math.min(d.anchor, t);
+  d.end = Math.max(d.anchor, t);
+}
+
+function stopRegionDraft() {
+  window.removeEventListener("mousemove", onRegionDraftMove);
+  window.removeEventListener("mouseup", onRegionDraftUp);
+  regionDraft.value = null;
+}
+
+function onRegionDraftUp() {
+  const d = regionDraft.value;
+  stopRegionDraft();
+  if (!d) return;
+  if ((d.end - d.start) * timeline.pixelsPerSecond >= REGION_MIN_DRAG_PX) {
+    emit("create-track-region", { trackId: d.trackId, start: d.start, end: d.end });
+    // 画完即切回选择工具，方便立刻调起止
+    timeline.setTool("select");
+  } else {
+    timeline.setTime(d.start);
+    timeline.focusTrack(d.trackId);
+  }
+}
+
+function startRegionDraft(e: MouseEvent, body: HTMLElement) {
+  const trackId = body.dataset.trackId ?? null;
+  if (!trackId) return;
+  const track = projectStore.currentProject?.tracks.find((t) => t.id === trackId);
+  // 只有选区控制轨能画：文本轨的空白区留给选择/分割
+  if (!track || track.type !== "ocr_region") return;
+  const rect = body.getBoundingClientRect();
+  const t = Math.max(0, Math.min(timeline.duration, timeline.timeAtPixel(e.clientX - rect.left)));
+  regionDraft.value = { trackId, anchor: t, start: t, end: t, rect };
+  e.preventDefault();
+  window.addEventListener("mousemove", onRegionDraftMove);
+  window.addEventListener("mouseup", onRegionDraftUp);
 }
 
 // ── 轨道区域：分割工具 or 只聚焦轨道（不移动播放头）──
@@ -163,16 +240,29 @@ function onWindowMouseUp() {
 function onTrackAreaMouseDown(e: MouseEvent) {
   const target = e.currentTarget as HTMLElement;
 
+  // 加选区工具：空白处按下开始画选区（点在 clip 上交给 clip 自己处理）
+  if (timeline.activeTool === "region") {
+    if (!(e.target as HTMLElement).closest(".clip")) startRegionDraft(e, target);
+    return;
+  }
+
   // 分割工具：在 clip 上按下即分割，空白处不动作
   if (timeline.activeTool === "split") {
     const clipEl = (e.target as HTMLElement).closest(".clip") as HTMLElement | null;
     const eventId = clipEl?.dataset.eventId;
     if (!eventId) return;
     const time = timeline.timeAtPixel(e.clientX - target.getBoundingClientRect().left);
-    const rightId = projectStore.splitEvent(eventId, time);
-    if (rightId) {
-      timeline.focusClip(rightId);
-      const found = projectStore.findEvent(rightId);
+    const res = projectStore.splitEvent(eventId, time, timeline.splitStrategy);
+    if (res?.degraded) message.warning(SPLIT_DEGRADED_TEXT);
+    if (res) {
+      const found = projectStore.findEvent(res.rightId);
+      // 进入「被分割态」：键盘 ⬅️➡️ 可整段搬句界（仅文本事件有意义）
+      timeline.setSplitPair(
+        found && found.event.type !== "ocr_region"
+          ? { trackId: found.track.id, leftId: res.leftId, rightId: res.rightId }
+          : null
+      );
+      timeline.focusClip(res.rightId);
       if (found) timeline.focusTrack(found.track.id);
     }
     return;
@@ -205,6 +295,9 @@ const mergeFirstId = ref<string | null>(null);
 
 function onClipClicked(track: Track, clipId: string) {
   if (timeline.activeTool === "split") return;
+  // 点到「被分割态」这对之外的 clip ⇒ 退出该状态
+  const pair = timeline.splitPair;
+  if (pair && clipId !== pair.leftId && clipId !== pair.rightId) timeline.clearSplitPair();
   if (timeline.activeTool === "merge") {
     if (!mergeFirstId.value) {
       // 第一选择：聚焦高亮，等待第二次点击
@@ -215,7 +308,7 @@ function onClipClicked(track: Track, clipId: string) {
     }
     const first = mergeFirstId.value;
     mergeFirstId.value = null;
-    const merged = projectStore.mergeTwo(first, clipId);
+    const merged = projectStore.mergeTwo(first, clipId, true, timeline.mergeStrategy);
     if (merged) {
       timeline.focusClip(merged);
       timeline.focusTrack(track.id);
@@ -231,7 +324,7 @@ function onClipClicked(track: Track, clipId: string) {
   // 迷你时间轴场景：点击 clip 跳转播放头到其起点（同步视频）
   if (props.clickSeeks) {
     const found = projectStore.findEvent(clipId);
-    if (found) timeline.seek(found.event.start);
+    if (found) timeline.setTime(found.event.start);
   }
 }
 
@@ -283,6 +376,7 @@ function cancelRename() {
 // WebView 点击不可聚焦元素可能不移焦，blur 兜底不可靠；
 // 捕获阶段注册，先于 clip 拖动 mousedown 的 stopPropagation 执行
 function onWindowMouseDown(e: MouseEvent) {
+  if (!isAttached()) return;
   if (!renameTrackId.value) return;
   if ((e.target as HTMLElement).closest(".tl-name-input")) return;
   commitRename();
@@ -351,6 +445,14 @@ function onWheelRoot(e: WheelEvent) {
   // 滑条自己处理缩放；工具条/标签列不响应
   if (t.closest(".scrollbar-track")) return;
   if (t.closest(".tool-strip") || t.closest(".tl-label-col")) return;
+  // 标尺上滚轮也缩放（与滑条一致），锚点取标尺内容区左缘
+  if (t.closest(".ruler")) {
+    e.preventDefault();
+    const body = t.closest(".tl-content") as HTMLElement | null;
+    const rect = (body ?? rootRef.value)?.getBoundingClientRect();
+    if (rect) timeline.zoom(e.deltaY < 0 ? 1.1 : 0.9, e.clientX - rect.left);
+    return;
+  }
   // Shift+滚轮：垂直滚动轨道区
   if (e.shiftKey) {
     const tracksEl = rootRef.value?.querySelector<HTMLElement>(".tl-tracks") ?? null;
@@ -376,15 +478,40 @@ function onWheelRoot(e: WheelEvent) {
 // 用注入的独立 store），输入框内不响应。这样聚焦迷你时间轴 clip 后，
 // 快捷键作用于该时间轴而非全局校对区时间轴，与 Delete 行为一致。
 function onKeydown(e: KeyboardEvent) {
+  // 被 KeepAlive 暂存的页面/校对区不响应键盘（其 DOM 已脱离文档）
+  if (!isAttached()) return;
   const t = e.target as HTMLElement;
   if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
   const id = timeline.focusedClipId;
+  const pair = timeline.splitPair;
+
+  // 被分割态：⬅️➡️ 把整段句界从左/右搬到另一边（只改文本）
+  if (pair && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+    e.preventDefault();
+    const res = projectStore.adjustSplitBoundary(
+      pair.leftId,
+      pair.rightId,
+      e.key === "ArrowLeft" ? "left" : "right"
+    );
+    if (!res.ok) {
+      if (res.reason === "no-boundary") message.warning(SPLIT_ARROW_NO_BOUNDARY_TEXT);
+      if (res.reason === "no-pair") timeline.clearSplitPair();
+    }
+    return;
+  }
+
+  // Esc：退出被分割态
+  if (e.key === "Escape" && pair) {
+    timeline.clearSplitPair();
+    return;
+  }
 
   if (e.key === "Delete") {
     if (!id) return;
     const foundTrack = projectStore.findEvent(id);
     projectStore.removeEvent(id);
     timeline.focusClip(null);
+    timeline.clearSplitPair();
     if (foundTrack) timeline.focusTrack(foundTrack.track.id);
     return;
   }
@@ -392,10 +519,16 @@ function onKeydown(e: KeyboardEvent) {
   // 分割：在播放头处切开聚焦 clip
   if (e.code === "KeyS" && !e.ctrlKey && !e.metaKey && !e.altKey) {
     if (!id) return;
-    const rightId = projectStore.splitEvent(id, timeline.currentTime);
-    if (rightId) {
-      timeline.focusClip(rightId);
-      const right = projectStore.findEvent(rightId);
+    const res = projectStore.splitEvent(id, timeline.currentTime, timeline.splitStrategy);
+    if (res?.degraded) message.warning(SPLIT_DEGRADED_TEXT);
+    if (res) {
+      const right = projectStore.findEvent(res.rightId);
+      timeline.setSplitPair(
+        right && right.event.type !== "ocr_region"
+          ? { trackId: right.track.id, leftId: res.leftId, rightId: res.rightId }
+          : null
+      );
+      timeline.focusClip(res.rightId);
       if (right) timeline.focusTrack(right.track.id);
     }
     return;
@@ -404,8 +537,9 @@ function onKeydown(e: KeyboardEvent) {
   // 合并：聚焦 clip 与同轨下一个事件
   if (e.code === "KeyM" && !e.ctrlKey && !e.metaKey && !e.altKey) {
     if (!id) return;
-    const merged = projectStore.mergeAdjacent(id);
+    const merged = projectStore.mergeAdjacent(id, timeline.mergeStrategy);
     if (merged) timeline.focusClip(merged);
+    timeline.clearSplitPair();
     return;
   }
 }
@@ -433,6 +567,41 @@ watch(
   { immediate: true }
 );
 
+// 组件可能被 KeepAlive 缓存（校对区时间轴与各页面迷你时间轴都是）：
+// 全局键鼠监听只在「激活」期间挂着。否则隐藏的时间轴仍会响应 Delete/S/M 与
+// 文本输入，作用于它自己 store 的 focusedClipId——在语料页按 Delete 会删掉
+// 校对区时间轴上的片段。
+/// 是否"挂载在活动树上"：KeepAlive 暂存的子树会被移到脱离文档的容器里，
+/// 此时 isConnected 为 false。用它当活动闸门，比依赖 onActivated 可靠
+/// （实测 Vue 只为 KeepAlive 的直接子组件触发 activated/deactivated，
+/// 而本组件在校对区里是 ReviewPane 的子组件，钩子不会触发）。
+function isAttached(): boolean {
+  const el = rootRef.value as HTMLElement | null;
+  return !!el && el.isConnected;
+}
+
+function activate() {
+  // 从缓存里恢复时 DOM 刚插回，视口宽度可能还是 0，这里补测一次
+  if (viewportRef.value) {
+    timeline.setViewportWidth(viewportRef.value.getBoundingClientRect().width);
+  }
+}
+
+function deactivate() {
+  window.removeEventListener("mousemove", onWindowMouseMove);
+  window.removeEventListener("mouseup", onWindowMouseUp);
+  // 失焦（切页/校对区隐藏）即丢弃未完成的选区草稿
+  stopRegionDraft();
+  // 失焦（切页/校对区隐藏）即退出「被分割态」
+  timeline.clearSplitPair();
+}
+
+// 换工具也退出「被分割态」（⬅️➡️ 只在刚分割完、工具未变时生效）
+watch(
+  () => timeline.activeTool,
+  () => timeline.clearSplitPair()
+);
+
 onMounted(() => {
   if (viewportRef.value) {
     const update = () => {
@@ -443,23 +612,26 @@ onMounted(() => {
     viewportObserver.observe(viewportRef.value);
   }
   rootRef.value?.addEventListener("wheel", onWheelRoot, { passive: false });
+  // 与挂载同生命周期注册（不能只靠 activate：KeepAlive 下孙组件收不到 activated）
   window.addEventListener("mousedown", onWindowMouseDown, true);
   window.addEventListener("keydown", onKeydown);
 });
+
+onActivated(activate);
+onDeactivated(deactivate);
 
 onUnmounted(() => {
   viewportObserver?.disconnect();
   rootRef.value?.removeEventListener("wheel", onWheelRoot);
   window.removeEventListener("mousedown", onWindowMouseDown, true);
   window.removeEventListener("keydown", onKeydown);
-  window.removeEventListener("mousemove", onWindowMouseMove);
-  window.removeEventListener("mouseup", onWindowMouseUp);
+  deactivate();
 });
 </script>
 
 <template>
   <div class="timeline-root" ref="rootRef">
-    <TimelineToolStrip v-if="props.showToolStrip" />
+    <TimelineToolStrip v-if="props.showToolStrip" :variant="props.toolVariant" />
 
     <div class="timeline-col">
       <!-- Header: ruler（仅这里可拖动播放头） -->
@@ -619,6 +791,12 @@ onUnmounted(() => {
               />
             </template>
             <div v-else class="empty-hint">此轨道暂无事件</div>
+            <!-- 加选区工具的拖动草稿（松手后才真正建选区） -->
+            <div
+              v-if="regionDraft && regionDraft.trackId === track.id"
+              class="region-draft"
+              :style="regionDraftStyle ?? {}"
+            />
           </div>
         </div>
       </div>
@@ -672,6 +850,16 @@ onUnmounted(() => {
         <div class="playhead-line" />
       </div>
     </div>
+
+    <!-- 拖边参考线：拖动 clip 起止期间显示，起于标尺线下、止于滑条容器上（虚线以区别于吸附实线） -->
+    <div
+      v-if="timeline.edgeGuideX !== null"
+      class="edge-guide"
+      :style="{
+        left: contentLeft + timeline.edgeGuideX - timeline.scrollLeft + 'px',
+        top: `calc(${playheadTop} + 20px)`,
+      }"
+    />
 
     <!-- 吸附标记线：贯穿轨道区，拖动吸附时显示（虚拟滚动，需减 scrollLeft） -->
     <div
@@ -982,6 +1170,34 @@ onUnmounted(() => {
   margin-left: -0.5px;
   background: var(--color-accent);
   z-index: 14; /* playhead(15) 之下 */
+  pointer-events: none;
+}
+
+/* 加选区工具的拖动草稿：只出现在选区轨空白处，松手后由 store 生成正式选区 */
+.region-draft {
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  background: var(--accent-soft);
+  z-index: 3;
+  pointer-events: none;
+}
+
+/* 拖边参考线：不贯穿标尺与滑条（起止时间由 top/bottom 限定），虚线区别于吸附实线 */
+.edge-guide {
+  position: absolute;
+  bottom: 8px;
+  width: 1px;
+  margin-left: -0.5px;
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--color-accent) 0 4px,
+    transparent 4px 8px
+  );
+  opacity: 0.85;
+  z-index: 14; /* playhead(15) 之下、轨道内容之上 */
   pointer-events: none;
 }
 </style>

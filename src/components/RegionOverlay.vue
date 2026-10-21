@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted } from "vue";
 import { useProjectStore } from "../stores/project";
+import { frameDurOf, hitsFrame } from "../composables/useFrameTolerance";
 
 /// OCR 选区覆盖层：把选区的归一化坐标按视频真实渲染矩形（contentRect）
 /// 换算成容器像素，画出遮罩 + 选区框 + 8 个缩放手柄。
@@ -36,7 +37,12 @@ const regionEvent = computed(() => {
   const regions = track.events.filter(
     (e): e is Extract<typeof e, { type: "ocr_region" }> => e.type === "ocr_region"
   );
-  const current = regions.find((e) => e.start <= t && e.end > t);
+  // 命中判定留一帧容差：跳到选区起点时时间可能落在 start 之前一帧内，
+  // 否则叠加层会退回「上一个选区」
+  const frameDur = frameDurOf(
+    props.videoKey === "source" ? projectStore.sourceVideoMeta : projectStore.currentVideoMeta
+  );
+  const current = regions.find((e) => hitsFrame(e.start, e.end, t, frameDur));
   return current ?? (regions.length > 0 ? regions[regions.length - 1] : null);
 });
 
