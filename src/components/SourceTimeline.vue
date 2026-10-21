@@ -96,6 +96,8 @@ function onCreateTrackRegion(payload: { trackId: string; start: number; end: num
         :track-filter="trackFilter"
         :show-tool-strip="true"
         tool-variant="mini"
+        timeline-role="mini"
+        :video-source="props.videoKey"
         :click-seeks="true"
         :label-width="132"
         @dblclick-track="onDblClickTrack"

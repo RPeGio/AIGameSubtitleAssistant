@@ -140,6 +140,13 @@ export const useTimelineStore = defineStore("timeline", () => {
     scrollLeft.value = Math.max(0, Math.min(scrollLeft.value + delta, maxScroll()));
   }
 
+  /// 缩放至全部：整段时长刚好铺满视口（即最小 pps，等价于缩略块铺满滑条）
+  function zoomToFit() {
+    if (duration.value <= 0 || viewportWidth.value <= 0) return;
+    pixelsPerSecond.value = viewportWidth.value / duration.value;
+    scrollLeft.value = 0;
+  }
+
   function timeAtPixel(px: number): number {
     const t = (scrollLeft.value + px) / pixelsPerSecond.value;
     return Math.max(0, Math.min(duration.value, t));
@@ -251,6 +258,7 @@ export const useTimelineStore = defineStore("timeline", () => {
     maxScroll,
     playheadX,
     zoom,
+    zoomToFit,
     pan,
     timeAtPixel,
     focusClip,

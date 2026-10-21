@@ -10,6 +10,7 @@ import TimelineScrollbar from "./TimelineScrollbar.vue";
 import TimelineToolStrip from "./TimelineToolStrip.vue";
 import TimelineWaveform from "./TimelineWaveform.vue";
 import AppIcon from "../AppIcon.vue";
+import { isActiveTimeline, markHoveredTimeline, onShortcut } from "../../composables/shortcuts";
 
 /// 支持注入独立 store 实例（页面级迷你时间轴用），未注入时回退全局 store
 const timeline = inject(TIMELINE_STORE_KEY, null) ?? useTimelineStore();
@@ -36,8 +37,21 @@ const props = withDefaults(
     labelWidth?: number;
     /// 工具条形态：full 校对区编辑器（含合并/分段互换/策略面板）| mini 迷你时间轴
     toolVariant?: "full" | "mini";
+    /// 时间轴角色：primary 主时间轴（校对区，未悬停过任何时间轴时的默认响应者）
+    /// | mini 迷你时间轴（只在鼠标进入它时响应快捷键）
+    timelineRole?: "primary" | "mini";
+    /// 视频来源：逐帧步进按哪支视频的 fps 计算（source 剧情录屏 | clip 切片视频）
+    videoSource?: "source" | "clip";
   }>(),
-  { showToolStrip: true, showWaveform: false, clickSeeks: false, labelWidth: 200, toolVariant: "full" }
+  {
+    showToolStrip: true,
+    showWaveform: false,
+    clickSeeks: false,
+    labelWidth: 200,
+    toolVariant: "full",
+    timelineRole: "primary",
+    videoSource: "clip",
+  }
 );
 
 const emit = defineEmits<{
@@ -473,21 +487,34 @@ function onWheelRoot(e: WheelEvent) {
   timeline.pan(e.deltaY + e.deltaX);
 }
 
-// ── Delete/S/M：删除/分割/合并聚焦 clip ──
-// 每个 Timeline 实例处理自己的 store（校对区用全局 store；语料页迷你时间轴
-// 用注入的独立 store），输入框内不响应。这样聚焦迷你时间轴 clip 后，
-// 快捷键作用于该时间轴而非全局校对区时间轴，与 Delete 行为一致。
-function onKeydown(e: KeyboardEvent) {
-  // 被 KeepAlive 暂存的页面/校对区不响应键盘（其 DOM 已脱离文档）
-  if (!isAttached()) return;
-  const t = e.target as HTMLElement;
-  if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
-  const id = timeline.focusedClipId;
-  const pair = timeline.splitPair;
+// ── 快捷键：登记到 composables/shortcuts.ts 的分发器（键位表只在那里定义）──
+// 每个 Timeline 实例各自登记，靠「活动时间轴」过滤：鼠标最后进入的那条生效，
+// 从未进入过则主时间轴（校对区）生效。这样打轴页按 Delete/S/M 不会同时动两条时间轴。
+const shortcutOwner = {};
+const shortcutOffs: Array<() => void> = [];
 
-  // 被分割态：⬅️➡️ 把整段句界从左/右搬到另一边（只改文本）
-  if (pair && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
-    e.preventDefault();
+/// 帧时长（秒）：逐帧步进与 ⬅️➡️ 步进用
+const fps = computed(() => {
+  const meta =
+    props.videoSource === "source" ? projectStore.sourceVideoMeta : projectStore.currentVideoMeta;
+  return meta?.fps && meta.fps > 0 ? meta.fps : 30;
+});
+
+function timelineShortcutActive(): boolean {
+  return isAttached() && isActiveTimeline(shortcutOwner, props.timelineRole !== "mini");
+}
+
+/// 跳转并让播放头进入视口（最小滚动）
+function seekWithScroll(t: number) {
+  const clamped = Math.max(0, Math.min(timeline.duration, t));
+  timeline.setTime(clamped);
+  timeline.jumpTo(clamped);
+}
+
+/// ⬅️➡️：被分割态把整段句界从左/右搬到另一边（只改文本），否则逐帧步进
+function onArrowKey(e: KeyboardEvent) {
+  const pair = timeline.splitPair;
+  if (pair) {
     const res = projectStore.adjustSplitBoundary(
       pair.leftId,
       pair.rightId,
@@ -499,49 +526,70 @@ function onKeydown(e: KeyboardEvent) {
     }
     return;
   }
+  seekWithScroll(timeline.currentTime + (e.key === "ArrowLeft" ? -1 : 1) / fps.value);
+}
 
-  // Esc：退出被分割态
-  if (e.key === "Escape" && pair) {
-    timeline.clearSplitPair();
-    return;
-  }
+function onSecondStep(e: KeyboardEvent) {
+  seekWithScroll(timeline.currentTime + (e.key === "ArrowLeft" ? -1 : 1));
+}
 
-  if (e.key === "Delete") {
-    if (!id) return;
-    const foundTrack = projectStore.findEvent(id);
-    projectStore.removeEvent(id);
-    timeline.focusClip(null);
-    timeline.clearSplitPair();
-    if (foundTrack) timeline.focusTrack(foundTrack.track.id);
-    return;
-  }
+/// 上/下一个片段：按开始时间取当前时间前后最近的 clip
+function onPrevNextClip(e: KeyboardEvent) {
+  const events = tracks()
+    .flatMap((t) => t.events)
+    .filter((ev) => ev.type !== "ocr_region")
+    .sort((a, b) => a.start - b.start);
+  if (events.length === 0) return;
+  const t = timeline.currentTime;
+  const EPS = 0.01;
+  const target =
+    e.key === ","
+      ? [...events].reverse().find((ev) => ev.start < t - EPS)
+      : events.find((ev) => ev.start > t + EPS);
+  if (!target) return;
+  seekWithScroll(target.start);
+  timeline.focusClip(target.id);
+}
 
-  // 分割：在播放头处切开聚焦 clip
-  if (e.code === "KeyS" && !e.ctrlKey && !e.metaKey && !e.altKey) {
-    if (!id) return;
-    const res = projectStore.splitEvent(id, timeline.currentTime, timeline.splitStrategy);
-    if (res?.degraded) message.warning(SPLIT_DEGRADED_TEXT);
-    if (res) {
-      const right = projectStore.findEvent(res.rightId);
-      timeline.setSplitPair(
-        right && right.event.type !== "ocr_region"
-          ? { trackId: right.track.id, leftId: res.leftId, rightId: res.rightId }
-          : null
-      );
-      timeline.focusClip(res.rightId);
-      if (right) timeline.focusTrack(right.track.id);
-    }
-    return;
-  }
+/// =/- 缩放，锚点取播放头当前 x（超出视口则贴边）
+function onZoomKey(e: KeyboardEvent) {
+  const anchor = Math.max(0, Math.min(timeline.viewportWidth, timeline.playheadX()));
+  timeline.zoom(e.key === "=" ? 1.1 : 0.9, anchor);
+}
 
-  // 合并：聚焦 clip 与同轨下一个事件
-  if (e.code === "KeyM" && !e.ctrlKey && !e.metaKey && !e.altKey) {
-    if (!id) return;
-    const merged = projectStore.mergeAdjacent(id, timeline.mergeStrategy);
-    if (merged) timeline.focusClip(merged);
-    timeline.clearSplitPair();
-    return;
+function onDeleteKey() {
+  const id = timeline.focusedClipId;
+  if (!id) return;
+  const found = projectStore.findEvent(id);
+  projectStore.removeEvent(id);
+  timeline.focusClip(null);
+  timeline.clearSplitPair();
+  if (found) timeline.focusTrack(found.track.id);
+}
+
+function onSplitKey() {
+  const id = timeline.focusedClipId;
+  if (!id) return;
+  const res = projectStore.splitEvent(id, timeline.currentTime, timeline.splitStrategy);
+  if (res?.degraded) message.warning(SPLIT_DEGRADED_TEXT);
+  if (res) {
+    const right = projectStore.findEvent(res.rightId);
+    timeline.setSplitPair(
+      right && right.event.type !== "ocr_region"
+        ? { trackId: right.track.id, leftId: res.leftId, rightId: res.rightId }
+        : null
+    );
+    timeline.focusClip(res.rightId);
+    if (right) timeline.focusTrack(right.track.id);
   }
+}
+
+function onMergeKey() {
+  const id = timeline.focusedClipId;
+  if (!id) return;
+  const merged = projectStore.mergeAdjacent(id, timeline.mergeStrategy);
+  if (merged) timeline.focusClip(merged);
+  timeline.clearSplitPair();
 }
 
 // ── 初始默认缩放：视口覆盖约 30% 视频时长 ──
@@ -614,7 +662,26 @@ onMounted(() => {
   rootRef.value?.addEventListener("wheel", onWheelRoot, { passive: false });
   // 与挂载同生命周期注册（不能只靠 activate：KeepAlive 下孙组件收不到 activated）
   window.addEventListener("mousedown", onWindowMouseDown, true);
-  window.addEventListener("keydown", onKeydown);
+  // 快捷键：全部登记到统一分发器，活动时间轴由鼠标进入判定（见 composables/shortcuts.ts）
+  shortcutOffs.push(
+    onShortcut("toolSelect", () => timeline.setTool("select"), timelineShortcutActive),
+    onShortcut("toolSplit", () => timeline.setTool("split"), timelineShortcutActive),
+    onShortcut("toggleSnap", () => timeline.toggleSnap(), timelineShortcutActive),
+    onShortcut("frameStep", onArrowKey, timelineShortcutActive),
+    onShortcut("secondStep", onSecondStep, timelineShortcutActive),
+    onShortcut(
+      "docStartEnd",
+      (e) => seekWithScroll(e.key === "Home" ? 0 : timeline.duration),
+      timelineShortcutActive
+    ),
+    onShortcut("prevNextClip", onPrevNextClip, timelineShortcutActive),
+    onShortcut("zoom", onZoomKey, timelineShortcutActive),
+    onShortcut("zoomFit", () => timeline.zoomToFit(), timelineShortcutActive),
+    onShortcut("splitAtPlayhead", onSplitKey, timelineShortcutActive),
+    onShortcut("mergeNext", onMergeKey, timelineShortcutActive),
+    onShortcut("delete", onDeleteKey, timelineShortcutActive),
+    onShortcut("exitSplitPair", () => timeline.clearSplitPair(), timelineShortcutActive)
+  );
 });
 
 onActivated(activate);
@@ -624,13 +691,19 @@ onUnmounted(() => {
   viewportObserver?.disconnect();
   rootRef.value?.removeEventListener("wheel", onWheelRoot);
   window.removeEventListener("mousedown", onWindowMouseDown, true);
-  window.removeEventListener("keydown", onKeydown);
+  shortcutOffs.splice(0).forEach((off) => off());
+  markHoveredTimeline(null);
   deactivate();
 });
 </script>
 
 <template>
-  <div class="timeline-root" ref="rootRef">
+  <div
+    class="timeline-root"
+    ref="rootRef"
+    @mouseenter="markHoveredTimeline(shortcutOwner)"
+    @mouseleave="markHoveredTimeline(null)"
+  >
     <TimelineToolStrip v-if="props.showToolStrip" :variant="props.toolVariant" />
 
     <div class="timeline-col">

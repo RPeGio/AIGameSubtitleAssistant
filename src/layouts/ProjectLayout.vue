@@ -9,6 +9,7 @@ import { useProjectStore } from "../stores/project";
 import { useTimelineStore } from "../stores/timeline";
 import { useUiStore } from "../stores/ui";
 import { useManualSave } from "../composables/useManualSave";
+import { dispatchShortcut, isEditableTarget, onShortcut } from "../composables/shortcuts";
 
 const route = useRoute();
 const router = useRouter();
@@ -69,40 +70,34 @@ function cleanupFocus() {
   }
 }
 
+// ── 全局快捷键：统一由 composables/shortcuts.ts 分发（键位表只在那里定义）──
+// 这里只登记全局动作；S 分割 / Delete 删除 / M 合并等由各 Timeline 实例登记。
 function onGlobalKeydown(e: KeyboardEvent) {
-  const t = e.target as HTMLElement;
-  if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
-
-  // 撤销/重做（含聚焦悬空清理）
-  if (e.code === "KeyZ" && e.ctrlKey) {
-    e.preventDefault();
-    if (e.shiftKey) {
-      projectStore.redo();
-    } else {
-      projectStore.undo();
-    }
-    cleanupFocus();
-    return;
-  }
-  if (e.code === "KeyY" && e.ctrlKey) {
-    e.preventDefault();
-    projectStore.redo();
-    cleanupFocus();
-    return;
-  }
-
-  if (e.code === "KeyS" && e.ctrlKey) {
-    e.preventDefault(); // 挡住浏览器默认保存对话框
-    manualSave();
-    return;
-  }
-
-  // Delete/S/M 已下沉到各 Timeline 实例处理自己的 store（校对区全局 + 语料页独立），
-  // 这里不重复处理，避免双重触发作用于错误的时间轴。
+  if (isEditableTarget(e.target)) return;
+  if (dispatchShortcut(e)) e.preventDefault();
 }
 
-onMounted(() => window.addEventListener("keydown", onGlobalKeydown));
-onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
+const offShortcuts: Array<() => void> = [];
+
+onMounted(() => {
+  window.addEventListener("keydown", onGlobalKeydown);
+  offShortcuts.push(
+    onShortcut("save", () => manualSave()),
+    onShortcut("undo", () => {
+      projectStore.undo();
+      cleanupFocus();
+    }),
+    onShortcut("redo", () => {
+      projectStore.redo();
+      cleanupFocus();
+    })
+  );
+});
+
+onUnmounted(() => {
+  window.removeEventListener("keydown", onGlobalKeydown);
+  offShortcuts.splice(0).forEach((off) => off());
+});
 </script>
 
 <template>

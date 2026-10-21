@@ -21,11 +21,14 @@
 | 15 | ✅ clip 拖边（改起止）时显示起止参考线 | 功能·时间轴 | 无（与 8/9 同区） | 已实现（提交号待补）：独立 `edgeGuideX` + 标尺下沿→滑条上沿的虚线 |
 | 16 | ✅ clip 吸附目标新增「播放头」 | 功能·时间轴 | 无（与 8/9 同区） | 已实现（提交号待补）：`collectSnapEdges` 追加播放头；单点候选本就不过滤 |
 | 17 | ✅ 去除轨道内 clip 的所有句末标点 | 功能·文本清理 | 8（句界操作会留下句尾逗号） | 已实现（提交号待补）：轨道总览「美化」下拉的「去除文本末标点」 |
-| 10 | 快捷键体系（调研 → 注册表 → 帮助面板） | 功能·跨页 | 8、9 | 键位必须绑在定稿交互上，先做必返工 |
+| 10 | ✅ 快捷键体系（注册表 + 单一监听；帮助面板并入第 19 项） | 功能·跨页 | 8、9 | 已实现（提交号待补）：`composables/shortcuts.ts` 分发器 + 活动时间轴判定 |
 | 11 | 欢迎页自检升级（探针 + 静默 bootstrap + 后端指引） | 功能·独立 | 7（info 基建）·「并行分支接口」的命令缺口 | 独立大件，放中后段不打断时间轴主线 |
 | 12 | CUDA GPU 加速参数化（设备迁移到 UI） | 功能·Rust+UI | 7（要带 info 说明）+ 11（需 `probe_moss_backend` 命令） | 存储与判定逻辑已随 PR #48 就位，只缺字段迁移与 UI |
 | 13 | 杂项清理与验证（死代码/参数开关/波形/图标） | 清理·零碎 | 无 | 随时可插入的零碎项，放最后一批 |
 | 14 | 内嵌 ffmpeg/ffprobe + 欢迎页 ffmpeg 自检卡 | 功能·打包 | 11（自检卡复用其探针机制） | 外部依赖一致性；涉及打包策略，宜与 11 一起看 |
+| 19 | 设置面板（默认 ASR 模型 + 快捷键查看/修改） | 功能·跨页 | 10（注册表） | 改动大、用户明确单独一个 PR；快捷键帮助面板并入此项 |
+| 20 | 校对区选中 clip 时，轨道总览滚动到该行 | 修复·小 | 无 | 独立小件，可随时插入 |
+| 21 | 时间轴框选多选（含 `Ctrl+A` 全选） | 功能·核心 | 10（活动时间轴判定） | 多选模型要先立起来，其余多选操作语义后续再定 |
 
 ---
 
@@ -529,20 +532,60 @@
 
 ## D 组：跨页面体验与外部一致性
 
-### 10. 收集主流视频编辑软件通用快捷键并应用
+### 10. ✅ 快捷键体系（注册表 + 单一监听；帮助面板移到第 19 项）
+
+**已实现（2026-10-21，提交号待补）**
+
+| 改动 | 文件 | 内容 |
+|---|---|---|
+| 注册表 + 分发器 | 新建 `src/composables/shortcuts.ts` | `SHORTCUTS`（21 个动作、按组分类）、`shortcutKey()` 规范成 `Ctrl+Shift+Z` / `Space` / `ArrowLeft`、`onShortcut(id, run, active?)` 注册、`dispatchShortcut(e)` 分发并返回是否命中、`markHoveredTimeline()/isActiveTimeline()` 活动时间轴、`isEditableTarget()`；注册表自身键位冲突在启动时 `console.warn` |
+| 唯一 window 监听 | `src/layouts/ProjectLayout.vue` | 原 `onGlobalKeydown`（Ctrl+S/Z/Y 硬编码）改为 `dispatchShortcut`，并登记 save/undo/redo 三个动作 |
+| 时间轴动作下沉 | `src/components/timeline/Timeline.vue` | 删掉自己挂在 window 的 keydown（**修掉「两条时间轴同时响应」的既有缺陷**），改为登记 toolSelect/toolSplit/toggleSnap/frameStep/secondStep/docStartEnd/prevNextClip/zoom/zoomFit/splitAtPlayhead/mergeNext/delete/exitSplitPair；新增 props `timelineRole`（primary/mini）与 `videoSource`（逐帧按哪支视频的 fps）；`@mouseenter/@mouseleave` 标记活动时间轴；⬅️➡️ 在分割态搬句界、否则逐帧（`1/fps`） |
+| 播放动作 | `src/components/VideoPlayer.vue` | 登记 playPause/reverse/stopPlay/forward；**倒放用 rAF 按真实耗时递减 currentTime**（浏览器不支持负 `playbackRate`），到 0 自停；K 暂停并复位方向 |
+| 缩放至全部 | `src/stores/timeline.ts` | 新增 `zoomToFit()`（`pps = 视口宽/时长`、`scrollLeft = 0`） |
+| 迷你时间轴角色 | `src/components/SourceTimeline.vue` | 传 `timeline-role="mini"` 与 `video-source`（语料页按剧情录屏 fps 逐帧） |
+
+**验证（`temp/css-preview/checks/item10.js`、`item10b.js`、`item10c.js`；合成 keydown，真实敲键待用户确认）**
+- 工具：`C` → 分割工具（含策略面板标题）、`V` → 选择工具、`N` 吸附开/关（`.tool-btn.active` 翻转）。
+- 跳转：`Home` → 0；`End` → 743.481；`→` 逐帧 0.11px（= `1/30 × pps`）、`Shift+→` 3.38px（= `1 × pps`）；`,`/`.` 跳到上/下一个 clip 起点（3.2s）。
+- 缩放：同一个 clip 22.58 → 27.32（两次 `=`）→ 24.59（一次 `-`）→ 6.77（`\` 缩放至全部）。
+- 编辑：clip 内部 `S` 分割 41 → 42 且 `.split-pair` = 2、`Esc` 归零；`M` 41 → 40；`Delete` → 39；均在聚焦 clip 上生效。
+- 播放：`Space` 500ms 前进 0.313s、再按暂停；`J` 450ms 后退 0.45s（≈1×）、`K` 后 Δ = 0；`L` 恢复播放。
+- 输入框内按 `C` 不切工具（`isEditableTarget` 生效）。
+- **活动时间轴**：悬停迷你时间轴按 `N` → 只有迷你开关翻转；悬停主时间轴按 `N` → 只有主时间轴翻转；两者都移出后按 `N` → 主时间轴（默认响应者）翻转。
+- `pnpm build` ✓ 2901 模块。
+
+**未做（用户明确留待第 19 项）**：帮助面板与「快捷键查看/修改」UI；注册表已预留 `group`/`label` 字段供其直接消费。
 
 **现状依据（散落三处）**
 - `src/layouts/ProjectLayout.vue`：Ctrl+S 保存 / Ctrl+Z 撤销 / Ctrl+Shift+Z、Ctrl+Y 重做。
 - `src/components/timeline/Timeline.vue:378-411`：Delete 删除聚焦 clip、S 在播放头处分割、M 合并相邻（**每个 Timeline 实例各绑一次**）。
 - `src/components/VideoPlayer.vue` 的 `handleKeydown`（播放器自身的按键）。
 
+**调研结论（2026-10-21）**
+- Premiere：`Space` 播放、`←/→` 一帧、`Shift+←/→` 五帧、`Home/End` 首尾、`V/C` 选择/剃刀、`S` 吸附、`Ctrl+K` 播放头切开、`+/-` 缩放、`?` 帮助。
+- Resolve：`J/K/L` 倒放/停/正放、`A/B` 选择/刀片、`N` 吸附、`Ctrl+B` 播放头切开。
+- Aegisub（字幕向）：`s` 播放选区、`q/w/e/d` 前后 500ms、`g` 提交进下一行、`z/x` 换行、`a/f` 滚动。
+- 依据：[Aegisub 计时手册](https://aeg-dev.github.io/AegiSite/docs/3.0/Timing/)、[Premiere 默认快捷键](https://helpx.adobe.com/premiere/desktop/get-started/keyboard-shortcuts/default-keyboard-shortcuts.html)、[Resolve 快捷键表](https://www.editorskeys.com/blogs/news/davinci-resolve-keyboard-shortcuts-pdf-cheat-sheet)。
+
+**用户已定的决策（2026-10-21，m06929）**
+- **吸附开关用 `N`**（避让 `S`）；`S` 保持「播放头处分割」（本应用是字幕工作站，分割为最高频操作，属**有意偏离** Premiere）。
+- **`J/K/L` 只做单速**：`J` 1× 倒放、`L` 1× 正放、`K` 停止并恢复正放；**不做连按加速**（用户认为没必要）。
+- **`⬅️/➡️` 不在分割态时退化为逐帧步进**（分割态仍为搬句界）。
+- **帮助面板与它的快捷键暂时只记待办**——由第 19 项「设置面板」承载（快捷键查看 + 修改）。
+- **`Ctrl+A` 暂不做**，随第 21 项多选一起实现（理由见第 21 项）。
+
 **要做**
-- 先产出调研对照表：主流 NLE（Premiere Pro / DaVinci Resolve / Vegas / Subtitle Edit / Aegisub）的通用键位 → 与我们功能集的「对齐 / 保留 / 冲突」三栏；
-- 收敛成一份**快捷键注册表**（集中定义、冲突检测、可选帮助面板），再逐个替换现有散落绑定。
+- 新建 `src/composables/shortcuts.ts`：`ShortcutDef { id, group, label, keys[], scope: "global" | "timeline" | "player" }` + `formatKey(e)`（规范成 `Ctrl+Shift+Z` / `Space` / `Shift+ArrowLeft`）+ `SHORTCUTS` 注册表 + `SHORTCUT_GROUPS`；**键位只在这里定义**（将来设置面板与帮助面板同源读取）。
+- 单一监听：`src/layouts/ProjectLayout.vue` 现有 `onGlobalKeydown` 扩成唯一入口 —— 先放行输入框（INPUT/TEXTAREA/contenteditable），再 `dispatchShortcut(e)`，命中则 `preventDefault()`；各组件通过注册函数挂自己的处理器，不再各自 `window.addEventListener("keydown")`。
+- **活动时间轴**：`timeline` 作用域的处理器按实例注册，分发时只调到「最近一次鼠标进入的时间轴」（`mouseenter` 标记；无标记时默认真正的校对区时间轴，即注入的独立 store 之外的那个）。**顺带修既有缺陷**：现在校对区 `Timeline` 与迷你时间轴 `Timeline` 都往 window 挂 keydown，打轴页按 `Delete`/`S`/`M` 会同时作用到两条时间轴。
+- 键位清单：`Space` 播放暂停、`J/K/L` 单速倒放/停/正放、`←/→` 逐帧（分割态为搬句界）、`Shift+←/→` ±1 秒、`Home/End` 片头/片尾、`,`/`.` 上/下一个 clip、`=`/`-` 缩放、`\` 缩放至全部、`N` 吸附、`V`/`C` 选择/分割工具、`S` 分割、`M` 合并、`Delete` 删除、`Esc` 退出分割态、`Ctrl+Z`/`Ctrl+Y`(`Ctrl+Shift+Z`)/`Ctrl+S`。
+- 全局监听一律按 PR49 审查的写法：挂 `onMounted` + `isConnected`/注入判定当激活闸门（`onActivated` 只对 `<KeepAlive>` 直接子组件触发）。
 
-**为什么放这里**：第 8、9 项会改分割/合并语义与迷你时间轴交互，先定键位必返工。
+**验收**
+- 每条键位用 CDP 可信 `keydown` 实测（含输入框内不触发、KeepAlive 暂存页不响应、两条时间轴互不串扰）；
+- `pnpm build` 通过；倒放实测时间在减少、`K` 后恢复正放；逐帧步进 = `1/fps`。
 
-**待与用户讨论**：`Space` 播放/暂停、`J/K/L` 变速、`I/O` 入出点、方向键逐帧与现有 `S`/`M`/`Delete` 的冲突取舍。
 
 ### 11. 欢迎页模型自检升级（探针 + 未就绪静默 bootstrap）
 
@@ -600,3 +643,63 @@
 - 一台**没有** ffmpeg 的机器：欢迎页 ffmpeg 卡显示内嵌版本（而非未就绪），元数据/抽帧/波形全部可用；
 - 有 PATH ffmpeg 的机器行为不回退（查找顺序明确、可预期）；
 - 安装包内包含二进制，且许可档案已更新。
+
+### 19. 设置面板（默认 ASR 模型 + 快捷键查看/修改）
+
+**来源**：用户 m06929（原话）「增加设置面板，详细功能待定，但确定包括的有默认ASR模型设置、快捷键设置（承载快捷键查看和修改两个功能），改动较大，值得单独一个PR」。
+
+**现状依据**
+- 没有设置面板/设置路由：`src/AppSidebar.vue` 的 `NAV_ITEMS` 只有四个页面，顶栏（`src/components/AppToolbar.vue`）只有折叠/撤销重做/面包屑/主题/保存/导出。
+- ASR 引擎是页面局部状态：`src/views/AsrView.vue` 的引擎 ref 只在本页生效，离开页面即回到默认；后端 `check_asr_engines` 已能给出可选引擎列表（`src/types/index.ts:209` `AsrEngineStatus`）。
+- 快捷键此时会集中在 `src/composables/shortcuts.ts` 的注册表（第 10 项产出），但**没有用户覆盖层**。
+
+**要做**
+- 新入口：顶栏右侧加「设置」按钮（与 `src/components/AppToolbar.vue` 的主题胶囊并列），内容用 `NModal` 或独立路由页（待定，倾向 Modal，避免打断当前工程）。
+- ① **默认 ASR 模型**：从 `projectStore.getAsrEngines()` 取列表渲染选择器，持久化（`localStorage` 或工程配置，待定）；`AsrView.vue` 初始化时读该值而不是硬编码 `"moss"`。
+- ② **快捷键查看 + 修改**：读 `src/composables/shortcuts.ts` 注册表；注册表增加「默认键 + 用户覆盖」两层（`resolveKeys(id)`），持久化 `gsa.shortcuts`；改键时做**冲突检测**（同 scope 内重复键提示且不落库）；「查看」视图即原第 10 项计划的帮助面板（分组表格 + `<kbd>` 样式），可搜索。
+- ③ 为后续默认项预留分组（语言、输出格式等），本次不实现。
+
+**验收要点**
+- 改键即时生效、重启后保留；冲突时提示且不写库；恢复默认可用；
+- 设置里的默认模型影响 `AsrView` 的初始引擎，且与 `AppStatusBar.vue` 的引擎段一致；
+- 帮助/查看视图按键位分组展示，与注册表同源（不出现「文案与实现不符」）。
+
+**为什么单独一个 PR**：跨页状态 + 持久化 + 冲突检测，与第 10 项的实现面重叠但不属于同一改动单元；用户明确要求单独 PR。
+
+### 20. 校对区选中 clip 时，轨道总览滚动到该行
+
+**来源**：用户 m06929（「在校对区选中clip时，轨道总览视口跳转至选中的clip」）。
+
+**现状依据**
+- `src/components/TrackOverview.vue` 的行列表在 `.overview-body`（`overflow-y: auto`）内，行是 `.ov-entry`；聚焦行已有 `.focused` 样式（inset 强调色 + `::before` 竖条）。
+- 选中来源是 `timeline.focusedClipId`（`src/components/timeline/Timeline.vue` 里 `focusClip` 设置），TrackOverview 已有 `focusedTrack` / `clips` computed，但**没有对 focusedClipId 做滚动**。
+
+**要做**
+- 行元素带可定位标记（`data-clip-id` 或 `ref` 数组），watch `timeline.focusedClipId` → `nextTick()` 后对目标行 `scrollIntoView({ block: "nearest" })`（**最小滚动**，已在视口内则不动，不要 `center` 打断浏览）。
+- 只在「时间轴点选/键盘跳转」时滚；因文本编辑导致的 focus 变化不要抢滚动（编辑中的行本来就可见，`nearest` 天然满足，故无需额外分支）。
+
+**验收要点**
+- 点时间轴上任意 clip → 总览滚动到该行（已在视口内不动）；键盘 `,/.` 跳到相邻 clip 时同样滚动；
+- 行内编辑/重命名期间滚动不打断输入；无页面溢出。
+
+### 21. 时间轴框选多选（含 `Ctrl+A` 全选）
+
+**来源**：用户 m06929（原话）「各时间轴在「选择」组件选中状态下，在时间轴区空白处左键并按住拖动时，以左键落地处以及光标拖动处作为两处对角锚点，生成范围选择矩形框，矩形框经过的clip均会被选中（多选功能），在按下Shift开始拖动的情况下，已被选中的clip不会失焦；在按下Ctrl开始拖动的情况下，选区框语义变为toggle（已被选中的clip且没有被再次框选的clip不会失焦，但如果选区框再次经过已被框中的clip，则失焦）」。
+
+**现状依据**
+- 选择模型是单值：`src/stores/timeline.ts` 的 `focusedClipId` / `focusedTrackId`；`src/components/timeline/TimelineClip.vue` 只渲染单个 `.focused`。
+- `.tl-track-body` 上已有 mousedown 处理（`Timeline.vue` 的 `onTrackAreaMouseDown`：加选区草稿 / 空白点击 seek / 合并工具），框选要接进同一条路径且不互相抢。
+- 没有任何多选先例 ⇒ 选中态、操作语义（删除/分割/拖动）都要重新定义。
+
+**要做**
+- **选择模型升级**：`selectedClipIds: Set<string>`（集合内即高亮），保留一个「主选中」用于轨道总览定位与文本编辑（可由最后点中的那个派生）；渲染区分「选中」与「主选中」两级。
+- **框选交互**：选择工具下在轨道空白处左键拖动，以落点与当前光标为对角生成矩形（视觉：虚线描边 + 半透明填充，与加选区工具的 `.region-draft` 明确区分）；**拖动距离 < 3px 视为点击（照旧 seek）**，≥3px 才进入框选；松手时**与矩形相交**的 clip 全部入选项（用户口径是「经过即选中」，不是「完全包含」）。
+- **修饰键**（在按下时决定语义）：`Shift` = 并集（原有选择保留）；`Ctrl` = toggle（框到已选中的取消选中，未框到的保留）；无修饰 = 替换。
+- **操作语义**（先只定这两条，其余后续再定）：`Delete` 删除全部选中（一次快照）；`Ctrl+A` 选中活动时间轴内所有可见轨道的 clip（依赖第 10 项的「活动时间轴」判定，故本项排在 10 之后）。
+- `Ctrl+A` **随本项一起做**，不单独提前实现——多选模型未立时它没有作用对象，先加会是空壳。
+
+**验收要点**
+- 框选/Shift 并集/Ctrl toggle 三种语义正确；不拖（<3px）仍 seek；与加选区工具、拖起止、吸附、分割态互不干扰；
+- `Ctrl+A` 只作用于活动时间轴（校对区与迷你时间轴分别验证）；`Delete` 多删只产生一次撤销；
+- 迷你时间轴同样支持框选（它复用同一个 `Timeline.vue`）。
+

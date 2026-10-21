@@ -5,6 +5,7 @@ import { useRoute } from "vue-router";
 import { useTimelineStore } from "../stores/timeline";
 import { useProjectStore } from "../stores/project";
 import { useVideoContentRect } from "../composables/useVideoContentRect";
+import { onShortcut } from "../composables/shortcuts";
 import SubtitleOverlay from "./SubtitleOverlay.vue";
 import RegionOverlay from "./RegionOverlay.vue";
 import AppIcon from "./AppIcon.vue";
@@ -167,20 +168,57 @@ function seekTo(e: Event) {
   v.currentTime = (parseFloat(target.value) / 100) * duration.value;
 }
 
-function handleKeydown(e: KeyboardEvent) {
-  // 被 KeepAlive 暂存（校对区收起）时 DOM 已脱离文档：不响应。
-  // 孙组件收不到 activated/deactivated 钩子（Vue 只对 <KeepAlive> 的直接子组件
-  // 触发，见 Timeline.vue 同款注释）⇒ 监听必须挂在 mount 生命周期上，用
-  // DOM 是否仍连接文档当激活闸门。
-  if (!(containerRef.value?.isConnected ?? false)) return;
-  // 编辑文字时（输入框/contentEditable）不拦截空格，避免吞掉输入
-  const t = e.target as HTMLElement;
-  if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
-  if (e.code === "Space") {
-    e.preventDefault();
-    togglePlay();
-  }
+// ── 播放类快捷键（Space / J / K / L）：登记到统一分发器（键位表在 shortcuts.ts）──
+// 活动闸门用「DOM 是否仍在文档里」：校对区被 KeepAlive 暂存时 isConnected=false，
+// 孙组件收不到 activated/deactivated 钩子（见 Timeline.vue 同款注释）。
+function isPlayerActive(): boolean {
+  return containerRef.value?.isConnected ?? false;
 }
+
+// 倒放：浏览器不支持负 playbackRate，用 rAF 按真实耗时把 currentTime 递减
+const reverseActive = ref(false);
+let reverseRaf = 0;
+let reverseLast = 0;
+
+function stopReverse() {
+  reverseActive.value = false;
+  if (reverseRaf) cancelAnimationFrame(reverseRaf);
+  reverseRaf = 0;
+}
+
+function startReverse() {
+  const v = videoRef.value;
+  if (!v || reverseRaf) return;
+  v.pause();
+  reverseActive.value = true;
+  reverseLast = performance.now();
+  const step = (now: number) => {
+    const el = videoRef.value;
+    if (!el || !reverseActive.value || !isPlayerActive()) {
+      reverseRaf = 0;
+      reverseActive.value = false;
+      return;
+    }
+    const dt = Math.min(0.1, (now - reverseLast) / 1000);
+    reverseLast = now;
+    const next = el.currentTime - dt;
+    if (next <= 0) {
+      el.currentTime = 0;
+      currentTime.value = 0;
+      timeline.setTime(0);
+      stopReverse();
+      return;
+    }
+    el.currentTime = next;
+    currentTime.value = next;
+    timeline.setTime(next);
+    reverseRaf = requestAnimationFrame(step);
+  };
+  reverseRaf = requestAnimationFrame(step);
+}
+
+const shortcutOffs: Array<() => void> = [];
+
 
 // KeepAlive 收起（切到语料页）时停住播放：失活钩子收不到（见 handleKeydown 注释），
 // 用路由当信号——校对区仅在非语料页显示（ProjectLayout 的 showReviewPane），
@@ -198,8 +236,42 @@ watch(
   }
 );
 
-onMounted(() => window.addEventListener("keydown", handleKeydown));
-onUnmounted(() => window.removeEventListener("keydown", handleKeydown));
+onMounted(() => {
+  shortcutOffs.push(
+    onShortcut(
+      "playPause",
+      () => {
+        stopReverse();
+        togglePlay();
+      },
+      isPlayerActive
+    ),
+    onShortcut("reverse", () => startReverse(), isPlayerActive),
+    onShortcut(
+      "stopPlay",
+      () => {
+        stopReverse();
+        const v = videoRef.value;
+        if (v && !v.paused) v.pause();
+      },
+      isPlayerActive
+    ),
+    onShortcut(
+      "forward",
+      () => {
+        stopReverse();
+        const v = videoRef.value;
+        if (v && v.paused) togglePlay();
+      },
+      isPlayerActive
+    )
+  );
+});
+
+onUnmounted(() => {
+  shortcutOffs.splice(0).forEach((off) => off());
+  stopReverse();
+});
 </script>
 
 <template>
