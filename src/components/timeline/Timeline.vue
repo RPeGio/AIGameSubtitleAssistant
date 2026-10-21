@@ -1156,18 +1156,16 @@ onUnmounted(() => {
   cursor: pointer;
 }
 
-/* 轨道操作按钮组：hover 显示，位于轨道名下方一行 */
+/* 轨道操作按钮组：常显淡色（样稿口径），整行 hover 时提亮；不再隐藏以免用户找不到 */
 .tl-label-actions {
   display: flex;
   gap: 3px;
-  opacity: 0;
-  pointer-events: none;
+  opacity: 0.45;
   transition: opacity 0.12s;
 }
 
 .tl-label-col:hover .tl-label-actions {
   opacity: 1;
-  pointer-events: auto;
 }
 
 .tl-label-btn {

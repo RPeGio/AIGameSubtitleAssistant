@@ -6,7 +6,7 @@ import SourceTimeline from "../components/SourceTimeline.vue";
 import ParamStepper from "../components/ParamStepper.vue";
 import AppIcon from "../components/AppIcon.vue";
 import InfoDot from "../components/InfoDot.vue";
-import { GLOSSARY_DOC } from "../composables/ocrParamDocs";
+import { FIX_MISREAD_DOC, GLOSSARY_DOC } from "../composables/ocrParamDocs";
 import type { CorpusItem, Diff, OcrRegionEvent } from "../types";
 import { usePersistedOcrParams } from "../composables/ocrDefaults";
 import { frameDurOf, hitsFrame } from "../composables/useFrameTolerance";
@@ -443,7 +443,6 @@ function discardDiff(d: Diff) {
                   <SourceVideoPreview
                     v-model:time="sourceTime"
                     :duration="sourceDuration"
-                    :show-header="false"
                   />
                 </div>
                 <div class="vside">
@@ -538,6 +537,23 @@ function discardDiff(d: Diff) {
                   :max="10"
                   :step="1"
                 />
+              </div>
+
+              <!-- 后端已有、此前界面未暴露的开关（第 13 项） -->
+              <div class="chkrow">
+                <button
+                  type="button"
+                  class="chk"
+                  role="checkbox"
+                  :aria-checked="ocrParams.punctuation.fix_misread_letters ? 'true' : 'false'"
+                  @click="
+                    ocrParams.punctuation.fix_misread_letters =
+                      !ocrParams.punctuation.fix_misread_letters
+                  "
+                >
+                  <i :class="{ on: ocrParams.punctuation.fix_misread_letters }"></i>修正行尾 j（引号误识别）
+                </button>
+                <InfoDot :text="FIX_MISREAD_DOC" title="修正行尾 j（引号误识别）" />
               </div>
 
               <div class="arow">

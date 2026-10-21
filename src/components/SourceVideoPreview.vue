@@ -5,7 +5,6 @@ import { useProjectStore } from "../stores/project";
 import { useTimelineStore } from "../stores/timeline";
 import { useVideoContentRect } from "../composables/useVideoContentRect";
 import RegionOverlay from "./RegionOverlay.vue";
-import { NButton } from "naive-ui";
 
 const projectStore = useProjectStore();
 /// 全局时间轴 store：仅在 syncPlayback 时用于协调"谁出声"（播放时间本身走 v-model）
@@ -25,13 +24,11 @@ const props = withDefaults(
     duration: number;
     /// 绑定视频源："source" 剧情录屏（默认，语料页）| "clip" 切片（转写页嵌字 OCR）
     videoKey?: "source" | "clip";
-    /// 是否显示组件自带的「更换视频」头行（页面已自带文件行时置 false，避免重复按钮）
-    showHeader?: boolean;
     /// 是否参与共享播放权（打轴页与校对区共用播放头时置 true）：
     /// 另一侧开始播放时本预览只跟随时间、自动暂停，避免同一文件双声道
     syncPlayback?: boolean;
   }>(),
-  { videoKey: "source", showHeader: true, syncPlayback: false }
+  { videoKey: "source", syncPlayback: false }
 );
 
 const emit = defineEmits<{
@@ -174,25 +171,6 @@ onUnmounted(() => {
 
 <template>
   <div class="source-preview">
-    <div v-if="props.showHeader" class="preview-header">
-      <NButton
-        v-if="props.videoKey === 'source'"
-        size="small"
-        type="primary"
-        @click="projectStore.importSourceVideo()"
-      >
-        更换剧情录屏
-      </NButton>
-      <NButton
-        v-else
-        size="small"
-        type="primary"
-        @click="projectStore.importVideo()"
-      >
-        更换切片视频
-      </NButton>
-    </div>
-
     <div ref="containerRef" class="preview-container">
       <video
         ref="videoRef"
@@ -246,11 +224,6 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 8px;
   height: 100%;
-}
-
-.preview-header {
-  display: flex;
-  justify-content: flex-end;
 }
 
 .preview-container {

@@ -43,6 +43,13 @@ export const OCR_PARAM_DOCS: Record<string, string> = {
     "默认 1：只丢纯符号段；0 = 关闭这道门。",
 };
 
+/// 易混字母纠正（`PunctuationNorm.fix_misread_letters`，此前界面上没有入口）
+/// 依据：`src-tauri/src/ocr/params.rs:72-74`（字段与默认值）、`correct.rs:60-89`（实现与上下文约束）
+export const FIX_MISREAD_DOC =
+  "把被 OCR 读成字母的引号修回来：英文嵌字里行尾的 j / J 常是右括号「」退化。\n" +
+  "只在该字母处在行尾、且本行没有其它括号时才替换，避免误伤正常单词（如 Sonnet 结尾的 j）。\n" +
+  "默认开启；关掉可保留 OCR 原始输出，便于人工判断是识别错误还是原文如此。";
+
 /// 术语表（同一套 hover 机制）
 /// 依据：params.rs:153-159（模糊匹配、编辑距离比例 ≤0.34）、correct.rs:232（GLOSSARY_MATCH_TOL）
 export const GLOSSARY_DOC =

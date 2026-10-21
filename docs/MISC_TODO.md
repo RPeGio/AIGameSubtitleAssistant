@@ -24,7 +24,7 @@
 | 10 | ✅ 快捷键体系（注册表 + 单一监听；帮助面板并入第 19 项） | 功能·跨页 | 8、9 | 已实现（提交号待补）：`composables/shortcuts.ts` 分发器 + 活动时间轴判定 |
 | 11 | 欢迎页自检升级（探针 + 静默 bootstrap + 后端指引） | 功能·独立 | 7（info 基建）·「并行分支接口」的命令缺口 | 独立大件，放中后段不打断时间轴主线 |
 | 12 | CUDA GPU 加速参数化（设备迁移到 UI） | 功能·Rust+UI | 7（要带 info 说明）+ 11（需 `probe_moss_backend` 命令） | 存储与判定逻辑已随 PR #48 就位，只缺字段迁移与 UI |
-| 13 | 杂项清理与验证（死代码/参数开关/波形/图标） | 清理·零碎 | 无 | 随时可插入的零碎项，放最后一批 |
+| 13 | ✅ 杂项清理与验证（死代码/参数开关/图标；真机波形待验） | 清理·零碎 | 无 | 已实现（提交号待补）：死代码已删、易混字母开关已暴露、轨道图标常显 |
 | 14 | 内嵌 ffmpeg/ffprobe + 欢迎页 ffmpeg 自检卡 | 功能·打包 | 11（自检卡复用其探针机制） | 外部依赖一致性；涉及打包策略，宜与 11 一起看 |
 | 19 | 设置面板（默认 ASR 模型 + 快捷键查看/修改） | 功能·跨页 | 10（注册表） | 改动大、用户明确单独一个 PR；快捷键帮助面板并入此项 |
 | 20 | ✅ 校对区选中 clip 时，轨道总览滚动到该行 | 修复·小 | 无 | 已实现（提交号待补）：`data-clip-id` + 矩形比对最小滚动 |
@@ -618,7 +618,18 @@
 - 新增参数**必须同时带 info 说明**（复用第 7 项的基建）；
 - 需要先补 `probe_moss_backend` 命令（见「并行分支接口」）才能在界面上拿到判定结果。
 
-### 13. 杂项清理与验证
+### 13. ✅ 杂项清理与验证
+
+**已实现（2026-10-21，提交号待补）**
+
+| 子项 | 处理 | 验证 |
+|---|---|---|
+| 死代码 `.preview-header` | `src/components/SourceVideoPreview.vue` 删掉头部「更换剧情录屏/更换切片视频」整块模板、`showHeader` prop 与默认值、`.preview-header` 样式、`NButton` import；`src/views/CorpusView.vue` 去掉 `:show-header="false"` 调用点 | 编辑器页 `.preview-header` = 0；`pnpm build` ✓（模板/样式/props 三处都删干净，无残留引用） |
+| OCR 未暴露开关 `punctuation.fix_misread_letters` | 语料页与打轴页的参数区各加一行 `.chkrow`（`.chk` 勾选框 + `InfoDot`），文案新增 `FIX_MISREAD_DOC`（依据 `src-tauri/src/ocr/params.rs:72-74` 与 `correct.rs:60-89`：只修「行尾 j/J 是右括号退化」且本行无其它括号时） | 两页各 1 行、标签「修正行尾 j（引号误识别）」；点击切换后写入 `gsa.ocrParams.corpus` 的 `punctuation.fix_misread_letters`（实测 false/true 往返）；打轴页该行 `inViewport: true`；无溢出 |
+| 轨道操作图标常显 | `src/components/timeline/Timeline.vue` 的 `.tl-label-actions`：`opacity 0 → 0.45`、去掉 `pointer-events: none`（行 hover 提亮到 1），与样稿口径一致 | 编辑器页 4 组、计算 `opacity: 0.45`；可直接点击（不再需要先悬停） |
+| 波形行真实音频验证 | **未完成**（唯一剩余项） | mock 已用合成峰值验证过渲染与 48px 行高；真实音频与真实 ffmpeg 路径需在真机（`pnpm tauri dev` + 带音频素材）看一次 |
+
+**原始依据（保留）**
 
 - `src/components/SourceVideoPreview.vue` 内建的 `.preview-header`（「更换剧情录屏」/「更换切片视频」按钮）**是死代码**——`src/views/CorpusView.vue` 与 `src/views/AsrView.vue` 两处调用点都传 `:show-header="false"`，可整块删除（顺带删相关样式与 props 分支）。
 - OCR 参数里后端已有、界面未暴露的开关（如 `src/composables/ocrDefaults.ts` 的 `punctuation.fix_misread_letters`）→ 评估补 UI（当初 T3 因「不想造假控件」未做）。

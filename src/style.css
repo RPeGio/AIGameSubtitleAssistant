@@ -475,6 +475,14 @@ textarea.inp { height: auto; padding: 8px 10px; line-height: 1.6; resize: vertic
 
 .chk:hover { color: var(--text); }
 
+/* 可选开关行：勾选框 + 同排的 info 图标（不能把 InfoDot 的按钮嵌进 .chk 的按钮里） */
+.chkrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+}
+
 .chk i {
   width: 13px;
   height: 13px;
