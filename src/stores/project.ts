@@ -1396,6 +1396,19 @@ export const useProjectStore = defineStore("project", () => {
     }
   }
 
+  /// 批量删除事件：整体只记一次快照
+  /// （逐条调 removeEvent 会记 N 次快照，撤销要按 N 次才能删回去）
+  function removeEvents(ids: string[]) {
+    if (!currentProject.value || ids.length === 0) return;
+    const targets = new Set(ids);
+    const affected = currentProject.value.tracks.filter((t) =>
+      t.events.some((e) => targets.has(e.id))
+    );
+    if (affected.length === 0) return;
+    recordSnapshot();
+    for (const track of affected) track.events = track.events.filter((e) => !targets.has(e.id));
+  }
+
   /// 删除轨道（聚焦清理由 UI 层负责）
   function removeTrack(id: string) {
     if (!currentProject.value) return;
@@ -1506,6 +1519,7 @@ export const useProjectStore = defineStore("project", () => {
     findEvent,
     findTrack,
     removeEvent,
+    removeEvents,
     renameTrack,
     updateTrackRole,
     subtitlePreviewOn,

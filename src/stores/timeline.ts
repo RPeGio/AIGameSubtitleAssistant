@@ -152,8 +152,59 @@ export const useTimelineStore = defineStore("timeline", () => {
     return Math.max(0, Math.min(duration.value, t));
   }
 
+  // ── 多选（框选 / Ctrl+A）──
+  // 不变式：selectedClipIds 永远包含 focusedClipId；主选中为 null 时选择集为空。
+  // 主选中仍承担「总览定位 / 行内编辑 / Delete 目标」等单元素语义，多选只是附加集合。
+  const selectedClipIds = ref<string[]>([]);
+
+  function isSelected(id: string): boolean {
+    return selectedClipIds.value.includes(id);
+  }
+
+  /// 聚焦某个 clip 即「单击选择」：主选中改为它，选择集重置为单元素
   function focusClip(id: string | null) {
     focusedClipId.value = id;
+    selectedClipIds.value = id ? [id] : [];
+  }
+
+  /// 设定整个选择集；primary 缺省时若当前主选中不在集合内则取首个
+  function setSelection(ids: string[], primary?: string | null) {
+    const unique = Array.from(new Set(ids));
+    selectedClipIds.value = unique;
+    if (primary !== undefined) {
+      focusedClipId.value = primary;
+    } else if (unique.length === 0) {
+      focusedClipId.value = null;
+    } else if (!unique.includes(focusedClipId.value ?? "")) {
+      focusedClipId.value = unique[0];
+    }
+  }
+
+  /// 并集添加（框选按住 Shift）
+  function addToSelection(ids: string[]) {
+    const base = [...selectedClipIds.value];
+    for (const id of ids) if (!base.includes(id)) base.push(id);
+    setSelection(base, ids.length > 0 ? ids[ids.length - 1] : undefined);
+  }
+
+  /// 反选（框选按住 Ctrl）：已在集合内的移出，不在的加入
+  function toggleInSelection(ids: string[]) {
+    const next = [...selectedClipIds.value];
+    let last: string | null = null;
+    for (const id of ids) {
+      const at = next.indexOf(id);
+      if (at >= 0) next.splice(at, 1);
+      else {
+        next.push(id);
+        last = id;
+      }
+    }
+    setSelection(next, last ?? undefined);
+  }
+
+  function clearSelection() {
+    selectedClipIds.value = [];
+    focusedClipId.value = null;
   }
 
   /// 聚焦某条轨道（决定选区遮罩是否显示）
@@ -263,6 +314,12 @@ export const useTimelineStore = defineStore("timeline", () => {
     timeAtPixel,
     focusClip,
     focusTrack,
+    selectedClipIds,
+    isSelected,
+    setSelection,
+    addToSelection,
+    toggleInSelection,
+    clearSelection,
     setTool,
     setSplitStrategy,
     setMergeStrategy,

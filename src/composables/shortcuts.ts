@@ -42,7 +42,8 @@ export const SHORTCUTS: ShortcutDef[] = [
 
   { id: "splitAtPlayhead", group: "编辑", label: "在播放头处分割", keys: ["S"], scope: "timeline" },
   { id: "mergeNext", group: "编辑", label: "合并相邻片段", keys: ["M"], scope: "timeline" },
-  { id: "delete", group: "编辑", label: "删除选中片段", keys: ["Delete"], scope: "timeline" },
+  { id: "delete", group: "编辑", label: "删除选中片段（多选时整批）", keys: ["Delete"], scope: "timeline" },
+  { id: "selectAll", group: "编辑", label: "全选活动时间轴的片段", keys: ["Ctrl+A"], scope: "timeline" },
   { id: "exitSplitPair", group: "编辑", label: "退出被分割态", keys: ["Escape"], scope: "timeline" },
 ];
 

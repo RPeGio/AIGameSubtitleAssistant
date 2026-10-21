@@ -249,6 +249,121 @@ function startRegionDraft(e: MouseEvent, body: HTMLElement) {
   window.addEventListener("mouseup", onRegionDraftUp);
 }
 
+// ── 框选多选（选择工具）：空白处拖出矩形，相交即选 ──
+// 修饰键在按下瞬间决定语义：无修饰 = 替换、Shift = 并集、Ctrl/⌘ = 反选
+
+const MARQUEE_MIN_PX = 3;
+
+type MarqueeMode = "replace" | "union" | "toggle";
+
+interface MarqueeState {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  mode: MarqueeMode;
+  base: string[];
+  active: boolean;
+}
+
+const colRef = ref<HTMLElement | null>(null);
+const marquee = ref<MarqueeState | null>(null);
+
+/// 覆盖层坐标相对 .timeline-col（不随轨道区纵向滚动）
+const marqueeStyle = computed(() => {
+  const m = marquee.value;
+  if (!m || !m.active) return null;
+  return {
+    left: `${Math.min(m.x0, m.x1)}px`,
+    top: `${Math.min(m.y0, m.y1)}px`,
+    width: `${Math.abs(m.x1 - m.x0)}px`,
+    height: `${Math.abs(m.y1 - m.y0)}px`,
+  };
+});
+
+/// 命中判定：与矩形相交即选（不是完全包含），与用户「经过即选中」的口径一致
+function applyMarquee(m: MarqueeState) {
+  const wrap = colRef.value;
+  if (!wrap) return;
+  const left = Math.min(m.x0, m.x1);
+  const right = Math.max(m.x0, m.x1);
+  const top = Math.min(m.y0, m.y1);
+  const bottom = Math.max(m.y0, m.y1);
+  const wr = wrap.getBoundingClientRect();
+  const hits: string[] = [];
+  wrap.querySelectorAll<HTMLElement>(".tl-track-body .clip").forEach((el) => {
+    const rb = el.getBoundingClientRect();
+    const l = rb.left - wr.left;
+    const t = rb.top - wr.top;
+    const r = rb.right - wr.left;
+    const b = rb.bottom - wr.top;
+    if (r >= left && l <= right && b >= top && t <= bottom) {
+      const id = el.dataset.eventId;
+      if (id) hits.push(id);
+    }
+  });
+  const primary = hits.length > 0 ? hits[hits.length - 1] : undefined;
+  if (m.mode === "union") {
+    const merged = [...m.base];
+    for (const id of hits) if (!merged.includes(id)) merged.push(id);
+    timeline.setSelection(merged, primary ?? undefined);
+  } else if (m.mode === "toggle") {
+    const next = [...m.base];
+    for (const id of hits) {
+      const at = next.indexOf(id);
+      if (at >= 0) next.splice(at, 1);
+      else next.push(id);
+    }
+    timeline.setSelection(next, primary ?? undefined);
+  } else {
+    timeline.setSelection(hits, primary ?? null);
+  }
+}
+
+function onMarqueeMove(e: MouseEvent) {
+  const m = marquee.value;
+  const wrap = colRef.value;
+  if (!m || !wrap) return;
+  const wr = wrap.getBoundingClientRect();
+  m.x1 = e.clientX - wr.left;
+  m.y1 = e.clientY - wr.top;
+  if (!m.active) {
+    if (Math.abs(m.x1 - m.x0) < MARQUEE_MIN_PX && Math.abs(m.y1 - m.y0) < MARQUEE_MIN_PX) return;
+    m.active = true;
+  }
+  applyMarquee(m);
+}
+
+function stopMarquee() {
+  window.removeEventListener("mousemove", onMarqueeMove);
+  window.removeEventListener("mouseup", onMarqueeUp);
+  marquee.value = null;
+}
+
+function onMarqueeUp() {
+  const m = marquee.value;
+  stopMarquee();
+  // 没越过阈值 = 点空白：清空选择（保持原有「点空白取消选择」语义）
+  if (!m || !m.active) timeline.clearSelection();
+}
+
+function startMarquee(e: MouseEvent) {
+  const wrap = colRef.value;
+  if (!wrap) return;
+  const wr = wrap.getBoundingClientRect();
+  marquee.value = {
+    x0: e.clientX - wr.left,
+    y0: e.clientY - wr.top,
+    x1: e.clientX - wr.left,
+    y1: e.clientY - wr.top,
+    mode: e.shiftKey ? "union" : e.ctrlKey || e.metaKey ? "toggle" : "replace",
+    base: [...timeline.selectedClipIds],
+    active: false,
+  };
+  window.addEventListener("mousemove", onMarqueeMove);
+  window.addEventListener("mouseup", onMarqueeUp);
+}
+
 // ── 轨道区域：分割工具 or 只聚焦轨道（不移动播放头）──
 
 function onTrackAreaMouseDown(e: MouseEvent) {
@@ -290,9 +405,9 @@ function onTrackAreaMouseDown(e: MouseEvent) {
     return;
   }
 
-  // 选择模式：只聚焦轨道，不改变播放头
+  // 选择模式：聚焦轨道；左键在空白处按下则进入框选（越过 3px 才生效）
   timeline.focusTrack(target.dataset.trackId ?? null);
-  timeline.focusClip(null);
+  if (e.button === 0 && !(e.target as HTMLElement).closest(".clip")) startMarquee(e);
 }
 
 /// 双击轨道空白：换算时间并 emit（语料页用其添加选区；校对区不监听则无副作用）
@@ -558,13 +673,26 @@ function onZoomKey(e: KeyboardEvent) {
 }
 
 function onDeleteKey() {
-  const id = timeline.focusedClipId;
-  if (!id) return;
-  const found = projectStore.findEvent(id);
-  projectStore.removeEvent(id);
-  timeline.focusClip(null);
+  // 有选择集就整批删（一次快照），否则退回单元素语义
+  const ids =
+    timeline.selectedClipIds.length > 0
+      ? [...timeline.selectedClipIds]
+      : timeline.focusedClipId
+        ? [timeline.focusedClipId]
+        : [];
+  if (ids.length === 0) return;
+  const found = projectStore.findEvent(ids[0]);
+  projectStore.removeEvents(ids);
+  timeline.clearSelection();
   timeline.clearSplitPair();
   if (found) timeline.focusTrack(found.track.id);
+}
+
+/// Ctrl+A：选中本时间轴当前显示的轨道上的全部片段
+function onSelectAll() {
+  const ids = tracks().flatMap((t) => t.events.map((e) => e.id));
+  if (ids.length === 0) return;
+  timeline.setSelection(ids, ids[0]);
 }
 
 function onSplitKey() {
@@ -640,6 +768,8 @@ function deactivate() {
   window.removeEventListener("mouseup", onWindowMouseUp);
   // 失焦（切页/校对区隐藏）即丢弃未完成的选区草稿
   stopRegionDraft();
+  // 同理丢弃未完成的框选
+  stopMarquee();
   // 失焦（切页/校对区隐藏）即退出「被分割态」
   timeline.clearSplitPair();
 }
@@ -680,6 +810,7 @@ onMounted(() => {
     onShortcut("splitAtPlayhead", onSplitKey, timelineShortcutActive),
     onShortcut("mergeNext", onMergeKey, timelineShortcutActive),
     onShortcut("delete", onDeleteKey, timelineShortcutActive),
+    onShortcut("selectAll", onSelectAll, timelineShortcutActive),
     onShortcut("exitSplitPair", () => timeline.clearSplitPair(), timelineShortcutActive)
   );
 });
@@ -706,7 +837,9 @@ onUnmounted(() => {
   >
     <TimelineToolStrip v-if="props.showToolStrip" :variant="props.toolVariant" />
 
-    <div class="timeline-col">
+    <div class="timeline-col" ref="colRef">
+      <!-- 框选矩形：坐标相对本列，不随轨道区滚动 -->
+      <div v-if="marqueeStyle" class="marquee" :style="marqueeStyle" />
       <!-- Header: ruler（仅这里可拖动播放头） -->
       <div class="tl-row">
         <div class="tl-label-col" :style="{ minWidth: props.labelWidth + 'px', maxWidth: props.labelWidth + 'px' }" />
@@ -858,6 +991,7 @@ onUnmounted(() => {
                 :left="timeline.clipPosition(event).left"
                 :width="timeline.clipPosition(event).width"
                 :focused="timeline.focusedClipId === event.id"
+                :selected="timeline.isSelected(event.id)"
                 @click-clip="onClipClicked(track, event.id)"
                 @merged="mergeFirstId = null"
                 @v-drag-target="onVDragTarget"
@@ -957,10 +1091,20 @@ onUnmounted(() => {
 }
 
 .timeline-col {
+  position: relative; /* 框选覆盖层的定位上下文 */
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* 框选矩形：与加选区草稿（.region-draft 实线）区分，用虚线 */
+.marquee {
+  position: absolute;
+  z-index: 15;
+  border: 1px dashed var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  pointer-events: none;
 }
 
 .tl-row {

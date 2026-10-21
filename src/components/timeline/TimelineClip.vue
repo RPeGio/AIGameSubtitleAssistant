@@ -22,6 +22,8 @@ const props = defineProps<{
   left: number;
   width: number;
   focused: boolean;
+  /// 是否属于多选集（框选 / Ctrl+A）；focused 仍是「主选中」单元素语义
+  selected: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -63,7 +65,16 @@ const drag = ref<{
   bodyRect: DOMRect | null;
   /// 候选吸附边界（所有其他事件 start/end 时间秒），拖动开始收集一次（静态）
   snapEdges: number[];
+  /// 多选整体位移：按下时同组各成员的起始位置（快照）
+  group: GroupMember[];
 } | null>(null);
+
+/// 组内一个成员的位移快照
+interface GroupMember {
+  id: string;
+  start: number;
+  end: number;
+}
 let suppressClick = false;
 
 // 相邻约束：只考虑与当前事件完全不重叠的最近前驱/后继
@@ -102,6 +113,70 @@ function bounds(): {
 
 // 合并工具：resize 边缘拖过相邻边界该距离（px）即合并
 const MERGE_DRAG_PX = 30;
+
+// ── 多选整体位移 ──
+
+/// 收集「本次拖动要整体平移的成员」：自身 + 选择集里属于本时间轴可见事件的其它 clip。
+/// 跨时间轴的选择（如校对区选中的 clip 出现在迷你时间轴里）不参与，避免误移不可见条目。
+function collectGroupMembers(): GroupMember[] {
+  const self = props.event;
+  const visible = new Set(props.snapEvents.map((e) => e.id));
+  const ids = [self.id, ...timeline.selectedClipIds.filter((id) => id !== self.id && visible.has(id))];
+  const tracks = projectStore.currentProject?.tracks ?? [];
+  const members: GroupMember[] = [];
+  for (const id of ids) {
+    const track = tracks.find((t) => t.events.some((e) => e.id === id));
+    const ev = track?.events.find((e) => e.id === id);
+    if (!ev) continue;
+    members.push({ id, start: ev.start, end: ev.end });
+  }
+  return members;
+}
+
+/// 整组刚性平移：位移只受时间轴两端限制，组内成员之间的相邻关系不再各自 clamp。
+/// 早先按「每个成员各自与同轨邻居取交集」实现，紧贴的一组会在组内互相夹死（交集为空）
+/// ⇒ 表现为「这组怎么拖都不动」。抓住组内任何一条都必须能带动整组（用户 m07277）。
+/// 代价：整组可以压到未选中的 clip 上（数据层本就允许同轨重叠），撤销即可复位。
+function moveGroup(d: NonNullable<typeof drag.value>, dt: number) {
+  const gStart = Math.min(...d.group.map((m) => m.start));
+  const gEnd = Math.max(...d.group.map((m) => m.end));
+  const limit = timeline.duration > 0 ? timeline.duration : Number.MAX_SAFE_INTEGER;
+  const dtMin = -gStart;
+  const dtMax = limit - gEnd;
+  let shift = Math.max(dtMin, Math.min(dt, dtMax));
+
+  // 吸附：候选取被拖 clip 起止 + 整组外缘，命中 8px 内最近的一条
+  if (timeline.snapEnabled && timeline.activeTool === "select" && d.snapEdges.length > 0) {
+    const pps = timeline.pixelsPerSecond;
+    const gStart = Math.min(...d.group.map((m) => m.start));
+    const gEnd = Math.max(...d.group.map((m) => m.end));
+    const values = [d.origStart + shift, d.origEnd + shift, gStart + shift, gEnd + shift];
+    let bestDelta: number | null = null;
+    let bestPx: number | null = null;
+    let bestDist = SNAP_THRESHOLD_PX;
+    for (const cand of d.snapEdges) {
+      for (const v of values) {
+        const delta = cand - v;
+        const dist = Math.abs(delta) * pps;
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestDelta = delta;
+          bestPx = cand * pps;
+        }
+      }
+    }
+    if (bestDelta !== null) {
+      shift = Math.max(dtMin, Math.min(shift + bestDelta, dtMax));
+      timeline.setSnapGuide(bestPx);
+    } else {
+      timeline.setSnapGuide(null);
+    }
+  }
+
+  // 整组位移不显示拖边参考线（它只用于单条 clip 改起止）
+  timeline.setEdgeGuide(null);
+  for (const m of d.group) projectStore.updateEventTime(m.id, m.start + shift, m.end + shift);
+}
 
 // ── 吸附 ──
 
@@ -185,6 +260,8 @@ function onClipMouseDown(e: MouseEvent, mode: DragMode) {
   if (timeline.activeTool === "split") return;
   e.preventDefault();
   e.stopPropagation();
+  // 拖动未选中的 clip：先按单击语义把选择集重置为它自己（否则整组位移会带上旧选择）
+  if (!timeline.isSelected(props.event.id)) timeline.focusClip(props.event.id);
   const body = (e.currentTarget as HTMLElement).closest(".tl-content") as HTMLElement | null;
   drag.value = {
     mode,
@@ -198,6 +275,7 @@ function onClipMouseDown(e: MouseEvent, mode: DragMode) {
     vTarget: null,
     bodyRect: body ? body.getBoundingClientRect() : null,
     snapEdges: [],
+    group: collectGroupMembers(),
   };
   window.addEventListener("mousemove", onWindowMouseMove);
   window.addEventListener("mouseup", onWindowMouseUp);
@@ -272,6 +350,13 @@ function onWindowMouseMove(e: MouseEvent) {
   const dt = (dx + (timeline.scrollLeft - d.origScrollLeft)) / timeline.pixelsPerSecond;
 
   const { minStart, maxEnd, prev, next } = bounds();
+
+  // 多选整体位移：组内刚性平移（不走合并工具的过界合并与单条 clamp）
+  if (d.mode === "move" && d.group.length > 1 && timeline.activeTool !== "merge") {
+    moveGroup(d, dt);
+    return;
+  }
+
   const dur0 = d.origEnd - d.origStart;
   // 合并工具：resize 边缘拖过相邻边界超过阈值即直接合并相邻 clip
   // （阈值以像素声明，比较前换算为秒：prev.end - MERGE_DRAG_PX / pps）
@@ -393,7 +478,7 @@ function clipText(): string {
   />
   <div
     class="clip"
-    :class="{ focused, dragging: drag !== null, 'v-dragging': drag?.vMode, 'split-tool': timeline.activeTool === 'split', 'split-pair': isSplitPair }"
+    :class="{ focused, selected, dragging: drag !== null, 'v-dragging': drag?.vMode, 'split-tool': timeline.activeTool === 'split', 'split-pair': isSplitPair }"
     :data-event-id="event.id"
     :style="{
       left: left + 'px',
@@ -448,6 +533,15 @@ function clipText(): string {
 .clip.focused {
   z-index: 5;
   box-shadow: 0 0 0 1px var(--accent);
+}
+
+/* 多选中（非主选中）：内描边标记，与主选中的外框区分 */
+.clip.selected {
+  box-shadow: inset 0 0 0 1px var(--accent-ink);
+}
+
+.clip.selected.focused {
+  box-shadow: inset 0 0 0 1px var(--accent-ink), 0 0 0 1px var(--accent);
 }
 
 .clip:hover {

@@ -27,8 +27,8 @@
 | 13 | 杂项清理与验证（死代码/参数开关/波形/图标） | 清理·零碎 | 无 | 随时可插入的零碎项，放最后一批 |
 | 14 | 内嵌 ffmpeg/ffprobe + 欢迎页 ffmpeg 自检卡 | 功能·打包 | 11（自检卡复用其探针机制） | 外部依赖一致性；涉及打包策略，宜与 11 一起看 |
 | 19 | 设置面板（默认 ASR 模型 + 快捷键查看/修改） | 功能·跨页 | 10（注册表） | 改动大、用户明确单独一个 PR；快捷键帮助面板并入此项 |
-| 20 | 校对区选中 clip 时，轨道总览滚动到该行 | 修复·小 | 无 | 独立小件，可随时插入 |
-| 21 | 时间轴框选多选（含 `Ctrl+A` 全选） | 功能·核心 | 10（活动时间轴判定） | 多选模型要先立起来，其余多选操作语义后续再定 |
+| 20 | ✅ 校对区选中 clip 时，轨道总览滚动到该行 | 修复·小 | 无 | 已实现（提交号待补）：`data-clip-id` + 矩形比对最小滚动 |
+| 21 | ✅ 时间轴框选多选（含 `Ctrl+A` 全选、多选整体位移） | 功能·核心 | 10（活动时间轴判定） | 已实现（提交号待补）：多选模型 + 框选 + 修饰键 + 批量删除 + 刚性整组位移 |
 
 ---
 
@@ -666,7 +666,21 @@
 
 **为什么单独一个 PR**：跨页状态 + 持久化 + 冲突检测，与第 10 项的实现面重叠但不属于同一改动单元；用户明确要求单独 PR。
 
-### 20. 校对区选中 clip 时，轨道总览滚动到该行
+### 20. ✅ 校对区选中 clip 时，轨道总览滚动到该行
+
+**已实现（2026-10-21，提交号待补）**
+
+| 改动 | 内容 |
+|---|---|
+| `src/components/TrackOverview.vue` | `.overview-body` 加 `ref="bodyRef"`，每行加 `:data-clip-id="clip.id"` |
+| 同上 | 新增 `scrollFocusedRow()`：用 `getBoundingClientRect()` 比对行与容器（**不用 `offsetTop`**——`.ov-entry` 的 `offsetParent` 未必是滚动容器），只在行越出可视带时 `scrollTop += 差值 ± 4px` 的最小滚动 |
+| 同上 | `watch([() => timeline.focusedClipId, () => timeline.focusedTrackId])` → `await nextTick()` → `scrollFocusedRow()` |
+
+**验证（`temp/css-preview/checks/item20.js`，编辑器页 1680×1000，12 行 / 容器 409px / 行 47.69px）**
+- A 从顶部聚焦末行：`scrollTop` 0 → 165，末行可见（贴下沿，4px 余量被最大滚动钳掉）✓
+- B 聚焦已在视口内的行：`scrollTop` 保持 165 不变 ✓（最小滚动语义）
+- C 容器在底部时聚焦首行：`scrollTop` 回 0，首行贴顶可见 ✓
+- D 键盘（`.`）驱动的焦点变化同样跟随（焦点落在第 6 行，可见、未额外滚动）✓；`pageOverflow: false`
 
 **来源**：用户 m06929（「在校对区选中clip时，轨道总览视口跳转至选中的clip」）。
 
@@ -674,7 +688,7 @@
 - `src/components/TrackOverview.vue` 的行列表在 `.overview-body`（`overflow-y: auto`）内，行是 `.ov-entry`；聚焦行已有 `.focused` 样式（inset 强调色 + `::before` 竖条）。
 - 选中来源是 `timeline.focusedClipId`（`src/components/timeline/Timeline.vue` 里 `focusClip` 设置），TrackOverview 已有 `focusedTrack` / `clips` computed，但**没有对 focusedClipId 做滚动**。
 
-**要做**
+**要做（原方案，实现时改为矩形比对最小滚动，见上）**
 - 行元素带可定位标记（`data-clip-id` 或 `ref` 数组），watch `timeline.focusedClipId` → `nextTick()` 后对目标行 `scrollIntoView({ block: "nearest" })`（**最小滚动**，已在视口内则不动，不要 `center` 打断浏览）。
 - 只在「时间轴点选/键盘跳转」时滚；因文本编辑导致的 focus 变化不要抢滚动（编辑中的行本来就可见，`nearest` 天然满足，故无需额外分支）。
 
@@ -682,7 +696,32 @@
 - 点时间轴上任意 clip → 总览滚动到该行（已在视口内不动）；键盘 `,/.` 跳到相邻 clip 时同样滚动；
 - 行内编辑/重命名期间滚动不打断输入；无页面溢出。
 
-### 21. 时间轴框选多选（含 `Ctrl+A` 全选）
+### 21. ✅ 时间轴框选多选（含 `Ctrl+A` 全选、多选整体位移）
+
+**已实现（2026-10-21，提交号待补）**
+
+| 改动 | 内容 |
+|---|---|
+| `src/stores/timeline.ts` | 新增 `selectedClipIds` + `isSelected/setSelection/addToSelection/toggleInSelection/clearSelection`；`focusClip(id)` 语义 = 「主选中 + 选择集重置为单元素」（单击）；不变式：选择集永远包含主选中 |
+| `src/components/timeline/Timeline.vue` | 框选状态机 `marquee`（`replace`/`union`/`toggle` 在按下时按修饰键决定，`base` = 按下瞬间快照）；3px 阈值区分点击与框选；命中判定为**矩形相交**；`.marquee` 覆盖层（虚线 + 12% 强调色填充 + `pointer-events:none`）挂在 `.timeline-col`（`position:relative`，不随轨道区滚动）；`onDeleteKey` 改批量删；`onSelectAll`（`Ctrl+A`） |
+| `src/components/timeline/TimelineClip.vue` | `selected` prop → `.clip.selected` 内描边（与主选中外框两级可辨）；`collectGroupMembers()` + `moveGroup()`：整组刚性平移，位移只受时间轴两端限制——**组内成员之间的相邻关系不再各自 clamp**（早先按「每成员与同轨邻居取交集」实现，紧贴的一组会在组内互相夹死、交集为空 ⇒ 怎么拖都不动，用户 m07277 判为 bug）；组内吸附（被拖 clip 起止 + 整组外缘，8px 内最近）；拖动未选中 clip 时先把选择集重置为它自己 |
+| `src/composables/shortcuts.ts` | 注册 `selectAll`（`Ctrl+A`，`scope: "timeline"`）；`delete` 文案注明多选整批 |
+| `src/stores/project.ts` | 新增 `removeEvents(ids)`：批次只记**一次**快照（`removeEvent` 逐条记，撤销会变成 N 次） |
+
+**验证（`temp/css-preview/checks/item21.js`，编辑器页 1680×1000，41 clip / 4 轨）**
+- A 无修饰框选 → 替换选择集，6 条选中；覆盖层拖动中出现、松手后消失 ✓
+- B 空白单击（<3px）→ 清空选择 ✓（原 seek/清聚焦语义不变）
+- C `Shift` 框选 → 并集 6 → 15 ✓
+- D `Ctrl` 框选同一片区域 → toggle 15 → 6 ✓
+- E `Ctrl+A` → 41/41 全选 ✓
+- F `Delete` → 全删；**一次 `Ctrl+Z` 全部复原** ✓
+- G 框选「每行最后一条 clip」后拖动其中一条 → 三条位移均为 **+27.49px**（刚性一致；差值来自吸附/阈值，不是各走各的）✓
+- H **紧贴相邻的一对**（`gap 0`）框选后拖第一条 → 两条位移均为 **+43.19px**、未选中的第三条不动 ✓（返工前此处位移为 0，即用户报的「拖不动」）
+- `pageOverflow: false`；`pnpm build` ✓ 2900+ 模块 / CSS 59.83 kB / JS 670.30 kB
+
+**已知取舍（用户已确认可接受）**：整组位移不再被未选中的邻居挡住 ⇒ 可以把组压到别的 clip 上（数据层本就允许同轨重叠，撤销即可复位）。换来的是「抓住组内任何一条都能带动整组」这一可预期行为；若日后要「推到邻居就停」或「推开邻居」，那是 ripple 语义，另立条目。
+
+**本次未做**（边界明确）：多选分割、多选合并、多选拖起止（resize）——只做选择、`Ctrl+A`、批量删除与整组整体位移。
 
 **来源**：用户 m06929（原话）「各时间轴在「选择」组件选中状态下，在时间轴区空白处左键并按住拖动时，以左键落地处以及光标拖动处作为两处对角锚点，生成范围选择矩形框，矩形框经过的clip均会被选中（多选功能），在按下Shift开始拖动的情况下，已被选中的clip不会失焦；在按下Ctrl开始拖动的情况下，选区框语义变为toggle（已被选中的clip且没有被再次框选的clip不会失焦，但如果选区框再次经过已被框中的clip，则失焦）」。
 
@@ -702,4 +741,22 @@
 - 框选/Shift 并集/Ctrl toggle 三种语义正确；不拖（<3px）仍 seek；与加选区工具、拖起止、吸附、分割态互不干扰；
 - `Ctrl+A` 只作用于活动时间轴（校对区与迷你时间轴分别验证）；`Delete` 多删只产生一次撤销；
 - 迷你时间轴同样支持框选（它复用同一个 `Timeline.vue`）。
+
+---
+
+## 附：实现期发现的小问题
+
+### 22. `,` / `.`（上/下一个片段）跨轨跳转，与「轨道总览 = 聚焦轨道」不一致
+
+**现状依据**
+- `src/components/timeline/Timeline.vue:537-552` 的 `onPrevNextClip` 先把**全部轨道**的事件合并排序，再按 `currentTime` 找前后最近的 clip，然后 `focusClip`。
+- `src/components/TrackOverview.vue` 只列「聚焦轨道」的 clip ⇒ 跳段后聚焦的 clip 常在别的轨道上，总览里既无高亮也不滚动，用户观感是「按了跳段没反应」。
+
+**要做**（二选一，倾向 ①）
+1. `,/.` 只在**聚焦轨道**内跳（与总览口径一致）；
+2. 跳段时同步切换聚焦轨道（`focusTrack`）到目标 clip 所在轨道。
+
+**验收要点**
+- 在任一轨道上按 `,/.`：播放头与聚焦都落在同一轨道；总览高亮并滚动到该行；
+- 目标轨道无更多片段时给出可感知的边界行为（不静默乱跳）。
 
