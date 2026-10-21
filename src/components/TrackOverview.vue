@@ -29,6 +29,29 @@ function onRoleChange(e: Event) {
   onTrackRoleChange((e.target as HTMLSelectElement).value);
 }
 
+// ── 聚焦 clip 时把对应行滚进视口 ──
+// 用 getBoundingClientRect 比对（.ov-entry 的 offsetParent 未必是滚动容器）；
+// 只在行越出可视带时最小滚动，已在视口内不动，避免打断正在浏览的总览列表。
+const bodyRef = ref<HTMLElement | null>(null);
+
+function scrollFocusedRow() {
+  const body = bodyRef.value;
+  const id = timeline.focusedClipId;
+  if (!body || !id) return;
+  const row = body.querySelector<HTMLElement>(`[data-clip-id="${id}"]`);
+  if (!row) return;
+  const rb = row.getBoundingClientRect();
+  const vb = body.getBoundingClientRect();
+  const MARGIN = 4;
+  if (rb.top < vb.top) body.scrollTop += rb.top - vb.top - MARGIN;
+  else if (rb.bottom > vb.bottom) body.scrollTop += rb.bottom - vb.bottom + MARGIN;
+}
+
+watch([() => timeline.focusedClipId, () => timeline.focusedTrackId], async () => {
+  await nextTick();
+  scrollFocusedRow();
+});
+
 // ── 单轨字幕导出 ──
 const EXPORT_FORMATS = [
   { label: "SRT（通用字幕）", value: "srt" },
@@ -325,11 +348,12 @@ watch(
       点击时间轴轨道以查看 clip 总览
     </div>
 
-    <div v-else class="overview-body">
+    <div v-else class="overview-body" ref="bodyRef">
       <div
         v-for="(clip, i) in clips"
         :key="clip.id"
         class="ov-entry"
+        :data-clip-id="clip.id"
         :class="{ focused: timeline.focusedClipId === clip.id }"
         @click="onEntryClicked(clip)"
         @dblclick="timeline.jumpTo(clip.start)"
