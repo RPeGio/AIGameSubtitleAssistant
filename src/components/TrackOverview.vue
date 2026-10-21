@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onActivated, onDeactivated, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import { NPopselect, useMessage } from "naive-ui";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -233,32 +234,42 @@ function cancelRename() {
 
 // 轨道名编辑时点击输入框外任意处即提交：
 // 时间轴 clip 的 mousedown preventDefault/stopPropagation 会挡住 blur 与冒泡，
-// 捕获阶段注册先于其执行（与时间轴标签列一致的兜底）
+// 捕获阶段注册先于其执行（与时间轴标签列一致的兜底）。
+// 组件在 ReviewPane 内（KeepAlive 的孙组件，收不到 activated/deactivated 钩子，
+// 见 Timeline.vue 同款注释）：监听挂在 mount 生命周期上，
+// 用 DOM 是否仍连接文档当激活闸门；失活时未落地的编辑由路由变化信号补提交。
+const panelRef = ref<HTMLElement | null>(null);
+
+function isAttached(): boolean {
+  const el = panelRef.value;
+  return !!el && el.isConnected;
+}
+
 function onWindowMouseDown(e: MouseEvent) {
+  if (!isAttached()) return;
   if (!renamingTrackId.value) return;
   if ((e.target as HTMLElement).closest(".ov-name-input")) return;
   commitRename();
 }
 
-// 组件套了 KeepAlive：全局 mousedown（点外部提交重命名）只在激活期间监听，
-// 失活时顺手提交未落地的行内编辑，避免下次回来还停在编辑态。
-function activate() {
-  window.addEventListener("mousedown", onWindowMouseDown, true);
-}
+onMounted(() => window.addEventListener("mousedown", onWindowMouseDown, true));
+onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, true));
 
-function deactivate() {
-  window.removeEventListener("mousedown", onWindowMouseDown, true);
-  commitEdit();
-  commitRename();
-}
+// 切页（含切到语料页收起校对区）时顺手提交未落地的行内编辑/重命名——
+// 未改动或未在编辑态时是无害 no-op
+const route = useRoute();
 
-onActivated(activate);
-onDeactivated(deactivate);
-onUnmounted(deactivate);
+watch(
+  () => route.name,
+  () => {
+    commitEdit();
+    commitRename();
+  }
+);
 </script>
 
 <template>
-  <div class="overview-panel">
+  <div class="overview-panel" ref="panelRef">
     <div class="overview-header">
       <div v-if="focusedTrack" class="ov-track-name-wrap">
         <input

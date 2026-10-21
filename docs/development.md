@@ -2,7 +2,7 @@
 
 [English](development_EN.md) | 中文
 
-本文面向想理解代码结构或参与开发的协作者。项目愿景与分阶段计划见 [GameSubtitleAssistant_Plan.md](../GameSubtitleAssistant_Plan.md)，上手使用见 [README](../README.md)。
+本文面向想理解代码结构或参与开发的协作者。项目愿景与分阶段计划见 [GameSubtitleAssistant_Plan.md](GameSubtitleAssistant_Plan.md)，上手使用见 [README](../README.md)。
 
 ## 技术栈
 

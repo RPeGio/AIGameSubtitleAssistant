@@ -219,7 +219,7 @@
 
 ## 6. 与并行会话的边界（避免改动冲突）
 
-- 主 worktree 分支 `feat/misc-fixes`（`d08219c`）的 `MISC_TODO.md` 第 12 项「CUDA GPU 加速参数化」要改 `src-tauri/src/ai_runtime/config.rs` 并做前端面板，与本设计 §3.5 重叠。
+- 主 worktree 分支 `feat/misc-fixes`（`d08219c`）的 `docs/MISC_TODO.md` 第 12 项「CUDA GPU 加速参数化」要改 `src-tauri/src/ai_runtime/config.rs` 并做前端面板，与本设计 §3.5 重叠。
 - 已确认划分：**本分支只碰 `scripts/` + 纯探测逻辑 + `docs/`**；字段与 UI 留给主 worktree。
 - 本 worktree **没有 `runtime/`**；只读使用主 worktree 的 runtime（`GSA_RUNTIME_DIR`），**绝不写主 worktree 的文件**。
 

@@ -121,12 +121,13 @@ pnpm tauri build   # produce installers (note: runtime-resource bundling is not 
 │       └── ai_runtime/     # AI runtime (provider abstraction, config, worker subprocesses)
 ├── scripts/                # bootstrap scripts (bootstrap_*.ps1) and Python workers
 ├── runtime/                # local AI runtime (script-generated, gitignored)
-└── GameSubtitleAssistant_Plan.md  # project plan
+└── docs/
+│   ├── GameSubtitleAssistant_Plan.md  # project plan
 ```
 
 ## Documentation
 
-- [GameSubtitleAssistant_Plan.md](GameSubtitleAssistant_Plan.md) — vision, architecture design and phased plan (Chinese)
+- [GameSubtitleAssistant_Plan.md](docs/GameSubtitleAssistant_Plan.md) — vision, architecture design and phased plan (Chinese)
 - [docs/development.md](docs/development.md) — development guide: architecture / data model / pipeline details / testing (Chinese)
 - [benchmark/README.md](benchmark/README.md) — quality benchmarks and the validation record for the fusion-alignment route
 - [CONTRIBUTING.md](CONTRIBUTING.md) — contributing guide

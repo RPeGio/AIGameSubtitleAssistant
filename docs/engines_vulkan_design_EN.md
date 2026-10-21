@@ -219,7 +219,7 @@ Rationale: the MOSS gap between CPU and GPU is an order of magnitude (the canoni
 
 ## 6. Boundary with the parallel session (avoid change conflicts)
 
-- Item 12 of `MISC_TODO.md` in the main worktree branch `feat/misc-fixes` (`d08219c`) — "parameterise CUDA GPU acceleration" — touches `src-tauri/src/ai_runtime/config.rs` and adds front-end UI, overlapping §3.5 of this design.
+- Item 12 of `docs/MISC_TODO.md` in the main worktree branch `feat/misc-fixes` (`d08219c`) — "parameterise CUDA GPU acceleration" — touches `src-tauri/src/ai_runtime/config.rs` and adds front-end UI, overlapping §3.5 of this design.
 - Agreed split: **this branch touches only `scripts/` + pure probing logic + `docs/`**; fields and UI stay with the main worktree.
 - This worktree **has no `runtime/`**; the main worktree's runtime is used read-only via `GSA_RUNTIME_DIR`, and **nothing in the main worktree is ever written**.
 

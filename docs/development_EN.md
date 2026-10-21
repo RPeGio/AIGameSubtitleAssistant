@@ -2,7 +2,7 @@
 
 English | [中文](development.md)
 
-This document is for collaborators who want to understand the codebase or contribute. For the project vision and phased plan, see [GameSubtitleAssistant_Plan.md](../GameSubtitleAssistant_Plan.md); for usage, see the [README](../README.md).
+This document is for collaborators who want to understand the codebase or contribute. For the project vision and phased plan, see [GameSubtitleAssistant_Plan.md](GameSubtitleAssistant_Plan.md); for usage, see the [README](../README.md).
 
 ## Tech stack
 

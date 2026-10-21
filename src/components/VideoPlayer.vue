@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, onActivated, onDeactivated, onUnmounted, watch } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { useRoute } from "vue-router";
 import { useTimelineStore } from "../stores/timeline";
 import { useProjectStore } from "../stores/project";
 import { useVideoContentRect } from "../composables/useVideoContentRect";
@@ -167,6 +168,11 @@ function seekTo(e: Event) {
 }
 
 function handleKeydown(e: KeyboardEvent) {
+  // 被 KeepAlive 暂存（校对区收起）时 DOM 已脱离文档：不响应。
+  // 孙组件收不到 activated/deactivated 钩子（Vue 只对 <KeepAlive> 的直接子组件
+  // 触发，见 Timeline.vue 同款注释）⇒ 监听必须挂在 mount 生命周期上，用
+  // DOM 是否仍连接文档当激活闸门。
+  if (!(containerRef.value?.isConnected ?? false)) return;
   // 编辑文字时（输入框/contentEditable）不拦截空格，避免吞掉输入
   const t = e.target as HTMLElement;
   if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
@@ -176,22 +182,24 @@ function handleKeydown(e: KeyboardEvent) {
   }
 }
 
-// 组件套了 KeepAlive（校对区在语料页会被收起）：全局按键只在激活期间监听，
-// 失活时摘掉并停住播放——否则在别的页面按空格会让隐藏的校对区播放器出声。
-function activate() {
-  window.addEventListener("keydown", handleKeydown);
-}
+// KeepAlive 收起（切到语料页）时停住播放：失活钩子收不到（见 handleKeydown 注释），
+// 用路由当信号——校对区仅在非语料页显示（ProjectLayout 的 showReviewPane），
+// 故切到语料页即视为被收起，摘掉 rAF 采样并暂停出声。
+const route = useRoute();
 
-function deactivate() {
-  window.removeEventListener("keydown", handleKeydown);
-  cancelRafTicker();
-  const v = videoRef.value;
-  if (v && !v.paused) v.pause();
-}
+watch(
+  () => route.name,
+  (n) => {
+    if (n === "corpus") {
+      cancelRafTicker();
+      const v = videoRef.value;
+      if (v && !v.paused) v.pause();
+    }
+  }
+);
 
-onActivated(activate);
-onDeactivated(deactivate);
-onUnmounted(deactivate);
+onMounted(() => window.addEventListener("keydown", handleKeydown));
+onUnmounted(() => window.removeEventListener("keydown", handleKeydown));
 </script>
 
 <template>
@@ -338,7 +346,7 @@ onUnmounted(deactivate);
   color: var(--danger);
 }
 
-/* 控件条在画面之下（不遮挡画面、不遮挡画面底部的选区手柄，见 MISC_TODO 第 5 项） */
+/* 控件条在画面之下（不遮挡画面、不遮挡画面底部的选区手柄，见 docs/MISC_TODO 第 5 项） */
 .controls {
   height: 32px;
   display: flex;

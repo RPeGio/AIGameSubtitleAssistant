@@ -111,7 +111,9 @@ export function textSegments(text: string): string[] {
   }
   if (from < text.length) pieces.push(text.slice(from));
 
-  // 空片（句首标点造成）并入相邻片：头部并入下一片、尾部并入上一片
+  // 纯空白片（相邻标点被空白隔开时产生）并入上一片，不留独立段。
+  // 注意句首标点产生的**标点片**（如 `，123` 的 `，`）保持独立——它有内容，
+  // ⬅️➡️ 搬家时可以单独搬；这里不会丢弃任何字符。
   const merged: string[] = [];
   for (const piece of pieces) {
     if (piece === "") continue;
