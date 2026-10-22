@@ -13,6 +13,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use tauri::Manager;
 
 /// 运行时配置 —— 描述 Python/依赖/模型所在位置
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -338,6 +339,55 @@ fn ensure_binary_exists(name: &str, value: &str, runtime_dir: &Path) -> Result<(
         ));
     }
     Ok(())
+}
+
+// ─── MOSS 推理设备设置（前端设备下拉）───────────────────
+
+/// 设备设置结果（写盘成功）
+#[derive(Debug, Clone, Serialize)]
+pub struct MossDeviceSaveResult {
+    /// 实际写入的 moss_device 值（"" = auto）
+    pub device: String,
+    /// 面向用户的结果说明
+    pub message: String,
+}
+
+/// 规范化设备取值："" / "auto" → ""（auto）；只接受 ""/cpu/cuda/vulkan
+pub fn normalize_moss_device(raw: &str) -> Result<String, String> {
+    let v = raw.trim().to_ascii_lowercase();
+    match v.as_str() {
+        "" | "auto" => Ok(String::new()),
+        "cpu" | "cuda" | "vulkan" => Ok(v),
+        other => Err(format!(
+            "moss_device 取值非法: {}（可选 空/auto/cpu/cuda/vulkan）",
+            other
+        )),
+    }
+}
+
+/// Tauri 命令：设置 MOSS 推理设备（写 runtime/config.json，下次启动生效）。
+///
+/// 只改 moss_device 一个字段并原子落盘；运行中的 provider 仍用启动时读到的配置
+/// （下次启动生效），避免转写中途换后端导致同一批素材前后不一致。
+#[tauri::command]
+pub fn set_moss_device(
+    app: tauri::AppHandle,
+    device: String,
+) -> Result<MossDeviceSaveResult, String> {
+    let runtime_dir = resolve_runtime_dir(app.path().app_data_dir().ok().map(|d| d.join("runtime")));
+    let normalized = normalize_moss_device(&device)?;
+    let mut cfg = RuntimeConfig::load(&runtime_dir)?;
+    cfg.moss_device = normalized.clone();
+    cfg.save(&runtime_dir)?;
+    let shown = if normalized.is_empty() {
+        "空（auto）".to_string()
+    } else {
+        normalized.clone()
+    };
+    Ok(MossDeviceSaveResult {
+        device: normalized,
+        message: format!("已保存 moss_device={}（下次启动生效）", shown),
+    })
 }
 
 // ─── 单元测试 ─────────────────────────────────────────────
@@ -709,5 +759,18 @@ mod tests {
             assert!(cfg.validate(&dir).is_ok(), "moss_device={:?} 应通过校验", device);
         }
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_normalize_moss_device() {
+        // auto 归一为空串（配置里存 ""），其余小写化并拒绝非法值
+        assert_eq!(normalize_moss_device("").unwrap(), "");
+        assert_eq!(normalize_moss_device("auto").unwrap(), "");
+        assert_eq!(normalize_moss_device("AUTO").unwrap(), "");
+        assert_eq!(normalize_moss_device(" CUDA ").unwrap(), "cuda");
+        assert_eq!(normalize_moss_device("vulkan").unwrap(), "vulkan");
+        assert_eq!(normalize_moss_device("cpu").unwrap(), "cpu");
+        assert!(normalize_moss_device("gpu").is_err());
+        assert!(normalize_moss_device("../evil").is_err());
     }
 }

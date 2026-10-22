@@ -222,6 +222,44 @@ export interface AsrProgress {
   message: string;
 }
 
+/// MOSS 后端探测报告（Rust `probe_moss_backend`）
+export interface MossBackendProbe {
+  /// 配置里的 moss_device 原值（"" = auto）
+  configured_device: string;
+  /// 本次判定实际请求的设备："auto" / "cpu" / "cuda" / "vulkan"
+  requested: string;
+  /// 请求是否可用：显式请求不可用 = false（硬报错，绝不静默降级）
+  available: boolean;
+  /// 实际生效后端（"CUDA0" / "Vulkan1" / "CPU"）；不可用或未实证时为空
+  backend: string;
+  /// 判定依据（人话）
+  reason: string;
+  /// 判定来源："l2" 实证 / "l1" 资产推断 / "requested" 显式指定 / "reject" 硬报错
+  source: string;
+  /// 推荐后端（"cuda" / "vulkan" / "cpu"）与推荐理由
+  recommendation: string;
+  recommendation_reason: string;
+  /// 本机能力：NVIDIA 驱动可用 / Vulkan loader + GPU 可枚举
+  machine_cuda: boolean;
+  machine_vulkan: boolean;
+  /// Vulkan 枚举到的 GPU 名
+  gpus: string[];
+  /// manifest 是否找到：false = 没找到 manifest ⇒ 下拉显示全部四项
+  manifest_found: boolean;
+  /// manifest 里 id=="moss" 的条目声明的 flavor（只有这些 flavor 可选）
+  manifest_flavors: string[];
+  /// 硬报错信息（显式请求不可用 / MOSS 未安装时非空）
+  error?: string | null;
+}
+
+/// MOSS 推理设备保存结果（Rust `set_moss_device`）
+export interface MossDeviceSaveResult {
+  /// 实际写入的 moss_device 值（"" = auto）
+  device: string;
+  /// 面向用户的结果说明
+  message: string;
+}
+
 /// ASR 进度事件名（Rust 侧 `ASR_PROGRESS_EVENT` 需保持一致）
 export const ASR_PROGRESS_EVENT = "asr-progress";
 

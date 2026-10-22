@@ -23,7 +23,7 @@
 | 17 | ✅ 去除轨道内 clip 的所有句末标点 | 功能·文本清理 | 8（句界操作会留下句尾逗号） | 已实现（提交号待补）：轨道总览「美化」下拉的「去除文本末标点」 |
 | 10 | ✅ 快捷键体系（注册表 + 单一监听；帮助面板并入第 19 项） | 功能·跨页 | 8、9 | 已实现（提交号待补）：`composables/shortcuts.ts` 分发器 + 活动时间轴判定 |
 | 11 | 欢迎页自检升级（探针 + 静默 bootstrap + 后端指引） | 功能·独立 | 7（info 基建）·「并行分支接口」的命令缺口 | 独立大件，放中后段不打断时间轴主线 |
-| 12 | CUDA GPU 加速参数化（设备迁移到 UI） | 功能·Rust+UI | 7（要带 info 说明）+ 11（需 `probe_moss_backend` 命令） | 存储与判定逻辑已随 PR #48 就位，只缺字段迁移与 UI |
+| 12 | ✅ CUDA GPU 加速参数化（设备迁移到 UI） | 功能·Rust+UI | 7（要带 info 说明）+ 11（需 `probe_moss_backend` 命令） | 已实现（提交号待补）：`probe_moss_backend` + `set_moss_device` 两命令、打轴页设备下拉、欢迎页硬报错 |
 | 13 | ✅ 杂项清理与验证（死代码/参数开关/图标；真机波形待验） | 清理·零碎 | 无 | 已实现（提交号待补）：死代码已删、易混字母开关已暴露、轨道图标常显 |
 | 14 | 内嵌 ffmpeg/ffprobe + 欢迎页 ffmpeg 自检卡 | 功能·打包 | 11（自检卡复用其探针机制） | 外部依赖一致性；涉及打包策略，宜与 11 一起看 |
 | 19 | 设置面板（默认 ASR 模型 + 快捷键查看/修改） | 功能·跨页 | 10（注册表） | 改动大、用户明确单独一个 PR；快捷键帮助面板并入此项 |
@@ -44,11 +44,11 @@
 
 **分工契约（设计文档 §3.5 / §6，两边约定）**
 - PR #48 只碰 `scripts/` + 纯探测逻辑 + `docs/`；**`src-tauri/src/ai_runtime/config.rs` 的字段扩展与前端配置/自检面板归本分支（我）**。
-- 取值集合：`"" | "auto" | "cuda" | "vulkan" | "cpu"`（`config.rs:306-313` 白名单现为 `空/cpu/cuda/vulkan`）；判定结构：`{ backend, reason, source }`。
+- 取值集合：`"" | "auto" | "cuda" | "vulkan" | "cpu"`（`config.rs:307-316` 白名单现为 `空/cpu/cuda/vulkan`）；判定结构：`{ backend, reason, source }`。
 - 行为契约（UI 必须照此）：显式 `cuda`/`vulkan` 不可用 = **硬报错**（提示「取消勾选 GPU 加速改用 CPU」或「装对应后端」），**绝不静默降级**——ggml 自己会静默降级且 exit 0，这正是必须 L2 实证的原因；`auto`（空）= CUDA → Vulkan → CPU，**reason 必须在自检面板可见**。
 
 **本分支要补的缺口 / 注意**
-- **没有 Tauri 命令暴露 `decide()`/`recommend_from_assets()`**（PR #48 未改 `lib.rs`）⇒ 第 11/12 项要在卡片上显示「为什么落到 CPU」「该装哪个后端」，必须先加命令（建议 `probe_moss_backend` → `{backend, reason, source}`，内部调 `backend_probe`）。
+- ~~**没有 Tauri 命令暴露 `decide()`/`recommend_from_assets()`**（PR #48 未改 `lib.rs`）⇒ 第 11/12 项要在卡片上显示「为什么落到 CPU」「该装哪个后端」，必须先加命令~~ → **已补（第 12 项阶段 A）**：`probe_moss_backend` 返回 `BackendProbeReport`（含 `reason` / `source` / `recommendation` / `manifest_flavors`），`lib.rs` 已注册；第 11 项可直接复用。
 - `config.rs` 已有 `moss_device`（白名单 `空/cpu/cuda/vulkan`）与 `funasr_device`（默认 `cpu`），**尚无 `llm_device`**（LLM 当前不参与融合，见第 12 项）。
 - `temp/css-preview/mock.js` 的引擎对象没有 `device`/`effective_backend` ⇒ 卡片走默认值显示「auto（ggml 自动选优）」；要测「实测 CUDA0」需补字段。
 - 合并后我的独立复核（2026-10-19）：`pnpm build` ✓ 2895 模块；欢迎页三卡 529×112（比 T8 的 89.8 高 22px，正好多一行），ASR 卡四行含「设备 · auto（ggml 自动选优）」，`asrOverflow 0`；1680×1000 / 1680×720 / 1280×720 三尺寸下 `pageOverflow 0`、页脚底 982 / 702 / 702 ✓ 不裁切。
@@ -603,20 +603,33 @@
 
 **顺序说明**：与 C 组无依赖，可与 8–10 并行；放中后段是为了不打断时间轴主线。
 
-### 12. CUDA GPU 加速参数化
+### 12. ✅ CUDA GPU 加速参数化（2026-10-22，阶段 A+B；提交号待补）
 
-**现状依据**
-- MOSS 目前是自动判断（欢迎页卡文案「ggml，有 CUDA/Vulkan 即 GPU」），界面无可配项；配置文件字段已存在：`src-tauri/src/ai_runtime/config.rs` 的 `moss_device`（白名单 `空/cpu/cuda/vulkan`，`config.rs:306-313`）与 `funasr_device`（默认 `cpu`）——**只缺 UI，不缺存储**。
+**已实现**
+
+| 子项 | 处理 | 位置 |
+|---|---|---|
+| 探测命令 | 新增 `#[tauri::command] probe_moss_backend(app, device?)` → `BackendProbeReport`：L0 机器能力 + L1 资产 + L2 `info` 实证 + `decide()` 判定 + `recommend_from_assets()` 建议；MOSS 未安装时 `available=false` 并给出「未就绪」原文 | `src-tauri/src/ai_runtime/backend_probe.rs:380-508`（报告结构 382-409、`probe_backend` 460-534、命令 583-595） |
+| manifest 过滤 | 新增 `read_manifest_flavors()` / `find_manifest()` / `manifest_candidates()`：按 `runtime/manifest.json` → exe 同目录 → dev 布局 → `resource_dir` 顺序找清单，取 `id=="moss"` 的 flavor；找不到 → `manifest_found=false`（前端退化显示四项） | `backend_probe.rs:420-456`、`597-628` |
+| 落盘命令 | 新增 `#[tauri::command] set_moss_device(app, device)` → `MossDeviceSaveResult`；`normalize_moss_device()` 归一（`auto`→`""`、大小写/空白），`RuntimeConfig::load` → 改字段 → `save` 原子写；**load 失败直接报错，不用默认值覆盖坏配置** | `src-tauri/src/ai_runtime/config.rs:344-391`（归一见 356-366） |
+| 命令注册 | `invoke_handler` 加两行（用户授权直接改 `lib.rs`，不走补丁） | `src-tauri/src/lib.rs`（`check_asr_engines` 之后） |
+| 前端类型/接口 | `MossBackendProbe` / `MossDeviceSaveResult`；store 暴露 `probeMossBackend(device?)` / `setMossDevice(device)` | `src/types/index.ts`、`src/stores/project.ts`（`getAsrEngines` 之后） |
+| 设备下拉 | 打轴页「音频获取时间轴」内新增「推理设备」小节：`auto（ggml 选优，推荐）/ CUDA / Vulkan / CPU`；按 `manifest_flavors` 过滤，manifest 缺失时四项全给；已保存值不在清单内时补一条「当前已保存，manifest 未提供」，避免下拉显示空值 | `src/views/AsrView.vue`（`mossOnly` 分块内） |
+| 结论与硬报错 | 下拉下方显示 `实测 CUDA0 · <reason>`；显式选了本机不具备的后端 → 红字（`--danger`）+ 保存时 `message.warning`，**仍允许保存**（决策 D2-A：驱动可后装，运行期由 provider 硬拦）；推荐与当前选择不一致时黄字给建议 | `AsrView.vue`（`.enote.danger` / `.enote.warn`） |
+| 欢迎页自检卡 | MOSS 卡在 `notready` 时把硬报错原因摊到卡面上（红字），并提示「推理设备可在打轴页「转写参数 → 推理设备」中设置」 | `src/views/Welcome.vue`（`probeAsr()` 追加 `probeMossBackend()`） |
+
+**决策（用户 m00142 全选 A）**：D1-A 下拉落 ASR 页转写参数区；D2-A 允许保存 + 警示 + 运行期硬拦；D3-A **下次启动生效**（不做 `mod.rs` 的即时重置补丁）；D4-A manifest 由 Rust 命令读并回传 flavor 集合（前端不加 fs 插件权限）；D5-A 本期只做 `moss`，`funasr_device` 不动。
+
+**验证**：`cargo test` 全绿（lib 279 + 集成 15/15，新增 4 个 manifest 单测 + 1 个归一化单测）；`pnpm build`（含 `vue-tsc --noEmit`）通过。**未经真机 UI 手测**（需要装着 MOSS 的机器切三种后端各跑一次）。
+
+**未做（明确留口）**：manifest 尚未进本分支 ⇒ 过滤逻辑只有退化分支被走过，清单合入后需再验一次；`funasr_device`（D5-A）；即时生效（D3-A）；`runtime/.installed.json` 启动比对属 `mod.rs`，等 installer 侧落地后出补丁。
+
+**原始背景（保留）**
+- MOSS 自动判断（欢迎页卡文案「ggml，有 CUDA/Vulkan 即 GPU」），界面无可配项；配置文件字段已存在：`src-tauri/src/ai_runtime/config.rs` 的 `moss_device`（白名单 `空/cpu/cuda/vulkan`）与 `funasr_device`（默认 `cpu`）——**只缺 UI，不缺存储**。
 - PR #48（已并入）交付了判定逻辑与展示字段：`backend_probe::decide()` / `recommend_from_assets()`、`AsrEngineStatus.device` 与 `.effective_backend`、ASR 卡「设备 · …（实测 …）」行；契约与缺口见「并行分支接口」一节。
 - **重要实测结论**：双 GPU 机器上裸 `vulkan` 会落到**核显**（`Vulkan0`、`uma:1`），`auto`（空）才落独显（`Vulkan1`、`uma:0`）⇒ UI 默认值必须是「空/auto」，不要引导用户选裸 `vulkan`。
 - `src-tauri/src/lib.rs` 已注册 `check_ocr_runtime` / `check_asr_runtime` / `check_asr_engines` / `check_llm_runtime` / `check_embed_runtime`；LLM 与融合无关（`src-tauri/src/fuse/mod.rs:255-301` 只用 `EmbedManager`），故 `llm_device` 暂不需要。
 - 历史上还有 `feat/ocr-cuda` 分支——本轮体检：其内容已由 PR #48 覆盖（PR #48 的起点即「MOSS 后端三级探测 + CUDA/Vulkan/CPU fallback 语义」），**不需要再翻它**。
-
-**要做**
-- 把设备选择（自动(空) / CUDA / Vulkan / CPU）暴露成可配置项：迁移 `moss_device`（+ 可选 `funasr_device`）到界面，后端落盘走既有 `config.rs` 白名单校验；
-- 显式选择不可用时按契约**硬报错**并给指引（复用 `decide()` 的 reason / `recommend_from_assets()`），不静默降级；
-- 新增参数**必须同时带 info 说明**（复用第 7 项的基建）；
-- 需要先补 `probe_moss_backend` 命令（见「并行分支接口」）才能在界面上拿到判定结果。
 
 ### 13. ✅ 杂项清理与验证
 

@@ -6,7 +6,7 @@ import SourceTimeline from "../components/SourceTimeline.vue";
 import AppIcon from "../components/AppIcon.vue";
 import ParamStepper from "../components/ParamStepper.vue";
 import InfoDot from "../components/InfoDot.vue";
-import type { AsrRunParams, AsrEngineStatus } from "../types";
+import type { AsrRunParams, AsrEngineStatus, MossBackendProbe } from "../types";
 import { usePersistedOcrParams } from "../composables/ocrDefaults";
 import { FIX_MISREAD_DOC } from "../composables/ocrParamDocs";
 import { useMessage } from "naive-ui";
@@ -15,6 +15,15 @@ const projectStore = useProjectStore();
 /// 全局时间轴 store（校对区同一个实例）：打轴页的播放头挂在它上面
 const timeline = useTimelineStore();
 const message = useMessage();
+
+/// 推理设备下拉的说明文案
+const MOSS_DEVICE_DOC = [
+  "决定 MOSS 跑在哪个后端上。",
+  "自动：交给 ggml 自己选优（优先 CUDA，其次 Vulkan，最后 CPU）。",
+  "CUDA / Vulkan / CPU：强制指定后端，本机不具备该后端时直接报错，不会静默降级。",
+  "保存后需重启应用生效。",
+  "下拉只列出 runtime manifest 里已发布的 flavor（manifest 未随包时列出全部）。",
+].join("\n");
 
 // ── 两张折叠卡的展开态（默认全部收起，一次只开一张最大利用高度）──
 type CardName = "visual" | "audio";
@@ -103,6 +112,89 @@ async function openAsrPanel() {
     asrEngines.value = await projectStore.getAsrEngines();
   } catch {
     asrEngines.value = [];
+  }
+  await loadMossProbe();
+  mossDevice.value = mossProbe.value?.configured_device || "auto";
+}
+
+// ── MOSS 推理设备（第 12 项）────────────────────────────
+/// 下拉值写入 runtime/config.json 的 moss_device；"" = auto（ggml 选优）
+const mossDevice = ref<string>("auto");
+const mossProbe = ref<MossBackendProbe | null>(null);
+const deviceSaving = ref(false);
+
+const DEVICE_OPTIONS = [
+  { value: "auto", label: "自动（ggml 选优，推荐）" },
+  { value: "cuda", label: "CUDA（NVIDIA 显卡）" },
+  { value: "vulkan", label: "Vulkan（显卡通用）" },
+  { value: "cpu", label: "CPU（通用，最慢）" },
+];
+
+/// manifest 只声明已发布的 flavor：不在 manifest 里的 flavor 不给选；
+/// manifest 还没进包（installer 未落地）时退化为全部四项。
+const deviceOptions = computed(() => {
+  const p = mossProbe.value;
+  if (!p || !p.manifest_found) return DEVICE_OPTIONS;
+  const allowed = new Set(p.manifest_flavors);
+  const cur = p.configured_device || "auto";
+  const list = DEVICE_OPTIONS.filter((o) => o.value === "auto" || allowed.has(o.value));
+  // 已保存值不在 manifest 里（装的是 CPU 版却存着 cuda）→ 补回，保证下拉能显示当前值
+  if (!list.some((o) => o.value === cur)) {
+    list.push({ value: cur, label: `${cur}（当前已保存，manifest 未提供）` });
+  }
+  return list;
+});
+
+/// 探测结论文案：实测后端 + 判定依据
+const probeVerdict = computed(() => {
+  const p = mossProbe.value;
+  if (!p) return "";
+  if (!p.available) return p.error || p.reason || "当前设备不可用";
+  return [p.backend ? `实测 ${p.backend}` : "", p.reason].filter(Boolean).join(" · ");
+});
+
+/// 显式选了当前环境不具备的设备 → 醒目警示（仍允许保存，运行期硬拦）
+const deviceUnavailable = computed(() => {
+  const p = mossProbe.value;
+  return !!p && !p.available && p.requested !== "auto";
+});
+
+/// 推荐与当前选择不一致时才提示（如当前只有 CPU 版但本机有 N 卡）
+const deviceSuggestion = computed(() => {
+  const p = mossProbe.value;
+  if (!p || !p.recommendation) return "";
+  if (p.recommendation === p.requested) return "";
+  return `建议 ${p.recommendation}：${p.recommendation_reason}`;
+});
+
+async function loadMossProbe(device?: string) {
+  try {
+    mossProbe.value = await projectStore.probeMossBackend(device);
+  } catch {
+    mossProbe.value = null;
+  }
+}
+
+async function onDeviceChange(e: Event) {
+  const raw = (e.target as HTMLSelectElement).value;
+  const value = raw === "auto" ? "" : raw;
+  deviceSaving.value = true;
+  try {
+    const res = await projectStore.setMossDevice(value);
+    message.success(res.message);
+    // 用刚保存的值立即判定一次：显式不可用要当场说清楚（运行期也会硬拦）
+    await loadMossProbe(value);
+    mossDevice.value = raw;
+    const p = mossProbe.value;
+    if (p && !p.available && p.requested !== "auto") {
+      message.warning(`已保存，但当前环境不可用：${p.error || p.reason}`);
+    }
+  } catch (err) {
+    message.error(String(err));
+    await loadMossProbe();
+    mossDevice.value = mossProbe.value?.configured_device || "auto";
+  } finally {
+    deviceSaving.value = false;
   }
 }
 
@@ -417,6 +509,37 @@ async function startEmbedOcr() {
           </span>
         </div>
 
+        <!-- MOSS 推理设备（第 12 项）：写入 runtime/config.json，重启生效 -->
+        <div v-if="mossOnly" class="sblk">
+          <span class="bt">推理设备</span>
+          <div class="prow">
+            <div class="pcell">
+              <span class="pl">
+                <span class="pl-t">MOSS 推理设备</span>
+                <InfoDot :text="MOSS_DEVICE_DOC" title="MOSS 推理设备" />
+              </span>
+              <span class="selwrap">
+                <select
+                  class="selbox"
+                  :value="mossDevice"
+                  :disabled="deviceSaving"
+                  @change="onDeviceChange"
+                >
+                  <option v-for="o in deviceOptions" :key="o.value" :value="o.value">
+                    {{ o.label }}
+                  </option>
+                </select>
+                <AppIcon name="chev-d" :size="11" />
+              </span>
+            </div>
+          </div>
+          <span v-if="probeVerdict" class="enote" :class="{ danger: deviceUnavailable }">
+            {{ probeVerdict }}
+          </span>
+          <span v-if="deviceSuggestion" class="enote warn">{{ deviceSuggestion }}</span>
+          <span class="enote">保存后重启应用生效；显式指定但本机不具备时会直接报错，不会静默降级</span>
+        </div>
+
         <!-- 说话人标记：每条 ASR 轨标记为主播语音 / 游戏内容（"选择即生效"）。
              融合只消费游戏内容轨（嵌字轴），主播轨仅供字幕轴参考 -->
         <div v-if="asrTracks.length > 0" class="sblk">
@@ -520,6 +643,9 @@ async function startEmbedOcr() {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px 14px;
 }
+
+.enote.danger { color: var(--danger); }
+.enote.warn { color: var(--warn); }
 
 .trow {
   display: flex;

@@ -170,6 +170,10 @@ interface Probe {
   /// 实测生效后端（仅 moss，来自 spawn 时 info 的 [mt I] backend 行），
   /// 如 "CUDA0"/"Vulkan1"/"CPU"；是硬判据——device=vulkan 静默降级后实测可能仍是 CUDA0
   backend?: string | null;
+  /// 设备判定说明（仅 ASR 卡）：不可用时给出原因/错误原文
+  deviceNote?: string;
+  /// 设备判定为硬错误（显式指定了本机不具备的后端）
+  deviceBad?: boolean;
 }
 
 const ENV_CARDS = [
@@ -213,6 +217,11 @@ function setProbe(key: EnvKey, ready: boolean | null, msg: string, device = "", 
   };
 }
 
+/// 把设备判定结论并进 ASR 卡（显式指定了本机不具备的后端 = 硬错误，醒目显示）
+function setAsrDeviceNote(note: string, bad: boolean) {
+  probes.value.asr = { ...probes.value.asr, deviceNote: note, deviceBad: bad };
+}
+
 async function probeOcr() {
   try {
     const status = await invoke<{ ready: boolean; message: string }>("check_ocr_runtime");
@@ -233,6 +242,15 @@ async function probeAsr() {
     setProbe("asr", moss.ready, moss.message, moss.device, moss.effective_backend ?? null);
   } catch (e) {
     setProbe("asr", null, String(e));
+  }
+  // 设备判定：显式指定了本机不具备的后端 = 硬错误，卡片上直接摊开说清楚
+  try {
+    const report = await projectStore.probeMossBackend();
+    if (!report.available) {
+      setAsrDeviceNote(report.error || report.reason || "当前推理设备不可用", report.requested !== "auto");
+    }
+  } catch {
+    // 探测失败不影响卡片其它信息
   }
 }
 
@@ -384,6 +402,12 @@ onMounted(() => {
             <span class="ex">{{ card.desc }}</span>
             <span v-if="deviceText(card.key)" class="ex">
               设备 · {{ deviceText(card.key) }}{{ backendText(card.key) ? `（${backendText(card.key)}）` : "" }}
+            </span>
+            <span v-if="card.key === 'asr' && probes.asr.deviceNote" class="ex" :class="{ danger: probes.asr.deviceBad }">
+              {{ probes.asr.deviceNote }}
+            </span>
+            <span v-if="card.key === 'asr' && probes.asr.state === 'notready'" class="ex">
+              推理设备可在打轴页「转写参数 → 推理设备」中设置
             </span>
           </div>
         </div>
@@ -735,6 +759,10 @@ onMounted(() => {
 .ecard .ex {
   font-size: 11px;
   color: var(--dim);
+}
+
+.ecard .ex.danger {
+  color: var(--danger);
 }
 
 .wfoot {

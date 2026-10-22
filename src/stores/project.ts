@@ -17,6 +17,8 @@ import type {
   AsrSegment,
   AsrEngineStatus,
   AsrProgress,
+  MossBackendProbe,
+  MossDeviceSaveResult,
   LlmProgress,
   LlmRuntimeStatus,
   FuseAsrInput,
@@ -1057,6 +1059,16 @@ export const useProjectStore = defineStore("project", () => {
     return invoke<AsrEngineStatus[]>("check_asr_engines");
   }
 
+  /// 探测 MOSS 后端（设备下拉 + 硬报错展示）；device 省略时按当前配置判定
+  async function probeMossBackend(device?: string): Promise<MossBackendProbe> {
+    return invoke<MossBackendProbe>("probe_moss_backend", { device: device ?? null });
+  }
+
+  /// 保存 MOSS 推理设备（写 runtime/config.json，下次启动生效）
+  async function setMossDevice(device: string): Promise<MossDeviceSaveResult> {
+    return invoke<MossDeviceSaveResult>("set_moss_device", { device });
+  }
+
   /// 请求取消当前 ASR 转写（后端终止 MOSS 子进程，runAsr 的 invoke 会返回"已取消"错误）
   async function cancelAsr() {
     try {
@@ -1570,6 +1582,8 @@ export const useProjectStore = defineStore("project", () => {
     asrMessage,
     runAsr,
     getAsrEngines,
+    probeMossBackend,
+    setMossDevice,
     cancelAsr,
     llmRunning,
     llmProgress,

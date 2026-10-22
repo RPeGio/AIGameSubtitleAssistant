@@ -8,8 +8,13 @@
 // 允许 ggml 自选最优。设备名映射：CUDA0 / Vulkan0 / CPU（显式 vulkan 裸值
 // 会选中枚举序第一块 GPU，双 GPU 机器上常是核显，见 §2.4 实测）。
 
-use std::path::Path;
+use serde::Serialize;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use tauri::Manager;
+
+use super::config::RuntimeConfig;
+use super::resolve_path;
 
 /// 配置里的 moss_device 请求值；"" 归一为 Auto
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -370,6 +375,239 @@ pub fn recommend_from_assets(assets: &AssetInfo) -> Decision {
     }
 }
 
+// ─── 探测报告（前端设备下拉 + 硬报错展示）───────────────
+
+/// 设备探测报告：前端据此渲染「推理设备」下拉、可用性提示与硬报错
+#[derive(Debug, Clone, Serialize)]
+pub struct BackendProbeReport {
+    /// 配置里的 moss_device 原值（"" = auto）
+    pub configured_device: String,
+    /// 本次判定实际请求的设备："auto" / "cpu" / "cuda" / "vulkan"
+    pub requested: String,
+    /// 请求是否可用：显式请求不可用 = false（硬报错，绝不静默降级）；auto 恒 true
+    pub available: bool,
+    /// 实际生效后端（"CUDA0" / "Vulkan1" / "CPU"）；不可用或未实证时为空
+    pub backend: String,
+    /// 判定依据（人话，给自检面板/设置页展示）
+    pub reason: String,
+    /// 判定来源："l2" 实证 / "l1" 资产推断 / "requested" 显式指定 / "reject" 硬报错
+    pub source: String,
+    /// 推荐后端（"cuda" / "vulkan" / "cpu"）与推荐理由
+    pub recommendation: String,
+    pub recommendation_reason: String,
+    /// 本机能力：NVIDIA 驱动可用 / Vulkan loader + GPU 可枚举
+    pub machine_cuda: bool,
+    pub machine_vulkan: bool,
+    /// Vulkan 枚举到的 GPU 名（vulkaninfo）
+    pub gpus: Vec<String>,
+    /// manifest 是否找到：false = 没找到 manifest ⇒ 前端按"四项全可选"退化展示
+    pub manifest_found: bool,
+    /// manifest 里 id=="moss" 的条目声明的 flavor（去重、小写）
+    pub manifest_flavors: Vec<String>,
+    /// 硬报错信息（显式请求不可用 / MOSS 未安装时非空）
+    pub error: Option<String>,
+}
+
+/// manifest 里可安装的 MOSS 后端集合
+#[derive(Debug, Clone, PartialEq)]
+pub struct ManifestFlavors {
+    /// manifest 是否找到
+    pub found: bool,
+    /// id=="moss" 的条目声明的 flavor（去重、小写，保持出现顺序）
+    pub flavors: Vec<String>,
+}
+
+/// 读取 manifest 中 id=="moss" 的 flavor 集合。
+/// manifest 未找到 → found=false（前端退化显示全部四项）；
+/// 找到但没有 moss 条目 → found=true + 空集合（前端不给选任何具体 flavor）。
+pub fn read_manifest_flavors(manifest_path: Option<&Path>) -> ManifestFlavors {
+    let Some(path) = manifest_path else {
+        return ManifestFlavors { found: false, flavors: Vec::new() };
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return ManifestFlavors { found: false, flavors: Vec::new() };
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return ManifestFlavors { found: false, flavors: Vec::new() };
+    };
+    let mut flavors: Vec<String> = Vec::new();
+    if let Some(items) = json.get("items").and_then(|v| v.as_array()) {
+        for item in items {
+            let is_moss = item.get("id").and_then(|v| v.as_str()) == Some("moss");
+            if !is_moss {
+                continue;
+            }
+            // flavor 可选；缺失的条目无法判定具体后端，跳过
+            let Some(flavor) = item.get("flavor").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let f = flavor.trim().to_ascii_lowercase();
+            if !f.is_empty() && !flavors.contains(&f) {
+                flavors.push(f);
+            }
+        }
+    }
+    ManifestFlavors { found: true, flavors }
+}
+
+/// 按候选路径顺序找 manifest 文件（第一个存在的胜出）
+pub fn find_manifest(candidates: &[PathBuf]) -> Option<PathBuf> {
+    candidates.iter().find(|p| p.is_file()).cloned()
+}
+
+/// 探测 MOSS 后端：L0 机器能力 + L1 资产 + L2 实证（`info <model>` 的 backend 行），
+/// 再按 §3.4 矩阵判定。device_override 非空时按该设备判定（用于下拉预览）。
+pub fn probe_backend(
+    runtime_dir: &Path,
+    config: &RuntimeConfig,
+    device_override: Option<&str>,
+    manifest_candidates: &[PathBuf],
+) -> BackendProbeReport {
+    let configured_device = config.moss_device.clone();
+    let requested_raw = device_override
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| configured_device.clone());
+    let req = normalize_device_request(&requested_raw);
+
+    let binary = resolve_path(&config.moss_binary, runtime_dir);
+    let model = resolve_path(&config.moss_model, runtime_dir);
+    let caps = probe_machine();
+    let assets = probe_assets(&binary);
+
+    let (backend, reason, source, error) = if !binary.is_file() || !model.is_file() {
+        let msg = format!(
+            "MOSS 未就绪：可执行文件 {} / 模型 {} 不存在（先安装 MOSS 运行时）",
+            binary.display(),
+            model.display()
+        );
+        (String::new(), msg.clone(), "reject".to_string(), Some(msg))
+    } else {
+        match run_info(&binary, &model, req) {
+            Ok(stderr) => {
+                let eff = parse_info_stderr(&stderr);
+                match decide(req, eff.as_ref(), &assets, &caps) {
+                    Ok(d) => (d.backend, d.reason, d.source.to_string(), None),
+                    Err(msg) => (String::new(), msg.clone(), "reject".to_string(), Some(msg)),
+                }
+            }
+            Err(msg) => (String::new(), msg.clone(), "reject".to_string(), Some(msg)),
+        }
+    };
+
+    // 推荐后端：资产层说话；资产只有 CPU 版但本机有 GPU 时补一句"装 GPU 版更快"
+    let rec = recommend_from_assets(&assets);
+    let (recommendation, recommendation_reason) = if rec.backend == "cpu" && (caps.cuda || caps.vulkan) {
+        let b = if caps.cuda { "cuda" } else { "vulkan" };
+        (
+            b.to_string(),
+            format!(
+                "本机有 {} GPU，建议安装 {} 版 moss（当前只装了 CPU 版）",
+                if caps.cuda { "NVIDIA" } else { "Vulkan" },
+                b
+            ),
+        )
+    } else {
+        (rec.backend.clone(), rec.reason.clone())
+    };
+
+    let manifest = read_manifest_flavors(find_manifest(manifest_candidates).as_deref());
+
+    BackendProbeReport {
+        configured_device,
+        requested: requested_raw,
+        available: error.is_none(),
+        backend,
+        reason,
+        source,
+        recommendation,
+        recommendation_reason,
+        machine_cuda: caps.cuda,
+        machine_vulkan: caps.vulkan,
+        gpus: probe_vulkan_gpus(),
+        manifest_found: manifest.found,
+        manifest_flavors: manifest.flavors,
+        error,
+    }
+}
+
+/// 跑 `info <model>` 拿 stderr（`[mt I] backend:` 行在其内）。
+/// 显式设备才设 MTD_DEVICE——这样实测到的后端与转写时真实生效的一致。
+fn run_info(binary: &Path, model: &Path, req: DeviceRequest) -> Result<String, String> {
+    let mut cmd = Command::new(binary);
+    cmd.arg("info").arg(model);
+    match req {
+        DeviceRequest::Auto => {}
+        DeviceRequest::Cpu => {
+            cmd.env("MTD_DEVICE", "cpu");
+        }
+        DeviceRequest::Cuda => {
+            cmd.env("MTD_DEVICE", "cuda");
+        }
+        DeviceRequest::Vulkan => {
+            cmd.env("MTD_DEVICE", "vulkan");
+        }
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("无法启动 MOSS：{}", e))?;
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    if !out.status.success() {
+        return Err(format!(
+            "MOSS info 探测失败（{}）：{}",
+            out.status,
+            stderr.trim()
+        ));
+    }
+    Ok(stderr)
+}
+
+/// Vulkan 枚举到的 GPU 名（vulkaninfo --summary）；无 Vulkan 时为空
+pub fn probe_vulkan_gpus() -> Vec<String> {
+    Command::new("vulkaninfo")
+        .arg("--summary")
+        .output()
+        .map(|o| {
+            if o.status.success() {
+                parse_vulkaninfo_gpus(&String::from_utf8_lossy(&o.stdout))
+            } else {
+                Vec::new()
+            }
+        })
+        .unwrap_or_default()
+}
+
+/// Tauri 命令：探测 MOSS 后端（设备下拉 + 硬报错展示）
+///
+/// device 省略时按当前配置的 moss_device 判定；传入时按该设备判定（下拉预览）。
+#[tauri::command]
+pub fn probe_moss_backend(
+    app: tauri::AppHandle,
+    device: Option<String>,
+) -> BackendProbeReport {
+    let runtime_dir = super::config::resolve_runtime_dir(
+        app.path().app_data_dir().ok().map(|d| d.join("runtime")),
+    );
+    let config = RuntimeConfig::load(&runtime_dir).unwrap_or_default();
+    probe_backend(&runtime_dir, &config, device.as_deref(), &manifest_candidates(&app, &runtime_dir))
+}
+
+/// manifest 候选路径：runtime 目录内 → Tauri 打包布局（exe 同级 runtime/）
+/// → 开发期布局（src-tauri/resources/runtime/）→ 显式 resource_dir
+fn manifest_candidates(app: &tauri::AppHandle, runtime_dir: &Path) -> Vec<PathBuf> {
+    let mut candidates = vec![runtime_dir.join("manifest.json")];
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("runtime").join("manifest.json"));
+            candidates.push(dir.join("../../resources/runtime/manifest.json"));
+        }
+    }
+    if let Ok(res) = app.path().resource_dir() {
+        candidates.push(res.join("runtime").join("manifest.json"));
+    }
+    candidates
+}
+
 // ─── 单测（夹具 = 实测 stderr / vulkaninfo 输出）─────────
 
 #[cfg(test)]
@@ -562,5 +800,59 @@ GPU3:
     #[test]
     fn vulkaninfo_parse_empty_when_no_devices() {
         assert!(parse_vulkaninfo_gpus("Vulkan Instance Version: 1.4.363\n\nDevices:\n========\n").is_empty());
+    }
+
+    // ─── manifest flavor 读取 ────────────────────────────
+
+    /// 写临时 manifest 文件（测试用）
+    fn write_temp_manifest(name: &str, body: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("gsa_manifest_{}_{}.json", name, std::process::id()));
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn manifest_missing_is_not_found() {
+        let f = read_manifest_flavors(None);
+        assert!(!f.found);
+        assert!(f.flavors.is_empty());
+    }
+
+    #[test]
+    fn manifest_collects_moss_flavors() {
+        let path = write_temp_manifest(
+            "flavors",
+            r#"{"version":1,"generated_at":"2026-01-01","items":[
+                {"id":"moss","flavor":"CUDA","url":"http://x/a.zip","sha256":"aa","size":1,"dest":"bin"},
+                {"id":"moss","flavor":"cuda","url":"http://x/b.zip","sha256":"bb","size":1,"dest":"bin"},
+                {"id":"moss","flavor":"vulkan","url":"http://x/c.zip","sha256":"cc","size":1,"dest":"bin"},
+                {"id":"deps-ocr","flavor":"cpu","url":"http://x/d.zip","sha256":"dd","size":1,"dest":"deps"}
+            ]}"#,
+        );
+        let f = read_manifest_flavors(Some(&path));
+        let _ = std::fs::remove_file(&path);
+        assert!(f.found);
+        // 只取 moss 条目、flavor 小写去重
+        assert_eq!(f.flavors, vec!["cuda".to_string(), "vulkan".to_string()]);
+    }
+
+    #[test]
+    fn manifest_without_moss_items_yields_empty_set() {
+        let path = write_temp_manifest(
+            "nomoss",
+            r#"{"version":1,"items":[{"id":"deps-ocr","flavor":"cpu","url":"u","sha256":"s","size":1,"dest":"d"}]}"#,
+        );
+        let f = read_manifest_flavors(Some(&path));
+        let _ = std::fs::remove_file(&path);
+        assert!(f.found);
+        assert!(f.flavors.is_empty());
+    }
+
+    #[test]
+    fn manifest_broken_json_is_not_found() {
+        let path = write_temp_manifest("broken", "{not json");
+        let f = read_manifest_flavors(Some(&path));
+        let _ = std::fs::remove_file(&path);
+        assert!(!f.found);
     }
 }
