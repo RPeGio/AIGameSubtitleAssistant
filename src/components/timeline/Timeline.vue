@@ -3,7 +3,7 @@ import { computed, inject, nextTick, onActivated, onDeactivated, onMounted, onUn
 import { NModal, NPopconfirm, NSelect, NButton, useMessage } from "naive-ui";
 import { useTimelineStore, TIMELINE_STORE_KEY, clipTone, TEXT_TRACK_TYPES } from "../../stores/timeline";
 import { useProjectStore } from "../../stores/project";
-import type { Track } from "../../types";
+import type { Track, TimelineEvent } from "../../types";
 import TimelineRuler from "./TimelineRuler.vue";
 import TimelineClip from "./TimelineClip.vue";
 import TimelineScrollbar from "./TimelineScrollbar.vue";
@@ -648,22 +648,39 @@ function onSecondStep(e: KeyboardEvent) {
   seekWithScroll(timeline.currentTime + (e.key === "ArrowLeft" ? -1 : 1));
 }
 
-/// 上/下一个片段：按开始时间取当前时间前后最近的 clip
+/// 上/下一个片段：在**聚焦轨道内**翻（第 22 项）
+/// - 口径与右侧「轨道总览」一致：总览只列聚焦轨道的 clip，跨轨跳会跳到总览看不见的轨，
+///   表现为「按了跳段没反应」（总览无高亮、无滚动），选区遮罩还留在旧轨；
+/// - 没有聚焦轨道（或聚焦轨暂无片段）时兜底跨轨找最近片段，并把目标轨设为聚焦轨；
+/// - mini 时间轴（语料页/转写页）只含 OCR 选区控制轨，「片段」语义不适用 ⇒ 不响应。
 function onPrevNextClip(e: KeyboardEvent) {
-  const events = tracks()
-    .flatMap((t) => t.events)
-    .filter((ev) => ev.type !== "ocr_region")
-    .sort((a, b) => a.start - b.start);
-  if (events.length === 0) return;
-  const t = timeline.currentTime;
+  if (props.timelineRole === "mini") return;
+  const forward = e.key === ".";
   const EPS = 0.01;
-  const target =
-    e.key === ","
-      ? [...events].reverse().find((ev) => ev.start < t - EPS)
-      : events.find((ev) => ev.start > t + EPS);
-  if (!target) return;
+  const t = timeline.currentTime;
+  const trackList = tracks();
+  const focused = trackList.find((tr) => tr.id === timeline.focusedTrackId);
+  let candidates: TimelineEvent[] = focused
+    ? focused.events.filter((ev) => ev.type !== "ocr_region")
+    : [];
+  if (candidates.length === 0) {
+    candidates = trackList.flatMap((tr) => tr.events.filter((ev) => ev.type !== "ocr_region"));
+  }
+  if (candidates.length === 0) return;
+  const sorted = [...candidates].sort((a, b) => a.start - b.start);
+  const target = forward
+    ? sorted.find((ev) => ev.start > t + EPS)
+    : [...sorted].reverse().find((ev) => ev.start < t - EPS);
+  if (!target) {
+    // 边界：给可感知的反馈，不静默乱跳到别的轨
+    message.info(forward ? "已是最后一条片段" : "已是第一条片段");
+    return;
+  }
   seekWithScroll(target.start);
   timeline.focusClip(target.id);
+  // 兜底路径命中别的轨时同步切聚焦轨，总览才跟得上（否则总览仍显示旧轨）
+  const owner = trackList.find((tr) => tr.events.some((ev) => ev.id === target.id));
+  if (owner && owner.id !== timeline.focusedTrackId) timeline.focusTrack(owner.id);
 }
 
 /// =/- 缩放，锚点取播放头当前 x（超出视口则贴边）

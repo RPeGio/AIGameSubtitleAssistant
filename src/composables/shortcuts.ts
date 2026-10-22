@@ -36,7 +36,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: "frameStep", group: "时间轴", label: "逐帧步进（被分割态改为搬句界）", keys: ["ArrowLeft", "ArrowRight"], scope: "timeline" },
   { id: "secondStep", group: "时间轴", label: "前后 1 秒", keys: ["Shift+ArrowLeft", "Shift+ArrowRight"], scope: "timeline" },
   { id: "docStartEnd", group: "时间轴", label: "片头 / 片尾", keys: ["Home", "End"], scope: "timeline" },
-  { id: "prevNextClip", group: "时间轴", label: "上 / 下一个片段", keys: [",", "."], scope: "timeline" },
+  { id: "prevNextClip", group: "时间轴", label: "上 / 下一个片段（当前轨道）", keys: [",", "."], scope: "timeline" },
   { id: "zoom", group: "时间轴", label: "放大 / 缩小", keys: ["=", "-"], scope: "timeline" },
   { id: "zoomFit", group: "时间轴", label: "缩放至全部", keys: ["\\"], scope: "timeline" },
 
