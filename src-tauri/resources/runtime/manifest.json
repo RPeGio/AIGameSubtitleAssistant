@@ -1,0 +1,33 @@
+{
+    "version":  "1",
+    "generated_at":  "2026-10-22T15:52:05Z",
+    "items":  [
+                  {
+                      "id":  "moss",
+                      "flavor":  "cpu",
+                      "url":  "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-cpu.zip",
+                      "sha256":  "545e2b1a18f35c6cd462c26b768d177458bf4d6918a619f24d4767492c4d791d",
+                      "size":  1121692,
+                      "dest":  "bin",
+                      "backend_marker":  "cpu"
+                  },
+                  {
+                      "id":  "moss",
+                      "flavor":  "vulkan",
+                      "url":  "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-vulkan.zip",
+                      "sha256":  "e848847289982b8322262341aa133e40b8f152ee563b8af63e3412e4eb6a89b5",
+                      "size":  16139894,
+                      "dest":  "bin",
+                      "backend_marker":  "vulkan"
+                  },
+                  {
+                      "id":  "moss",
+                      "flavor":  "cuda",
+                      "url":  "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-cuda.zip",
+                      "sha256":  "5faa48b8b85e7f5763b835ad8b18ba467daef8243f0b1c7172fb3a1c87ed894d",
+                      "size":  651834262,
+                      "dest":  "bin",
+                      "backend_marker":  "cuda"
+                  }
+              ]
+}

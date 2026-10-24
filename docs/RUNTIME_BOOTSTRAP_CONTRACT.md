@@ -77,9 +77,19 @@
 
 ## 4. manifest 规范
 
-- **落点**：`src-tauri/resources/runtime/manifest.json`，**随 app 发布并提交进仓库**
-  （installer 侧负责提交；`tauri.conf.json` 的 `bundle.resources` 需加一行指向
-  `resources/runtime/manifest.json`——该文件归 installer 侧）。
+- **落点**：`src-tauri/resources/runtime/manifest.json`，**随 app 发布并提交进仓库**。
+  - **状态（2026-10-24）**：真清单已由本分支落库（内容由 installer 侧生成，`version:"1"`，
+    三个 `id=moss` 条目 cpu / vulkan / cuda，`dest` 全为 `bin`）；`tauri.conf.json` 的
+    `bundle.resources` 本分支已加一行 `"resources": ["resources/runtime/manifest.json"]`
+    ——installer 侧**不要再重复加**（重复加会变成合并冲突）。
+  - **打包落点**：数组形式会**保留目录结构** ⇒ 清单实际落在
+    `$RESOURCES/resources/runtime/manifest.json`（不是 `$RESOURCES/runtime/…`）。
+    Rust 侧候选路径已覆盖这个形状（§8.1），别照"平铺"的直觉去改。
+  - **入库坑**：根 `.gitignore` 有一条 `runtime/`（指用户数据目录），它会顺带吃掉
+    `src-tauri/resources/runtime/`，导致清单**静默不入库**。已在 `.gitignore` 加
+    `!src-tauri/resources/runtime/` 例外（父目录被排除后无法只放行子文件，故整目录放行）。
+    谁再动 `.gitignore`，用 `git check-ignore -v src-tauri/resources/runtime/manifest.json`
+    确认没被重新吃掉。
 - **脚本缺省读取 app 内置 manifest**，`-Manifest` 可覆盖。
 - **schema（稳定字段冻结）**：
 
@@ -91,7 +101,7 @@
     {
       "id": "moss",
       "flavor": "cuda",
-      "url": "https://github.com/<owner>/<repo>/releases/download/<tag>/moss-cuda.7z",
+      "url": "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-cuda.zip",
       "sha256": "…",
       "size": 123456789,
       "dest": "bin",
@@ -141,6 +151,19 @@ installer 侧实现（已与前端侧对齐）：
 3. L1 资产探测 `probe_assets()` 固定读**二进制同目录**的 `.backend` 与
    `ggml-cuda.dll` / `ggml-vulkan.dll`（`backend_probe.rs:209-222`）。
 
+### 4.3 交付物是 zip（不是 7z）、以及解压的三个坑
+
+实际发布的资源是 **zip**（`moss-runtime-v1` 下的 `moss-cpu.zip` / `moss-vulkan.zip` /
+`moss-cuda.zip`）。**不要按扩展名写死 `.7z`**——那是早期示例留下的，会 404。
+
+installer 侧实测（2026-10-24）确认过、且容易踩的三点：
+
+| # | 现象 | 要求 |
+|---|---|---|
+| 1 | zip 条目带 `./` 前导（`./moss-transcribe.exe`） | 解压实现必须先规整条目名再去 `./`。`Expand-Archive -DestinationPath runtime\bin` 实测是**直接平铺** 11 个文件，不会出现 `bin\bin` 嵌套；但自研解压（Rust `zip` crate / .NET）若直接拼接会落成 `bin\./xxx` ⇒ 一律去掉前导 `./` 与 `.\`，并且**按 `dest` 展开到 `runtime/<dest>`，不要当成自带一级目录的包** |
+| 2 | 包内已有 `.backend` 标记（cpu 包内容 `cpu`、vulkan 包内容 `vulkan`） | 按 `backend_marker` 再写一次是**幂等覆盖**，不冲突；**但别指望它区分后端**——它只是校验用 |
+| 3 | `.backend` 看起来能"选后端" | 真正的判据永远是 L2 实测（`moss-transcribe info` 的 `[mt I] backend:` 行）+ L1 资产；`.backend` 只是缓存提示，标记与请求不符时 `decide()` 会**拒绝**而不是信任它 |
+
 ⇒ 换 flavor = 覆盖 `runtime/bin` 下的同名文件 + 重写 `runtime/bin/.backend`。
 这也是 installer 侧「装另一种 flavor 前需 -Force 或先清理旧 flavor」的原因。
 
@@ -168,8 +191,14 @@ installer 侧实现（已与前端侧对齐）：
 - 下拉候选 = `auto`（空值）/ `cuda` / `vulkan` / `cpu`。
 - **只有 manifest 里存在的 flavor 才给选**：`items[]` 中 `id == "moss"` 的条目所覆盖的
   flavor。
-- **manifest 读不到时（本期必然如此：manifest 尚未进本分支）→ 退化显示全部四项**，
-  并在界面上标注「未读取到安装清单，显示全部设备选项」。manifest 合入后自动生效。
+- **manifest 读不到时 → 退化显示全部四项**，并在下拉下方标注「未读取到安装清单，
+  暂显示全部设备选项」。
+  - 清单到位前（2026-10-24 之前）**一直**走这个退化分支，属预期；清单到位后只在
+    清单文件缺失/损坏时才触发。⇒ 过滤生效后要**重测一次下拉项**，别把退化表现当成新 bug。
+  - 注意：当前发布的清单声明了 cpu / vulkan / cuda **三种** flavor，所以正常情况下列表
+    仍是四项全可选、与退化分支**看起来一样**（差别只在有没有那行标注）。
+    要验证过滤真的起作用：临时把清单里某个 flavor 条目删掉（或用 `-Manifest` 指向精简清单）
+    → 对应项必须消失；已保存值不在清单里时仍要能看到它（带「manifest 未提供」后缀）。
 - 配置文件字段 `moss_device` 白名单维持 `"" | cpu | cuda | vulkan`（`config.rs:307-316`），
   `"auto"` 归一为 `""` 的逻辑在 `backend_probe::normalize_device_request` 与
   `config::normalize_moss_device` 两处（前者判定用、后者写盘用）——
@@ -181,7 +210,7 @@ installer 侧实现（已与前端侧对齐）：
 
 | 依赖 | 由谁提供 | 前端如何使用 |
 |---|---|---|
-| manifest 可读（id → flavor 集合） | installer 侧提交 manifest + `tauri.conf.json` 的 `bundle.resources` | 前端读 JSON 过滤下拉项；读不到则退化显示全部 |
+| manifest 可读（id → flavor 集合） | **已就位**（2026-10-24：清单落库 + `bundle.resources` 已加） | 前端读 Rust 命令回传的 flavor 过滤下拉项；读不到则退化显示全部 |
 | 装完一项的落盘标记 `runtime/.installed.json` | installer 侧**只负责写** | `{items:{<id>:{flavor, sha256, source_version, installed_at}}}`；**app 启动侧的比对逻辑本期不做**——它住在 `ai_runtime/mod.rs`（跨界文件，见 §7），等本分支出补丁、installer 侧套用 |
 | 磁盘空间预检 / 退出码语义 | installer 侧 | 前端只展示引导文案，不自己算 |
 
@@ -203,6 +232,7 @@ installer 侧实现（已与前端侧对齐）：
 | P1 | `src-tauri/src/lib.rs` | `invoke_handler` 注册 `ai_runtime::backend_probe::probe_moss_backend,` | **已由本分支直接改**（用户 2026-10-22 授权） |
 | P2 | `src-tauri/src/lib.rs` | `invoke_handler` 注册 `ai_runtime::config::set_moss_device,` | **已由本分支直接改**（同上） |
 | P3 | `src-tauri/src/ai_runtime/mod.rs` | *（可选）* `AsrManager` 增加「重置 moss provider」的方法，用于改设备后**即时**生效 | 不做（决策 D3-A：下次启动生效），仅在将来要即时生效时补 |
+| P4 | `src-tauri/tauri.conf.json` | `bundle.resources` 加 `"resources": ["resources/runtime/manifest.json"]` | **已由本分支直接改**（2026-10-24 用户指示落清单时一并加好）；installer 侧勿重复添加 |
 
 P1/P2 的命令函数本体放在 `backend_probe.rs` / `config.rs`——这两个模块**已在
 `ai_runtime/mod.rs` 里声明**（`pub mod backend_probe;` / `pub mod config;`），
@@ -244,13 +274,15 @@ invoke("probe_moss_backend", { device?: string })  // device 省略/空 = 用配
   `parse_info_stderr()`（L2）、`decide()`、`recommend_from_assets()`——**不重写判定逻辑**。
 - L2 实证需要拉起 `moss-transcribe info <model>` 子进程（约 0.5 s），命令应为异步或
   允许失败降级到 L1 推断（`source: "l1"`）。
-- **manifest 查找顺序**（`backend_probe.rs::manifest_candidates`，第一个存在的胜出）：
+- **manifest 查找顺序**（`backend_probe.rs::manifest_candidates_for`，第一个存在的胜出）：
   1. `runtime/manifest.json`（installer 可写，便于热修清单）
   2. `<exe 目录>/runtime/manifest.json`
-  3. `<exe 目录>/../../resources/runtime/manifest.json`（dev 布局：`target/debug/` → `src-tauri/resources/`）
-  4. `<resource_dir>/runtime/manifest.json`（bundle 布局）
-  ⇒ installer 侧把清单放进 `src-tauri/resources/runtime/manifest.json` 并加进
-  `bundle.resources` 后，dev 与打包两种形态都能读到。
+  3. `<exe 目录>/resources/runtime/manifest.json`（**打包布局**：`bundle.resources` 数组形式保留目录结构）
+  4. `<exe 目录>/../../resources/runtime/manifest.json`（dev 布局：`target/debug/` → `src-tauri/resources/`）
+  5. `<resource_dir>/runtime/manifest.json`（平铺布局，兼容 map 形式的 `bundle.resources`）
+  6. `<resource_dir>/resources/runtime/manifest.json`（与第 3 条同源，非 Windows 平台 resource_dir ≠ exe 目录时兜底）
+  ⇒ 清单放在 `src-tauri/resources/runtime/manifest.json` 并加进 `bundle.resources` 后，
+  dev 与打包两种形态都能读到；第 3/4/6 条各有 `manifest_candidates_find_*` 单测钉住。
 
 ### 8.2 `set_moss_device`（落盘）
 

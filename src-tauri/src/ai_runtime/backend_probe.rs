@@ -592,18 +592,37 @@ pub fn probe_moss_backend(
     probe_backend(&runtime_dir, &config, device.as_deref(), &manifest_candidates(&app, &runtime_dir))
 }
 
-/// manifest 候选路径：runtime 目录内 → Tauri 打包布局（exe 同级 runtime/）
-/// → 开发期布局（src-tauri/resources/runtime/）→ 显式 resource_dir
+/// manifest 候选路径：runtime 目录内 → Tauri 打包布局（exe 同级 runtime/ 或
+/// exe 同级 resources/runtime/）→ 开发期布局（src-tauri/resources/runtime/）
+/// → 显式 resource_dir
 fn manifest_candidates(app: &tauri::AppHandle, runtime_dir: &Path) -> Vec<PathBuf> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let resource_dir = app.path().resource_dir().ok();
+    manifest_candidates_for(runtime_dir, exe_dir.as_deref(), resource_dir.as_deref())
+}
+
+/// manifest 候选路径（纯函数，便于单测）
+///
+/// 注意 `bundle.resources` 用**数组**形式时 Tauri 保留原目录结构
+/// （`resources/runtime/manifest.json` → `$RESOURCES/resources/runtime/manifest.json`），
+/// 所以 `*/resources/runtime/manifest.json` 这两条必须留着，否则打包后读不到清单、
+/// 前端会一直走"四项全可选"的退化分支。
+fn manifest_candidates_for(
+    runtime_dir: &Path,
+    exe_dir: Option<&Path>,
+    resource_dir: Option<&Path>,
+) -> Vec<PathBuf> {
     let mut candidates = vec![runtime_dir.join("manifest.json")];
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("runtime").join("manifest.json"));
-            candidates.push(dir.join("../../resources/runtime/manifest.json"));
-        }
+    if let Some(dir) = exe_dir {
+        candidates.push(dir.join("runtime").join("manifest.json"));
+        candidates.push(dir.join("resources").join("runtime").join("manifest.json"));
+        candidates.push(dir.join("../../resources/runtime/manifest.json"));
     }
-    if let Ok(res) = app.path().resource_dir() {
+    if let Some(res) = resource_dir {
         candidates.push(res.join("runtime").join("manifest.json"));
+        candidates.push(res.join("resources").join("runtime").join("manifest.json"));
     }
     candidates
 }
@@ -854,5 +873,72 @@ GPU3:
         let f = read_manifest_flavors(Some(&path));
         let _ = std::fs::remove_file(&path);
         assert!(!f.found);
+    }
+
+    /// 打包布局：`bundle.resources` 数组形式保留目录结构 ⇒ 清单落在
+    /// `$RESOURCES/resources/runtime/manifest.json`，候选路径必须能找到。
+    #[test]
+    fn manifest_candidates_find_bundled_layout() {
+        let root = std::env::temp_dir().join(format!("gsa_bundle_{}", std::process::id()));
+        let exe_dir = root.join("app");
+        let res_dir = root.join("app");
+        let res = res_dir.join("resources").join("runtime");
+        std::fs::create_dir_all(&res).unwrap();
+        let written = res.join("manifest.json");
+        std::fs::write(
+            &written,
+            r#"{"version":1,"items":[{"id":"moss","flavor":"cpu","url":"u","sha256":"s","size":1,"dest":"bin"}]}"#,
+        )
+        .unwrap();
+
+        let cands = manifest_candidates_for(&root.join("userdata"), Some(&exe_dir), Some(&res_dir));
+        let found = find_manifest(&cands);
+        let flavors = read_manifest_flavors(found.as_deref());
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(found.is_some(), "打包布局下没找到清单，候选：{:?}", cands);
+        assert!(flavors.found);
+        assert_eq!(flavors.flavors, vec!["cpu".to_string()]);
+    }
+
+    /// 开发期布局：exe 在 `src-tauri/target/debug/` ⇒ `../../resources/runtime/manifest.json`
+    #[test]
+    fn manifest_candidates_find_dev_layout() {
+        let root = std::env::temp_dir().join(format!("gsa_dev_{}", std::process::id()));
+        let exe_dir = root.join("src-tauri").join("target").join("debug");
+        let res = root.join("src-tauri").join("resources").join("runtime");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        std::fs::create_dir_all(&res).unwrap();
+        std::fs::write(
+            res.join("manifest.json"),
+            r#"{"version":1,"items":[{"id":"moss","flavor":"vulkan","url":"u","sha256":"s","size":1,"dest":"bin"}]}"#,
+        )
+        .unwrap();
+
+        let cands = manifest_candidates_for(&root.join("userdata"), Some(&exe_dir), None);
+        let found = find_manifest(&cands);
+        let flavors = read_manifest_flavors(found.as_deref());
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(found.is_some(), "dev 布局下没找到清单，候选：{:?}", cands);
+        assert_eq!(flavors.flavors, vec!["vulkan".to_string()]);
+    }
+
+    /// 随包发布的真清单（`src-tauri/resources/runtime/manifest.json`）必须可解析，
+    /// 且至少声明了 cpu 版——否则下拉只剩 auto，用户装不了任何具体后端。
+    #[test]
+    fn shipped_manifest_declares_moss_flavors() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/runtime/manifest.json");
+        if !path.is_file() {
+            return;
+        }
+        let f = read_manifest_flavors(Some(&path));
+        assert!(f.found, "随包 manifest 解析失败：{}", path.display());
+        assert!(!f.flavors.is_empty(), "manifest 里没有 id=moss 的 flavor：{:?}", f.flavors);
+        assert!(
+            f.flavors.contains(&"cpu".to_string()),
+            "manifest 缺 cpu flavor（CPU 是兜底后端）：{:?}",
+            f.flavors
+        );
     }
 }

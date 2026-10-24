@@ -18,6 +18,9 @@ src-tauri/gen/
 
 # Local AI runtime (python deps, models, worker) — bootstrap creates this
 runtime/
+# 例外：随 app 发布的安装清单必须入库。上面这条指用户数据目录，但它会顺带
+# 吃掉 src-tauri/resources/runtime/；父目录被排除后无法只放行子文件，故整目录放行。
+!src-tauri/resources/runtime/
 
 # Dev debug frames output
 temp/

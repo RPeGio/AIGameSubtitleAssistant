@@ -167,6 +167,9 @@ const deviceSuggestion = computed(() => {
   return `建议 ${p.recommendation}：${p.recommendation_reason}`;
 });
 
+/// 没读到安装清单 ⇒ 下拉走了"四项全显示"的退化分支，得让用户看得出来
+const manifestMissing = computed(() => !!mossProbe.value && !mossProbe.value.manifest_found);
+
 async function loadMossProbe(device?: string) {
   try {
     mossProbe.value = await projectStore.probeMossBackend(device);
@@ -537,6 +540,9 @@ async function startEmbedOcr() {
             {{ probeVerdict }}
           </span>
           <span v-if="deviceSuggestion" class="enote warn">{{ deviceSuggestion }}</span>
+          <span v-if="manifestMissing" class="enote warn">
+            未读取到安装清单，暂显示全部设备选项
+          </span>
           <span class="enote">保存后重启应用生效；显式指定但本机不具备时会直接报错，不会静默降级</span>
         </div>
 

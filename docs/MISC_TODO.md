@@ -604,7 +604,7 @@
 
 **顺序说明**：与 C 组无依赖，可与 8–10 并行；放中后段是为了不打断时间轴主线。
 
-### 12. ✅ CUDA GPU 加速参数化（2026-10-22，阶段 A+B；提交 `a8e8010`）
+### 12. ✅ CUDA GPU 加速参数化（2026-10-22 阶段 A+B → 2026-10-24 阶段 C 接通；提交 `a8e8010`）
 
 **已实现**
 
@@ -621,9 +621,23 @@
 
 **决策（用户 m00142 全选 A）**：D1-A 下拉落 ASR 页转写参数区；D2-A 允许保存 + 警示 + 运行期硬拦；D3-A **下次启动生效**（不做 `mod.rs` 的即时重置补丁）；D4-A manifest 由 Rust 命令读并回传 flavor 集合（前端不加 fs 插件权限）；D5-A 本期只做 `moss`，`funasr_device` 不动。
 
-**验证**：`cargo test` 全绿（lib 279 + 集成 15/15，新增 4 个 manifest 单测 + 1 个归一化单测）；`pnpm build`（含 `vue-tsc --noEmit`）通过。**未经真机 UI 手测**（需要装着 MOSS 的机器切三种后端各跑一次）。
+**2026-10-24 补记（manifest 落库，阶段 C 接通）**
 
-**未做（明确留口）**：manifest 尚未进本分支 ⇒ 过滤逻辑只有退化分支被走过，清单合入后需再验一次；`funasr_device`（D5-A）；即时生效（D3-A）；`runtime/.installed.json` 启动比对属 `mod.rs`，等 installer 侧落地后出补丁。
+| 子项 | 处理 | 位置 |
+|---|---|---|
+| 清单落库 | installer 侧生成的真清单（`version:"1"`、`id=moss` × 3：cpu / vulkan / cuda，`dest` 全 `bin`）拷入仓库并随包发布 | `src-tauri/resources/runtime/manifest.json` |
+| 打包声明 | `bundle.resources` 加 `"resources": ["resources/runtime/manifest.json"]`；数组形式**保留目录结构** ⇒ 打包后落在 `$RESOURCES/resources/runtime/manifest.json`，不是 `$RESOURCES/runtime/…` | `src-tauri/tauri.conf.json` |
+| 查找路径补齐 | `manifest_candidates_for()`（拆成纯函数便于单测）新增 `<exe>/resources/runtime/…` 与 `<resource_dir>/resources/runtime/…` 两条——原先只有 `runtime/…`，**打包形态会读不到清单**；新增 3 个单测分别钉住打包布局、dev 布局、随包清单可解析 | `backend_probe.rs`（`manifest_candidates_for`、`manifest_candidates_find_bundled_layout`、`manifest_candidates_find_dev_layout`、`shipped_manifest_declares_moss_flavors`） |
+| 退化分支可见化 | 读不到清单时下拉下方黄字「未读取到安装清单，暂显示全部设备选项」——否则过滤是否生效肉眼看不出来 | `src/views/AsrView.vue`（`manifestMissing`） |
+| 入库例外 | 根 `.gitignore` 的 `runtime/`（指用户数据目录）会把 `src-tauri/resources/runtime/` 一起吃掉 ⇒ 清单**静默不入库**；加 `!src-tauri/resources/runtime/` 例外（父目录被排除后无法只放行子文件） | `.gitignore` |
+
+> ⚠ 复测提示：清单到位前前端**一直**走"四项全显示"的退化分支；当前清单声明了三种 flavor，
+> 所以正常情况下列表**仍是四项**、与退化分支看起来一样（差别只在有没有那行黄字）。
+> 要验证过滤真起作用：临时删掉清单里某个 flavor 条目 → 对应项必须消失。
+
+**验证**：`cargo test` 全绿（lib 282 + 集成 15/15；含 4 个 manifest 读取单测 + 2 个布局单测 + 1 个随包清单单测 + 1 个归一化单测）；`pnpm build`（含 `vue-tsc --noEmit`）通过。**未经真机 UI 手测**（需要装着 MOSS 的机器切三种后端各跑一次）。
+
+**未做（明确留口）**：`funasr_device`（D5-A）；即时生效（D3-A）；`runtime/.installed.json` 启动比对属 `mod.rs`，等 installer 侧落地后出补丁；真机 UI 手测（三种后端 + 过滤验证）。
 
 **原始背景（保留）**
 - MOSS 自动判断（欢迎页卡文案「ggml，有 CUDA/Vulkan 即 GPU」），界面无可配项；配置文件字段已存在：`src-tauri/src/ai_runtime/config.rs` 的 `moss_device`（白名单 `空/cpu/cuda/vulkan`）与 `funasr_device`（默认 `cpu`）——**只缺 UI，不缺存储**。
