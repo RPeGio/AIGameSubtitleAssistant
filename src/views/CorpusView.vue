@@ -253,8 +253,12 @@ function onReplaceAll() {
     return;
   }
   const r = projectStore.replaceAllCorpus(query.value, replacement.value);
-  if (r.hits === 0) message.info("没有匹配到可替换的内容");
-  else message.success(`已替换 ${r.hits} 处（${r.items} 条）`);
+  // 产物轨会被一并替换（一次性精确子串），提示里给出两边各自的处数，别让人以为只动了语料
+  const parts: string[] = [];
+  if (r.hits > 0) parts.push(`语料 ${r.hits} 处（${r.items} 条）`);
+  if (r.trackHits > 0) parts.push(`产物轨 ${r.trackHits} 处（${r.trackItems} 条）`);
+  if (parts.length === 0) message.info("没有匹配到可替换的内容");
+  else message.success(`已替换：${parts.join("，")}`);
 }
 
 function startEdit(item: CorpusItem) {

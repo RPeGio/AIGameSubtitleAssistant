@@ -943,10 +943,15 @@ export const useProjectStore = defineStore("project", () => {
   }
 
   /// 语料全文搜索替换：把所有条目里匹配的子串全部替换（替换为空串 = 删除该子串）。
-  /// 有实际改动才记一个撤销步骤（整次替换一次回退），返回「替换处数 / 涉及条数」。
+  /// 同时替换 fused 产物轨的文本——产物文本是语料的搬运快照，语料改名后不同步会留下旧文案。
+  /// 只做**一次性精确子串替换**，不建回链、也不保证两边此后持续一致（各走各的）。
+  /// 转写轨（ocr_text / embed_ocr / asr）不动：那是待替换的原文，不能被语料反向污染。
+  /// 有实际改动才记一个撤销步骤（快照含语料+轨道，整次替换一次回退）。
   function replaceAllCorpus(query: string, replacement: string) {
     const project = currentProject.value;
-    if (!project || !query) return { hits: 0, items: 0 };
+    if (!project || !query) {
+      return { hits: 0, items: 0, trackHits: 0, trackItems: 0 };
+    }
     let hits = 0;
     let items = 0;
     const next = project.corpus.map((c) => {
@@ -956,10 +961,36 @@ export const useProjectStore = defineStore("project", () => {
       items += 1;
       return { ...c, text: parts.join(replacement) };
     });
-    if (hits === 0) return { hits: 0, items: 0 };
+    // 产物侧先只在 fused 轨道里挑命中的事件、算出新文本，再统一落盘（不就地改）
+    let trackHits = 0;
+    let trackItems = 0;
+    const patched = new Map<string, string>();
+    for (const track of project.tracks) {
+      if (track.type !== "fused") continue;
+      for (const ev of track.events) {
+        if (ev.type !== "fused" || !ev.text.includes(query)) continue;
+        const parts = ev.text.split(query);
+        trackHits += parts.length - 1;
+        trackItems += 1;
+        patched.set(ev.id, parts.join(replacement));
+      }
+    }
+    if (hits === 0 && trackHits === 0) {
+      return { hits: 0, items: 0, trackHits: 0, trackItems: 0 };
+    }
     recordSnapshot();
-    project.corpus = next;
-    return { hits, items };
+    if (hits > 0) project.corpus = next;
+    if (patched.size > 0) {
+      for (const track of project.tracks) {
+        if (track.type !== "fused") continue;
+        for (const ev of track.events) {
+          if (ev.type !== "fused") continue;
+          const text = patched.get(ev.id);
+          if (text !== undefined) ev.text = text;
+        }
+      }
+    }
+    return { hits, items, trackHits, trackItems };
   }
 
   /// 移动一条语料的位置（拖动排序）。语料顺序参与融合 DP 的取舍，所以顺序是数据。
