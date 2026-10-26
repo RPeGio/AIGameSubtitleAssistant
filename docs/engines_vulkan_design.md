@@ -307,8 +307,10 @@ gh release upload  moss-runtime-v1 moss-cuda.zip
 > 指向一个包含该产物的提交，不要求 sha 精确对应（产物自身的 `SOURCE.txt` + `packages.json` 才是溯源依据）。
 > 另：发布后**不要**再重打包上传，zip 不可复现（§8.4），重打就会与 manifest 的哈希对不上。
 
-### 8.8 未完成
+### 8.8 原「未完成」三条的结案（2026-10-26）
 
-- 老卡分流：按 `compute_cap < 7.5` 走别的构建（需给 `backend_probe.rs` 出补丁，属并行会话文件）。
-- `manifest.json` 进仓库（`src-tauri/resources/runtime/`）+ `tauri.conf.json` 的 `bundle.resources`——installer 侧。
-- 契约 §4 示例 URL 仍写 `.7z`，实测交付用 **zip**，需契约侧订正。
+- **老卡分流** → 已出补丁 `_gsa_staging/patches/0001-old-gpu-cuda-fallback.patch`（算力 < 7.5 不再推荐 CUDA：`cuda_runnable()` 判据、`decide()` 老卡硬报错改指 Vulkan、`recommend()` 反向推荐），基线 = installer 侧 HEAD `dcdd1a5`，待那边 `git am`。
+- **`manifest.json` 进仓库 + `bundle.resources`** → installer 侧已完成（`2a766c8`，第 12 项阶段 C）：`src-tauri/resources/runtime/manifest.json` + `tauri.conf.json` 的 `"resources": ["resources/runtime/manifest.json"]`。
+- **契约 §4 示例 URL 的 `.7z`** → 契约侧已订正：`docs/RUNTIME_BOOTSTRAP_CONTRACT.md` 新增 §4.3「交付物是 zip（不是 7z）、以及解压的三个坑」。
+
+另新增一件并已结案：**`.installed.json` 比对**（原写"本期不做"）→ 补丁 `_gsa_staging/patches/0002-installed-state-check.patch`（新增 `ai_runtime/installed_state.rs` + `probe_moss_install` 命令，七态）；写入方 `bootstrap_runtime.ps1` 仍在 installer 侧。两个补丁的套用说明与边界见 `_gsa_staging/patches/HANDOFF.md`。

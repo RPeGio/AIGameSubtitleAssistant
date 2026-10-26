@@ -307,8 +307,10 @@ gh release upload  moss-runtime-v1 moss-cuda.zip
 > a commit that contains the artifacts; exact SHA provenance comes from the bundle's `SOURCE.txt` and `packages.json`.
 > Also: **do not** repack and re-upload after publishing — the zips are not reproducible (§8.4), so a re-pack stops matching the manifest hashes.
 
-### 8.8 Not done yet
+### 8.8 The three former "not done" items, closed (2026-10-26)
 
-- Splitting for older cards: route `compute_cap < 7.5` to another build (needs a patch to `backend_probe.rs`, a file owned by the parallel session).
-- Getting `manifest.json` into the repo (`src-tauri/resources/runtime/`) plus `tauri.conf.json`'s `bundle.resources` — installer side.
-- The contract's §4 sample URL still says `.7z`; what we actually ship is **zip**, so the contract side needs correcting.
+- **Older-card routing** → patched as `_gsa_staging/patches/0001-old-gpu-cuda-fallback.patch` (`cuda_runnable()` gate at compute capability 7.5, `decide()` hard error now points at Vulkan instead of asking for a rebuild, `recommend()` recommends Vulkan), based on installer-side HEAD `dcdd1a5`, awaiting `git am` there.
+- **`manifest.json` in the repo + `bundle.resources`** → done on the installer side (`2a766c8`, item 12 phase C): `src-tauri/resources/runtime/manifest.json` plus `"resources": ["resources/runtime/manifest.json"]` in `tauri.conf.json`.
+- **Contract §4's `.7z` sample URL** → corrected on the contract side: `docs/RUNTIME_BOOTSTRAP_CONTRACT.md` now has §4.3 "deliverables are zip (not 7z), and the three unpacking pitfalls".
+
+Also new and now closed: **`.installed.json` reconciliation** (previously "not this round") → `_gsa_staging/patches/0002-installed-state-check.patch` (adds `ai_runtime/installed_state.rs` and the `probe_moss_install` command, seven states); the writer, `bootstrap_runtime.ps1`, is still on the installer side. Apply instructions and boundaries: `_gsa_staging/patches/HANDOFF.md`.
