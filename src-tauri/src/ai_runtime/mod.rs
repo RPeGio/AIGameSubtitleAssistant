@@ -11,6 +11,7 @@ pub mod config;
 pub mod dhash;
 pub mod embed;
 pub mod funasr;
+pub mod installed_state;
 pub mod llm;
 pub mod moss;
 pub mod paddle;
