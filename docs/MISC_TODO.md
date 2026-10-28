@@ -23,7 +23,7 @@
 | 17 | ✅ 去除轨道内 clip 的所有句末标点 | 功能·文本清理 | 8（句界操作会留下句尾逗号） | 已实现（`79ae0af`）：轨道总览「美化」下拉的「去除文本末标点」 |
 | 18 | ✅ 语料「全文替换」同步作用于产物轨 | 功能·文本清理 | 6（替换本身）·17（同属语料→产物文本口径） | 已实现（2026-10-25）：仅 fused 轨，一次性精确子串替换，一次撤销回退 |
 | 10 | ✅ 快捷键体系（注册表 + 单一监听；帮助面板并入第 19 项） | 功能·跨页 | 8、9 | 已实现（`02416b8`）：`composables/shortcuts.ts` 分发器 + 活动时间轴判定 |
-| 11 | 欢迎页自检升级（探针 + 静默 bootstrap + 后端指引） | 功能·独立 | 7（info 基建）·「并行分支接口」的命令缺口 | 独立大件，放中后段不打断时间轴主线 |
+| 11 | ◐ 欢迎页自检升级（11a/11b ✅ 探针摊开 + 补齐命令；11c 静默 bootstrap 等 installer 侧） | 功能·独立 | 7（info 基建）·12（`probe_moss_backend`/`probe_moss_install` 已就绪） | 11a/11b 已实现（2026-10-28）；11c 需 `scripts/bootstrap_runtime.ps1` + Rust 子进程基础设施 |
 | 12 | ✅ CUDA GPU 加速参数化（设备迁移到 UI） | 功能·Rust+UI | 7（要带 info 说明）+ 11（需 `probe_moss_backend` 命令） | 已实现（阶段 A+B `a8e8010`、阶段 C `2a766c8`）：`probe_moss_backend` + `set_moss_device` 两命令、打轴页设备下拉、欢迎页硬报错、manifest 随包落库 |
 | 13 | ✅ 杂项清理与验证（死代码/参数开关/图标；真机波形待验） | 清理·零碎 | 无 | 已实现（`8b71ee2`）：死代码已删、易混字母开关已暴露、轨道图标常显 |
 | 14 | 内嵌 ffmpeg/ffprobe + 欢迎页 ffmpeg 自检卡 | 功能·打包 | 11（自检卡复用其探针机制） | 外部依赖一致性；涉及打包策略，宜与 11 一起看 |
@@ -632,6 +632,26 @@
   - 仍然「自检不阻塞」，只在真正运行引擎时硬拦。
 - **11b 命令指引层（可立即做）**：未就绪时给一条**可复制**的命令（`scripts/bootstrap_moss.ps1 -Backend vulkan` 这一代）；若要判断脚本是否存在，加一个只读命令 `probe_bootstrap_scripts`（返回脚本存在与路径），不让前端猜路径。
 - **11c 静默 bootstrap（阻塞中）**：需 `bootstrap_runtime.ps1`（按契约 §3 出 JSONL）+ Rust spawn / 进度事件 / 取消 / 磁盘预检。**决策点**：等 installer 侧交付，还是本分支按契约自己写（会动 `scripts/*`，属 installer 侧所有权，需用户拍板）。
+
+**11a / 11b 已实现（2026-10-28；11c 按用户决定等 installer 侧）**
+
+| 子项 | 处理 | 位置 |
+|---|---|---|
+| ASR 卡三行 | ①设备（配置值 + 实测后端）②为什么 / 该装哪个：显式指定不可用 → 红字硬报错；**装的是 CPU 版但本机能上 GPU → 黄字「建议改用 cuda 版运行时：<理由>」**（比对的是 `probe_moss_install.installed.flavor`，不是 `requested`，避免 auto 下天天误报）③运行时状态：`probe_moss_install.message`，需要动作的状态（`update_available` / `file_missing` / `flavor_not_in_manifest`）标黄 | `src/views/Welcome.vue`（`probeAsr` / `setAsrInstall` / `INSTALL_ACTION_STATES`） |
+| OCR / Embed 卡 | 未就绪时把 `check_*_runtime` 的失败原文直接摊到卡面（原先只藏在 `title` 悬浮里）；`pnpm build` 前 ASR 卡的原因已由上面两行覆盖 ⇒ 不再重复显示引擎 message | 同上 |
+| 手动补齐命令 | 未就绪（或运行时需更新）时给一行等宽命令，**点击复制**（`navigator.clipboard`，失败降级提示手动选中）：`scripts/bootstrap_ocr.ps1` / `scripts/bootstrap_moss.ps1 -Backend <flavor>` / `scripts/bootstrap_embed.ps1`。moss 的 `-Backend` 取值有讲究：`update_available` 时取**已装后端**（更新同一份），其余情况取 `probe_moss_backend.recommendation`（尚未安装 / 该后端已从清单下线 ⇒ 换推荐后端） | 同上（`cmdOf` / `showCmd` / `copyCmd`、样式 `.ecard .cmd`） |
+| store / 类型 | 新增 `probeMossInstall()` 与 `MossInstallStatus` / `MossInstalledItem` | `src/stores/project.ts`、`src/types/index.ts` |
+
+| 顺手修正 | OCR / e5-small 卡此前也会显示「设备 · auto（ggml 自动选优）」——`ggml` 是 MOSS 专属，`deviceText()` 对任何 `device===""` 的卡都返回该文案（`setProbe` 的 device 默认空）。改成只给 ASR 卡渲染设备行 | `Welcome.vue` 设备行加 `card.key === 'asr'` 守卫 |
+
+**验证**：`pnpm build`（含 `vue-tsc --noEmit`）EXIT=0；**已用 headless Chrome + Tauri mock 实测**（`temp/css-preview/checks/item11.js`，1680×1000）：
+- 正常态（MOSS 就绪 + 运行时 `update_available`）：MOSS 卡多出黄字「运行时是旧版…」+ 命令 `scripts/bootstrap_moss.ps1 -Backend vulkan`（`update_available` 正确地取**已装** flavor）；e5-small 未就绪卡多出失败原文 + `scripts/bootstrap_embed.ps1`；`pageOverflow=false`、`.env` 高 167px。
+- 最拥挤态（MOSS 未就绪 + 显式 cuda 不可用）：红字硬报错、`MOSS 运行时未安装`、命令、`推理设备可在打轴页…设置` 五行并存，三张卡等高不溢出。
+- 命令点击 → 弹「复制失败，请手动选中命令」（headless 无剪贴板权限，即降级分支按设计工作；成功分支未在无头环境验证）。
+- 亮色主题同步核对。
+- 截图：`temp/css-preview/item11-env-cards.png`（暗/正常）、`item11-env-notready.png`（暗/最拥挤）、`item11-env-light.png`（亮/正常）。
+
+**11c 仍阻塞（按用户 m01104 决定：等 installer 侧）**：静默 bootstrap 需要 `scripts/bootstrap_runtime.ps1` + Rust 侧 spawn / JSONL 进度 / 取消 / 磁盘预检；在此之前 `probe_moss_install` 稳定返回 `not_installed` / `unknown`，属预期。**未做**：`probe_bootstrap_scripts`（判断脚本是否存在，随 11c 一起做才有意义——安装版没有 `scripts/`，命令行届时改为指向安装器）。
 
 **依赖/前置**：11a/11b 已全部满足（命令齐、契约齐）；11c 缺执行体与子进程基础设施，见上表。
 

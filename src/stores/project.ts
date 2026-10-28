@@ -19,6 +19,7 @@ import type {
   AsrProgress,
   MossBackendProbe,
   MossDeviceSaveResult,
+  MossInstallStatus,
   LlmProgress,
   LlmRuntimeStatus,
   FuseAsrInput,
@@ -1100,6 +1101,11 @@ export const useProjectStore = defineStore("project", () => {
     return invoke<MossDeviceSaveResult>("set_moss_device", { device });
   }
 
+  /// 比对「已装运行时」与清单（数据源是 installer 写的 runtime/.installed.json）
+  async function probeMossInstall(): Promise<MossInstallStatus> {
+    return invoke<MossInstallStatus>("probe_moss_install");
+  }
+
   /// 请求取消当前 ASR 转写（后端终止 MOSS 子进程，runAsr 的 invoke 会返回"已取消"错误）
   async function cancelAsr() {
     try {
@@ -1615,6 +1621,7 @@ export const useProjectStore = defineStore("project", () => {
     getAsrEngines,
     probeMossBackend,
     setMossDevice,
+    probeMossInstall,
     cancelAsr,
     llmRunning,
     llmProgress,

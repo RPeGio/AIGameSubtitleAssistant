@@ -260,6 +260,30 @@ export interface MossDeviceSaveResult {
   message: string;
 }
 
+/// installer 写下的安装记录（`runtime/.installed.json` 的单项）
+export interface MossInstalledItem {
+  /// 装的是哪个后端版本：cpu / cuda / vulkan
+  flavor: string;
+  /// 所装压缩包的 SHA256（与清单比对是唯一判据）
+  sha256: string;
+  /// 清单版本号（装的时候那份）
+  source_version: string;
+  /// 安装时间（ISO8601）
+  installed_at: string;
+}
+
+/// 已装运行时 vs 清单的比对结果（Rust `probe_moss_install`）
+export interface MossInstallStatus {
+  /// ok / update_available / not_installed / file_missing / flavor_not_in_manifest / manifest_missing / unknown
+  state: string;
+  /// 无安装记录时 null（`.installed.json` 尚未由 installer 写入）
+  installed: MossInstalledItem | null;
+  /// 清单里该 flavor 声明的字节数；清单缺失或该 flavor 不在清单时 null
+  declared_size: number | null;
+  /// 可直接上屏的中文结论
+  message: string;
+}
+
 /// ASR 进度事件名（Rust 侧 `ASR_PROGRESS_EVENT` 需保持一致）
 export const ASR_PROGRESS_EVENT = "asr-progress";
 

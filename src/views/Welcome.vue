@@ -5,7 +5,7 @@ import { useProjectStore } from "../stores/project";
 import { useUiStore } from "../stores/ui";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import type { RecentProject } from "../types";
+import type { RecentProject, MossInstallStatus } from "../types";
 import AppIcon from "../components/AppIcon.vue";
 import { NCard, NCheckbox, NInput, NModal, NPopconfirm, useMessage } from "naive-ui";
 
@@ -174,6 +174,15 @@ interface Probe {
   deviceNote?: string;
   /// 设备判定为硬错误（显式指定了本机不具备的后端）
   deviceBad?: boolean;
+  /// 已装运行时 vs 清单的结论（仅 ASR 卡，来自 probe_moss_install）
+  installNote?: string;
+  /// 该结论需要用户动作（更新 / 文件缺失 / 后端已下线）
+  installWarn?: boolean;
+  /// 原始状态码与已装后端（决定补齐命令装哪个版本）
+  installState?: string;
+  installFlavor?: string;
+  /// 推荐安装的后端版本（cuda / vulkan / cpu），用于拼手动补齐命令
+  recommend?: string;
 }
 
 const ENV_CARDS = [
@@ -222,6 +231,20 @@ function setAsrDeviceNote(note: string, bad: boolean) {
   probes.value.asr = { ...probes.value.asr, deviceNote: note, deviceBad: bad };
 }
 
+/// 这些状态需要用户动作（更新 / 文件缺失 / 后端已下线）；ok / unknown / not_installed 只陈述
+const INSTALL_ACTION_STATES = ["update_available", "file_missing", "flavor_not_in_manifest"];
+
+/// 把「已装运行时 vs 清单」的结论并进 ASR 卡
+function setAsrInstall(install: MossInstallStatus) {
+  probes.value.asr = {
+    ...probes.value.asr,
+    installNote: install.message,
+    installWarn: INSTALL_ACTION_STATES.includes(install.state),
+    installState: install.state,
+    installFlavor: install.installed?.flavor,
+  };
+}
+
 async function probeOcr() {
   try {
     const status = await invoke<{ ready: boolean; message: string }>("check_ocr_runtime");
@@ -237,20 +260,58 @@ async function probeAsr() {
     const moss = engines.find((e) => e.engine === "moss");
     if (!moss) {
       setProbe("asr", null, "探针未返回 MOSS 引擎信息");
-      return;
+    } else {
+      setProbe("asr", moss.ready, moss.message, moss.device, moss.effective_backend ?? null);
     }
-    setProbe("asr", moss.ready, moss.message, moss.device, moss.effective_backend ?? null);
   } catch (e) {
     setProbe("asr", null, String(e));
   }
-  // 设备判定：显式指定了本机不具备的后端 = 硬错误，卡片上直接摊开说清楚
-  try {
-    const report = await projectStore.probeMossBackend();
+
+  // 设备判定与运行时比对互不等待、互不拖累：任一失败只丢那一行信息
+  const [report, install] = await Promise.all([
+    projectStore.probeMossBackend().catch(() => null),
+    projectStore.probeMossInstall().catch(() => null),
+  ]);
+
+  if (report) {
+    probes.value.asr = { ...probes.value.asr, recommend: report.recommendation };
     if (!report.available) {
+      // 显式指定了本机不具备的后端 = 硬错误，卡片上直接摊开说清楚
       setAsrDeviceNote(report.error || report.reason || "当前推理设备不可用", report.requested !== "auto");
+    } else if (install?.installed && report.recommendation && report.recommendation !== install.installed.flavor) {
+      // 装的是 CPU 版但本机能上 GPU：把「为什么没吃到 GPU / 该装哪个版本」说清楚
+      setAsrDeviceNote(`建议改用 ${report.recommendation} 版运行时：${report.recommendation_reason}`, false);
     }
+  }
+
+  if (install) {
+    setAsrInstall(install);
+  }
+}
+
+/// 手动补齐命令：源码运行时用 scripts/ 下的脚本；安装版由安装器负责（第 11c 项）
+function cmdOf(key: EnvKey): string {
+  if (key === "asr") {
+    const p = probes.value.asr;
+    // 更新既有安装 → 装回原后端；尚未安装 / 该后端已下线 → 装推荐后端
+    const flavor = p.installState === "update_available" && p.installFlavor ? p.installFlavor : p.recommend;
+    return `scripts/bootstrap_moss.ps1${flavor ? ` -Backend ${flavor}` : ""}`;
+  }
+  return key === "ocr" ? "scripts/bootstrap_ocr.ps1" : "scripts/bootstrap_embed.ps1";
+}
+
+/// 需要手动补齐/更新时才给命令：未就绪，或运行时与清单不一致（仅 ASR 有此判据）
+function showCmd(key: EnvKey): boolean {
+  if (probes.value[key].state === "notready") return true;
+  return key === "asr" && !!probes.value.asr.installWarn;
+}
+
+async function copyCmd(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    message.success("已复制命令");
   } catch {
-    // 探测失败不影响卡片其它信息
+    message.warning("复制失败，请手动选中命令");
   }
 }
 
@@ -400,12 +461,30 @@ onMounted(() => {
               <i class="dot" :class="dotClass(card.key)" />{{ stateText(card.key) }}
             </span>
             <span class="ex">{{ card.desc }}</span>
-            <span v-if="deviceText(card.key)" class="ex">
+            <span v-if="card.key === 'asr' && deviceText(card.key)" class="ex">
               设备 · {{ deviceText(card.key) }}{{ backendText(card.key) ? `（${backendText(card.key)}）` : "" }}
             </span>
-            <span v-if="card.key === 'asr' && probes.asr.deviceNote" class="ex" :class="{ danger: probes.asr.deviceBad }">
+            <span
+              v-if="card.key === 'asr' && probes.asr.deviceNote"
+              class="ex"
+              :class="{ danger: probes.asr.deviceBad, warn: !probes.asr.deviceBad }"
+            >
               {{ probes.asr.deviceNote }}
             </span>
+            <span v-if="card.key === 'asr' && probes.asr.installNote" class="ex" :class="{ warn: probes.asr.installWarn }">
+              {{ probes.asr.installNote }}
+            </span>
+            <!-- 未就绪原因原文直接摊在卡面上（ASR 的原因已由上面两行覆盖，不重复） -->
+            <span
+              v-if="card.key !== 'asr' && probes[card.key].state === 'notready' && probes[card.key].message"
+              class="ex"
+            >
+              {{ probes[card.key].message }}
+            </span>
+            <!-- 手动补齐命令（点击复制）；安装版没有 scripts/，由安装器负责 -->
+            <code v-if="showCmd(card.key)" class="cmd" title="点击复制" @click="copyCmd(cmdOf(card.key))">
+              {{ cmdOf(card.key) }}
+            </code>
             <span v-if="card.key === 'asr' && probes.asr.state === 'notready'" class="ex">
               推理设备可在打轴页「转写参数 → 推理设备」中设置
             </span>
@@ -763,6 +842,27 @@ onMounted(() => {
 
 .ecard .ex.danger {
   color: var(--danger);
+}
+
+.ecard .ex.warn {
+  color: var(--warn);
+}
+
+.ecard .cmd {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text);
+  background: var(--hover);
+  border: 1px solid var(--hair);
+  border-radius: 4px;
+  padding: 4px 7px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.ecard .cmd:hover {
+  border-color: var(--dim);
 }
 
 .wfoot {
