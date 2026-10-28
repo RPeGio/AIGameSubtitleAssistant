@@ -52,6 +52,8 @@ pub fn run() {
             app.manage(AsrManager::new(config.clone(), runtime_dir.clone()));
             app.manage(EmbedManager::new(config.clone(), runtime_dir.clone()));
             app.manage(LlmManager::new(config, runtime_dir));
+            // runtime 安装器状态（同一时刻只允许一个安装任务，且要能取消）
+            app.manage(ai_runtime::runtime_install::RuntimeInstaller::default());
             Ok(())
         })
 
@@ -77,6 +79,9 @@ pub fn run() {
             ai_runtime::backend_probe::probe_moss_backend,
             ai_runtime::config::set_moss_device,
             ai_runtime::installed_state::probe_moss_install,
+            ai_runtime::runtime_install::precheck_runtime_disk,
+            ai_runtime::runtime_install::install_runtime,
+            ai_runtime::runtime_install::cancel_runtime_install,
             ai_runtime::check_llm_runtime,
             ai_runtime::check_embed_runtime,
             ai_runtime::asr_cancel,
