@@ -618,11 +618,11 @@
 |---|---|
 | `probe_moss_backend`（判定 / `reason` / `source` / `recommendation` / `manifest_flavors` / `cuda_compute_cap` / `cuda_runnable` / `gpus` / `error`） | ✅ 就绪（第 12 项 + P5 `351cd5a`） |
 | `set_moss_device`（落盘，下次启动生效） | ✅ 就绪（`a8e8010`） |
-| `probe_moss_install`（已装运行时 vs 清单，七态） | ✅ 命令就绪（P6 `80eda1d`）；但**数据源 `runtime/.installed.json` 目前无人写** ⇒ 实际必返回 `not_installed` / `unknown`，属预期 |
+| `probe_moss_install`（已装运行时 vs 清单，七态） | ✅ 命令就绪（P6 `80eda1d`）；数据源 `runtime/.installed.json` 自 `7d3f8d5` 起由 `scripts/bootstrap_runtime.ps1` 写入（`install_runtime` 跑完即落盘），未跑过安装时仍返回 `not_installed` / `unknown`，属预期 |
 | `check_asr_engines.effective_backend`（L2 实测） | ✅ 已有（PR#48） |
 | `scripts/bootstrap_moss.ps1 -Backend <cpu\|cuda\|vulkan>`（现存脚本，可作指引） | ✅ 可用；注意默认 `cpu`，要 GPU 必须显式传 `-Backend`，也支持 `-BinaryUrl` + `-BinarySha256` 指向发布包 |
-| `scripts/bootstrap_runtime.ps1`（契约 §2 新入口 + §3 JSONL 进度） | ❌ **不存在**（dev / 本分支 / staging 均无；交接文档 §5.1 列为 installer 侧待办） |
-| Rust 侧「起子进程 + 读 JSONL + 进度事件 + 取消 + 磁盘预检」 | ❌ **零基础设施**：全仓库对 bootstrap 只有「请先跑 scripts/xxx.ps1」的文案 |
+| `scripts/bootstrap_runtime.ps1`（契约 §2 新入口 + §3 JSONL 进度） | ✅ 已交付（`7d3f8d5`，分支 `feat/runtime-bootstrap`）：stdout 纯 JSONL（`start`/`progress`/`item_skip`/`item_done`/`item_fail`/`error`/`done`，末行必 `done`），退出码 0/1/2/3/4，多条目 + 多 flavor，`-Flavor auto` 走 L0 探测，下载前磁盘预检，镜像失败回退直连，SHA256 校验通过才解压，写 `runtime/.installed.json`（已装且哈希一致 → `item_skip`，`-Force` 重装） |
+| Rust 侧「起子进程 + 读 JSONL + 进度事件 + 取消 + 磁盘预检」 | ✅ 已交付（`7d3f8d5`）：`src-tauri/src/ai_runtime/runtime_install.rs`，命令 `precheck_runtime_disk` / `install_runtime` / `cancel_runtime_install`，进度走 `runtime-install-progress` 事件，取消用 `taskkill /T /F` 杀进程树，同一时刻只允许一个安装任务 |
 
 **规划（2026-10-28 拆三步，11a/11b 不阻塞）**
 
@@ -631,9 +631,9 @@
   - OCR / Embed 卡同口径：未就绪时把 `check_ocr_runtime` / `check_embed_runtime` 的失败原文摊到卡面（现在只有状态点 + `title` 悬停看）；
   - 仍然「自检不阻塞」，只在真正运行引擎时硬拦。
 - **11b 命令指引层（可立即做）**：未就绪时给一条**可复制**的命令（`scripts/bootstrap_moss.ps1 -Backend vulkan` 这一代）；若要判断脚本是否存在，加一个只读命令 `probe_bootstrap_scripts`（返回脚本存在与路径），不让前端猜路径。
-- **11c 静默 bootstrap（阻塞中）**：需 `bootstrap_runtime.ps1`（按契约 §3 出 JSONL）+ Rust spawn / 进度事件 / 取消 / 磁盘预检。**决策点**：等 installer 侧交付，还是本分支按契约自己写（会动 `scripts/*`，属 installer 侧所有权，需用户拍板）。
+- **11c 静默 bootstrap（阻塞已解除，2026-10-28）**：执行体 `scripts/bootstrap_runtime.ps1` 与 Rust 侧基础设施（spawn / JSONL 进度事件 / 取消 / 磁盘预检）已由分发侧随 `7d3f8d5` 交付。本分支剩下的是**接线**：首次启动或用户点「安装」时先调 `precheck_runtime_disk`，再调 `install_runtime`（`items` / `flavor` / `force`），监听 `runtime-install-progress` 渲染进度，取消按钮调 `cancel_runtime_install`。**遗留一条**：打包形态下脚本尚未随 app 发布（`bundle.resources` 只有 manifest，`bootstrap_candidates` 已留 `resources/scripts/bootstrap_runtime.ps1` 位置），需分发侧补 `tauri.conf.json` 的资源映射。
 
-**依赖/前置**：11a/11b 已全部满足（命令齐、契约齐）；11c 缺执行体与子进程基础设施，见上表。
+**依赖/前置**：11a/11b 已全部满足（命令齐、契约齐）；11c 的执行体与子进程基础设施已就位（`7d3f8d5`），只剩前端接线与打包形态的脚本发布，见上表。
 
 - bootstrap 脚本**已在 `scripts/`**（不在根目录）：`scripts/bootstrap_moss.ps1`（模型/二进制获取与就绪自检）、`scripts/build_moss.ps1`（自构建，含 vulkan 前置检查）。
 
