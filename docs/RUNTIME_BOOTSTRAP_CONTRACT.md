@@ -233,10 +233,16 @@ installer 侧实测（2026-10-24）确认过、且容易踩的三点：
 | P2 | `src-tauri/src/lib.rs` | `invoke_handler` 注册 `ai_runtime::config::set_moss_device,` | **已由本分支直接改**（同上） |
 | P3 | `src-tauri/src/ai_runtime/mod.rs` | *（可选）* `AsrManager` 增加「重置 moss provider」的方法，用于改设备后**即时**生效 | 不做（决策 D3-A：下次启动生效），仅在将来要即时生效时补 |
 | P4 | `src-tauri/tauri.conf.json` | `bundle.resources` 加 `"resources": ["resources/runtime/manifest.json"]` | **已由本分支直接改**（2026-10-24 用户指示落清单时一并加好）；installer 侧勿重复添加 |
+| P5 | `src-tauri/src/ai_runtime/backend_probe.rs` | 老卡（算力 < 7.5）不再走 CUDA：`MIN_CUDA_COMPUTE_CAP`、`MachineCaps.cuda_cc` / `cuda_runnable()`、`parse_compute_cap()`、`decide()` 老卡改指「换 vulkan」、`recommend()` 抽成纯函数、报告加 `cuda_compute_cap` / `cuda_runnable`（详见 §8.1） | **已套用**（`351cd5a`，= installer 侧补丁 0001；2026-10-28 `git am --3way` 无冲突） |
+| P6 | `src-tauri/src/ai_runtime/installed_state.rs`（新增）<br>+ `ai_runtime/mod.rs`（`pub mod installed_state;`）<br>+ `src-tauri/src/lib.rs`（注册命令） | 已装运行时 vs 清单比对：`evaluate()` 七态 + `#[tauri::command] probe_moss_install`（详见 §8.4） | **已套用**（`80eda1d`，= installer 侧补丁 0002；同上） |
 
 P1/P2 的命令函数本体放在 `backend_probe.rs` / `config.rs`——这两个模块**已在
-`ai_runtime/mod.rs` 里声明**（`pub mod backend_probe;` / `pub mod config;`），
-所以**除 `mod.rs` 外，双方不需要在任何文件上有协同**；`mod.rs` 本期无人改动。
+`ai_runtime/mod.rs` 里声明**（`pub mod backend_probe;` / `pub mod config;`）。
+
+> **状态更正（2026-10-28）**：原文写「除 `mod.rs` 外双方不需要协同、`mod.rs` 本期无人改动」，
+> 现已被 P6 打破——补丁 0002 在 `mod.rs` 加了 `pub mod installed_state;`、在 `lib.rs` 加了
+> `ai_runtime::installed_state::probe_moss_install,`，两处各一行。两个补丁已按交接文档
+> `git am --3way` 套入本分支，`cargo test --lib` 302 项全过，故**本期不再有需双方协同的文件**。
 
 ---
 
@@ -262,6 +268,8 @@ invoke("probe_moss_backend", { device?: string })  // device 省略/空 = 用配
   "recommendation_reason": "已装 CUDA 版 moss（.backend 标记 / ggml-cuda.dll）",
   "machine_cuda": true,         // L0：NVIDIA 驱动可用
   "machine_vulkan": true,       // L0：Vulkan loader + GPU 可枚举
+  "cuda_compute_cap": "8.9",    // 首块 NVIDIA 卡算力（×10 记法转成 "8.9"）；探测不到 ⇒ null
+  "cuda_runnable": true,        // 有 NVIDIA 卡且算力 ≥ 7.5（MIN_CUDA_COMPUTE_CAP=75）；算力未知时乐观放行
   "gpus": ["NVIDIA GeForce RTX 4060 Laptop GPU"],   // vulkaninfo 枚举到的 GPU 名
   "manifest_found": false,      // 找到安装清单？false ⇒ 前端退化显示四项
   "manifest_flavors": ["cuda", "vulkan", "cpu"],    // id=="moss" 的条目声明的 flavor
@@ -283,6 +291,12 @@ invoke("probe_moss_backend", { device?: string })  // device 省略/空 = 用配
   6. `<resource_dir>/resources/runtime/manifest.json`（与第 3 条同源，非 Windows 平台 resource_dir ≠ exe 目录时兜底）
   ⇒ 清单放在 `src-tauri/resources/runtime/manifest.json` 并加进 `bundle.resources` 后，
   dev 与打包两种形态都能读到；第 3/4/6 条各有 `manifest_candidates_find_*` 单测钉住。
+- **算力口径（P5 引入）**：预构建 cuda 版只含 `sm_75/86/89` 内核，PTX 只向后 JIT ⇒
+  Pascal 及更老（GTX 10xx / MX，算力 6.1）加载 cuda 版是**直接失败**（`no kernel image is
+  available`），不是变慢。故显式请求 `cuda` 但 `cuda_runnable=false` 时在 L1 就硬报错，
+  `reason` 已写「该卡算力 X.Y 低于预构建版本要求 7.5」，并指引改 `moss_device=vulkan`；
+  `recommendation` 会反向推荐 vulkan（无 vulkan 则 cpu）。**前端不要自己按卡型号判断**，
+  一律以 `cuda_runnable` / `reason` / `recommendation` 为准。
 
 ### 8.2 `set_moss_device`（落盘）
 
@@ -304,6 +318,46 @@ invoke("set_moss_device", { device: "" | "cpu" | "cuda" | "vulkan" })
 已返回 `device`（配置值）与 `effective_backend`（L2 实测值，仅 moss 有），
 欢迎页 ASR 卡的「设备 · …（实测 …）」一行就是它渲染的。
 
+### 8.4 `probe_moss_install`（已装运行时 vs 清单，P6 引入）
+
+```ts
+invoke("probe_moss_install")   // 无参，只读，不改任何文件
+```
+
+返回 `InstallStatus`：
+
+```jsonc
+{
+  "state": "ok",            // 七态，见下表
+  "installed": {            // 无 .installed.json 记录 ⇒ null
+    "flavor": "vulkan",
+    "sha256": "e8488472…",
+    "source_version": "1",
+    "installed_at": "2026-10-24T…Z"
+  },
+  "declared_size": 16139894, // 清单里该 flavor 的 size；清单缺失/该 flavor 不在清单 ⇒ null
+  "message": "已安装 vulkan 版，与清单一致"   // 可直接上屏的中文结论
+}
+```
+
+| `state` | 含义 |
+|---|---|
+| `ok` | 已装且与清单 sha256 一致 |
+| `update_available` | 已装但 sha256 与清单不同（清单换了版本） |
+| `not_installed` | 无 `.installed.json` 记录（或有记录但二进制没装） |
+| `file_missing` | 有记录、二进制却不在 ⇒ 优先报「能跑」问题，不比较版本 |
+| `flavor_not_in_manifest` | 装的 flavor 当前清单里没有（清单被精简或换过发布） |
+| `manifest_missing` | 找不到清单 |
+| `unknown` | 坏 JSON / 缺 sha256 字段 ⇒ 当「无记录」处理，不让元数据问题挡住 ASR |
+
+约束：判据**只认 sha256**（zip 不可字节复现，版本号证明不了内容一致）；只管
+`runtime/bin/moss-transcribe.exe`，**模型缺失不归它管**（归 `check_asr_engines`）；`flavor`
+与二进制同目录 `.backend` 标记不一致时只在 `message` 里附注（以 L2 实测为准）。
+⇒ 本命令的数据源是 installer 写的 `runtime/.installed.json`：在
+`scripts/bootstrap_runtime.ps1` 落地前，它会稳定返回 `not_installed` / `unknown`，
+这是**预期**，不是 bug。
+
+
 ---
 
 ## 9. UI 侧硬报错口径（行为契约，UI 必须照此）
@@ -313,6 +367,7 @@ invoke("set_moss_device", { device: "" | "cpu" | "cuda" | "vulkan" })
 | 显式选 `cuda` / `vulkan` 但本机不具备该后端 | **硬报错**，提示「装对应后端」或「改回 auto / cpu」，**绝不静默降级**（ggml 自己会静默降级且 exit 0 ⇒ 必须靠 L2 实证拦下） |
 | `auto`（空值） | CUDA → Vulkan → CPU；**reason 必须在自检面板可见** |
 | 裸 `vulkan` 落到核显（`uma: 1`） | 同族可用，只提示落点问题（实测：双 GPU 机器裸 `vulkan` 落 `Vulkan0` 核显，`auto` 才落 `Vulkan1` 独显）⇒ **UI 默认值必须是 auto，不要引导用户选裸 `vulkan`** |
+| 老卡（算力 < 7.5，如 GTX 10xx / MX 6.1）显式选 `cuda` | **硬报错**，文案已由后端写成「该卡算力 X.Y 低于预构建版本要求 7.5 ⇒ 改 `moss_device=vulkan`」；`recommendation` 自动反向推荐 vulkan / cpu。**前端不要按卡型号自行判断**，只读 `cuda_runnable` / `reason` / `recommendation` |
 
 实测性能参考（同一段 5:14.99 音频）：CPU 680.6 s / Vulkan 134.7 s / CUDA 76.2 s
 （Vulkan ≈ 1.77× CUDA、5.0× CPU；CUDA 8.9× CPU）。

@@ -610,7 +610,31 @@
 
 **现状依据**
 - 现在只做探针：`src/views/Welcome.vue` 的 `probeOcr()`（`invoke("check_ocr_runtime")`）、`probeAsr()`（`projectStore.getAsrEngines()` 取 `moss`）、`probeEmbed()`（`invoke("check_embed_runtime")`），三者不 await、未就绪只显示状态、不阻塞。
-- 合并 PR #48 后，ASR 卡已多一行「设备 · <config>（实测 <L2>）」；`backend_probe` 的 L0/L1 判定与「该装哪个后端」建议**前端目前够不到**（没有对应命令，见「并行分支接口」一节）。
+- 合并 PR #48 后，ASR 卡已多一行「设备 · <config>（实测 <L2>）」。（原文还写「判定与建议前端够不到、没有对应命令」——**已过时**，见下方「前置状态」。）
+
+**前置状态（2026-10-28 核对，含 P5/P6 补丁已套用）**
+
+| 依赖 | 状态 |
+|---|---|
+| `probe_moss_backend`（判定 / `reason` / `source` / `recommendation` / `manifest_flavors` / `cuda_compute_cap` / `cuda_runnable` / `gpus` / `error`） | ✅ 就绪（第 12 项 + P5 `351cd5a`） |
+| `set_moss_device`（落盘，下次启动生效） | ✅ 就绪（`a8e8010`） |
+| `probe_moss_install`（已装运行时 vs 清单，七态） | ✅ 命令就绪（P6 `80eda1d`）；但**数据源 `runtime/.installed.json` 目前无人写** ⇒ 实际必返回 `not_installed` / `unknown`，属预期 |
+| `check_asr_engines.effective_backend`（L2 实测） | ✅ 已有（PR#48） |
+| `scripts/bootstrap_moss.ps1 -Backend <cpu\|cuda\|vulkan>`（现存脚本，可作指引） | ✅ 可用；注意默认 `cpu`，要 GPU 必须显式传 `-Backend`，也支持 `-BinaryUrl` + `-BinarySha256` 指向发布包 |
+| `scripts/bootstrap_runtime.ps1`（契约 §2 新入口 + §3 JSONL 进度） | ❌ **不存在**（dev / 本分支 / staging 均无；交接文档 §5.1 列为 installer 侧待办） |
+| Rust 侧「起子进程 + 读 JSONL + 进度事件 + 取消 + 磁盘预检」 | ❌ **零基础设施**：全仓库对 bootstrap 只有「请先跑 scripts/xxx.ps1」的文案 |
+
+**规划（2026-10-28 拆三步，11a/11b 不阻塞）**
+
+- **11a 探针与指引（可立即做：纯前端 + 现有命令，零跨会话依赖）**
+  - 欢迎页 ASR 卡三行：①设备（`probe_moss_backend.configured_device`，附「去打轴页改」入口）②为什么 / 该装哪个（`reason` / `source` / `recommendation(_reason)` / `cuda_compute_cap` + `cuda_runnable`）③运行时状态（`probe_moss_install.state` + `message`）；
+  - OCR / Embed 卡同口径：未就绪时把 `check_ocr_runtime` / `check_embed_runtime` 的失败原文摊到卡面（现在只有状态点 + `title` 悬停看）；
+  - 仍然「自检不阻塞」，只在真正运行引擎时硬拦。
+- **11b 命令指引层（可立即做）**：未就绪时给一条**可复制**的命令（`scripts/bootstrap_moss.ps1 -Backend vulkan` 这一代）；若要判断脚本是否存在，加一个只读命令 `probe_bootstrap_scripts`（返回脚本存在与路径），不让前端猜路径。
+- **11c 静默 bootstrap（阻塞中）**：需 `bootstrap_runtime.ps1`（按契约 §3 出 JSONL）+ Rust spawn / 进度事件 / 取消 / 磁盘预检。**决策点**：等 installer 侧交付，还是本分支按契约自己写（会动 `scripts/*`，属 installer 侧所有权，需用户拍板）。
+
+**依赖/前置**：11a/11b 已全部满足（命令齐、契约齐）；11c 缺执行体与子进程基础设施，见上表。
+
 - bootstrap 脚本**已在 `scripts/`**（不在根目录）：`scripts/bootstrap_moss.ps1`（模型/二进制获取与就绪自检）、`scripts/build_moss.ps1`（自构建，含 vulkan 前置检查）。
 
 **要做**
