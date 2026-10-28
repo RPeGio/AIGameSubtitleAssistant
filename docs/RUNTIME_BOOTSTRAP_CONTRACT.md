@@ -235,6 +235,7 @@ installer 侧实测（2026-10-24）确认过、且容易踩的三点：
 | P4 | `src-tauri/tauri.conf.json` | `bundle.resources` 加 `"resources": ["resources/runtime/manifest.json"]` | **已由本分支直接改**（2026-10-24 用户指示落清单时一并加好）；installer 侧勿重复添加 |
 | P5 | `src-tauri/src/ai_runtime/backend_probe.rs` | 老卡（算力 < 7.5）不再走 CUDA：`MIN_CUDA_COMPUTE_CAP`、`MachineCaps.cuda_cc` / `cuda_runnable()`、`parse_compute_cap()`、`decide()` 老卡改指「换 vulkan」、`recommend()` 抽成纯函数、报告加 `cuda_compute_cap` / `cuda_runnable`（详见 §8.1） | **已套用**（`351cd5a`，= installer 侧补丁 0001；2026-10-28 `git am --3way` 无冲突） |
 | P6 | `src-tauri/src/ai_runtime/installed_state.rs`（新增）<br>+ `ai_runtime/mod.rs`（`pub mod installed_state;`）<br>+ `src-tauri/src/lib.rs`（注册命令） | 已装运行时 vs 清单比对：`evaluate()` 七态 + `#[tauri::command] probe_moss_install`（详见 §8.4） | **已套用**（`80eda1d`，= installer 侧补丁 0002；同上） |
+| P7 | `scripts/bootstrap_runtime.ps1`（新增 406 行）<br>+ `ai_runtime/runtime_install.rs`（新增 1100 行）<br>+ `ai_runtime/mod.rs`（`pub mod runtime_install;`）<br>+ `lib.rs`（manage + 注册三命令） | 安装器执行体与 Rust 侧子进程基础设施（详见 §8.5） | **已并入**（`7d3f8d5`，走分支合并而非补丁；本分支在此之上做前端接线 §8.6） |
 
 P1/P2 的命令函数本体放在 `backend_probe.rs` / `config.rs`——这两个模块**已在
 `ai_runtime/mod.rs` 里声明**（`pub mod backend_probe;` / `pub mod config;`）。
@@ -356,6 +357,42 @@ invoke("probe_moss_install")   // 无参，只读，不改任何文件
 ⇒ 本命令的数据源是 installer 写的 `runtime/.installed.json`：在
 `scripts/bootstrap_runtime.ps1` 落地前，它会稳定返回 `not_installed` / `unknown`，
 这是**预期**，不是 bug。
+
+### 8.5 安装器命令（installer 侧 `runtime_install.rs` 交付，前端 11c 已接线）
+
+```ts
+invoke("precheck_runtime_disk")                                              // 无参，只读
+invoke("install_runtime", { items: null, flavor: "auto", force: false })      // 起子进程
+invoke("cancel_runtime_install")                                             // 杀进程树
+```
+
+- `precheck_runtime_disk` → `DiskPrecheck`：`{ ok, manifest_entries, required_bytes, free_bytes | null, message }`。
+  `free_bytes = null` 表示读不到磁盘信息 ⇒ **不拦**（宁放行不误拦）。`required_bytes` 取该 id
+  全部 flavor 里**最大**的 size 乘展开系数 3（cuda 622 MB ⇒ ≈1.97 GB），故意偏保守。
+- `install_runtime` 的 `items` 是**逗号分隔字符串**（`null`/省略 = `"moss"`）；`flavor` 省略 = `"auto"`；
+  `force = false` 时已装且哈希一致就跳过、不重下。
+- `cancel_runtime_install` → `bool`：没有在跑的任务时返回 `false`。
+- 进度事件 `runtime-install-progress`，payload = `InstallEvent`：
+  `{ event, item?, flavor?, phase?, percent?, detail?, ok?, installed?, skipped?, failed? }`。
+  `event ∈ start | progress | item_skip | item_done | item_fail | error | done`（与 §3 同一套），
+  只有 `done` 才带 `ok / installed / skipped / failed`；`percent` 为 0–100 浮点。
+- 失败语义要分清：**预检不过不抛 Err**，而是发 `error` + `done` 事件并返回
+  `InstallSummary{ ok: false, exit_code: 1, message }`；**找不到脚本 / 已有任务并发**才抛 `Err(String)`。
+  两者前端都是一条提示，但前者不能当异常处理（否则会掩盖「磁盘不够」这种可操作原因）。
+- 事件是**全局**的（不分窗口），前端在 store 顶层监听一次即可；同一时刻只允许一个安装任务。
+
+### 8.6 前端接线口径（第 11 项 11c，已实现）
+
+- 按钮出现条件：MOSS 未就绪 **或** `probe_moss_install.state ∈ {update_available, file_missing, flavor_not_in_manifest}`；
+  文案「安装运行时」/「更新运行时」。
+- 点击顺序：`precheck_runtime_disk`（不 ok 只提示、不启动）→ `install_runtime({ flavor: "auto" })`
+  → 事件驱动进度条 → 结束（成功/取消/失败）后重跑 `check_asr_engines` + `probe_moss_backend` + `probe_moss_install`。
+- `flavor` 传 `"auto"`：脚本 `Resolve-AutoFlavor`（cuda 算力 ≥7.5 → vulkan → cpu）与 Rust
+  `recommend_from_assets` 口径一致，与卡面「建议改用 cuda 版运行时」不矛盾。
+- **不做首启静默下载**（有意偏离该待办原标题）：cuda 包 622 MB，静默后台拉不可接受，失败时用户
+  什么也看不到；由自检卡负责说清「缺什么、该装哪个后端」。形态可逆。
+- 打包形态下脚本尚未随包（`bundle.resources` 只有 manifest）⇒ `install_runtime` 会返回可读的 `Err`，
+  前端原样提示；补资源映射归分发侧。
 
 
 ---

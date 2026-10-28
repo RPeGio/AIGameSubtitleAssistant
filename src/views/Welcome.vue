@@ -160,7 +160,7 @@ const deleteWithFile = ref(false);
 // ── 环境自检：只做探针 ──
 // 未就绪/探测失败都只显示状态，不阻塞任何操作（真正运行该引擎时才会提示），
 // 这里也不做自动 bootstrap。三个探针互不等待：谁先回来谁先显示。
-type ProbeState = "probing" | "ready" | "notready" | "unknown";
+type ProbeState = "probing" | "installing" | "ready" | "notready" | "unknown";
 
 interface Probe {
   state: ProbeState;
@@ -178,11 +178,6 @@ interface Probe {
   installNote?: string;
   /// 该结论需要用户动作（更新 / 文件缺失 / 后端已下线）
   installWarn?: boolean;
-  /// 原始状态码与已装后端（决定补齐命令装哪个版本）
-  installState?: string;
-  installFlavor?: string;
-  /// 推荐安装的后端版本（cuda / vulkan / cpu），用于拼手动补齐命令
-  recommend?: string;
 }
 
 const ENV_CARDS = [
@@ -201,6 +196,7 @@ const probes = ref<Record<EnvKey, Probe>>({
 
 const STATE_TEXT: Record<ProbeState, string> = {
   probing: "探测中…",
+  installing: "安装中…",
   ready: "就绪",
   notready: "未就绪",
   unknown: "—",
@@ -210,11 +206,11 @@ function stateText(key: EnvKey) {
   return STATE_TEXT[probes.value[key].state];
 }
 
-/// 探测失败与未就绪都用灰点，探测中给琥珀点
+/// 探测失败与未就绪都用灰点，探测中 / 安装中给琥珀点
 function dotClass(key: EnvKey) {
   const state = probes.value[key].state;
   if (state === "ready") return "";
-  return state === "probing" ? "warn" : "off";
+  return state === "probing" || state === "installing" ? "warn" : "off";
 }
 
 function setProbe(key: EnvKey, ready: boolean | null, msg: string, device = "", backend: string | null = null) {
@@ -240,8 +236,6 @@ function setAsrInstall(install: MossInstallStatus) {
     ...probes.value.asr,
     installNote: install.message,
     installWarn: INSTALL_ACTION_STATES.includes(install.state),
-    installState: install.state,
-    installFlavor: install.installed?.flavor,
   };
 }
 
@@ -274,7 +268,6 @@ async function probeAsr() {
   ]);
 
   if (report) {
-    probes.value.asr = { ...probes.value.asr, recommend: report.recommendation };
     if (!report.available) {
       // 显式指定了本机不具备的后端 = 硬错误，卡片上直接摊开说清楚
       setAsrDeviceNote(report.error || report.reason || "当前推理设备不可用", report.requested !== "auto");
@@ -289,21 +282,77 @@ async function probeAsr() {
   }
 }
 
-/// 手动补齐命令：源码运行时用 scripts/ 下的脚本；安装版由安装器负责（第 11c 项）
-function cmdOf(key: EnvKey): string {
-  if (key === "asr") {
-    const p = probes.value.asr;
-    // 更新既有安装 → 装回原后端；尚未安装 / 该后端已下线 → 装推荐后端
-    const flavor = p.installState === "update_available" && p.installFlavor ? p.installFlavor : p.recommend;
-    return `scripts/bootstrap_moss.ps1${flavor ? ` -Backend ${flavor}` : ""}`;
+/// 一键安装/更新的入口条件：未就绪，或运行时与清单不一致（仅 MOSS 有安装器覆盖）
+const canInstall = computed(() => {
+  const p = probes.value.asr;
+  return !projectStore.installRunning && (p.state === "notready" || !!p.installWarn);
+});
+
+const installLabel = computed(() =>
+  probes.value.asr.state === "notready" ? "安装运行时" : "更新运行时"
+);
+
+const PHASE_TEXT: Record<string, string> = {
+  download: "下载",
+  verify: "校验",
+  extract: "解压",
+  configure: "配置",
+};
+
+/// 进度行文案：「下载 42%」；脚本还没报阶段时退回「准备中…」
+const installLine = computed(() => {
+  if (!projectStore.installRunning) return "";
+  const phase = PHASE_TEXT[projectStore.installPhase] || "";
+  const pct = Math.round(projectStore.installPercent);
+  if (phase) return `${phase} ${pct}%`;
+  return pct > 0 ? `${pct}%` : "准备中…";
+});
+
+/// 装 MOSS 运行时：先磁盘预检（cuda 包 622 MB，别下到一半才发现没空间），
+/// 再交给 installer（flavor=auto = 按本机能力选 cuda / vulkan / cpu）
+async function startInstall() {
+  if (projectStore.installRunning) return;
+  let pre;
+  try {
+    pre = await projectStore.precheckRuntimeDisk();
+  } catch (e) {
+    message.error(`磁盘预检失败：${e}`);
+    return;
   }
+  if (!pre.ok) {
+    message.error(pre.message);
+    return;
+  }
+  probes.value.asr = { ...probes.value.asr, state: "installing" };
+  const summary = await projectStore.startRuntimeInstall("auto", false).catch((e) => {
+    message.error(`安装失败：${e}`);
+    return null;
+  });
+  if (summary) {
+    if (summary.cancelled) message.warning(summary.message);
+    else if (summary.ok) message.success(summary.message);
+    else message.error(summary.message);
+  }
+  // 装完或取消都重探：运行时状态、设备判定、实测后端都可能变
+  await probeAsr();
+}
+
+async function cancelInstall() {
+  try {
+    if (!(await projectStore.cancelRuntimeInstall())) message.info("没有正在运行的安装任务");
+  } catch (e) {
+    message.error(`取消失败：${e}`);
+  }
+}
+
+/// 手动补齐命令（只给安装器覆盖不到的条目：OCR / e5-small）；
+/// MOSS 由上面的安装按钮负责，不再重复给命令
+function cmdOf(key: EnvKey): string {
   return key === "ocr" ? "scripts/bootstrap_ocr.ps1" : "scripts/bootstrap_embed.ps1";
 }
 
-/// 需要手动补齐/更新时才给命令：未就绪，或运行时与清单不一致（仅 ASR 有此判据）
 function showCmd(key: EnvKey): boolean {
-  if (probes.value[key].state === "notready") return true;
-  return key === "asr" && !!probes.value.asr.installWarn;
+  return key !== "asr" && probes.value[key].state === "notready";
 }
 
 async function copyCmd(text: string) {
@@ -474,6 +523,21 @@ onMounted(() => {
             <span v-if="card.key === 'asr' && probes.asr.installNote" class="ex" :class="{ warn: probes.asr.installWarn }">
               {{ probes.asr.installNote }}
             </span>
+            <!-- 一键安装/更新：安装器只覆盖清单里的条目（当前 MOSS），装完自动重探 -->
+            <span v-if="card.key === 'asr' && canInstall" class="ex act">
+              <button class="btn pri sm" @click="startInstall">{{ installLabel }}</button>
+              <span class="hint">按本机能力选后端</span>
+            </span>
+            <template v-if="card.key === 'asr' && projectStore.installRunning">
+              <span class="pbar"><i :style="{ width: `${projectStore.installPercent}%` }" /></span>
+              <span class="ex act">
+                <span class="inst">{{ installLine }}</span>
+                <button class="btn ghost sm" @click="cancelInstall">取消</button>
+              </span>
+              <span v-if="projectStore.installDetail" class="ex ell" :title="projectStore.installDetail">
+                {{ projectStore.installDetail }}
+              </span>
+            </template>
             <!-- 未就绪原因原文直接摊在卡面上（ASR 的原因已由上面两行覆盖，不重复） -->
             <span
               v-if="card.key !== 'asr' && probes[card.key].state === 'notready' && probes[card.key].message"
@@ -481,7 +545,7 @@ onMounted(() => {
             >
               {{ probes[card.key].message }}
             </span>
-            <!-- 手动补齐命令（点击复制）；安装版没有 scripts/，由安装器负责 -->
+            <!-- 手动补齐命令（点击复制）：只给安装器覆盖不到的条目 -->
             <code v-if="showCmd(card.key)" class="cmd" title="点击复制" @click="copyCmd(cmdOf(card.key))">
               {{ cmdOf(card.key) }}
             </code>
@@ -846,6 +910,46 @@ onMounted(() => {
 
 .ecard .ex.warn {
   color: var(--warn);
+}
+
+/* 安装按钮行与进度行：与文案行同样式底，只多一层横排 */
+.ecard .ex.act {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ecard .act .hint {
+  font-size: 10.5px;
+  color: var(--faint);
+}
+
+.ecard .inst {
+  font-size: 11px;
+  color: var(--warn);
+  font-variant-numeric: tabular-nums;
+}
+
+.ecard .pbar {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--hover);
+  overflow: hidden;
+}
+
+.ecard .pbar i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s;
+}
+
+/* detail 是脚本原文的短诊断，长了就省略，全文走 title */
+.ecard .ex.ell {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .ecard .cmd {

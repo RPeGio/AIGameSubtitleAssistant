@@ -20,6 +20,8 @@ import type {
   MossBackendProbe,
   MossDeviceSaveResult,
   MossInstallStatus,
+  RuntimeDiskPrecheck,
+  RuntimeInstallSummary,
   LlmProgress,
   LlmRuntimeStatus,
   FuseAsrInput,
@@ -27,7 +29,13 @@ import type {
   FusedSegment,
   FusedEvent,
 } from "../types";
-import { OCR_PROGRESS_EVENT, ASR_PROGRESS_EVENT, LLM_PROGRESS_EVENT } from "../types";
+import {
+  OCR_PROGRESS_EVENT,
+  ASR_PROGRESS_EVENT,
+  LLM_PROGRESS_EVENT,
+  RUNTIME_INSTALL_EVENT,
+  type RuntimeInstallEvent,
+} from "../types";
 import { buildAuditRows, applyFusedDecision, type FuseAuditDecision } from "./fuseAudit";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -192,6 +200,34 @@ export const useProjectStore = defineStore("project", () => {
   llmUnlistenPromise.catch((e) => console.error("监听 LLM 进度事件失败:", e));
   onScopeDispose(() => {
     llmUnlistenPromise.then((fn) => fn()).catch(() => {});
+  });
+
+  // ── 运行时安装（installer 子进程 + JSONL 进度）────────────
+  // 状态放 store 而不是欢迎页组件：安装要跑几十秒到几分钟，用户切走页面也不能丢进度
+  const installRunning = ref(false);
+  const installPhase = ref("");
+  const installPercent = ref(0);
+  const installDetail = ref("");
+
+  // 监听进度事件；注册清理函数，store 被 dispose（HMR/重复实例）时退订，避免叠加泄漏
+  const installUnlistenPromise = listen<RuntimeInstallEvent>(RUNTIME_INSTALL_EVENT, (event) => {
+    const evt = event.payload;
+    if (evt.detail) installDetail.value = evt.detail;
+    if (evt.event === "start") {
+      installRunning.value = true;
+      installPercent.value = 0;
+      installPhase.value = "";
+    } else if (evt.event === "progress") {
+      installRunning.value = true;
+      if (evt.phase) installPhase.value = evt.phase;
+      if (typeof evt.percent === "number") installPercent.value = evt.percent;
+    } else if (evt.event === "done") {
+      installRunning.value = false;
+    }
+  });
+  installUnlistenPromise.catch((e) => console.error("监听运行时安装进度失败:", e));
+  onScopeDispose(() => {
+    installUnlistenPromise.then((fn) => fn()).catch(() => {});
   });
 
   // ── 自动保存 ─────────────────────────────────────────
@@ -1106,6 +1142,34 @@ export const useProjectStore = defineStore("project", () => {
     return invoke<MossInstallStatus>("probe_moss_install");
   }
 
+  /// 安装前先查磁盘（不够就当场拒绝，别下到一半才失败）
+  async function precheckRuntimeDisk(): Promise<RuntimeDiskPrecheck> {
+    return invoke<RuntimeDiskPrecheck>("precheck_runtime_disk");
+  }
+
+  /// 跑一次运行时安装（进度走 `runtime-install-progress` 事件）
+  async function installRuntime(flavor = "auto", force = false): Promise<RuntimeInstallSummary> {
+    return invoke<RuntimeInstallSummary>("install_runtime", { items: null, flavor, force });
+  }
+
+  /// 取消正在跑的安装（Rust 侧 taskkill 杀进程树）
+  async function cancelRuntimeInstall(): Promise<boolean> {
+    return invoke<boolean>("cancel_runtime_install");
+  }
+
+  /// 跑一次安装：进度写进 install* refs，返回汇总（取消 / 失败都带 message）
+  async function startRuntimeInstall(flavor = "auto", force = false): Promise<RuntimeInstallSummary> {
+    installRunning.value = true;
+    installPercent.value = 0;
+    installPhase.value = "";
+    installDetail.value = "";
+    try {
+      return await installRuntime(flavor, force);
+    } finally {
+      installRunning.value = false;
+    }
+  }
+
   /// 请求取消当前 ASR 转写（后端终止 MOSS 子进程，runAsr 的 invoke 会返回"已取消"错误）
   async function cancelAsr() {
     try {
@@ -1622,6 +1686,14 @@ export const useProjectStore = defineStore("project", () => {
     probeMossBackend,
     setMossDevice,
     probeMossInstall,
+    precheckRuntimeDisk,
+    installRuntime,
+    cancelRuntimeInstall,
+    startRuntimeInstall,
+    installRunning,
+    installPhase,
+    installPercent,
+    installDetail,
     cancelAsr,
     llmRunning,
     llmProgress,

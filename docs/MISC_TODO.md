@@ -23,7 +23,7 @@
 | 17 | ✅ 去除轨道内 clip 的所有句末标点 | 功能·文本清理 | 8（句界操作会留下句尾逗号） | 已实现（`79ae0af`）：轨道总览「美化」下拉的「去除文本末标点」 |
 | 18 | ✅ 语料「全文替换」同步作用于产物轨 | 功能·文本清理 | 6（替换本身）·17（同属语料→产物文本口径） | 已实现（2026-10-25）：仅 fused 轨，一次性精确子串替换，一次撤销回退 |
 | 10 | ✅ 快捷键体系（注册表 + 单一监听；帮助面板并入第 19 项） | 功能·跨页 | 8、9 | 已实现（`02416b8`）：`composables/shortcuts.ts` 分发器 + 活动时间轴判定 |
-| 11 | ◐ 欢迎页自检升级（11a/11b ✅ 探针摊开 + 补齐命令；11c 静默 bootstrap 等 installer 侧） | 功能·独立 | 7（info 基建）·12（`probe_moss_backend`/`probe_moss_install` 已就绪） | 11a/11b 已实现（2026-10-28）；11c 需 `scripts/bootstrap_runtime.ps1` + Rust 子进程基础设施 |
+| 11 | ✅ 欢迎页自检升级（探针摊开 + 手动补齐命令 + 一键安装/更新） | 功能·独立 | 7（info 基建）·12（`probe_moss_backend`/`probe_moss_install` 已就绪） | 11a/11b/11c 已实现（2026-10-28）；打包形态脚本随包仍归分发侧 |
 | 12 | ✅ CUDA GPU 加速参数化（设备迁移到 UI） | 功能·Rust+UI | 7（要带 info 说明）+ 11（需 `probe_moss_backend` 命令） | 已实现（阶段 A+B `a8e8010`、阶段 C `2a766c8`）：`probe_moss_backend` + `set_moss_device` 两命令、打轴页设备下拉、欢迎页硬报错、manifest 随包落库 |
 | 13 | ✅ 杂项清理与验证（死代码/参数开关/图标；真机波形待验） | 清理·零碎 | 无 | 已实现（`8b71ee2`）：死代码已删、易混字母开关已暴露、轨道图标常显 |
 | 14 | 内嵌 ffmpeg/ffprobe + 欢迎页 ffmpeg 自检卡 | 功能·打包 | 11（自检卡复用其探针机制） | 外部依赖一致性；涉及打包策略，宜与 11 一起看 |
@@ -606,7 +606,7 @@
 - `pnpm build` 通过；倒放实测时间在减少、`K` 后恢复正放；逐帧步进 = `1/fps`。
 
 
-### 11. 欢迎页模型自检升级（探针 + 未就绪静默 bootstrap）
+### 11. ✅ 欢迎页模型自检升级（探针 + 手动补齐命令 + 一键安装/更新）
 
 **现状依据**
 - 现在只做探针：`src/views/Welcome.vue` 的 `probeOcr()`（`invoke("check_ocr_runtime")`）、`probeAsr()`（`projectStore.getAsrEngines()` 取 `moss`）、`probeEmbed()`（`invoke("check_embed_runtime")`），三者不 await、未就绪只显示状态、不阻塞。
@@ -639,7 +639,7 @@
 |---|---|---|
 | ASR 卡三行 | ①设备（配置值 + 实测后端）②为什么 / 该装哪个：显式指定不可用 → 红字硬报错；**装的是 CPU 版但本机能上 GPU → 黄字「建议改用 cuda 版运行时：<理由>」**（比对的是 `probe_moss_install.installed.flavor`，不是 `requested`，避免 auto 下天天误报）③运行时状态：`probe_moss_install.message`，需要动作的状态（`update_available` / `file_missing` / `flavor_not_in_manifest`）标黄 | `src/views/Welcome.vue`（`probeAsr` / `setAsrInstall` / `INSTALL_ACTION_STATES`） |
 | OCR / Embed 卡 | 未就绪时把 `check_*_runtime` 的失败原文直接摊到卡面（原先只藏在 `title` 悬浮里）；`pnpm build` 前 ASR 卡的原因已由上面两行覆盖 ⇒ 不再重复显示引擎 message | 同上 |
-| 手动补齐命令 | 未就绪（或运行时需更新）时给一行等宽命令，**点击复制**（`navigator.clipboard`，失败降级提示手动选中）：`scripts/bootstrap_ocr.ps1` / `scripts/bootstrap_moss.ps1 -Backend <flavor>` / `scripts/bootstrap_embed.ps1`。moss 的 `-Backend` 取值有讲究：`update_available` 时取**已装后端**（更新同一份），其余情况取 `probe_moss_backend.recommendation`（尚未安装 / 该后端已从清单下线 ⇒ 换推荐后端） | 同上（`cmdOf` / `showCmd` / `copyCmd`、样式 `.ecard .cmd`） |
+| 手动补齐命令（仅 OCR / e5-small） | 未就绪时给一行等宽命令，**点击复制**（`navigator.clipboard`，失败降级提示手动选中）：`scripts/bootstrap_ocr.ps1` / `scripts/bootstrap_embed.ps1`。MOSS 在 11c 之后改用安装按钮，卡面不再并列给 `scripts/bootstrap_moss.ps1`（两个 CTA 打架，见 11c 决策） | 同上（`cmdOf` / `showCmd` / `copyCmd`、样式 `.ecard .cmd`） |
 | store / 类型 | 新增 `probeMossInstall()` 与 `MossInstallStatus` / `MossInstalledItem` | `src/stores/project.ts`、`src/types/index.ts` |
 
 | 顺手修正 | OCR / e5-small 卡此前也会显示「设备 · auto（ggml 自动选优）」——`ggml` 是 MOSS 专属，`deviceText()` 对任何 `device===""` 的卡都返回该文案（`setProbe` 的 device 默认空）。改成只给 ASR 卡渲染设备行 | `Welcome.vue` 设备行加 `card.key === 'asr'` 守卫 |
@@ -651,13 +651,36 @@
 - 亮色主题同步核对。
 - 截图：`temp/css-preview/item11-env-cards.png`（暗/正常）、`item11-env-notready.png`（暗/最拥挤）、`item11-env-light.png`（亮/正常）。
 
-**11c 阻塞已于 2026-10-28 解除（`7d3f8d5` 交付执行体）**：`scripts/bootstrap_runtime.ps1`（406 行，stdout 纯 JSONL，末行必 `done`）与 `src-tauri/src/ai_runtime/runtime_install.rs`（1100 行，`precheck_runtime_disk` / `install_runtime` / `cancel_runtime_install` 三命令 + `runtime-install-progress` 事件）已随 `feat/runtime-bootstrap` 并入本分支。本分支剩下的是**前端接线**：先 `precheck_runtime_disk` 报磁盘，再 `install_runtime({ items, flavor, force })`，`listen("runtime-install-progress")` 渲染进度，取消调 `cancel_runtime_install`。
+**11c 已实现（2026-10-28，一键安装/更新）：前置由 `7d3f8d5` 交付**（`scripts/bootstrap_runtime.ps1` 406 行 + `src-tauri/src/ai_runtime/runtime_install.rs` 1100 行：`precheck_runtime_disk` / `install_runtime` / `cancel_runtime_install` 三命令 + `runtime-install-progress` 事件）。
 
-**打包形态遗留（归分发侧）**：`bundle.resources` 目前只有 `resources/runtime/manifest.json`，`bootstrap_runtime.ps1` 尚未随 app 发布（Rust 侧 `bootstrap_candidates` 已预留 `resources/scripts/bootstrap_runtime.ps1` 位置），需分发侧补一条资源映射。
+| 子项 | 处理 | 位置 |
+|---|---|---|
+| 入口 | MOSS 卡在「未就绪」或「运行时需更新」时给按钮（`canInstall` / `installLabel`：未就绪 →「安装运行时」，否则「更新运行时」），旁注「按本机能力选后端」 | `src/views/Welcome.vue` |
+| 磁盘预检 | 点按钮先 `precheck_runtime_disk`（Rust 侧按 cuda 包 622 MB × 展开系数 3 估 ≈1.97 GB）；不通过只 toast、不启动安装 | 同上 `startInstall` |
+| 进度 | 安装态放 store（切页面不丢）：`installRunning` / `installPhase` / `installPercent` / `installDetail`；`listen(RUNTIME_INSTALL_EVENT)` 在 store 顶层注册、`onScopeDispose` 退订；卡面渲染 3px 进度条 +「下载 42%」+「取消」，`detail`（脚本原文短诊断）单行省略、全文进 `title` | `src/stores/project.ts`、`Welcome.vue` |
+| 取消 | 「取消」→ `cancel_runtime_install()`；返回 `false` 时提示「没有正在运行的安装任务」 | 同上 `cancelInstall` |
+| 完成后 | 无论成功/取消都重跑 `probeAsr()`（引擎状态、设备判定、实测后端、安装状态全部重取） | 同上 `startInstall` |
+| 类型 | `RUNTIME_INSTALL_EVENT` / `RuntimeInstallEvent` / `RuntimeInstallSummary` / `RuntimeDiskPrecheck`（snake_case 对齐 Rust） | `src/types/index.ts` |
 
-**未做**：`probe_bootstrap_scripts`（判断脚本是否存在，随 11c 接线一起做才有意义——安装版没有 `scripts/`，命令行届时改为指向安装器）。
+**11c 决策（含对该项原标题「静默 bootstrap」的有意偏离）**：
+- **不做首启静默下载**：cuda 包 622 MB，静默在后台拉对大流量/家用带宽不可接受，失败时用户什么也看不到；改成「显式按钮 + 先报磁盘」。11a 的自检卡已经把「缺什么、该装哪个后端」说清，静默的那点便利不值这个代价。形态可逆。
+- **按钮取代 MOSS 的手动命令**：两个并列 CTA（按钮 + 命令）互相打架，且命令在安装版里根本不存在（没有 `scripts/`）；OCR / e5-small 没有清单条目，仍只给命令。
+- **`flavor` 传 `auto`**：脚本 `Resolve-AutoFlavor`（cuda 算力 ≥7.5 → cuda → vulkan → cpu）与 Rust `recommend_from_assets` 口径一致，与卡面「建议改用 cuda 版运行时」不矛盾。
+- **进度状态放 store**：安装几分钟，用户切走页面不能丢进度，与既有 OCR/ASR/LLM 进度监听同一写法。
 
-**依赖/前置**：11a/11b 已全部满足（命令齐、契约齐）；11c 的执行体与子进程基础设施已就位（`7d3f8d5`），只剩前端接线与打包形态的脚本发布，见上表。
+**11c 验证**：`pnpm build`（含 `vue-tsc --noEmit`）EXIT=0（2901 modules）；headless Chrome + Tauri mock 实测（`temp/css-preview/checks/item11c.js`，1680×1000；mock 新增 `plugin:event|listen` 捕获与 `window.__emitEvent(name, payload)`，并新增 `precheck_runtime_disk` / `install_runtime` / `cancel_runtime_install` 三个 case，`?asrmock=notready` 切到未安装态）：
+- 未就绪态卡面顺序：设备 → 红字硬报错 → 运行时未安装 → 「安装运行时」按钮 + 旁注 → 「推理设备可在打轴页…设置」，`pageOverflow=false`；
+- 点击后 500 ms：`.pbar` 出现（30%）、行文案「下载 30%」+「取消」、安装按钮消失、`.ell` 显示 `moss-vulkan.zip`，状态点变琥珀 + 「安装中…」；
+- 1.8 s 后：toast「安装完成：新增 1 项，跳过 0 项」，按钮回到「安装运行时」（mock 仍返回未安装态）；
+- 就绪 + `update_available`：按钮文案为「更新运行时」，黄字仍显示运行时提示；
+- 截图：`temp/css-preview/item11c-install.png`（未就绪）、`item11c-progress.png`（安装中）、`item11c-update.png`（可更新）。
+- **未验证**：真实 installer 子进程（本机无外网，cuda 包 622 MB）、取消对真实进程树的 `taskkill /T /F` 效果——需联网后在有网环境下走一次真装。
+
+**打包形态遗留（归分发侧）**：`bundle.resources` 目前只有 `resources/runtime/manifest.json`，`bootstrap_runtime.ps1` 尚未随 app 发布（Rust 侧 `bootstrap_candidates` 已预留 `resources/scripts/bootstrap_runtime.ps1` 位置），需分发侧补一条资源映射；在那之前安装按钮只在源码运行时可用（找不到脚本时 `install_runtime` 返回可读的 Err，前端 toast 出来）。
+
+**未做**：`probe_bootstrap_scripts`（并入安装器后不需要前端判断脚本存在——`install_runtime` 找不到脚本会直接 Err）；首启静默安装（见 11c 决策，不做）。
+
+**依赖/前置**：已全部满足（命令齐、契约齐、执行体已并入）。
 
 - bootstrap 脚本**已在 `scripts/`**（不在根目录）：`scripts/bootstrap_moss.ps1`（模型/二进制获取与就绪自检）、`scripts/build_moss.ps1`（自构建，含 vulkan 前置检查）。
 
