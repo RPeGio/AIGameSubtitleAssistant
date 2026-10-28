@@ -1,4 +1,4 @@
-﻿# MOSS ASR 的 Vulkan 优化与 GPU 后端回退设计
+# MOSS ASR 的 Vulkan 优化与 GPU 后端回退设计
 
 > 状态：**步骤 1–5 全部完成**（脚本前置检查 / Vulkan 构建实测 / 三设备基准 / 探测与 fallback 语义 / 文档与文案核验）（2026-10-18 用户确认要点见 §0.2）
 > 本分支范围：**仅 MOSS ASR 的 Vulkan 通路 + 后端探测/回退语义**
@@ -240,3 +240,77 @@
 - 走 `scripts/bootstrap_funasr.ps1 -Device cpu`：**只需 CPU 版 torch**（约 200 MB 量级）＋ funasr/modelscope 依赖 ＋ 4 个模型（主模型 Fun-ASR-Nano-2512 约 1.6 GB）≈ **2.5–3 GB**（CUDA 路线约 7 GB）。时间戳语义与设备无关，**cpu 路线即可**。
 - 前置：脚本要求 `runtime/python/python.exe`（复用 OCR 的内嵌解释器，由 `scripts/bootstrap_ocr.ps1` 提供）。替代路线：用 `py -3.12`（指向主 worktree 的 3.12 解释器）在**本 worktree 内**建 venv。
 - 判定方法（比"是否等距"更准）：dump `res[0].get("timestamps")`、`res[0]["sentence_info"][i]["timestamp"]`，并留意 stderr 的 `Disabling CTC timestamps…` / `No timestamp found…`。**空 = 缺陷成立；非空且与音频内容对齐 = 真实强制对齐**——同时验证 `batch_size_s=120` 是否把它推入 batched 模式。
+---
+
+## 8. 预构建分发（P1，2026-10-22）
+
+> 起因（用户决策）：**不要求用户在自己机器上现构建**。改为 GitHub Release 发布预构建 zip + sha256 校验，安装器按 manifest 下载解包。分支 `feat/runtime-distribution`（基线 `f8dc4ac`）。
+
+### 8.1 三个 flavor 的实测体积（本机，2026-10-22）
+
+| flavor | zip | 展开 | 主要构成 |
+|---|---|---|---|
+| cpu | 1.1 MB | 2.7 MB | `moss-transcribe.exe` + `ggml*.dll`（无后端 DLL） |
+| vulkan | 15.4 MB | 48.9 MB | 同上 + `ggml-vulkan.dll`（46 MB，SPIR-V 内核） |
+| cuda | 621.6 MB | 1,159.7 MB | + `ggml-cuda.dll` 549 MB、`cublasLt64_12.dll` 507 MB、`cublas64_12.dll` 100 MB |
+
+⇒ **默认走 vulkan**（15 MB，跨 NVIDIA/AMD/Intel 三厂），cuda 作为「按需补装」的第二条目；manifest 两条目共存，不默认下发 621 MB 的 cuda 包。
+
+### 8.2 CUDA 目标架构：`75;86;89`
+
+- 覆盖 Turing(75) / Ampere(86) / Ada(89)，**去掉 sm_80**（A100 数据中心卡，与玩家无关）；实测构建日志 `-- Using CMAKE_CUDA_ARCHITECTURES=75;86;89`。
+- `build_moss.ps1` 新增 `-CudaArch`（默认 `75;86;89`）、`-OutputDir`、`-UpstreamRef`、`-Jobs`；产物落 `<OutputDir>/<flavor>/`，供打包脚本直接吃。
+
+### 8.3 MSVC 运行库必须 app-local 自带
+
+`dumpbin /dependents` 实测：`moss-transcribe.exe` 与 `ggml*.dll` **全部静态导入** `msvcp140.dll` / `vcruntime140.dll` / `vcruntime140_1.dll`（`ggml-base`/`ggml-cpu` 另需 `vcomp140.dll` = OpenMP）。Rust 主程序不需要（静态链 CRT），但干净 Windows 上缺任一即 `0xC0000135`，**表现与「缺 CUDA DLL」完全一样**，用户只能看到"启动失败"。
+
+⇒ 采用微软的 app-local 部署（DLL 放 exe 同目录，免管理员权限、免安装次序），打包脚本校验这 4 个文件的 Authenticode 签名主体含 `Microsoft`。
+
+### 8.4 工具链
+
+- `scripts/package_moss_flavors.ps1`：打 zip + 产 `manifest.json`（与 `docs/RUNTIME_BOOTSTRAP_CONTRACT.md` §4 schema 对齐，`dest` 一律 `bin`）+ `packages.json`（构建记录：每文件哈希、上游 pin）。退出码 0/1/2/3 = 成功/参数/校验/打包。
+- `scripts/verify_moss_flavors.ps1`：纯净性（不该有的后端 DLL 必须没有）+ 依赖 + 签名校验。
+> ⚠ **zip 不是字节可复现的**：包内 `SOURCE.txt` 记录构建时刻、zip 条目带文件 mtime，同一份产物打两次哈希不同（实测 `098E28…` vs `272A23…`）。所以**必须以 `packages.json` 记录的哈希为准**，上传哪个文件就发那个文件的 sha256，不能靠"重建一遍对一下哈希"来校验。
+
+### 8.5 ⚠ PowerShell 参数类型约束的坑（已踩，勿重犯）
+
+`param([string]$Flavors)` 声明的变量**被永久约束为字符串**：后续 `$Flavors = @()` 会被强制转回字符串，`$Flavors += $x` 变成**字符串拼接**——表现是 `"cpu,vulkan"` 变成 `"cpuvulkan"` 或 `"cpu vulkan"`（分隔符丢失/变空格），且报错信息只显示"未知 flavor"，极难定位。
+
+⇒ 拆分结果必须放进**另一个变量名**（本脚本用 `$FlavorList`），不要复用参数变量。另：用 `-File` 调用时 `-Flavors 'cpu,vulkan'` 传入的是**单个字符串**，不会绑成数组。
+
+### 8.6 已完成：Release 发布与 manifest 填址
+
+- ✅ **已发布**（2026-10-24）：release tag **`moss-runtime-v1`**（target `dev`，指向 `408e082`），三个资产 + manifest 绝对 URL 已填好。
+  下载基址 `https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/`：
+
+  | 资产 | 大小 | sha256 |
+  |---|---|---|
+  | `moss-cpu.zip` | 1,121,692 B | `545e2b1a18f35c6cd462c26b768d177458bf4d6918a619f24d4767492c4d791d` |
+  | `moss-vulkan.zip` | 16,139,894 B | `e848847289982b8322262341aa133e40b8f152ee563b8af63e3412e4eb6a89b5` |
+  | `moss-cuda.zip` | 651,834,262 B | `5faa48b8b85e7f5763b835ad8b18ba467daef8243f0b1c7172fb3a1c87ed894d` |
+
+- **上传结果已由 GitHub 侧独立核验**：`gh release view --json assets` 返回的 `digest` 字段（`sha256:…`）与上表逐条一致，`size` 也一致 ⇒ 传输无损，不需要「重下一次再比哈希」。
+- **匿名下载实测**：`moss-vulkan.zip` 从公网 URL 拉下来 16,139,894 B、哈希一致、耗时 6.6 s；解包后 11 个文件与本地产物完全相同（`.backend`=`vulkan`）。
+- `manifest.json` 的三条 `url` 已从 `-UrlBase` 占位改为上面的绝对地址，`sha256`/`size`/`dest` 未变，本地三份 zip 重新哈希逐条对上。
+
+### 8.7 发布操作备忘（`gh`）
+
+```powershell
+# 首次创建（同时带上小资产；cuda 621 MB 单独补传，实测耗时 10.5 分钟）
+gh release create moss-runtime-v1 --target dev --title "..." -F notes.md moss-cpu.zip moss-vulkan.zip
+gh release upload  moss-runtime-v1 moss-cuda.zip
+```
+
+> ⚠ **`--target` 只认分支名/标签**：传 commit SHA（`--target 408e082`）会被 GitHub 拒为
+> `HTTP 422 Validation Failed: Release.target_commitish is invalid`。用 `--target dev` 即可——release 只需
+> 指向一个包含该产物的提交，不要求 sha 精确对应（产物自身的 `SOURCE.txt` + `packages.json` 才是溯源依据）。
+> 另：发布后**不要**再重打包上传，zip 不可复现（§8.4），重打就会与 manifest 的哈希对不上。
+
+### 8.8 原「未完成」三条的结案（2026-10-26）
+
+- **老卡分流** → 已出补丁 `_gsa_staging/patches/0001-old-gpu-cuda-fallback.patch`（算力 < 7.5 不再推荐 CUDA：`cuda_runnable()` 判据、`decide()` 老卡硬报错改指 Vulkan、`recommend()` 反向推荐），基线 = installer 侧 HEAD `dcdd1a5`，待那边 `git am`。
+- **`manifest.json` 进仓库 + `bundle.resources`** → installer 侧已完成（`2a766c8`，第 12 项阶段 C）：`src-tauri/resources/runtime/manifest.json` + `tauri.conf.json` 的 `"resources": ["resources/runtime/manifest.json"]`。
+- **契约 §4 示例 URL 的 `.7z`** → 契约侧已订正：`docs/RUNTIME_BOOTSTRAP_CONTRACT.md` 新增 §4.3「交付物是 zip（不是 7z）、以及解压的三个坑」。
+
+另新增一件并已结案：**`.installed.json` 比对**（原写"本期不做"）→ 补丁 `_gsa_staging/patches/0002-installed-state-check.patch`（新增 `ai_runtime/installed_state.rs` + `probe_moss_install` 命令，七态）；写入方 `bootstrap_runtime.ps1` 仍在 installer 侧。两个补丁的套用说明与边界见 `_gsa_staging/patches/HANDOFF.md`。

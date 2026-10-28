@@ -1,4 +1,4 @@
-﻿# Vulkan Optimization for MOSS ASR and the GPU Backend Fallback Design
+# Vulkan Optimization for MOSS ASR and the GPU Backend Fallback Design
 
 > Status: **steps 1–5 all done** (script pre-checks / Vulkan build measured / three-device benchmark / probing & fallback semantics / docs & wording verified) (decisions confirmed by the user on 2026-10-18, see §0.2)
 > Scope of this branch: **the Vulkan path for MOSS ASR plus backend probing / fallback semantics only**
@@ -240,3 +240,77 @@ The comment at `scripts/funasr_worker.py:219` claims Fun-ASR-Nano's `sentence_in
 - Via `scripts/bootstrap_funasr.ps1 -Device cpu`: **only CPU torch is needed** (on the order of 200 MB) plus the funasr/modelscope dependencies plus 4 models (the main model Fun-ASR-Nano-2512 is ~1.6 GB) ≈ **2.5–3 GB** (versus ~7 GB for the CUDA route). Timestamp semantics are device-independent, so **the CPU route suffices**.
 - Prerequisite: the script expects `runtime/python/python.exe` (it reuses OCR's embedded interpreter, provisioned by `scripts/bootstrap_ocr.ps1`). An alternative: use `py -3.12` (which points at the main worktree's 3.12 interpreter) to create a venv **inside this worktree**.
 - Decision method (sharper than "is it equidistant"): dump `res[0].get("timestamps")` and `res[0]["sentence_info"][i]["timestamp"]`, and watch stderr for `Disabling CTC timestamps…` / `No timestamp found…`. **Empty = the defect holds; non-empty and aligned with the audio content = genuine forced alignment** — while also checking whether `batch_size_s=120` pushes it into batched mode.
+---
+
+## 8. Prebuilt distribution (P1, 2026-10-22)
+
+> Motivation (user decision): **do not require users to build on their own machine**. Ship prebuilt zips on GitHub Releases plus sha256 verification; the installer downloads and unpacks them per manifest. Branch `feat/runtime-distribution` (base `f8dc4ac`).
+
+### 8.1 Measured size of the three flavors (this machine, 2026-10-22)
+
+| flavor | zip | unpacked | main contents |
+|---|---|---|---|
+| cpu | 1.1 MB | 2.7 MB | `moss-transcribe.exe` + `ggml*.dll` (no backend DLL) |
+| vulkan | 15.4 MB | 48.9 MB | same + `ggml-vulkan.dll` (46 MB of SPIR-V kernels) |
+| cuda | 621.6 MB | 1,159.7 MB | + `ggml-cuda.dll` 549 MB, `cublasLt64_12.dll` 507 MB, `cublas64_12.dll` 100 MB |
+
+⇒ **Default to vulkan** (15 MB, covers NVIDIA/AMD/Intel alike) and keep cuda as a second, on-demand entry; both manifest entries coexist, and the 621 MB cuda package is not downloaded by default.
+
+### 8.2 CUDA target architectures: `75;86;89`
+
+- Covers Turing(75) / Ampere(86) / Ada(89) and **drops sm_80** (A100 datacenter, irrelevant to players); the build log printed `-- Using CMAKE_CUDA_ARCHITECTURES=75;86;89`.
+- `build_moss.ps1` gained `-CudaArch` (default `75;86;89`), `-OutputDir`, `-UpstreamRef` and `-Jobs`; artifacts land in `<OutputDir>/<flavor>/`, ready for the packaging script.
+
+### 8.3 MSVC runtime must be shipped app-local
+
+`dumpbin /dependents` shows `moss-transcribe.exe` and every `ggml*.dll` **statically import** `msvcp140.dll` / `vcruntime140.dll` / `vcruntime140_1.dll` (`ggml-base`/`ggml-cpu` also need `vcomp140.dll`, i.e. OpenMP). The Rust host does not need them (static CRT), but on a clean Windows box a missing one means `0xC0000135`, which **looks exactly like "missing CUDA DLL"** — the user only sees "failed to start".
+
+⇒ Ship them app-local (next to the exe: no admin rights, no install order), and have the packaging script verify that each of the four carries an Authenticode signature whose subject contains `Microsoft`.
+
+### 8.4 Tooling
+
+- `scripts/package_moss_flavors.ps1`: builds the zips and emits `manifest.json` (matching the schema in `docs/RUNTIME_BOOTSTRAP_CONTRACT.md` §4, `dest` always `bin`) plus `packages.json` (build record: per-file hash, upstream pin). Exit codes 0/1/2/3 = ok/args/verification/packaging.
+- `scripts/verify_moss_flavors.ps1`: purity (backend DLLs that must be absent are absent), dependencies, signatures.
+> ⚠ **The zips are not byte-reproducible**: the bundled `SOURCE.txt` records the build time and the zip entries carry file mtimes, so packing the same artifacts twice yields different hashes (measured `098E28…` vs `272A23…`). Therefore **the hash recorded in `packages.json` is authoritative**: publish the sha256 of the exact file you upload; never verify by rebuilding and comparing hashes.
+
+### 8.5 ⚠ PowerShell parameter type constraint (already hit; do not repeat)
+
+A variable declared `param([string]$Flavors)` stays **permanently constrained to string**: a later `$Flavors = @()` is coerced back to a string, and `$Flavors += $x` becomes **string concatenation** — so `"cpu,vulkan"` silently turns into `"cpuvulkan"` or `"cpu vulkan"` while the only symptom is "unknown flavor", which is very hard to trace.
+
+⇒ Put the split result in a **different variable name** (this script uses `$FlavorList`); never reuse the parameter variable. Also note that with `-File`, `-Flavors 'cpu,vulkan'` arrives as a **single string**, not an array.
+
+### 8.6 Done: release published and manifest URLs filled
+
+- ✅ **Published** (2026-10-24): release tag **`moss-runtime-v1`** (target `dev`, pointing at `408e082`), three assets, and the manifest's absolute URLs are filled in.
+  Download base `https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/`:
+
+  | Asset | Size | sha256 |
+  |---|---|---|
+  | `moss-cpu.zip` | 1,121,692 B | `545e2b1a18f35c6cd462c26b768d177458bf4d6918a619f24d4767492c4d791d` |
+  | `moss-vulkan.zip` | 16,139,894 B | `e848847289982b8322262341aa133e40b8f152ee563b8af63e3412e4eb6a89b5` |
+  | `moss-cuda.zip` | 651,834,262 B | `5faa48b8b85e7f5763b835ad8b18ba467daef8243f0b1c7172fb3a1c87ed894d` |
+
+- **Upload verified independently by GitHub**: the `digest` field (`sha256:…`) returned by `gh release view --json assets` matches the table above entry by entry, and so does `size` ⇒ the transfer was lossless, no need to re-download and re-hash.
+- **Anonymous download test**: `moss-vulkan.zip` fetched from the public URL — 16,139,894 B, hash matches, 6.6 s; the extracted 11 files are identical to the local artifact (`.backend`=`vulkan`).
+- The manifest's three `url` values are now the absolute addresses above instead of the `-UrlBase` placeholder; `sha256`/`size`/`dest` are unchanged and re-hashing the three local zips matched every entry.
+
+### 8.7 Release procedure notes (`gh`)
+
+```powershell
+# Create with the small assets first; upload the 621 MB cuda zip separately (10.5 min measured)
+gh release create moss-runtime-v1 --target dev --title "..." -F notes.md moss-cpu.zip moss-vulkan.zip
+gh release upload  moss-runtime-v1 moss-cuda.zip
+```
+
+> ⚠ **`--target` accepts a branch or tag name only**: passing a commit SHA (`--target 408e082`) is rejected by GitHub as
+> `HTTP 422 Validation Failed: Release.target_commitish is invalid`. Use `--target dev` — a release only needs to point at
+> a commit that contains the artifacts; exact SHA provenance comes from the bundle's `SOURCE.txt` and `packages.json`.
+> Also: **do not** repack and re-upload after publishing — the zips are not reproducible (§8.4), so a re-pack stops matching the manifest hashes.
+
+### 8.8 The three former "not done" items, closed (2026-10-26)
+
+- **Older-card routing** → patched as `_gsa_staging/patches/0001-old-gpu-cuda-fallback.patch` (`cuda_runnable()` gate at compute capability 7.5, `decide()` hard error now points at Vulkan instead of asking for a rebuild, `recommend()` recommends Vulkan), based on installer-side HEAD `dcdd1a5`, awaiting `git am` there.
+- **`manifest.json` in the repo + `bundle.resources`** → done on the installer side (`2a766c8`, item 12 phase C): `src-tauri/resources/runtime/manifest.json` plus `"resources": ["resources/runtime/manifest.json"]` in `tauri.conf.json`.
+- **Contract §4's `.7z` sample URL** → corrected on the contract side: `docs/RUNTIME_BOOTSTRAP_CONTRACT.md` now has §4.3 "deliverables are zip (not 7z), and the three unpacking pitfalls".
+
+Also new and now closed: **`.installed.json` reconciliation** (previously "not this round") → `_gsa_staging/patches/0002-installed-state-check.patch` (adds `ai_runtime/installed_state.rs` and the `probe_moss_install` command, seven states); the writer, `bootstrap_runtime.ps1`, is still on the installer side. Apply instructions and boundaries: `_gsa_staging/patches/HANDOFF.md`.

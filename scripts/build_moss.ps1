@@ -24,13 +24,30 @@ build_moss.ps1 —— 从源码构建 moss-transcribe.exe（仅开发者/CI 使�
                 **有硬约束**：vulkan 构建树最深的 TryCompile 瞬态尾巴实测 208 字符，工作根
                 超 ~50 字符即触 FileTracker FTK1011；勿挪进仓库（仓库路径本身已 58 字符）。
   -GitMirror    源码镜像前缀，如 https://ghproxy.com/ 或 https://gitclone.com/github.com/（网络受限时使用）
+  -OutputDir    产物目录（默认 <仓库>\runtime\bin）。**分发打包必须分目录**：三个 flavor 的
+                ggml-*.dll 同名互斥（cpu 版恒有 ggml-cpu.dll，GPU 版另有 ggml-cuda.dll /
+                ggml-vulkan.dll），混装目录会加载到错误后端并静默降级。相对路径按仓库根解析。
+  -UpstreamRef  上游源码锚点（commit sha 或 tag）。**分发必须 pin**：浅克隆 master 无法保证
+                多个 flavor 同源，manifest 的 source_version 也取自它。空 = 拉当前 master。
+  -SourceDir    复用已准备好的源码树（含 third_party/ggml 子模块），跳过克隆。
+                用途：多个 flavor 必须同源且网络慢时，先备好一份 pin 源码，再逐个 flavor 构建。
+  -CudaArch     CUDA 架构列表（仅 -Backend cuda），默认 75;86;89（Turing/Ampere/Ada）。
+                单 arch 构建快 2-3 倍；本地快速迭代可传本机 arch（如 89），分发产物必须用默认值。
+  -Jobs         构建并行度（默认不限核数）。CUDA 多架构构建时单个 nvcc 可占 1–3 GB，
+                32 GB 机器上并行满核易爆内存，需要时按内存给（如 10）。
 用法：powershell -ExecutionPolicy Bypass -File scripts/build_moss.ps1 -Backend cuda
 #>
 param(
   [switch]$Force,
+  [ValidateSet("cpu", "cuda", "vulkan")]
   [string]$Backend = "cpu",
   [string]$WorkDir = "",
-  [string]$GitMirror = ""
+  [string]$GitMirror = "",
+  [string]$OutputDir = "",
+  [string]$UpstreamRef = "",
+  [string]$SourceDir = "",
+  [string]$CudaArch = "75;86;89",
+  [int]$Jobs = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,7 +61,12 @@ if ($Backend -notmatch "^(cpu|cuda|vulkan)$") {
 $scriptDir = $PSScriptRoot
 $root = (Resolve-Path (Join-Path $scriptDir "..")).Path
 $runtime = Join-Path $root "runtime"
-$binDir = Join-Path $runtime "bin"
+# -OutputDir：分发打包时把各 flavor 产到独立目录（runtime/_flavors/<flavor>/bin）
+if ($OutputDir) {
+  $binDir = if ([System.IO.Path]::IsPathRooted($OutputDir)) { $OutputDir } else { Join-Path $root $OutputDir }
+} else {
+  $binDir = Join-Path $runtime "bin"
+}
 $targetExe = Join-Path $binDir "moss-transcribe.exe"
 
 # ── 1. 工具链检查 ──
@@ -139,6 +161,7 @@ if ($missing.Count -gt 0) {
 # .backend 标记缺失 = 旧构建（该标记是新版才写入）→ 一律视为未知后端，
 # 若请求后端与现有 DLL 布局不符则重建（GPU 请求 + 无 ggml-cuda/vulkan.dll → 必须重建）
 $stamp = Join-Path $binDir ".backend"
+$archStamp = Join-Path $binDir ".cudaarch"
 $old = if (Test-Path $stamp) { (Get-Content $stamp -Raw).Trim() } else { "" }
 $needsRebuild = $false
 if (Test-Path $targetExe) {
@@ -148,6 +171,14 @@ if (Test-Path $targetExe) {
     elseif ($Backend -eq "vulkan" -and -not (Test-Path (Join-Path $binDir "ggml-vulkan.dll"))) { $needsRebuild = $true }
   } elseif ($old -ne $Backend) {
     $needsRebuild = $true
+  } elseif ($Backend -eq "cuda") {
+    # 同后端也可能换了 arch（-CudaArch）：device 代码是按 arch 编进 DLL 的，
+    # 不重建就会把旧 arch 的二进制当成新 arch 的产物发出去，且外观完全无法分辨。
+    $oldArch = if (Test-Path $archStamp) { (Get-Content $archStamp -Raw).Trim() } else { "" }
+    if ($oldArch -ne $CudaArch) {
+      Write-Host "==> CUDA arch 变更：$(if ($oldArch) { $oldArch } else { '未知（旧构建）' }) → $CudaArch，重建"
+      $needsRebuild = $true
+    }
   }
 }
 if ($needsRebuild) {
@@ -209,12 +240,51 @@ try {
   $repoUrl = "https://github.com/mudler/moss-transcribe.cpp"
   if ($GitMirror) { $repoUrl = "$GitMirror$repoUrl" }
 
-  Write-Host "==> 克隆源码（含 ggml 子模块，浅克隆）..."
-  # --shallow-submodules：ggml 历史庞大，浅克隆子模块可显著减少下载量
-  & git clone --recursive --depth 1 --shallow-submodules $repoUrl (Join-Path $work "src")
-  if ($LASTEXITCODE -ne 0) {
-    $keepWork = $true
-    throw "git clone 失败（网络受限可试 -GitMirror 镜像参数），工作目录保留在 $work"
+  $srcDir = Join-Path $work "src"
+  if ($SourceDir) {
+    # 复用已准备好的 pin 源码树（含 ggml 子模块）：多 flavor 同源，且不用重复下载仓库
+    if (-not (Test-Path (Join-Path $SourceDir "third_party\ggml\CMakeLists.txt"))) {
+      $keepWork = $true
+      throw "-SourceDir $SourceDir 缺少 ggml 子模块（third_party\ggml\CMakeLists.txt），不可用"
+    }
+    Write-Host "==> 复用已准备好的源码树：$SourceDir（含 ggml 子模块）"
+    Copy-Item -Recurse -Force $SourceDir $srcDir
+  } elseif ($UpstreamRef) {
+    # pin 指定 commit/tag：浅克隆 master 无法保证多 flavor 同源，分发包必须同源可复现。
+    # git init + fetch --depth 1 <sha> 也能拿到任意 commit（GitHub 允许按 SHA fetch）。
+    Write-Host "==> 克隆源码并 pin 到 $UpstreamRef（git init + fetch --depth 1）..."
+    & git init $srcDir
+    if ($LASTEXITCODE -ne 0) { $keepWork = $true; throw "git init 失败，工作目录保留在 $work" }
+    & git -C $srcDir remote add origin $repoUrl
+    if ($GitMirror) {
+      # ggml 子模块的 URL 是绝对地址（.gitmodules: https://github.com/ggml-org/ggml），
+      # 不改写的话主仓库走镜像、子模块直连 GitHub（国内常超时）→ 统一改写走镜像
+      & git -C $srcDir config "url.$($GitMirror)https://github.com/.insteadOf" "https://github.com/"
+    }
+    & git -C $srcDir fetch --depth 1 origin $UpstreamRef
+    if ($LASTEXITCODE -ne 0) { $keepWork = $true; throw "git fetch $UpstreamRef 失败（网络受限可试 -GitMirror），工作目录保留在 $work" }
+    & git -C $srcDir checkout FETCH_HEAD
+    if ($LASTEXITCODE -ne 0) { $keepWork = $true; throw "git checkout FETCH_HEAD 失败，工作目录保留在 $work" }
+    & git -C $srcDir submodule update --init --recursive --depth 1
+    if ($LASTEXITCODE -ne 0) { $keepWork = $true; throw "ggml 子模块拉取失败，工作目录保留在 $work" }
+  } else {
+    Write-Host "==> 克隆源码（浅克隆）..."
+    & git clone --depth 1 $repoUrl $srcDir
+    if ($LASTEXITCODE -ne 0) {
+      $keepWork = $true
+      throw "git clone 失败（网络受限可试 -GitMirror 镜像参数），工作目录保留在 $work"
+    }
+    if ($GitMirror) {
+      & git -C $srcDir config "url.$($GitMirror)https://github.com/.insteadOf" "https://github.com/"
+    }
+    # 子模块单独拉：先设好 insteadOf 再拉，避免子模块绕过镜像直连 GitHub
+    # --depth 1：ggml 历史庞大，浅克隆子模块可显著减少下载量
+    Write-Host "==> 拉取 ggml 子模块（浅克隆）..."
+    & git -C $srcDir submodule update --init --recursive --depth 1
+    if ($LASTEXITCODE -ne 0) {
+      $keepWork = $true
+      throw "ggml 子模块拉取失败，工作目录保留在 $work"
+    }
   }
   $ggmlDir = Join-Path $work "src\third_party\ggml"
   if (-not (Test-Path (Join-Path $ggmlDir "CMakeLists.txt"))) {
@@ -229,7 +299,7 @@ try {
   switch ($Backend) {
     "cuda"   {
       $buildDir = "build-cuda"
-      $backendFlag = @("-DMT_GGML_CUDA=ON", "-DCMAKE_CUDA_ARCHITECTURES=89")
+      $backendFlag = @("-DMT_GGML_CUDA=ON", "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch")
       $useNinja = $true   # 自定义 CUDA 路径下 VS toolset 常缺失，Ninja 更稳
     }
     "vulkan" { $buildDir = "build-vulkan"; $backendFlag = @("-DMT_GGML_VULKAN=ON") }
@@ -237,6 +307,12 @@ try {
 
   Write-Host "==> cmake 配置（backend=$Backend）..."
   Push-Location (Join-Path $work "src")
+  # 原生命令的成败一律看 $LASTEXITCODE，不看 stderr：本脚本是 $ErrorActionPreference="Stop"，
+  # 一旦调用方把 stderr 合并进管道（如 `build_moss.ps1 ... | Tee-Object log`），
+  # cmake 往 stderr 打的任意一条 warning（实测 CMakeDetermineASMCompiler 的 dev warning）
+  # 都会变成 terminating error，让配置阶段假失败并误报"需装 VS Build Tools"。
+  $eapBeforeCmake = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
   try {
     if ($useNinja) {
       # CUDA 后端：清 PATH 剔除 mingw/Anaconda 污染 → vcvars 导入 MSVC 工具 → cmake -G Ninja
@@ -262,12 +338,17 @@ try {
     }
 
     Write-Host "==> 编译（Release，CPU 版数分钟 / CUDA 版首次可能 10-30 分钟）..."
-    & cmake --build $buildDir --config Release -j
+    if ($Jobs -gt 0) {
+      & cmake --build $buildDir --config Release --parallel $Jobs
+    } else {
+      & cmake --build $buildDir --config Release -j
+    }
     if ($LASTEXITCODE -ne 0) {
       $keepWork = $true
       throw "cmake 构建失败，详见上方日志，工作目录保留在 $work"
     }
   } finally {
+    $ErrorActionPreference = $eapBeforeCmake
     Pop-Location
   }
 
@@ -284,9 +365,38 @@ try {
   $dllDir = Join-Path $exeDir "..\bin\Release"
   if (-not (Test-Path (Join-Path $dllDir "ggml.dll"))) { $dllDir = Join-Path $exeDir "bin" }
   if (-not (Test-Path (Join-Path $dllDir "ggml.dll"))) { $dllDir = $exeDir }
+  # 产物纯净性：三个 flavor 的 GPU 后端 DLL（ggml-cuda.dll / ggml-vulkan.dll）互斥，
+  # 混装目录会按加载顺序选到错误后端并静默降级（契约 §9 要硬拦的那一类）。
+  # 复制前先清掉输出目录里旧的 ggml*.dll，保证目录里只有本次 flavor 的运行时。
+  Get-ChildItem -Path $binDir -Filter "ggml*.dll" -ErrorAction SilentlyContinue | Remove-Item -Force
   Get-ChildItem -Path $dllDir -Filter "*.dll" | Copy-Item -Destination $binDir -Force
   # 记录后端标记，供下次构建检测后端切换
   Set-Content -Path (Join-Path $binDir ".backend") -Value $Backend -NoNewline
+  # cuda 额外记录 arch：换 arch 必须重建（见上方重建判定）
+  if ($Backend -eq "cuda") {
+    Set-Content -Path $archStamp -Value $CudaArch -NoNewline
+  } elseif (Test-Path $archStamp) {
+    Remove-Item -Force $archStamp
+  }
+
+  # 纯净性校验：目标 flavor 的后端 DLL 必须在，别的 flavor 的 GPU DLL 必须不在
+  $mustNot = @()
+  if ($Backend -ne "cuda") { $mustNot += "ggml-cuda.dll" }
+  if ($Backend -ne "vulkan") { $mustNot += "ggml-vulkan.dll" }
+  foreach ($f in $mustNot) {
+    if (Test-Path (Join-Path $binDir $f)) {
+      throw "产物目录混入其它 flavor 的 $f（backend=$Backend）：会加载到错误后端并静默降级。请清空 $binDir 后重建"
+    }
+  }
+  if ($Backend -eq "cuda" -and -not (Test-Path (Join-Path $binDir "ggml-cuda.dll"))) {
+    throw "构建完成但缺少 ggml-cuda.dll（backend=cuda），产物不可用"
+  }
+  if ($Backend -eq "vulkan" -and -not (Test-Path (Join-Path $binDir "ggml-vulkan.dll"))) {
+    throw "构建完成但缺少 ggml-vulkan.dll（backend=vulkan），产物不可用"
+  }
+  if ($Backend -eq "cpu" -and -not (Test-Path (Join-Path $binDir "ggml-cpu.dll"))) {
+    Write-Host "==> 提示：未产出 ggml-cpu.dll（CPU 后端可能静态链入），属预期内情形则可忽略"
+  }
   Write-Host "==> 构建成功：$targetExe（backend=$Backend，含 ggml DLL）"
 } finally {
   if (-not $keepWork) {
