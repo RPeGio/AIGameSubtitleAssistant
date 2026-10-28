@@ -313,4 +313,14 @@ gh release upload  moss-runtime-v1 moss-cuda.zip
 - **`manifest.json` 进仓库 + `bundle.resources`** → installer 侧已完成（`2a766c8`，第 12 项阶段 C）：`src-tauri/resources/runtime/manifest.json` + `tauri.conf.json` 的 `"resources": ["resources/runtime/manifest.json"]`。
 - **契约 §4 示例 URL 的 `.7z`** → 契约侧已订正：`docs/RUNTIME_BOOTSTRAP_CONTRACT.md` 新增 §4.3「交付物是 zip（不是 7z）、以及解压的三个坑」。
 
-另新增一件并已结案：**`.installed.json` 比对**（原写"本期不做"）→ 补丁 `_gsa_staging/patches/0002-installed-state-check.patch`（新增 `ai_runtime/installed_state.rs` + `probe_moss_install` 命令，七态）；写入方 `bootstrap_runtime.ps1` 仍在 installer 侧。两个补丁的套用说明与边界见 `_gsa_staging/patches/HANDOFF.md`。
+另新增一件并已结案：**`.installed.json` 比对**（原写"本期不做"）→ 补丁 `_gsa_staging/patches/0002-installed-state-check.patch`（新增 `ai_runtime/installed_state.rs` + `probe_moss_install` 命令，七态）；写入方 `scripts/bootstrap_runtime.ps1` 与 Rust 侧安装基础设施随 `7d3f8d5` 交付（`ai_runtime/runtime_install.rs`：`precheck_runtime_disk` / `install_runtime` / `cancel_runtime_install` + `runtime-install-progress` 事件）。两个补丁的套用说明与边界见 `_gsa_staging/patches/HANDOFF.md`。
+
+### 8.9 运行时安装器（`bootstrap_runtime.ps1` + `runtime_install.rs`）
+
+> 落地：`7d3f8d5`。目的是让「装运行时」不必再让用户手抄命令行——前端能起进程、看进度、能取消。
+> 契约见 `docs/RUNTIME_BOOTSTRAP_CONTRACT.md`（本实现按它写，未改动契约）。
+
+- **脚本侧**（`scripts/bootstrap_runtime.ps1`）：stdout 纯 JSONL（`start` / `progress` / `item_skip` / `item_done` / `item_fail` / `error` / `done`，末行必 `done`），人类诊断走 stderr；退出码 `0` 成功 / `1` 预检失败 / `2` 校验失败 / `3` 部分条目失败 / `4` 未知错误；`-Flavor auto` 走 L0 探测（`nvidia-smi` 算力 ≥ 7.5 → `vulkan-1.dll` → cpu），下载前做磁盘预检（下载量 ×3 + 100 MB），镜像失败自动回退直连，SHA256 通过后才解压，成功后写 `runtime/.installed.json` 并支持 `item_skip`。
+- **Rust 侧**（`src-tauri/src/ai_runtime/runtime_install.rs`）：`precheck_runtime_disk` / `install_runtime` / `cancel_runtime_install` 三个命令，进度经 `runtime-install-progress` 逐条转发；取消用 `taskkill /T /F` 杀进程树；同一时刻只允许一个安装任务。
+- **为什么两者解耦**：子进程读写收敛在 `stream_child` + 退出码映射 `summarize` 两个不碰 Tauri 的函数里，单测可以用**真脚本、真子进程**跑通（`end_to_end_bogus_item_reports_failure`、`cancel_stops_waiting`），不必为测试造 mock。
+- **遗留**：打包形态下脚本未随 app 发布（`bundle.resources` 目前只映射 manifest）。`bootstrap_candidates` 已预留 `resources/scripts/bootstrap_runtime.ps1` 位置，补一条资源映射即可。
