@@ -25,6 +25,10 @@ runtime/
 # Dev debug frames output
 temp/
 
+# 内嵌的 ffmpeg（LGPL 共享构建，约 161 MB）由 scripts/fetch_ffmpeg.ps1 现取现用，不入库；
+# 打包时由 tauri.conf.json 的 bundle.resources 从该目录取。缺文件就跑一次脚本。
+src-tauri/resources/ffmpeg/
+
 # Local tests
 # 素材 mp4 体积达 GB 级，不入库；但基准的**工程与参考文本**是小文件（合计约 0.2 MB），
 # 必须入库——否则**融合基准无法被他人复现**（融合侧只读 .gsa 的 tracks 与参考文本，不读视频）。
