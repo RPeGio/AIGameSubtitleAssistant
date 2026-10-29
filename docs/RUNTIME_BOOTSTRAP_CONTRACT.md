@@ -236,6 +236,7 @@ installer 侧实测（2026-10-24）确认过、且容易踩的三点：
 | P5 | `src-tauri/src/ai_runtime/backend_probe.rs` | 老卡（算力 < 7.5）不再走 CUDA：`MIN_CUDA_COMPUTE_CAP`、`MachineCaps.cuda_cc` / `cuda_runnable()`、`parse_compute_cap()`、`decide()` 老卡改指「换 vulkan」、`recommend()` 抽成纯函数、报告加 `cuda_compute_cap` / `cuda_runnable`（详见 §8.1） | **已套用**（`351cd5a`，= installer 侧补丁 0001；2026-10-28 `git am --3way` 无冲突） |
 | P6 | `src-tauri/src/ai_runtime/installed_state.rs`（新增）<br>+ `ai_runtime/mod.rs`（`pub mod installed_state;`）<br>+ `src-tauri/src/lib.rs`（注册命令） | 已装运行时 vs 清单比对：`evaluate()` 七态 + `#[tauri::command] probe_moss_install`（详见 §8.4） | **已套用**（`80eda1d`，= installer 侧补丁 0002；同上） |
 | P7 | `scripts/bootstrap_runtime.ps1`（新增 406 行）<br>+ `ai_runtime/runtime_install.rs`（新增 1100 行）<br>+ `ai_runtime/mod.rs`（`pub mod runtime_install;`）<br>+ `lib.rs`（manage + 注册三命令） | 安装器执行体与 Rust 侧子进程基础设施（详见 §8.5） | **已并入**（`7d3f8d5`，走分支合并而非补丁；本分支在此之上做前端接线 §8.6） |
+| P8 | `tauri.conf.json` 的 `bundle.resources` + `scripts/sync_bundle_resources.mjs` + `package.json` 的 `build` | 让 `scripts/bootstrap_runtime.ps1` 随安装包发布（此前只声明了 manifest，真机上一键安装必然失败） | **已由本分支完成**（2026-10-30，见 §8.6）；分发侧不要再重复加 |
 
 P1/P2 的命令函数本体放在 `backend_probe.rs` / `config.rs`——这两个模块**已在
 `ai_runtime/mod.rs` 里声明**（`pub mod backend_probe;` / `pub mod config;`）。
@@ -392,8 +393,24 @@ invoke("cancel_runtime_install")                                             // 
   `recommend_from_assets` 口径一致，与卡面「建议改用 cuda 版运行时」不矛盾。
 - **不做首启静默下载**（有意偏离该待办原标题）：cuda 包 622 MB，静默后台拉不可接受，失败时用户
   什么也看不到；由自检卡负责说清「缺什么、该装哪个后端」。形态可逆。
-- 打包形态下脚本尚未随包（`bundle.resources` 只有 manifest）⇒ `install_runtime` 会返回可读的 `Err`，
-  前端原样提示；补资源映射归分发侧。
+- **脚本随包（2026-10-30 补齐）**：`scripts/sync_bundle_resources.mjs` 在 `pnpm build` 前置把
+  `scripts/bootstrap_runtime.ps1` 拷进 `src-tauri/resources/scripts/`，`bundle.resources` 声明
+  `resources/scripts/*` ⇒ 打包后落在 `<exe 目录>/resources/scripts/bootstrap_runtime.ps1`，正是
+  `bootstrap_candidates()` 的候选之一（`resources/scripts/` 那条）。已验证 NSIS/MSI 内确实带该文件。
+  该目录是**构建产物**：`.gitignore` 只忽略 `*.ps1`，`README.md` 常驻（目录空掉会让 Tauri 的
+  `resources/scripts/*` 通配失配，构建直接失败）。
+- 安装失败时看 `runtime/logs/install.log`（脚本路径 / flavor / 退出码 / stderr 尾部 4000 字符），
+  `InstallSummary.message` 会自动追加「（日志：<路径>）」。
+
+### 8.6.1 子进程与命令的硬约束（2026-10-30 真机回归后新增）
+
+真机装机实测暴露过两个体验级故障，均已定位并修复；后续任何新增命令/子进程**必须**遵守：
+
+| 约束 | 为什么 | 做法 |
+|---|---|---|
+| 会起子进程或读大文件的 `#[tauri::command]` 一律 `async` + `tauri::async_runtime::spawn_blocking` | 同步命令跑在 Tauri **主线程**上，`probe_moss_backend`（`moss info` 加载几百 MB 模型 + `nvidia-smi` + `vulkaninfo`）、`check_ffmpeg`、`get_video_metadata` 曾把整个窗口冻住，连拖窗口都卡 | `probe_moss_backend` / `check_ffmpeg` / `get_video_metadata` 已改；`precheck_runtime_disk` / `install_runtime` 本来就是 async |
+| 任何 `Command` 都必须经 `crate::subprocess::hidden()` / `quiet()` | GUI 进程起控制台子进程会弹窗，真机上表现为「命令行窗口疯狂闪」 | `CREATE_NO_WINDOW`（`0x0800_0000`），全仓库 28 处已统一；单测钉住「静默但仍能取到 stdout」 |
+| 构造 manager 时不要做重活 | `AsrManager::new` 在 `setup` 里跑，曾经在构造函数里同步 `provider.probe()`，启动即卡 | `MossProvider` 改为惰性：`ensure_probed()` + 后台线程 `warm_up()`；`describe()` 未探测时给「正在探测」 |
 
 ### 8.7 `set_funasr_device`（落盘，2026-10-29 引入）
 

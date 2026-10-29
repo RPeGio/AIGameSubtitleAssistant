@@ -23,10 +23,10 @@
 | 17 | ✅ 去除轨道内 clip 的所有句末标点 | 功能·文本清理 | 8（句界操作会留下句尾逗号） | 已实现（`79ae0af`）：轨道总览「美化」下拉的「去除文本末标点」 |
 | 18 | ✅ 语料「全文替换」同步作用于产物轨 | 功能·文本清理 | 6（替换本身）·17（同属语料→产物文本口径） | 已实现（2026-10-25）：仅 fused 轨，一次性精确子串替换，一次撤销回退 |
 | 10 | ✅ 快捷键体系（注册表 + 单一监听；帮助面板并入第 19 项） | 功能·跨页 | 8、9 | 已实现（`02416b8`）：`composables/shortcuts.ts` 分发器 + 活动时间轴判定 |
-| 11 | ✅ 欢迎页自检升级（探针摊开 + 手动补齐命令 + 一键安装/更新） | 功能·独立 | 7（info 基建）·12（`probe_moss_backend`/`probe_moss_install` 已就绪） | 11a/11b/11c 已实现（2026-10-28）；打包形态脚本随包仍归分发侧 |
-| 12 | ✅ CUDA GPU 加速参数化（设备迁移到 UI） | 功能·Rust+UI | 7（要带 info 说明）+ 11（需 `probe_moss_backend` 命令） | 已实现（阶段 A+B `a8e8010`、阶段 C `2a766c8`）：`probe_moss_backend` + `set_moss_device` 两命令、打轴页设备下拉、欢迎页硬报错、manifest 随包落库 |
+| 11 | ✅ 欢迎页自检升级（探针摊开 + 手动补齐命令 + 一键安装/更新） | 功能·独立 | 7（info 基建）·12（`probe_moss_backend`/`probe_moss_install` 已就绪） | 11a/11b/11c 已实现（2026-10-28）；2026-10-30 真机回归修复：脚本随包 + 子进程静默 + 探测改异步 |
+| 12 | ✅ CUDA GPU 加速参数化（设备迁移到 UI） | 功能·Rust+UI | 7（要带 info 说明）+ 11（需 `probe_moss_backend` 命令） | 已实现（阶段 A+B `a8e8010`、阶段 C `2a766c8`；2026-10-30 探测命令改 async）：`probe_moss_backend` + `set_moss_device` 两命令、打轴页设备下拉、欢迎页硬报错、manifest 随包落库 |
 | 13 | ✅ 杂项清理与验证（死代码/参数开关/图标；真机波形待验） | 清理·零碎 | 无 | 已实现（`8b71ee2`）：死代码已删、易混字母开关已暴露、轨道图标常显 |
-| 14 | ✅ 内嵌 ffmpeg/ffprobe + 欢迎页 ffmpeg 自检卡 | 功能·打包 | 11（自检卡复用其探针机制） | 已实现（`40e645f`/`5acb56f`/`bfd1168`）：LGPL 共享构建内嵌、内嵌优先回退 PATH、环境自检第 4 张卡 |
+| 14 | ✅ 内嵌 ffmpeg/ffprobe + 欢迎页 ffmpeg 自检卡 | 功能·打包 | 11（自检卡复用其探针机制） | 已实现（`40e645f`/`5acb56f`/`bfd1168`/`f3d19d8`/`cd1b753`）：LGPL 共享构建内嵌、内嵌优先回退 PATH、环境自检第 4 张卡；2026-10-30 `check_ffmpeg` 改 async + 静默启动 |
 | 19 | 设置面板（默认 ASR 模型 + 快捷键查看/修改） | 功能·跨页 | 10（注册表） | 改动大、用户明确单独一个 PR；快捷键帮助面板并入此项 |
 | 20 | ✅ 校对区选中 clip 时，轨道总览滚动到该行 | 修复·小 | 无 | 已实现（`b2e70ab`）：`data-clip-id` + 矩形比对最小滚动 |
 | 21 | ✅ 时间轴框选多选（含 `Ctrl+A` 全选、多选整体位移） | 功能·核心 | 10（活动时间轴判定） | 已实现（`34e2837`）：多选模型 + 框选 + 修饰键 + 批量删除 + 刚性整组位移 |
@@ -676,7 +676,17 @@
 - 截图：`temp/css-preview/item11c-install.png`（未就绪）、`item11c-progress.png`（安装中）、`item11c-update.png`（可更新）。
 - **未验证**：真实 installer 子进程（本机无外网，cuda 包 622 MB）、取消对真实进程树的 `taskkill /T /F` 效果——需联网后在有网环境下走一次真装。
 
-**打包形态遗留（归分发侧）**：`bundle.resources` 目前只有 `resources/runtime/manifest.json`，`bootstrap_runtime.ps1` 尚未随 app 发布（Rust 侧 `bootstrap_candidates` 已预留 `resources/scripts/bootstrap_runtime.ps1` 位置），需分发侧补一条资源映射；在那之前安装按钮只在源码运行时可用（找不到脚本时 `install_runtime` 返回可读的 Err，前端 toast 出来）。
+**真机回归修复（2026-10-30，MSI 装机反馈；提交 `bd8ee43`）**：上一版安装包在真机上暴露三个问题——「探测阻塞整个应用（连拖窗口都卡）」「命令行窗口疯狂闪」「一键安装必然失败」，根因与修法：
+
+| 缺陷 | 根因 | 修法 |
+|---|---|---|
+| 探测冻结 UI | `probe_moss_backend` / `check_ffmpeg` / `get_video_metadata` 是**同步** `#[tauri::command]`，跑在主线程上；探测要起 `moss info`（加载几百 MB 模型）+ `nvidia-smi` ×2 + `vulkaninfo` ×2 | 三个命令改 `async` + `tauri::async_runtime::spawn_blocking`；`MossProvider` 构造时**不再同步 probe**（`probed: AtomicBool` + `ensure_probed()`，`describe()` 未探测时返回「正在探测 MOSS 后端」），`AsrManager::new` 起后台线程逐个 `warm_up()` |
+| 控制台窗口乱闪 | 28 处 `Command::new(...)`（powershell / nvidia-smi / vulkaninfo / moss / python / ffmpeg）都没设 `CREATE_NO_WINDOW`，GUI 进程起控制台子进程必弹窗 | 新增 `src-tauri/src/subprocess.rs`（`hidden()` / `quiet()` 统一加 `CREATE_NO_WINDOW`），全仓库替换；新增两条单测钉住「静默但仍能取到 stdout」 |
+| 打包后一键安装必失败 | `bootstrap_runtime.ps1` 从未进 `bundle.resources` ⇒ `bootstrap_candidates()` 全落空 | 新增 `scripts/sync_bundle_resources.mjs`（构建前置步骤，拷脚本到 `src-tauri/resources/scripts/`），`package.json` 的 `build` 串进去，`bundle.resources` 加 `resources/scripts/*`；已验证 NSIS/MSI 内确实含 `resources\scripts\bootstrap_runtime.ps1` |
+| 失败了看不到原因 | 安装子进程无可见控制台后成了黑盒 | 每次安装写 `runtime/logs/install.log`（脚本路径 / flavor / 退出码 / stderr 尾部 4000 字符），失败时 `InstallSummary.message` 追加「（日志：<路径>）」 |
+
+- `bundle.resources` 现在是三条：`resources/runtime/manifest.json`、`resources/ffmpeg/*`、`resources/scripts/*`。**不能把 `src-tauri/resources/scripts/` 整个 gitignore**：目录空掉时 Tauri 会报 `glob pattern resources/scripts/* path not found or didn't match any files.`，故 `.gitignore` 只忽略 `*.ps1`，另提交一份 `src-tauri/resources/scripts/README.md` 常驻。
+- 验证：`cargo test --lib` 334 passed、`cargo check --lib` 0 warning、`pnpm tauri build` EXIT=0、`7z l` 确认三处资源都在包里。**真机复测（重装 MSI）由用户执行**。
 
 **未做**：`probe_bootstrap_scripts`（并入安装器后不需要前端判断脚本存在——`install_runtime` 找不到脚本会直接 Err）；首启静默安装（见 11c 决策，不做）。
 
