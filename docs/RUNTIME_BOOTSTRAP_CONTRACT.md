@@ -231,7 +231,7 @@ installer 侧实测（2026-10-24）确认过、且容易踩的三点：
 |---|---|---|---|
 | P1 | `src-tauri/src/lib.rs` | `invoke_handler` 注册 `ai_runtime::backend_probe::probe_moss_backend,` | **已由本分支直接改**（用户 2026-10-22 授权） |
 | P2 | `src-tauri/src/lib.rs` | `invoke_handler` 注册 `ai_runtime::config::set_moss_device,` | **已由本分支直接改**（同上） |
-| P3 | `src-tauri/src/ai_runtime/mod.rs` | *（可选）* `AsrManager` 增加「重置 moss provider」的方法，用于改设备后**即时**生效 | **已实现**（2026-10-29，本分支直接改：`reload_engine(key)` + provider 换 `RwLock<Arc<dyn AsrProvider>>`，见 §8.2 / §8.7；旧决策 D3-A「下次启动生效」已反转） |
+| P3 | `src-tauri/src/ai_runtime/mod.rs` | *（可选）* `AsrManager` 增加「重置 moss provider」的方法，用于改设备后**即时**生效 | **已实现**（2026-10-29 提交 `1fa8a77`，本分支直接改：`reload_engine(key)` + provider 换 `RwLock<Arc<dyn AsrProvider>>`，见 §8.2 / §8.7；旧决策 D3-A「下次启动生效」已反转） |
 | P4 | `src-tauri/tauri.conf.json` | `bundle.resources` 加 `"resources": ["resources/runtime/manifest.json"]` | **已由本分支直接改**（2026-10-24 用户指示落清单时一并加好）；installer 侧勿重复添加 |
 | P5 | `src-tauri/src/ai_runtime/backend_probe.rs` | 老卡（算力 < 7.5）不再走 CUDA：`MIN_CUDA_COMPUTE_CAP`、`MachineCaps.cuda_cc` / `cuda_runnable()`、`parse_compute_cap()`、`decide()` 老卡改指「换 vulkan」、`recommend()` 抽成纯函数、报告加 `cuda_compute_cap` / `cuda_runnable`（详见 §8.1） | **已套用**（`351cd5a`，= installer 侧补丁 0001；2026-10-28 `git am --3way` 无冲突） |
 | P6 | `src-tauri/src/ai_runtime/installed_state.rs`（新增）<br>+ `ai_runtime/mod.rs`（`pub mod installed_state;`）<br>+ `src-tauri/src/lib.rs`（注册命令） | 已装运行时 vs 清单比对：`evaluate()` 七态 + `#[tauri::command] probe_moss_install`（详见 §8.4） | **已套用**（`80eda1d`，= installer 侧补丁 0002；同上） |
