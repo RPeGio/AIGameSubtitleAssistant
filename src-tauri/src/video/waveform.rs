@@ -30,7 +30,7 @@ const BYTES_PER_WINDOW: usize = SAMPLES_PER_WINDOW * 2;
 /// 前端也可先用 VideoMetadata.audio_codec 预判跳过调用。
 #[command]
 pub async fn get_audio_peaks(video_path: String) -> Result<Vec<f32>, String> {
-    let ffmpeg = super::resolve_ffmpeg().ok_or_else(|| "FFMPEG_NOT_FOUND".to_string())?;
+    let ffmpeg = super::resolve_ffmpeg().ok_or_else(super::ffmpeg_missing)?;
 
     let mut child = Command::new(&ffmpeg)
         .arg("-i")

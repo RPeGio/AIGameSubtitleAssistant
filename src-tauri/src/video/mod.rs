@@ -14,6 +14,7 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub mod ffmpeg_locator; // ffmpeg/ffprobe 定位（内嵌优先 → 系统 PATH）
 pub mod waveform; // 时间轴音频波形峰值提取（get_audio_peaks）
 
 // ─── 公开数据结构 ─────────────────────────────────────────
@@ -61,40 +62,23 @@ struct FfprobeFormat {
     duration: Option<String>,
 }
 
-// ─── ffprobe 查找 ─────────────────────────────────────────
-// 优先级：
-//   1. 系统 PATH（用户自己装了 ffmpeg）
-//   2. ffmpeg-sidecar 管理目录（auto_download 下载的位置）
-//   3. [预留] 用户自定义路径（后续由启动时的下载器写入 config）
+// ─── ffprobe / ffmpeg 查找 ────────────────────────────────
+// 优先级（见 `ffmpeg_locator`）：
+//   1. 随应用打包的 `<resources>/resources/ffmpeg/`（版本由发布包锁定）
+//   2. 系统 PATH（dev 环境或用户自己装了 ffmpeg 时兜底）
+// 都找不到时报 `FFMPEG_NOT_FOUND`（错误码被前端字符串匹配，不能改名）。
+
+/// 找不到 ffmpeg/ffprobe 时的错误文案。
+///
+/// 保留 `FFMPEG_NOT_FOUND` 前缀：`src/stores/project.ts` 用 `includes()` 判断它。
+fn ffmpeg_missing() -> String {
+    "FFMPEG_NOT_FOUND: 未找到可用的 ffmpeg/ffprobe（应用内嵌目录与系统 PATH 都没有）"
+        .to_string()
+}
 
 /// 在系统上定位可用的 ffprobe 二进制文件
 fn resolve_ffprobe() -> Option<PathBuf> {
-    // 策略 1：系统 PATH
-    // 直接尝试运行 "ffprobe -version"
-    // Windows 的 CreateProcess 会自动搜索 PATH 中的所有目录
-    let mut probe_cmd = Command::new("ffprobe");
-    probe_cmd
-        .arg("-version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    if probe_cmd.output().is_ok() {
-        return Some(PathBuf::from("ffprobe"));
-    }
-
-    // 策略 2：ffmpeg-sidecar 的 sidecar 目录
-    // auto_download() 会把 ffmpeg/ffprobe/ffplay 下载到 sidecar_dir 中
-    if let Ok(dir) = ffmpeg_sidecar::paths::sidecar_dir() {
-        let probe_path = if cfg!(target_os = "windows") {
-            dir.join("ffprobe.exe")
-        } else {
-            dir.join("ffprobe")
-        };
-        if probe_path.exists() {
-            return Some(probe_path);
-        }
-    }
-
-    None
+    ffmpeg_locator::ffprobe()
 }
 
 // ─── 辅助函数 ─────────────────────────────────────────────
@@ -188,10 +172,10 @@ fn probe_video(path: &str, ffprobe: &PathBuf) -> Result<VideoMetadata, String> {
 ///
 /// # 返回值
 /// - `Ok(VideoMetadata)`: 视频元数据
-/// - `Err("FFMPEG_NOT_FOUND")`: 系统未安装 ffmpeg/ffprobe
+/// - `Err("FFMPEG_NOT_FOUND: …")`: 内嵌目录与系统 PATH 都找不到 ffmpeg/ffprobe
 #[tauri::command]
 pub fn get_video_metadata(path: String) -> Result<VideoMetadata, String> {
-    let ffprobe = resolve_ffprobe().ok_or_else(|| "FFMPEG_NOT_FOUND".to_string())?;
+    let ffprobe = resolve_ffprobe().ok_or_else(ffmpeg_missing)?;
     probe_video(&path, &ffprobe)
 }
 
@@ -199,26 +183,7 @@ pub fn get_video_metadata(path: String) -> Result<VideoMetadata, String> {
 
 /// 在系统上定位可用的 ffmpeg 二进制文件（与 resolve_ffprobe 同策略）
 fn resolve_ffmpeg() -> Option<PathBuf> {
-    let mut cmd = Command::new("ffmpeg");
-    cmd.arg("-version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    if cmd.output().is_ok() {
-        return Some(PathBuf::from("ffmpeg"));
-    }
-
-    if let Ok(dir) = ffmpeg_sidecar::paths::sidecar_dir() {
-        let path = if cfg!(target_os = "windows") {
-            dir.join("ffmpeg.exe")
-        } else {
-            dir.join("ffmpeg")
-        };
-        if path.exists() {
-            return Some(path);
-        }
-    }
-
-    None
+    ffmpeg_locator::ffmpeg()
 }
 
 /// 归一化选区坐标 → 整数 crop 框 (x, y, w, h)
@@ -317,7 +282,7 @@ pub fn extract_frames_bytes(
     if end <= start {
         return Err("时间段无效（end 需大于 start）".into());
     }
-    let ffmpeg = resolve_ffmpeg().ok_or_else(|| "FFMPEG_NOT_FOUND".to_string())?;
+    let ffmpeg = resolve_ffmpeg().ok_or_else(ffmpeg_missing)?;
     let (x, y, w, h) = crop_geometry(x1, y1, x2, y2, video_w, video_h)?;
 
     let mut child = Command::new(&ffmpeg)
@@ -412,7 +377,7 @@ pub fn extract_single_frame_bytes(
     video_w: u32,
     video_h: u32,
 ) -> Result<Vec<u8>, String> {
-    let ffmpeg = resolve_ffmpeg().ok_or_else(|| "FFMPEG_NOT_FOUND".to_string())?;
+    let ffmpeg = resolve_ffmpeg().ok_or_else(ffmpeg_missing)?;
     let (x, y, w, h) = crop_geometry(x1, y1, x2, y2, video_w, video_h)?;
 
     let mut child = Command::new(&ffmpeg)
@@ -492,7 +457,7 @@ pub fn scan_frame_hashes(
     if end <= start {
         return Err("时间段无效（end 需大于 start）".into());
     }
-    let ffmpeg = resolve_ffmpeg().ok_or_else(|| "FFMPEG_NOT_FOUND".to_string())?;
+    let ffmpeg = resolve_ffmpeg().ok_or_else(ffmpeg_missing)?;
     let (x, y, w, h) = crop_geometry(x1, y1, x2, y2, video_w, video_h)?;
 
     let mut child = Command::new(&ffmpeg)
@@ -570,7 +535,7 @@ pub fn scan_frame_hashes(
 /// 返回生成的 audio.wav 路径。
 /// 无音轨时返回友好错误（录屏文件常见）。
 pub fn extract_audio(video_path: &str, out_dir: &Path) -> Result<PathBuf, String> {
-    let ffmpeg = resolve_ffmpeg().ok_or_else(|| "FFMPEG_NOT_FOUND".to_string())?;
+    let ffmpeg = resolve_ffmpeg().ok_or_else(ffmpeg_missing)?;
     fs::create_dir_all(out_dir).map_err(|e| format!("无法创建音频目录: {}", e))?;
 
     let output_path = out_dir.join("audio.wav");

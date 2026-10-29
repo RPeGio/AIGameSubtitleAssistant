@@ -22,7 +22,6 @@ Components are grouped by how they are consumed:
 | [serde](https://github.com/serde-rs/serde) / serde_json | Serialization | MIT OR Apache-2.0 |
 | [image](https://github.com/image-rs/image) | Frame decoding | MIT OR Apache-2.0 |
 | [uuid](https://github.com/uuid-rs/uuid) | ID generation | MIT OR Apache-2.0 |
-| [ffmpeg-sidecar](https://github.com/nathanbabcock/ffmpeg-sidecar) | Locating FFmpeg binaries | MIT |
 | [base64](https://github.com/marshallpierce/rust-base64) | Base64 encoding of JPEG frames on the OCR IPC path | MIT OR Apache-2.0 |
 
 ### Frontend packages (`package.json`)

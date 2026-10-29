@@ -54,6 +54,8 @@ pub fn run() {
             app.manage(LlmManager::new(config, runtime_dir));
             // runtime 安装器状态（同一时刻只允许一个安装任务，且要能取消）
             app.manage(ai_runtime::runtime_install::RuntimeInstaller::default());
+            // ffmpeg/ffprobe 定位：注入资源目录（内嵌优先，PATH 兜底）
+            video::ffmpeg_locator::init(app.path().resource_dir().ok());
             Ok(())
         })
 
