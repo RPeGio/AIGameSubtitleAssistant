@@ -178,6 +178,8 @@ interface Probe {
   installNote?: string;
   /// 该结论需要用户动作（更新 / 文件缺失 / 后端已下线）
   installWarn?: boolean;
+  /// 原始状态串（`probe_moss_install.state`）：用于区分「运行时已就绪但引擎仍缺料」
+  installState?: string;
   /// 版本号（仅 ffmpeg 卡）：形如 "n8.1.3-25-g611cec792a"
   version?: string;
   /// 二进制来源（仅 ffmpeg 卡）："bundled" / "path" / "missing"
@@ -242,6 +244,7 @@ function setAsrInstall(install: MossInstallStatus) {
     ...probes.value.asr,
     installNote: install.message,
     installWarn: INSTALL_ACTION_STATES.includes(install.state),
+    installState: install.state,
   };
 }
 
@@ -288,15 +291,26 @@ async function probeAsr() {
   }
 }
 
-/// 一键安装/更新的入口条件：未就绪，或运行时与清单不一致（仅 MOSS 有安装器覆盖）
+/// 一键安装/更新的入口条件：未就绪，或运行时与清单不一致（仅 MOSS 有安装器覆盖）。
+/// 运行时已与清单一致（installState === "ok"）时不再给按钮——那说明缺的是清单之外的
+/// 东西（模型文件），重复点只会「跳过」一次，白让用户等。
 const canInstall = computed(() => {
   const p = probes.value.asr;
-  return !projectStore.installRunning && (p.state === "notready" || !!p.installWarn);
+  if (projectStore.installRunning) return false;
+  if (p.installWarn) return true;
+  return p.state === "notready" && p.installState !== "ok";
 });
 
 const installLabel = computed(() =>
   probes.value.asr.state === "notready" ? "安装运行时" : "更新运行时"
 );
+
+/// 运行时已就绪、引擎却仍未就绪：清单目前只覆盖可执行文件，缺的是清单之外的模型
+/// （models-moss 条目还没进 manifest）。此时不引导重复安装，直接说清缺什么。
+const asrRuntimeOnly = computed(() => {
+  const p = probes.value.asr;
+  return p.state === "notready" && p.installState === "ok";
+});
 
 const PHASE_TEXT: Record<string, string> = {
   download: "下载",
@@ -557,6 +571,11 @@ onMounted(() => {
             </span>
             <span v-if="card.key === 'asr' && probes.asr.installNote" class="ex" :class="{ warn: probes.asr.installWarn }">
               {{ probes.asr.installNote }}
+            </span>
+            <!-- 运行时已装好但仍缺料：当前清单只含可执行文件，模型要另行获取 -->
+            <span v-if="card.key === 'asr' && asrRuntimeOnly" class="ex warn">
+              运行时已装好，但还缺模型文件：当前安装清单只含 MOSS 可执行文件（models-moss 条目未上线），
+              需把 moss-transcribe-q5_k.gguf 放到 runtime\models\moss\ 下
             </span>
             <!-- 一键安装/更新：安装器只覆盖清单里的条目（当前 MOSS），装完自动重探 -->
             <span v-if="card.key === 'asr' && canInstall" class="ex act">
