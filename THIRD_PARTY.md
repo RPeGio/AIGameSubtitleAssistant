@@ -8,7 +8,7 @@ Components are grouped by how they are consumed:
 
 - **Build-time dependencies** — compiled into or bundled with the app from the package registries.
 - **Runtime components** — downloaded to the local `runtime/` directory by the `scripts/bootstrap_*.ps1` setup scripts when you first set up the AI features. They are **not** distributed with this repository.
-- **External requirement** — must be provided by the user; not downloaded by this project.
+- **Bundled binaries** — fetched by a setup script and shipped inside the installer. Each keeps its own license, and the notices it requires are reproduced below and travel with the binaries themselves.
 
 ---
 
@@ -93,11 +93,22 @@ Components are grouped by how they are consumed:
 
 ---
 
-## External requirement
+## Bundled binaries
 
-| Component | Purpose | License |
-|---|---|---|
-| [FFmpeg](https://ffmpeg.org) / ffprobe | Video metadata, frame extraction, audio extraction | LGPL-2.1+ (may be GPL depending on build flags). Installed by the user; the app only locates it on `PATH` and never downloads it. |
+### FFmpeg / ffprobe (LGPL shared build)
+
+| Component | Purpose | License | Source |
+|---|---|---|---|
+| [FFmpeg](https://ffmpeg.org) 8.1 — `ffmpeg.exe`, `ffprobe.exe` and the `av*`/`sw*` DLLs in `resources/ffmpeg/` | Video metadata, frame extraction, audio extraction | LGPL-2.1-or-later | [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds), tag `autobuild-2026-10-28-19-47`, asset `ffmpeg-n8.1.3-25-g611cec792a-win64-lgpl-shared-8.1.zip`, SHA-256 `0448c3f3b9bdc724cc0189d5ce6e6bfa5b8937e7ec408e1e97fb08719bdb3b92` |
+
+Why this particular build:
+
+- **`-lgpl-shared`, not the default GPL build.** The builds most packagers publish by default enable GPL-only components (libx264/x265 and friends); shipping one of those would put the entire application under the GPL. This build enables neither `--enable-gpl` nor `--enable-nonfree`.
+- **Shared, not static.** DLLs are the LGPL §4 route with the smallest obligations: the user may replace the FFmpeg libraries with their own build. We also do not link against FFmpeg at all — `ffmpeg.exe` / `ffprobe.exe` are invoked as separate processes — so nothing of ours needs relinking.
+- **DLLs ship in plain sight**, next to the executables, in `resources/ffmpeg/`. Replacing them with a self-built set of the same major version is sufficient to swap in a modified FFmpeg.
+- **License text and provenance travel with the binaries**: `resources/ffmpeg/LICENSE.txt` is the LGPL text extracted from the same archive, and `resources/ffmpeg/SOURCE.txt` records the exact URL, asset name, SHA-256 and fetch time. Both are installed alongside the binaries.
+- **Corresponding source**: the sources for this exact build are published by BtbN under the release tag above; `scripts/fetch_ffmpeg.ps1` pins tag + asset + SHA-256 so the same sources can always be re-fetched.
+- **Nothing is downloaded at runtime.** The binaries are fetched at build time by `scripts/fetch_ffmpeg.ps1` and shipped inside the installer. If `resources/ffmpeg/` is absent (e.g. a developer checkout that skipped the script), the app falls back to an `ffmpeg` on `PATH` and otherwise reports `FFMPEG_NOT_FOUND`.
 
 ---
 

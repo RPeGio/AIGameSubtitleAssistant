@@ -56,7 +56,7 @@ A project mounts **two video sources**: `source` (the quest recording — the OC
 | Windows 10/11 x64 | The currently only supported platform (embedded Python is win_amd64, scripts are PowerShell) |
 | [Node.js](https://nodejs.org/) 18+ (20 LTS recommended) + [pnpm](https://pnpm.io/) | Frontend build |
 | Rust stable (MSVC toolchain) | Desktop build; see [Tauri prerequisites](https://tauri.app/start/prerequisites/) |
-| FFmpeg + ffprobe | Install yourself and add to `PATH`; the app never downloads it |
+| FFmpeg + ffprobe | **Bundled** (LGPL shared build, shipped in the installer — see [THIRD_PARTY.md](THIRD_PARTY.md)); run `scripts/fetch_ffmpeg.ps1` in a source checkout; falls back to `PATH` when absent |
 | NVIDIA GPU (optional) | FunASR defaults to CUDA 12.4; llama.cpp / MOSS support cpu / cuda / vulkan backends — use cpu without a GPU(transcription time increases severalfold) |
 
 The AI modules together occupy about 13.9 GB of disk (models + Python dependencies); the E5-small qint8 model used by vector fusion adds about 113 MB.
@@ -145,7 +145,7 @@ pnpm tauri build   # produce installers (note: runtime-resource bundling is not 
 
 - Windows only; macOS / Linux would require porting the bootstrap scripts and runtime.
 - No installer — the AI environment is set up by scripts; models are downloaded at setup time, not by the app (which only performs readiness checks).
-- FFmpeg must be provided by the user (added to `PATH`).
+- FFmpeg/ffprobe are bundled (LGPL shared build, shipped in the installer); a source checkout that skipped `scripts/fetch_ffmpeg.ps1` falls back to an `ffmpeg` on `PATH`.
 - Fusion output still needs per-event manual proofreading: at any threshold the precision of `score` stays close to the error base rate (4.2%), so it is **not a correctness signal** and the audit table only provides structural hints (see [benchmark/FUSE_THRESHOLD_CALIBRATION.md](benchmark/FUSE_THRESHOLD_CALIBRATION.md) §7.9⑥). In the "same line, different speakers" case ([F14](benchmark/FUSE_PIPELINE_DEFECTS.md)) the mis-bound row's text is verbatim identical — subtitle content is unaffected — but the audit table's speaker attribution may be wrong; experiments ruled out an algorithm-side fix, so it is left to human judgement.
 - The default LLM, Qwen2.5-3B-Instruct (**optional**, used only by the fusion-capability test bench), uses the **Qwen Research license** (commercial use requires separate permission) — see [THIRD_PARTY.md](THIRD_PARTY.md).
 
