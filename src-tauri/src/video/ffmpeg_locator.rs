@@ -10,6 +10,7 @@
 // dev 形态下 exe 在 `src-tauri/target/<profile>/`，向上两级即 `src-tauri`，
 // 对应仓库里的 `src-tauri/resources/ffmpeg`。
 
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
@@ -131,6 +132,83 @@ pub fn ffprobe() -> Option<PathBuf> {
     Some(found)
 }
 
+// ─── 自检命令（欢迎页 FFmpeg 卡）────────────────────────────
+
+/// 自检结论：前端只读这份结构，不自己拼路径也不自己判版本
+#[derive(Debug, Clone, Serialize)]
+pub struct FfmpegStatus {
+    /// ffmpeg 与 ffprobe 都可用
+    pub ready: bool,
+    /// "bundled"（内嵌目录）/ "path"（系统 PATH）/ "missing"
+    pub source: String,
+    /// 解析到的可执行文件：内嵌时是绝对路径，走 PATH 时就是命令名
+    pub ffmpeg: String,
+    pub ffprobe: String,
+    /// 形如 "n8.1.3-25-g611cec792a"；取不到为空串
+    pub version: String,
+    /// 给用户看的一句话（未就绪时说明该怎么办）
+    pub message: String,
+}
+
+/// 取版本号：`ffmpeg -version` 首行形如
+/// `ffmpeg version n8.1.3-25-g611cec792a-20261028 Copyright (c) 2000-2026 the FFmpeg developers`
+fn version_of(path: &Path) -> String {
+    let out = match Command::new(path)
+        .arg("-version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return String::new(),
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.lines()
+        .next()
+        .and_then(|line| line.split("version ").nth(1))
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// 欢迎页 FFmpeg 自检卡的数据源。
+///
+/// 只读探测，不改配置、不下载任何东西：内嵌目录优先，其次系统 PATH。
+#[tauri::command]
+pub fn check_ffmpeg() -> FfmpegStatus {
+    let ff = ffmpeg();
+    let fp = ffprobe();
+    let mut status = FfmpegStatus {
+        ready: false,
+        source: "missing".into(),
+        ffmpeg: String::new(),
+        ffprobe: String::new(),
+        version: String::new(),
+        message: String::new(),
+    };
+
+    let (Some(ff), Some(fp)) = (ff, fp) else {
+        status.message =
+            "未找到 ffmpeg/ffprobe：安装包应自带 resources/ffmpeg/；源码检出请先跑 scripts/fetch_ffmpeg.ps1"
+                .into();
+        return status;
+    };
+
+    // locate() 对内嵌命中返回绝对路径，走 PATH 兜底时返回的是裸命令名
+    let bundled = ff.is_absolute();
+    status.ready = true;
+    status.source = if bundled { "bundled" } else { "path" }.into();
+    status.ffmpeg = ff.display().to_string();
+    status.ffprobe = fp.display().to_string();
+    status.version = version_of(&ff);
+    status.message = if bundled {
+        "使用随包内嵌的 ffmpeg".to_string()
+    } else {
+        "随包内嵌的 ffmpeg 缺失，已回退到系统 PATH 上的 ffmpeg".to_string()
+    };
+    status
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,5 +256,35 @@ mod tests {
         std::fs::write(&bogus, b"not a real exe").unwrap();
         assert!(!runs(&bogus));
         let _ = std::fs::remove_file(&bogus);
+    }
+
+    /// 仓库里已跑过 `scripts/fetch_ffmpeg.ps1` 时，locate 必须命中内嵌目录而不是 PATH。
+    /// 没跑过（二进制不入库）则跳过——这条测试的职责是「内嵌优先真的生效」。
+    #[test]
+    fn bundled_binary_takes_priority() {
+        let bundled = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join(BUNDLED_SUBDIR)
+            .join(file_name("ffmpeg"));
+        if !bundled.is_file() {
+            return;
+        }
+        let found = ffmpeg().expect("内嵌 ffmpeg 存在时必须能定位到");
+        assert!(found.is_absolute(), "内嵌命中应返回绝对路径，实际 {found:?}");
+        assert!(found.ends_with(&file_name("ffmpeg")));
+    }
+
+    #[test]
+    fn version_parses_from_bundled_binary() {
+        let bundled = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join(BUNDLED_SUBDIR)
+            .join(file_name("ffmpeg"));
+        if !bundled.is_file() {
+            return;
+        }
+        let v = version_of(&bundled);
+        assert!(!v.is_empty(), "版本号解析为空");
+        assert!(v.contains("n8.1") || v.contains("8.1"), "意外的版本号：{v}");
     }
 }

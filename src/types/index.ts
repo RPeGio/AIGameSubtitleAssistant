@@ -287,6 +287,21 @@ export interface MossInstallStatus {
 /// 运行时安装进度事件（Rust `runtime_install::INSTALL_PROGRESS_EVENT`）
 export const RUNTIME_INSTALL_EVENT = "runtime-install-progress";
 
+/// ffmpeg 自检结论（Rust `video::ffmpeg_locator::check_ffmpeg`）
+export interface FfmpegStatus {
+  /// ffmpeg 与 ffprobe 都可用
+  ready: boolean;
+  /// "bundled"（随包内嵌）/ "path"（系统 PATH）/ "missing"
+  source: string;
+  /// 内嵌时是绝对路径，走 PATH 时是命令名
+  ffmpeg: string;
+  ffprobe: string;
+  /// 形如 "n8.1.3-25-g611cec792a"；取不到为空串
+  version: string;
+  /// 可直接上屏的结论（未就绪时说明该怎么办）
+  message: string;
+}
+
 /// installer 脚本 stdout 的一行事件（契约 §3 冻结的 schema）
 export interface RuntimeInstallEvent {
   /// start / progress / item_done / item_skip / item_fail / error / done

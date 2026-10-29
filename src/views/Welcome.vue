@@ -178,12 +178,17 @@ interface Probe {
   installNote?: string;
   /// 该结论需要用户动作（更新 / 文件缺失 / 后端已下线）
   installWarn?: boolean;
+  /// 版本号（仅 ffmpeg 卡）：形如 "n8.1.3-25-g611cec792a"
+  version?: string;
+  /// 二进制来源（仅 ffmpeg 卡）："bundled" / "path" / "missing"
+  origin?: string;
 }
 
 const ENV_CARDS = [
   { key: "ocr", name: "PaddleOCR", desc: "OCR 引擎 · PP-OCR 本地 Python worker" },
   { key: "asr", name: "MOSS", desc: "转写 + 说话人分离（S01/S02）· ggml，有 CUDA/Vulkan 即 GPU" },
   { key: "embed", name: "e5-small", desc: "融合向量召回 · multilingual-e5-small ONNX qint8" },
+  { key: "ffmpeg", name: "FFmpeg", desc: "视频解码 / 抽帧 / 抽音 / 波形 · 随安装包内嵌" },
 ] as const;
 
 type EnvKey = (typeof ENV_CARDS)[number]["key"];
@@ -192,6 +197,7 @@ const probes = ref<Record<EnvKey, Probe>>({
   ocr: { state: "probing", message: "" },
   asr: { state: "probing", message: "" },
   embed: { state: "probing", message: "" },
+  ffmpeg: { state: "probing", message: "" },
 });
 
 const STATE_TEXT: Record<ProbeState, string> = {
@@ -345,10 +351,12 @@ async function cancelInstall() {
   }
 }
 
-/// 手动补齐命令（只给安装器覆盖不到的条目：OCR / e5-small）；
+/// 手动补齐命令（只给安装器覆盖不到的条目：OCR / e5-small / 内嵌 ffmpeg）；
 /// MOSS 由上面的安装按钮负责，不再重复给命令
 function cmdOf(key: EnvKey): string {
-  return key === "ocr" ? "scripts/bootstrap_ocr.ps1" : "scripts/bootstrap_embed.ps1";
+  if (key === "ocr") return "scripts/bootstrap_ocr.ps1";
+  if (key === "ffmpeg") return "scripts/fetch_ffmpeg.ps1";
+  return "scripts/bootstrap_embed.ps1";
 }
 
 function showCmd(key: EnvKey): boolean {
@@ -386,11 +394,35 @@ async function probeEmbed() {
   }
 }
 
+/// ffmpeg 自检：内嵌优先、回退 PATH，只读探测
+async function probeFfmpeg() {
+  try {
+    const status = await projectStore.checkFfmpeg();
+    probes.value.ffmpeg = {
+      state: status.ready ? "ready" : "notready",
+      message: status.message,
+      version: status.version,
+      origin: status.source,
+    };
+  } catch (e) {
+    setProbe("ffmpeg", null, String(e));
+  }
+}
+
+/// 二进制来源文案：内嵌 / 系统 PATH（都没找到时不显示这行）
+function originText(key: EnvKey): string {
+  const o = probes.value[key].origin;
+  if (o === "bundled") return "内嵌";
+  if (o === "path") return "系统 PATH";
+  return "";
+}
+
 onMounted(() => {
   projectStore.refreshRecentProjects();
   probeOcr();
   probeAsr();
   probeEmbed();
+  probeFfmpeg();
 });
 </script>
 
@@ -510,6 +542,9 @@ onMounted(() => {
               <i class="dot" :class="dotClass(card.key)" />{{ stateText(card.key) }}
             </span>
             <span class="ex">{{ card.desc }}</span>
+            <span v-if="card.key === 'ffmpeg' && probes.ffmpeg.state === 'ready'" class="ex">
+              版本 · {{ probes.ffmpeg.version || "未知" }}（{{ originText("ffmpeg") }}）
+            </span>
             <span v-if="card.key === 'asr' && deviceText(card.key)" class="ex">
               设备 · {{ deviceText(card.key) }}{{ backendText(card.key) ? `（${backendText(card.key)}）` : "" }}
             </span>
@@ -871,7 +906,8 @@ onMounted(() => {
 .env {
   flex: none;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  /* 4 张卡在宽屏一行放下，窄屏自动折行（固定 3 列会让第 4 张独占一行） */
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
   gap: 12px;
 }
 

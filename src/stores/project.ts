@@ -20,6 +20,7 @@ import type {
   MossBackendProbe,
   DeviceSaveResult,
   MossInstallStatus,
+  FfmpegStatus,
   RuntimeDiskPrecheck,
   RuntimeInstallSummary,
   LlmProgress,
@@ -1147,6 +1148,11 @@ export const useProjectStore = defineStore("project", () => {
     return invoke<MossInstallStatus>("probe_moss_install");
   }
 
+  /// ffmpeg 自检（内嵌优先，回退 PATH）；只读探测
+  async function checkFfmpeg(): Promise<FfmpegStatus> {
+    return invoke<FfmpegStatus>("check_ffmpeg");
+  }
+
   /// 安装前先查磁盘（不够就当场拒绝，别下到一半才失败）
   async function precheckRuntimeDisk(): Promise<RuntimeDiskPrecheck> {
     return invoke<RuntimeDiskPrecheck>("precheck_runtime_disk");
@@ -1692,6 +1698,7 @@ export const useProjectStore = defineStore("project", () => {
     setMossDevice,
     setFunasrDevice,
     probeMossInstall,
+    checkFfmpeg,
     precheckRuntimeDisk,
     installRuntime,
     cancelRuntimeInstall,

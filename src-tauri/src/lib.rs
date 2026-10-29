@@ -88,6 +88,8 @@ pub fn run() {
             ai_runtime::check_llm_runtime,
             ai_runtime::check_embed_runtime,
             ai_runtime::asr_cancel,
+            // video 模块
+            video::ffmpeg_locator::check_ffmpeg,
             // ocr 模块
             ocr::commands::run_ocr,
             ocr::commands::run_ocr_images,
