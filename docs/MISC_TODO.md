@@ -26,7 +26,7 @@
 | 11 | ✅ 欢迎页自检升级（探针摊开 + 手动补齐命令 + 一键安装/更新） | 功能·独立 | 7（info 基建）·12（`probe_moss_backend`/`probe_moss_install` 已就绪） | 11a/11b/11c 已实现（2026-10-28）；打包形态脚本随包仍归分发侧 |
 | 12 | ✅ CUDA GPU 加速参数化（设备迁移到 UI） | 功能·Rust+UI | 7（要带 info 说明）+ 11（需 `probe_moss_backend` 命令） | 已实现（阶段 A+B `a8e8010`、阶段 C `2a766c8`）：`probe_moss_backend` + `set_moss_device` 两命令、打轴页设备下拉、欢迎页硬报错、manifest 随包落库 |
 | 13 | ✅ 杂项清理与验证（死代码/参数开关/图标；真机波形待验） | 清理·零碎 | 无 | 已实现（`8b71ee2`）：死代码已删、易混字母开关已暴露、轨道图标常显 |
-| 14 | 内嵌 ffmpeg/ffprobe + 欢迎页 ffmpeg 自检卡 | 功能·打包 | 11（自检卡复用其探针机制） | 外部依赖一致性；涉及打包策略，宜与 11 一起看 |
+| 14 | ✅ 内嵌 ffmpeg/ffprobe + 欢迎页 ffmpeg 自检卡 | 功能·打包 | 11（自检卡复用其探针机制） | 已实现（`40e645f`/`5acb56f`/`bfd1168`）：LGPL 共享构建内嵌、内嵌优先回退 PATH、环境自检第 4 张卡 |
 | 19 | 设置面板（默认 ASR 模型 + 快捷键查看/修改） | 功能·跨页 | 10（注册表） | 改动大、用户明确单独一个 PR；快捷键帮助面板并入此项 |
 | 20 | ✅ 校对区选中 clip 时，轨道总览滚动到该行 | 修复·小 | 无 | 已实现（`b2e70ab`）：`data-clip-id` + 矩形比对最小滚动 |
 | 21 | ✅ 时间轴框选多选（含 `Ctrl+A` 全选、多选整体位移） | 功能·核心 | 10（活动时间轴判定） | 已实现（`34e2837`）：多选模型 + 框选 + 修饰键 + 批量删除 + 刚性整组位移 |
@@ -776,7 +776,39 @@
 - 波形行 `.wf-row`（48px）**从没在有真实波形数据时目视验证过**（mock 无音频）→ 用带音频素材看一眼。
 - 轨道操作图标目前 hover 才显示（样稿是常显淡色）→ 按观感定夺，属风格取舍。
 
-### 14. 内嵌 ffmpeg/ffprobe + 欢迎页 ffmpeg 自检卡
+### 14. ✅ 内嵌 ffmpeg/ffprobe + 欢迎页 ffmpeg 自检卡
+
+**已实现（2026-10-29，提交 `40e645f` / `5acb56f` / `bfd1168` / `f3d19d8`）**
+
+| 任务 | 改动 | 内容 |
+|---|---|---|
+| T1 定位层 | 新增 `src-tauri/src/video/ffmpeg_locator.rs` | 内嵌候选（从 exe 目录 `ancestors().take(4)` 逐级拼 `resources/ffmpeg/<name>`）→ 系统 PATH；`runs()` 真跑 `-version`，避免「文件在但跑不动」被骗过 |
+| T1 | `video/mod.rs`、`waveform.rs` | `resolve_ffmpeg()`/`resolve_ffprobe()` 变薄包装；`ffmpeg_missing()` 统一 `FFMPEG_NOT_FOUND: …` 文案（前端 `err.includes("FFMPEG_NOT_FOUND")` 依赖此前缀，不可改名） |
+| T1 | `src-tauri/Cargo.toml`、`THIRD_PARTY.md` | 删 `ffmpeg-sidecar`（唯一用途 `sidecar_dir()` 恒空；`auto_download()` 从未调用），连带去掉 ureq/tar/xz2/zip |
+| T2 取二进制 | 新增 `scripts/fetch_ffmpeg.ps1` | pin `autobuild-2026-10-28-19-47` 的 `win64-lgpl-shared` 包（不可用滚动的 `latest` tag）；缓存 → SHA256 校验 → 只解 `bin/*` 与 `LICENSE.txt` → 落 `src-tauri/resources/ffmpeg/` → 写 `SOURCE.txt` → 跑 `-version` 自检 |
+| T2 | `.gitignore`、`tauri.conf.json` | 忽略 `src-tauri/resources/ffmpeg/`（161 MB 不入库）；`bundle.resources` 加 `"resources/ffmpeg/*"` |
+| T3 许可与文档 | `THIRD_PARTY.md`、`README(_EN).md`、`docs/development(_EN).md` | 「用户自备」改为「随包内嵌 LGPL 共享构建」，写明为何不用默认 GPL 静态构建、共享构建的 LGPL 义务如何满足 |
+| T4 自检卡 | `video/ffmpeg_locator.rs` + `lib.rs` | 新命令 `check_ffmpeg() -> FfmpegStatus { ready, source: "bundled"/"path"/"missing", ffmpeg, ffprobe, version, message }` |
+| T4 | `src/views/Welcome.vue`、`src/stores/project.ts`、`src/types/index.ts` | 环境自检加第 4 张卡：就绪时显示「版本 · n8.1.3…（内嵌）」/（系统 PATH），未就绪时摊原因并给 `scripts/fetch_ffmpeg.ps1` 复制命令；`.env` 栅格改 `repeat(auto-fit, minmax(230px, 1fr))` |
+
+**决策（用户 2026-10-29 拍板）**
+- **LGPL 共享构建**（`win64-lgpl-shared`），不用默认的 GPL 静态构建——后者会把整个 app 拖进 GPL；共享构建 DLL 可替换，LGPL §4 义务最轻，且我们只当子进程调用、不链接。
+- **sidecar 可删**：`ffmpeg-sidecar` 的下载目录永远为空，删依赖换来「内嵌 + PATH 两级查找」。
+- **必须真跑一次 `pnpm tauri build`** 验证打包形态（Windows 上 `resource_dir()` = exe 目录 ⇒ 二进制落 `$RESOURCES/resources/ffmpeg/`，与 dev 布局不同）。
+
+**验证**
+- `cargo test --lib` → **332 passed, 0 failed**；`cargo check --lib` 0 warning。
+- `ffmpeg_locator` 单测含「内嵌优先真的生效」（`bundled_binary_takes_priority`：二进制存在时必须返回绝对路径）与「版本号解析」（`version_parses_from_bundled_binary`）；二进制缺失时这两条自动跳过。
+- `pnpm build` → EXIT=0（2901 modules）。
+- headless（`temp/css-preview/checks/item14-ffmpeg.js` + `evalq.mjs`，1680×1000）：4 张卡一行排开（`cols = 394px ×4`，`rowCount=1`，`pageOverflow=false`）；bundled 场景 FFmpeg 卡「就绪 / 版本 · n8.1.3-25-g611cec792a-20261028（内嵌）」；`?ffmpeg=missing` 场景「未就绪 / 安装包应自带 resources/ffmpeg/；源码检出请先跑 scripts/fetch_ffmpeg.ps1」并显示该命令；截图 `temp/css-preview/item14-ffmpeg.png`。
+- **打包形态验证**（`pnpm tauri build`，EXIT=0）：`src-tauri/target/release/resources/ffmpeg/` 落 11 个文件共 169,051,668 B（含 `ffmpeg.exe` / `ffprobe.exe` / 8 个 av* DLL / `LICENSE.txt` / `SOURCE.txt`），与 `ffmpeg_locator` 的首个候选 `<exe目录>/resources/ffmpeg/` 完全一致；`7z l` 列出 NSIS 安装包内容确认 `resources\ffmpeg\*` 与 `resources\runtime\manifest.json` 都进包（安装包 `GameSubtitleAssistant_0.3.0_x64-setup.exe` 57.3 MB、MSI 75.5 MB）。注意 `target/release/bundle/` 里还留着 `0.1.0` 的旧包，属构建缓存，不是本次产物。
+
+**未做 / 遗留**
+- 真机手测（无 ffmpeg 的干净机器上跑元数据/抽帧/波形）留给用户；
+- 只覆盖 Windows x64（macOS/Linux 的分发形态未定，`file_name()` 已按平台拼后缀）；
+- 二进制不入库 ⇒ 源码检出必须先跑 `scripts/fetch_ffmpeg.ps1`，否则自检卡显示未就绪并回退 PATH。
+
+**原始背景（保留）**
 
 **现状依据**
 - 应用**不内嵌** ffmpeg/ffprobe：`src-tauri/src/video/mod.rs:71` `resolve_ffprobe()` 与 `:201` `resolve_ffmpeg()` 都是两级查找——先 `Command::new("ffprobe"/"ffmpeg")`（系统 PATH），再 `ffmpeg_sidecar::paths::sidecar_dir()`（`src-tauri/Cargo.toml` 的 `ffmpeg-sidecar = "2"` 的 auto_download 目录）；找不到即返回 `FFMPEG_NOT_FOUND`（`mod.rs:194/:320/:495/:573`、`src-tauri/src/video/waveform.rs:33`）。
