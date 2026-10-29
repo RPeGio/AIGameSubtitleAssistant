@@ -22,7 +22,7 @@ use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tauri::Manager;
 
 pub use config::RuntimeConfig;
@@ -548,45 +548,111 @@ pub struct AsrEngineStatus {
 /// 全局 ASR 管理器 —— 同时持有 funasr / moss 两个引擎（各自按配置就绪），
 /// 由前端配置面板在每次运行时选择。provider 以 Arc 共享、无互斥锁：
 /// transcribe 阻塞调用与 cancel（取消/超时/退出钩子）需要并发，锁会把
-/// 取消拖到转写结束（失效）。
+/// 取消拖到转写结束（失效）。这里的 `RwLock` 只护住"换 provider 的那一瞬"
+/// （见 `reload_engine`）：取用时先克隆 Arc、立刻放锁，转写期间不会持锁。
 pub struct AsrManager {
-    config: RuntimeConfig,
+    /// 当前生效的配置快照：切换设备后整体替换，因此只能克隆、不能借出引用
+    config: RwLock<RuntimeConfig>,
     runtime_dir: PathBuf,
-    funasr: Arc<dyn AsrProvider>,
-    moss: Arc<dyn AsrProvider>,
+    funasr: RwLock<Arc<dyn AsrProvider>>,
+    moss: RwLock<Arc<dyn AsrProvider>>,
     /// 转写进行中标志（test-and-set）：Arc 去锁后不再天然串行转写，
     /// 该标志是后端兜底，防并发转写互相覆盖 active_child / 互相清理
     transcribing: AtomicBool,
 }
 
+/// 按配置构造 funasr provider：三路径字段任一为空即视为未配置（None 占位）
+fn build_funasr(config: &RuntimeConfig, runtime_dir: &PathBuf) -> Box<dyn AsrProvider> {
+    if config.funasr_worker.is_empty()
+        || config.funasr_deps.is_empty()
+        || config.funasr_model_dir.is_empty()
+    {
+        return Box::new(AsrNoneProvider);
+    }
+    create_asr_provider(AsrProviderKind::FunAsr, config, runtime_dir)
+}
+
+/// 按配置构造 moss provider：binary / model 任一为空即视为未配置
+fn build_moss(config: &RuntimeConfig, runtime_dir: &PathBuf) -> Box<dyn AsrProvider> {
+    if config.moss_binary.is_empty() || config.moss_model.is_empty() {
+        return Box::new(AsrNoneProvider);
+    }
+    create_asr_provider(AsrProviderKind::Moss, config, runtime_dir)
+}
+
 impl AsrManager {
     pub fn new(config: RuntimeConfig, runtime_dir: PathBuf) -> Self {
-        // 双引擎并存：funasr 需三路径字段齐全（worker/deps/model_dir），
-        // moss 需 binary + model；未配置的引擎用 None 占位
-        let funasr = if !config.funasr_worker.is_empty()
-            && !config.funasr_deps.is_empty()
-            && !config.funasr_model_dir.is_empty()
-        {
-            create_asr_provider(AsrProviderKind::FunAsr, &config, &runtime_dir)
-        } else {
-            Box::new(AsrNoneProvider)
-        };
-        let moss = if !config.moss_binary.is_empty() && !config.moss_model.is_empty() {
-            create_asr_provider(AsrProviderKind::Moss, &config, &runtime_dir)
-        } else {
-            Box::new(AsrNoneProvider)
-        };
+        // 双引擎并存：各自按路径字段是否齐全决定是否真的拉起 provider
+        let funasr = build_funasr(&config, &runtime_dir);
+        let moss = build_moss(&config, &runtime_dir);
         Self {
-            config,
+            config: RwLock::new(config),
             runtime_dir,
-            funasr: Arc::from(funasr),
-            moss: Arc::from(moss),
+            funasr: RwLock::new(Arc::from(funasr)),
+            moss: RwLock::new(Arc::from(moss)),
             transcribing: AtomicBool::new(false),
         }
     }
 
-    pub fn config(&self) -> &RuntimeConfig {
-        &self.config
+    /// 当前生效的配置快照（克隆）
+    pub fn config(&self) -> RuntimeConfig {
+        self.read_config()
+    }
+
+    /// 读配置快照；锁中毒时取回内部值——一次 panic 不该让整个管理器永久不可用
+    fn read_config(&self) -> RuntimeConfig {
+        match self.config.read() {
+            Ok(g) => g.clone(),
+            Err(e) => e.into_inner().clone(),
+        }
+    }
+
+    /// 取指定引擎的 provider（克隆 Arc 后立即放锁，转写期间不持锁）
+    fn provider_of(&self, key: &str) -> Arc<dyn AsrProvider> {
+        let slot = if key == "moss" { &self.moss } else { &self.funasr };
+        match slot.read() {
+            Ok(g) => Arc::clone(&g),
+            Err(e) => Arc::clone(&e.into_inner()),
+        }
+    }
+
+    /// 重读盘上配置并重建**单个**引擎的 provider（切换设备后立即生效）。
+    /// 另一个引擎不动：FunASR worker 拉起成本高，改 MOSS 设备没理由重启它。
+    /// 返回面向用户的一句话（成功=已重新加载 / 成功但不可用=原因）。
+    pub fn reload_engine(&self, key: &str) -> Result<String, String> {
+        if key != "moss" && key != "funasr" {
+            return Err(format!("未知 ASR 引擎: {key}"));
+        }
+        // 换 provider 会丢弃正在跑的子进程，转写期间直接拒绝（配置已落盘，重启后仍生效）
+        if self.transcribing.load(Ordering::SeqCst) {
+            return Err("转写进行中，完成后再切换".into());
+        }
+        let config = RuntimeConfig::load(&self.runtime_dir)?;
+        config.validate(&self.runtime_dir)?;
+        let provider: Box<dyn AsrProvider> = if key == "moss" {
+            build_moss(&config, &self.runtime_dir)
+        } else {
+            build_funasr(&config, &self.runtime_dir)
+        };
+        let (name, ready, message) = (
+            provider.name().to_string(),
+            provider.is_ready(),
+            provider.describe().to_string(),
+        );
+        let slot = if key == "moss" { &self.moss } else { &self.funasr };
+        match slot.write() {
+            Ok(mut g) => *g = Arc::from(provider),
+            Err(e) => *e.into_inner() = Arc::from(provider),
+        }
+        match self.config.write() {
+            Ok(mut g) => *g = config,
+            Err(e) => *e.into_inner() = config,
+        }
+        Ok(if ready {
+            format!("{name} 已重新加载")
+        } else {
+            format!("{name} 已重新加载但不可用：{message}")
+        })
     }
 
     pub fn runtime_dir(&self) -> &PathBuf {
@@ -595,25 +661,24 @@ impl AsrManager {
 
     /// 访问指定引擎的 provider（无锁：provider 内部自带同步，transcribe 与 cancel 可并发）
     pub fn with_engine<R>(&self, key: &str, f: impl FnOnce(&dyn AsrProvider) -> R) -> R {
-        match key {
-            "moss" => f(&*self.moss),
-            _ => f(&*self.funasr),
-        }
+        let provider = self.provider_of(key);
+        f(&*provider)
     }
 
     /// 两引擎状态列表（供 check_asr_engines 命令展示面板可用性）
     pub fn engines(&self) -> Vec<AsrEngineStatus> {
+        let config = self.read_config();
         ["funasr", "moss"]
             .iter()
             .map(|key| {
                 let (ready, message, effective) = self.with_engine(key, |p| {
                     (p.is_ready(), p.describe(), p.effective_backend())
                 });
-                // 设备值直接取 config：welcome 页展示"当前配置的 moss device"，
+                // 设备值直接取配置：welcome 页展示"当前配置的 moss device"，
                 // 空 = auto（ggml 自动选优，实测偏好独显），由前端转成可读文案
                 let device = match *key {
-                    "moss" => self.config.moss_device.clone(),
-                    _ => self.config.funasr_device.clone(),
+                    "moss" => config.moss_device.clone(),
+                    _ => config.funasr_device.clone(),
                 };
                 AsrEngineStatus {
                     engine: (*key).into(),
@@ -679,8 +744,8 @@ impl AsrManager {
 
     /// 请求取消当前转写（两引擎同时取消，幂等：无活动任务时无副作用）
     pub fn cancel(&self) {
-        self.funasr.cancel();
-        self.moss.cancel();
+        self.provider_of("funasr").cancel();
+        self.provider_of("moss").cancel();
     }
 }
 

@@ -693,7 +693,7 @@
 
 **顺序说明**：与 C 组无依赖，可与 8–10 并行；放中后段是为了不打断时间轴主线。
 
-### 12. ✅ CUDA GPU 加速参数化（2026-10-22 阶段 A+B → 2026-10-24 阶段 C 接通；提交 `a8e8010`）
+### 12. ✅ CUDA GPU 加速参数化（2026-10-22 阶段 A+B → 2026-10-24 阶段 C 接通 → 2026-10-29 FunASR 设备 + 即时生效；提交 `a8e8010`）
 
 **已实现**
 
@@ -709,6 +709,7 @@
 | 欢迎页自检卡 | MOSS 卡在 `notready` 时把硬报错原因摊到卡面上（红字），并提示「推理设备可在打轴页「转写参数 → 推理设备」中设置」 | `src/views/Welcome.vue`（`probeAsr()` 追加 `probeMossBackend()`） |
 
 **决策（用户 m00142 全选 A）**：D1-A 下拉落 ASR 页转写参数区；D2-A 允许保存 + 警示 + 运行期硬拦；D3-A **下次启动生效**（不做 `mod.rs` 的即时重置补丁）；D4-A manifest 由 Rust 命令读并回传 flavor 集合（前端不加 fs 插件权限）；D5-A 本期只做 `moss`，`funasr_device` 不动。
+（D3-A 与 D5-A 已于 2026-10-29 按用户 m01567 要求反转：即时生效已实现、FunASR 设备已补，见下方补记。）
 
 **2026-10-24 补记（manifest 落库，阶段 C 接通）**
 
@@ -724,9 +725,31 @@
 > 所以正常情况下列表**仍是四项**、与退化分支看起来一样（差别只在有没有那行黄字）。
 > 要验证过滤真起作用：临时删掉清单里某个 flavor 条目 → 对应项必须消失。
 
-**验证**：`cargo test` 全绿（lib 282 + 集成 15/15；含 4 个 manifest 读取单测 + 2 个布局单测 + 1 个随包清单单测 + 1 个归一化单测）；`pnpm build`（含 `vue-tsc --noEmit`）通过。**未经真机 UI 手测**（需要装着 MOSS 的机器切三种后端各跑一次）。
+**2026-10-29 补记（FunASR 设备 + 即时生效 + 真实安装验证）**
 
-**未做（明确留口）**：`funasr_device`（D5-A）；即时生效（D3-A）；`runtime/.installed.json` 启动比对属 `mod.rs`，等 installer 侧落地后出补丁；真机 UI 手测（三种后端 + 过滤验证）。
+用户 m01567 要求「把 12 项遗留填上」，即把 D5-A / D3-A 两条暂缓项做掉、并补一次真实联网验证。
+
+| 子项 | 处理 | 位置 |
+|---|---|---|
+| FunASR 设备下拉 | 与 MOSS 同一套交互但**只给 CUDA / CPU**（FunASR 走 torch，无 Vulkan 后端）；`set_funasr_device` 归一规则 `""/"auto"/"cuda" → cuda`、`"cpu" → cpu`；切引擎时两块互斥出现，值从 `check_asr_engines` 的 `device` 回填 | `src-tauri/src/ai_runtime/config.rs`（`normalize_funasr_device`、`set_funasr_device`）；`src/views/AsrView.vue`（`FUNASR_DEVICE_OPTIONS`、`onFunasrDeviceChange`） |
+| FunASR 不做硬报错 | torch 侧本来就是软回退（`scripts/funasr_worker.py:46 pick_device` 在 CUDA 不可用/缺库时自动落 CPU），硬报错会拦住一个能跑的组合 ⇒ 只在尾注写明「CUDA 不可用时 worker 自动回退 CPU」 | `AsrView.vue`（`FUNASR_DEVICE_DOC`） |
+| 配置校验加固 | `RuntimeConfig::validate()` 增加 `funasr_device ∈ {"", cpu, cuda}`，手改 config.json 写进 `vulkan` 会被启动时打回 | `config.rs`（`test_validate_rejects_bad_funasr_device` 钉住） |
+| 即时生效（原 D3-A） | `AsrManager` 的 `config` 改为 `RwLock<RuntimeConfig>`、两个 provider 改为 `RwLock<Arc<dyn AsrProvider>>`；新增 `read_config()` / `provider_of()` / `reload_engine(key)`，转写进行中拒绝切换（`"转写进行中，完成后再切换"`），否则重读盘上配置 → `validate` → 只重建该引擎的 provider → 换配置 | `src-tauri/src/ai_runtime/mod.rs`（`build_funasr` / `build_moss` 抽出复用） |
+| 命令侧接线 | `set_moss_device` / `set_funasr_device` 均为 `async`，保存后用 `spawn_blocking` 调 `reload_engine`（MOSS 重建要跑 `info` 探测，不能卡命令线程）；reason 返回「已重新加载」或「但不可用：…（重启后生效）」 | `config.rs`（`reload_asr_engine`）；`lib.rs` 注册 `set_funasr_device` |
+| 返回类型统一 | `MossDeviceSaveResult` → `DeviceSaveResult`（两个命令共用） | `config.rs`、`src/types/index.ts` |
+
+> 即时生效的边界：改设备**不需要重启**，但只重载被改的那个引擎；正在跑的转写不会被中断（拒绝切换）。
+> 旧结论 D3-A「下次启动生效」invalidate，契约 §7 的 P3 补丁项随之落地（见契约 §7、§8.7）。
+
+**验证**（2026-10-29）
+- `cargo test --lib` → **325 passed, 0 failed**（较上次 +43：新增归一化/校验单测与即时生效相关单测）；`cargo check --lib` 0 warning。
+- `pnpm build`（`vue-tsc --noEmit && vite build`）→ EXIT=0。
+- headless 实测 FunASR 块：切引擎后 MOSS 设备块消失、FunASR 设备块出现，下拉值取配置（`cpu`），选项仅 `cuda`/`cpu`，无横向溢出（`temp/css-preview/item12-funasr.png`）。
+- **真实联网安装验证**（用户 m01567 要求，直连 GitHub 可用，无需代理）：`scripts/bootstrap_runtime.ps1` 在 RTX 4060 Laptop（算力 8.9）上 `-Flavor auto` **自动选 cuda**、磁盘预检「需要约 1.92 GB」、下载 621.6 MB → 校验 → 解压 14 个文件、`.backend=cuda`、末行 `done ok:true`；`-Flavor vulkan` 全流程同样通过（11 个文件、15.4 MB）。
+- `evaluate()` 对真实装好的 vulkan 目录判定 `state=ok`；`precheck_disk_with` 按「最大 flavor」估算（1.92 GB > 单包 622 MB）；脚本走 skip 路径时 stdout 是合法 UTF-8 且每行可 JSON 解析（中文 detail 不丢）。
+- 仍**未经真机 UI 手测**（真机上点下拉切后端跑一次转写）。
+
+**未做（明确留口）**：真机 UI 手测（三种后端各跑一次转写 + manifest 过滤验证）；`funasr_device` 的 Vulkan（FunASR 不支持，非缺口）。
 
 **原始背景（保留）**
 - MOSS 自动判断（欢迎页卡文案「ggml，有 CUDA/Vulkan 即 GPU」），界面无可配项；配置文件字段已存在：`src-tauri/src/ai_runtime/config.rs` 的 `moss_device`（白名单 `空/cpu/cuda/vulkan`）与 `funasr_device`（默认 `cpu`）——**只缺 UI，不缺存储**。

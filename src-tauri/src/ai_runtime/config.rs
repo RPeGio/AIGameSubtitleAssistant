@@ -314,6 +314,16 @@ impl RuntimeConfig {
                 self.moss_device
             ));
         }
+        // funasr_device 白名单：空（历史默认，等价 cuda）/ cpu / cuda。
+        // FunASR 走 PyTorch，没有 Vulkan 后端；worker 侧 cuda 不可用会自动回退
+        // CPU（scripts/funasr_worker.py 的 pick_device），所以这里不拦"选了 cuda
+        // 但本机没有 CUDA"——那是软回退，不是错误。
+        if !matches!(self.funasr_device.as_str(), "" | "cpu" | "cuda") {
+            return Err(format!(
+                "funasr_device 取值非法: {}（可选 空/cpu/cuda）",
+                self.funasr_device
+            ));
+        }
         Ok(())
     }
 }
@@ -341,14 +351,14 @@ fn ensure_binary_exists(name: &str, value: &str, runtime_dir: &Path) -> Result<(
     Ok(())
 }
 
-// ─── MOSS 推理设备设置（前端设备下拉）───────────────────
+// ─── 推理设备设置（前端设备下拉）─────────────────────────
 
-/// 设备设置结果（写盘成功）
+/// 设备设置结果（MOSS / FunASR 共用；写盘成功）
 #[derive(Debug, Clone, Serialize)]
-pub struct MossDeviceSaveResult {
-    /// 实际写入的 moss_device 值（"" = auto）
+pub struct DeviceSaveResult {
+    /// 实际写入的值（moss 的 "" = auto；funasr 恒为 cpu/cuda）
     pub device: String,
-    /// 面向用户的结果说明
+    /// 面向用户的结果说明（含是否已立即生效）
     pub message: String,
 }
 
@@ -365,15 +375,42 @@ pub fn normalize_moss_device(raw: &str) -> Result<String, String> {
     }
 }
 
-/// Tauri 命令：设置 MOSS 推理设备（写 runtime/config.json，下次启动生效）。
+/// 规范化 FunASR 设备："" / "auto" / "cuda" → "cuda"，"cpu" → "cpu"。
+/// worker 侧 cuda 不可用会自动回退 CPU，所以没有第三种取值。
+pub fn normalize_funasr_device(raw: &str) -> Result<String, String> {
+    let v = raw.trim().to_ascii_lowercase();
+    match v.as_str() {
+        "" | "auto" | "cuda" => Ok("cuda".into()),
+        "cpu" => Ok("cpu".into()),
+        other => Err(format!(
+            "funasr_device 取值非法: {}（可选 cpu/cuda）",
+            other
+        )),
+    }
+}
+
+/// 让运行中的 ASR 管理器重读配置、重建单个引擎的 provider（切设备立即生效）。
+/// 放后台线程：MOSS 重建要跑一次 `info` 实测，不能卡住命令线程。
+async fn reload_asr_engine(app: &tauri::AppHandle, engine: &'static str) -> Result<String, String> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || match handle.try_state::<super::AsrManager>() {
+        Some(mgr) => mgr.reload_engine(engine),
+        None => Err("ASR 管理器未托管".to_string()),
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("重新加载失败: {e}")))
+}
+
+/// Tauri 命令：设置 MOSS 推理设备（写 runtime/config.json 并立即生效）。
 ///
-/// 只改 moss_device 一个字段并原子落盘；运行中的 provider 仍用启动时读到的配置
-/// （下次启动生效），避免转写中途换后端导致同一批素材前后不一致。
+/// 只改 moss_device 一个字段并原子落盘；随后重建 moss provider —— 转写进行中
+/// 时重建会被拒绝（配置仍已落盘，重启后生效），避免中途换后端导致同一批素材
+/// 前后不一致。
 #[tauri::command]
-pub fn set_moss_device(
+pub async fn set_moss_device(
     app: tauri::AppHandle,
     device: String,
-) -> Result<MossDeviceSaveResult, String> {
+) -> Result<DeviceSaveResult, String> {
     let runtime_dir = resolve_runtime_dir(app.path().app_data_dir().ok().map(|d| d.join("runtime")));
     let normalized = normalize_moss_device(&device)?;
     let mut cfg = RuntimeConfig::load(&runtime_dir)?;
@@ -384,9 +421,36 @@ pub fn set_moss_device(
     } else {
         normalized.clone()
     };
-    Ok(MossDeviceSaveResult {
+    let message = match reload_asr_engine(&app, "moss").await {
+        Ok(note) => format!("已保存 moss_device={}（{}）", shown, note),
+        Err(e) => format!("已保存 moss_device={}（{}；重启后生效）", shown, e),
+    };
+    Ok(DeviceSaveResult {
         device: normalized,
-        message: format!("已保存 moss_device={}（下次启动生效）", shown),
+        message,
+    })
+}
+
+/// Tauri 命令：设置 FunASR 推理设备（写 runtime/config.json 并立即生效）。
+/// 与 MOSS 不同：选中 cuda 但本机 CUDA 不可用时 worker 会自动回退 CPU，
+/// 不构成错误，因此这里不做硬校验。
+#[tauri::command]
+pub async fn set_funasr_device(
+    app: tauri::AppHandle,
+    device: String,
+) -> Result<DeviceSaveResult, String> {
+    let runtime_dir = resolve_runtime_dir(app.path().app_data_dir().ok().map(|d| d.join("runtime")));
+    let normalized = normalize_funasr_device(&device)?;
+    let mut cfg = RuntimeConfig::load(&runtime_dir)?;
+    cfg.funasr_device = normalized.clone();
+    cfg.save(&runtime_dir)?;
+    let message = match reload_asr_engine(&app, "funasr").await {
+        Ok(note) => format!("已保存 funasr_device={}（{}）", normalized, note),
+        Err(e) => format!("已保存 funasr_device={}（{}；重启后生效）", normalized, e),
+    };
+    Ok(DeviceSaveResult {
+        device: normalized,
+        message,
     })
 }
 
@@ -772,5 +836,34 @@ mod tests {
         assert_eq!(normalize_moss_device("cpu").unwrap(), "cpu");
         assert!(normalize_moss_device("gpu").is_err());
         assert!(normalize_moss_device("../evil").is_err());
+    }
+
+    #[test]
+    fn test_normalize_funasr_device() {
+        // funasr 只有 cpu/cuda 两种落点；空与 auto 都等价 cuda（worker 侧再软回退）
+        assert_eq!(normalize_funasr_device("").unwrap(), "cuda");
+        assert_eq!(normalize_funasr_device("auto").unwrap(), "cuda");
+        assert_eq!(normalize_funasr_device(" CUDA ").unwrap(), "cuda");
+        assert_eq!(normalize_funasr_device("cpu").unwrap(), "cpu");
+        assert!(normalize_funasr_device("vulkan").is_err(), "FunASR 无 Vulkan 后端");
+        assert!(normalize_funasr_device("../evil").is_err());
+    }
+
+    #[test]
+    fn test_validate_rejects_bad_funasr_device() {
+        let dir = temp_dir("cfg_bad_funasr_device");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("python.exe"), b"dummy").unwrap();
+        let mut cfg = RuntimeConfig::default();
+        cfg.python_path = "python.exe".into();
+        cfg.funasr_device = "vulkan".into();
+        let err = cfg.validate(&dir).unwrap_err();
+        assert!(err.contains("funasr_device"), "错误应点名 funasr_device：{err}");
+        // 旧配置的空串与两个合法值都放行
+        for ok in ["", "cpu", "cuda"] {
+            cfg.funasr_device = ok.into();
+            assert!(cfg.validate(&dir).is_ok(), "funasr_device={ok:?} 应通过校验");
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 }

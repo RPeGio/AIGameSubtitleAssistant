@@ -18,7 +18,7 @@ import type {
   AsrEngineStatus,
   AsrProgress,
   MossBackendProbe,
-  MossDeviceSaveResult,
+  DeviceSaveResult,
   MossInstallStatus,
   RuntimeDiskPrecheck,
   RuntimeInstallSummary,
@@ -1132,9 +1132,14 @@ export const useProjectStore = defineStore("project", () => {
     return invoke<MossBackendProbe>("probe_moss_backend", { device: device ?? null });
   }
 
-  /// 保存 MOSS 推理设备（写 runtime/config.json，下次启动生效）
-  async function setMossDevice(device: string): Promise<MossDeviceSaveResult> {
-    return invoke<MossDeviceSaveResult>("set_moss_device", { device });
+  /// 保存 MOSS 推理设备（写 runtime/config.json 并重建 moss provider，立即生效）
+  async function setMossDevice(device: string): Promise<DeviceSaveResult> {
+    return invoke<DeviceSaveResult>("set_moss_device", { device });
+  }
+
+  /// 保存 FunASR 推理设备（写 runtime/config.json 并重建 funasr provider，立即生效）
+  async function setFunasrDevice(device: string): Promise<DeviceSaveResult> {
+    return invoke<DeviceSaveResult>("set_funasr_device", { device });
   }
 
   /// 比对「已装运行时」与清单（数据源是 installer 写的 runtime/.installed.json）
@@ -1685,6 +1690,7 @@ export const useProjectStore = defineStore("project", () => {
     getAsrEngines,
     probeMossBackend,
     setMossDevice,
+    setFunasrDevice,
     probeMossInstall,
     precheckRuntimeDisk,
     installRuntime,

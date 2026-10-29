@@ -115,6 +115,8 @@ async function openAsrPanel() {
   }
   await loadMossProbe();
   mossDevice.value = mossProbe.value?.configured_device || "auto";
+  const funasr = asrEngines.value.find((e) => e.engine === "funasr");
+  funasrDevice.value = funasr?.device || "cuda";
 }
 
 // ── MOSS 推理设备（第 12 项）────────────────────────────
@@ -201,12 +203,44 @@ async function onDeviceChange(e: Event) {
   }
 }
 
+// ── FunASR 推理设备（第 12 项遗留）──────────────────────
+/// FunASR 走 PyTorch：只有 cpu / cuda 两种落点，cuda 不可用时 worker 侧自动
+/// 回退 CPU（scripts/funasr_worker.py），所以这里不做硬校验。
+const funasrDevice = ref<string>("cuda");
+const funasrSaving = ref(false);
+
+const FUNASR_DEVICE_OPTIONS = [
+  { value: "cuda", label: "CUDA（推荐；不可用时自动回退 CPU）" },
+  { value: "cpu", label: "CPU（最慢，但一定可用）" },
+];
+
+const FUNASR_DEVICE_DOC = [
+  "FunASR 用 PyTorch 推理，只有 CPU / CUDA 两种设备（没有 Vulkan 后端）。",
+  "选 CUDA 但本机没有可用 CUDA 时，worker 会自动回退 CPU 并在日志里说明——这是软回退，不会报错。",
+  "保存后立即重建 FunASR provider 生效；转写进行中会拒绝切换。",
+].join("\n");
+
+async function onFunasrDeviceChange(e: Event) {
+  const value = (e.target as HTMLSelectElement).value;
+  funasrSaving.value = true;
+  try {
+    const res = await projectStore.setFunasrDevice(value);
+    message.success(res.message);
+    funasrDevice.value = res.device;
+    asrEngines.value = await projectStore.getAsrEngines();
+  } catch (err) {
+    message.error(String(err));
+    const funasr = asrEngines.value.find((x) => x.engine === "funasr");
+    funasrDevice.value = funasr?.device || "cuda";
+  } finally {
+    funasrSaving.value = false;
+  }
+}
+
 // 展开 ASR 卡时探测一次引擎状态
 watch(openCard, (v) => {
   if (v === "audio") void openAsrPanel();
-});
-
-async function startAsr() {
+});async function startAsr() {
   try {
     await projectStore.runAsr(asrParams.value);
     message.success("ASR 完成，时间轴已生成");
@@ -512,7 +546,7 @@ async function startEmbedOcr() {
           </span>
         </div>
 
-        <!-- MOSS 推理设备（第 12 项）：写入 runtime/config.json，重启生效 -->
+        <!-- MOSS 推理设备（第 12 项）：写入 runtime/config.json，切设备立即生效 -->
         <div v-if="mossOnly" class="sblk">
           <span class="bt">推理设备</span>
           <div class="prow">
@@ -543,7 +577,34 @@ async function startEmbedOcr() {
           <span v-if="manifestMissing" class="enote warn">
             未读取到安装清单，暂显示全部设备选项
           </span>
-          <span class="enote">保存后重启应用生效；显式指定但本机不具备时会直接报错，不会静默降级</span>
+          <span class="enote">选中即保存并立即生效；显式指定但本机不具备时会直接报错，不会静默降级</span>
+        </div>
+
+        <!-- FunASR 推理设备（第 12 项遗留）：PyTorch 后端，仅 cpu / cuda -->
+        <div v-if="!mossOnly" class="sblk">
+          <span class="bt">推理设备</span>
+          <div class="prow">
+            <div class="pcell">
+              <span class="pl">
+                <span class="pl-t">FunASR 推理设备</span>
+                <InfoDot :text="FUNASR_DEVICE_DOC" title="FunASR 推理设备" />
+              </span>
+              <span class="selwrap">
+                <select
+                  class="selbox"
+                  :value="funasrDevice"
+                  :disabled="funasrSaving"
+                  @change="onFunasrDeviceChange"
+                >
+                  <option v-for="o in FUNASR_DEVICE_OPTIONS" :key="o.value" :value="o.value">
+                    {{ o.label }}
+                  </option>
+                </select>
+                <AppIcon name="chev-d" :size="11" />
+              </span>
+            </div>
+          </div>
+          <span class="enote">选中即保存并立即生效；CUDA 不可用时 worker 自动回退 CPU</span>
         </div>
 
         <!-- 说话人标记：每条 ASR 轨标记为主播语音 / 游戏内容（"选择即生效"）。

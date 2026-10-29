@@ -231,7 +231,7 @@ installer 侧实测（2026-10-24）确认过、且容易踩的三点：
 |---|---|---|---|
 | P1 | `src-tauri/src/lib.rs` | `invoke_handler` 注册 `ai_runtime::backend_probe::probe_moss_backend,` | **已由本分支直接改**（用户 2026-10-22 授权） |
 | P2 | `src-tauri/src/lib.rs` | `invoke_handler` 注册 `ai_runtime::config::set_moss_device,` | **已由本分支直接改**（同上） |
-| P3 | `src-tauri/src/ai_runtime/mod.rs` | *（可选）* `AsrManager` 增加「重置 moss provider」的方法，用于改设备后**即时**生效 | 不做（决策 D3-A：下次启动生效），仅在将来要即时生效时补 |
+| P3 | `src-tauri/src/ai_runtime/mod.rs` | *（可选）* `AsrManager` 增加「重置 moss provider」的方法，用于改设备后**即时**生效 | **已实现**（2026-10-29，本分支直接改：`reload_engine(key)` + provider 换 `RwLock<Arc<dyn AsrProvider>>`，见 §8.2 / §8.7；旧决策 D3-A「下次启动生效」已反转） |
 | P4 | `src-tauri/tauri.conf.json` | `bundle.resources` 加 `"resources": ["resources/runtime/manifest.json"]` | **已由本分支直接改**（2026-10-24 用户指示落清单时一并加好）；installer 侧勿重复添加 |
 | P5 | `src-tauri/src/ai_runtime/backend_probe.rs` | 老卡（算力 < 7.5）不再走 CUDA：`MIN_CUDA_COMPUTE_CAP`、`MachineCaps.cuda_cc` / `cuda_runnable()`、`parse_compute_cap()`、`decide()` 老卡改指「换 vulkan」、`recommend()` 抽成纯函数、报告加 `cuda_compute_cap` / `cuda_runnable`（详见 §8.1） | **已套用**（`351cd5a`，= installer 侧补丁 0001；2026-10-28 `git am --3way` 无冲突） |
 | P6 | `src-tauri/src/ai_runtime/installed_state.rs`（新增）<br>+ `ai_runtime/mod.rs`（`pub mod installed_state;`）<br>+ `src-tauri/src/lib.rs`（注册命令） | 已装运行时 vs 清单比对：`evaluate()` 七态 + `#[tauri::command] probe_moss_install`（详见 §8.4） | **已套用**（`80eda1d`，= installer 侧补丁 0002；同上） |
@@ -309,10 +309,11 @@ invoke("set_moss_device", { device: "" | "cpu" | "cuda" | "vulkan" })
   空串或三种具体后端；非法值 → 报错，不落盘，`config.rs:356-366`）。
 - 落盘目标：`runtime/config.json` 的 `moss_device` 字段（原子写 `RuntimeConfig::save`）；
   读不到/坏文件直接报错，**不会用默认值覆盖**。
-- 返回：`{ device: "cuda", message: "已保存 moss_device=cuda（下次启动生效）" }`
-  （结构体 `MossDeviceSaveResult`，无 `ok` 字段——成功即返回，失败走 `Err`）。
-- **生效时机**：MOSS provider 在 app 启动时 spawn 并绑定设备 ⇒ 改完配置
-  **默认下次启动生效**；若 installer 侧套用补丁 P3，可做即时重置。
+- 返回：`{ device: "cuda", message: "已保存 moss_device=cuda（moss 已重新加载）" }`
+  （结构体 `DeviceSaveResult`，无 `ok` 字段——成功即返回，失败走 `Err`）。
+- **生效时机（2026-10-29 变更）**：保存后立即调 `reload_engine("moss")` 重建该 provider，
+  **不需要重启**；转写进行中时拒绝切换（返回 `"转写进行中，完成后再切换"`）。
+  重建失败不阻断落盘，message 变成 `"已保存 moss_device=…；但 {原因}（重启后生效）"`。
 
 ### 8.3 `check_asr_engines`（已有，不改）
 
@@ -393,6 +394,24 @@ invoke("cancel_runtime_install")                                             // 
   什么也看不到；由自检卡负责说清「缺什么、该装哪个后端」。形态可逆。
 - 打包形态下脚本尚未随包（`bundle.resources` 只有 manifest）⇒ `install_runtime` 会返回可读的 `Err`，
   前端原样提示；补资源映射归分发侧。
+
+### 8.7 `set_funasr_device`（落盘，2026-10-29 引入）
+
+```ts
+invoke("set_funasr_device", { device: "cuda" | "cpu" })   // 也接受 "" / "auto"，均归一为 cuda
+```
+
+- 返回 `DeviceSaveResult`（与 §8.2 同一结构体），message 形如
+  `"已保存 funasr_device=cuda（funasr 已重新加载）"`。
+- 白名单只有 `{"", "cpu", "cuda"}`——**FunASR 走 torch，没有 Vulkan 后端**，写 `vulkan` 会被
+  `RuntimeConfig::validate()` 打回（手改 `config.json` 也一样，启动时报错而非静默忽略）。
+- **默认 `cuda`、但软回退**：`scripts/funasr_worker.py:46 pick_device` 在 CUDA 不可用（缺库/无卡）时
+  自动落 CPU 并跑通 ⇒ UI **不做硬报错**，只在尾注写明回退行为（与 §9 里 MOSS 的「绝不静默降级」相反，
+  因为两者后果不同：MOSS 静默降级会跑出一个假 GPU 结论，FunASR 只是慢）。
+- 生效时机同 §8.2：保存后立即 `reload_engine("funasr")` 重建 worker，转写中拒绝切换。
+- 旧决策 D5-A「本期只做 moss」已由用户 m01567 反转——FunASR 设备下拉已补
+  （`src/views/AsrView.vue` 的 `FUNASR_DEVICE_OPTIONS`），两块 UI 互斥出现（选 MOSS 显示 MOSS 设备、
+  选 FunASR 显示 FunASR 设备）。
 
 
 ---

@@ -252,11 +252,11 @@ export interface MossBackendProbe {
   error?: string | null;
 }
 
-/// MOSS 推理设备保存结果（Rust `set_moss_device`）
-export interface MossDeviceSaveResult {
-  /// 实际写入的 moss_device 值（"" = auto）
+/// 推理设备保存结果（Rust `set_moss_device` / `set_funasr_device` 共用）
+export interface DeviceSaveResult {
+  /// 实际写入的值（moss 的 "" = auto；funasr 恒为 cpu/cuda）
   device: string;
-  /// 面向用户的结果说明
+  /// 面向用户的结果说明（含是否已立即生效）
   message: string;
 }
 
