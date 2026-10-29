@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -218,7 +218,7 @@ fn query_free_bytes(path: &Path) -> Option<u64> {
         "$d = Get-PSDrive -Name {} -ErrorAction SilentlyContinue; if ($d) {{ $d.Free }}",
         letter
     );
-    let out = Command::new("powershell")
+    let out = crate::subprocess::hidden("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .output()
         .ok()?;
@@ -256,7 +256,7 @@ impl RuntimeInstaller {
                 // 只杀根可能留下悬挂的 IO；/T 覆盖整棵树
                 #[cfg(windows)]
                 {
-                    let _ = Command::new("taskkill")
+                    let _ = crate::subprocess::hidden("taskkill")
                         .args(["/PID", &child.id().to_string(), "/T", "/F"])
                         .output();
                 }
@@ -281,9 +281,11 @@ impl Drop for RunningGuard<'_> {
 
 /// 找 `scripts/bootstrap_runtime.ps1` 的候选路径（第一个存在的胜出）。
 ///
-/// 注意：脚本**没有**随 app 打包（`bundle.resources` 只放了 manifest），
-/// 所以打包形态下默认找不到——这是刻意的现状：安装器目前是"仓库内/开发期"能力，
-/// 要进正式分发得把脚本一起塞进 resources（见契约 §6.2 的后续项）。
+/// 脚本**随安装包发布**：`pnpm build` 先跑 `scripts/sync_bundle_resources.mjs`
+/// 把它拷进 `src-tauri/resources/scripts/`，再由 `bundle.resources` 带进安装包，
+/// 最终落在 `<exe目录>/resources/scripts/bootstrap_runtime.ps1`（见候选列表里的
+/// `dir/resources/...`）。Windows 上 `resource_dir()` 就是 exe 所在目录。
+/// 开发期则直接命中仓库里的 `scripts/`。
 pub fn bootstrap_candidates(runtime_dir: &Path) -> Vec<PathBuf> {
     let mut v = Vec::new();
     if let Ok(p) = std::env::var("GSA_BOOTSTRAP_SCRIPT") {
@@ -404,6 +406,37 @@ fn push_tail(buf: &mut String, text: &str) {
     }
 }
 
+/// 把这次安装的诊断落到 `runtime/logs/install.log`（每次安装覆盖上一次）。
+///
+/// 为什么要文件：打包形态下 powershell 子进程**没有可见控制台**（我们刻意加了
+/// CREATE_NO_WINDOW），安装失败时用户只看到一句 toast，没处看原因——真机反馈
+/// 2026-10-29 正是卡在"命令行一闪而过、看不到报错"上。失败文案会带上这个路径。
+fn write_install_log(
+    runtime_dir: &Path,
+    script: &Path,
+    flavor: &str,
+    outcome: &StreamOutcome,
+) -> Option<PathBuf> {
+    let dir = runtime_dir.join("logs");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join("install.log");
+    let status = outcome
+        .status
+        .as_ref()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "已取消（没有退出码）".into());
+    let stderr = outcome.stderr_tail.trim();
+    let body = format!(
+        "脚本: {}\nflavor: {}\n退出码: {}\n\n── stderr（尾部 {STDERR_TAIL_LIMIT} 字符）──\n{}\n",
+        script.display(),
+        flavor,
+        status,
+        if stderr.is_empty() { "（空）" } else { stderr }
+    );
+    std::fs::write(&path, body).ok()?;
+    Some(path)
+}
+
 fn run_install(
     app: &tauri::AppHandle,
     installer: &RuntimeInstaller,
@@ -464,7 +497,7 @@ fn run_install(
         .ok_or_else(|| format!("找不到安装脚本 {BOOTSTRAP_SCRIPT_REL}（打包形态下脚本未随 app 发布）"))?;
 
     // 3) 起子进程：stdout 是 JSONL 协议流，stderr 是人类诊断
-    let mut cmd = Command::new("powershell");
+    let mut cmd = crate::subprocess::hidden("powershell");
     cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
         .arg(&script)
         .arg("-Items")
@@ -498,7 +531,15 @@ fn run_install(
         move |evt| emit_event(&app_for_events, evt),
         &|| installer.cancel(),
     )?;
-    Ok(summarize(outcome))
+    // 落一份诊断日志：失败时把它写进文案，用户不用再猜"刚才那个黑窗口报了什么"
+    let log_path = write_install_log(&runtime_dir, &script, &want_flavor, &outcome);
+    let mut summary = summarize(outcome);
+    if !summary.ok {
+        if let Some(p) = log_path {
+            summary.message = format!("{}（日志：{}）", summary.message, p.display());
+        }
+    }
+    Ok(summary)
 }
 
 /// 一次运行的原始产物（未套退出码语义）
@@ -867,14 +908,14 @@ mod tests {
         // 这里借 cmd 的 /c exit 快速拿到真实 ExitStatus
         #[cfg(windows)]
         {
-            Command::new("cmd")
+            crate::subprocess::hidden("cmd")
                 .args(["/c", "exit", &code.to_string()])
                 .status()
                 .expect("cmd 应可用")
         }
         #[cfg(not(windows))]
         {
-            Command::new("sh")
+            crate::subprocess::hidden("sh")
                 .args(["-c", &format!("exit {code}")])
                 .status()
                 .expect("sh 应可用")
@@ -991,7 +1032,7 @@ mod tests {
         let manifest = dir.join("manifest.json");
         std::fs::write(&manifest, MANIFEST).unwrap();
 
-        let child = Command::new("powershell")
+        let child = crate::subprocess::hidden("powershell")
             .args([
                 "-NoProfile",
                 "-NonInteractive",
@@ -1056,7 +1097,7 @@ mod tests {
             return;
         };
         // 用一个睡 5 秒的子进程模拟"安装中"，验证 cancel 后 stream_child 立即返回
-        let child = Command::new("powershell")
+        let child = crate::subprocess::hidden("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 5"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

@@ -12,7 +12,7 @@
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::OnceLock;
 
 /// 内嵌二进制在 resources 下的子目录名
@@ -77,7 +77,7 @@ pub fn candidates_for(exe_dir: Option<&Path>, resource_dir: Option<&Path>, name:
 ///
 /// 不能只判 `exists()`：解压中断、被杀掉的半个文件、架构不符的二进制都会「存在」但跑不动。
 fn runs(path: &Path) -> bool {
-    Command::new(path)
+    crate::subprocess::hidden(path)
         .arg("-version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -88,7 +88,7 @@ fn runs(path: &Path) -> bool {
 
 /// PATH 里有没有这个命令（Windows 的 CreateProcess 会自动搜 PATH）
 fn runs_on_path(stem: &str) -> bool {
-    Command::new(stem)
+    crate::subprocess::hidden(stem)
         .arg("-version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -153,7 +153,7 @@ pub struct FfmpegStatus {
 /// 取版本号：`ffmpeg -version` 首行形如
 /// `ffmpeg version n8.1.3-25-g611cec792a-20261028 Copyright (c) 2000-2026 the FFmpeg developers`
 fn version_of(path: &Path) -> String {
-    let out = match Command::new(path)
+    let out = match crate::subprocess::hidden(path)
         .arg("-version")
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -174,8 +174,24 @@ fn version_of(path: &Path) -> String {
 /// 欢迎页 FFmpeg 自检卡的数据源。
 ///
 /// 只读探测，不改配置、不下载任何东西：内嵌目录优先，其次系统 PATH。
+/// **必须 async**：里面要跑两次 `-version`（冷启动时杀毒软件扫描可上百毫秒），
+/// 同步命令跑在主线程上会把欢迎页卡住（真机反馈 2026-10-29）。
 #[tauri::command]
-pub fn check_ffmpeg() -> FfmpegStatus {
+pub async fn check_ffmpeg() -> FfmpegStatus {
+    tauri::async_runtime::spawn_blocking(ffmpeg_status)
+        .await
+        .unwrap_or_else(|e| FfmpegStatus {
+            ready: false,
+            source: "missing".into(),
+            ffmpeg: String::new(),
+            ffprobe: String::new(),
+            version: String::new(),
+            message: format!("ffmpeg 自检失败: {e}"),
+        })
+}
+
+/// 自检的实际实现（阻塞版，供命令与单测复用）
+pub fn ffmpeg_status() -> FfmpegStatus {
     let ff = ffmpeg();
     let fp = ffprobe();
     let mut status = FfmpegStatus {

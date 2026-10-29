@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 pub mod ffmpeg_locator; // ffmpeg/ffprobe 定位（内嵌优先 → 系统 PATH）
 pub mod waveform; // 时间轴音频波形峰值提取（get_audio_peaks）
@@ -139,7 +138,7 @@ fn ffprobe_output_to_metadata(parsed: &FfprobeOutput, path: &str) -> Result<Vide
 
 /// 调用 ffprobe 并解析其 JSON 输出，提取视频元数据
 fn probe_video(path: &str, ffprobe: &PathBuf) -> Result<VideoMetadata, String> {
-    let output = Command::new(ffprobe)
+    let output = crate::subprocess::hidden(ffprobe)
         .args([
             "-v",
             "quiet",
@@ -174,9 +173,14 @@ fn probe_video(path: &str, ffprobe: &PathBuf) -> Result<VideoMetadata, String> {
 /// - `Ok(VideoMetadata)`: 视频元数据
 /// - `Err("FFMPEG_NOT_FOUND: …")`: 内嵌目录与系统 PATH 都找不到 ffmpeg/ffprobe
 #[tauri::command]
-pub fn get_video_metadata(path: String) -> Result<VideoMetadata, String> {
-    let ffprobe = resolve_ffprobe().ok_or_else(ffmpeg_missing)?;
-    probe_video(&path, &ffprobe)
+pub async fn get_video_metadata(path: String) -> Result<VideoMetadata, String> {
+    // ffprobe 子进程要几十到几百毫秒：丢到 blocking 线程池，别占主线程
+    tauri::async_runtime::spawn_blocking(move || {
+        let ffprobe = resolve_ffprobe().ok_or_else(ffmpeg_missing)?;
+        probe_video(&path, &ffprobe)
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("视频元数据探测失败: {e}")))
 }
 
 // ─── 帧提取（OCR 用）──────────────────────────────────────
@@ -285,7 +289,7 @@ pub fn extract_frames_bytes(
     let ffmpeg = resolve_ffmpeg().ok_or_else(ffmpeg_missing)?;
     let (x, y, w, h) = crop_geometry(x1, y1, x2, y2, video_w, video_h)?;
 
-    let mut child = Command::new(&ffmpeg)
+    let mut child = crate::subprocess::hidden(&ffmpeg)
         .arg("-ss")
         .arg(start.to_string())
         .arg("-i")
@@ -380,7 +384,7 @@ pub fn extract_single_frame_bytes(
     let ffmpeg = resolve_ffmpeg().ok_or_else(ffmpeg_missing)?;
     let (x, y, w, h) = crop_geometry(x1, y1, x2, y2, video_w, video_h)?;
 
-    let mut child = Command::new(&ffmpeg)
+    let mut child = crate::subprocess::hidden(&ffmpeg)
         .arg("-y")
         .arg("-ss")
         .arg(time.to_string())
@@ -460,7 +464,7 @@ pub fn scan_frame_hashes(
     let ffmpeg = resolve_ffmpeg().ok_or_else(ffmpeg_missing)?;
     let (x, y, w, h) = crop_geometry(x1, y1, x2, y2, video_w, video_h)?;
 
-    let mut child = Command::new(&ffmpeg)
+    let mut child = crate::subprocess::hidden(&ffmpeg)
         .arg("-ss")
         .arg(start.to_string())
         .arg("-i")
@@ -539,7 +543,7 @@ pub fn extract_audio(video_path: &str, out_dir: &Path) -> Result<PathBuf, String
     fs::create_dir_all(out_dir).map_err(|e| format!("无法创建音频目录: {}", e))?;
 
     let output_path = out_dir.join("audio.wav");
-    let output = Command::new(&ffmpeg)
+    let output = crate::subprocess::hidden(&ffmpeg)
         .arg("-y")
         .arg("-i")
         .arg(video_path)

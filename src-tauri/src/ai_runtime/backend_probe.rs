@@ -10,7 +10,6 @@
 
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use tauri::Manager;
 
 use super::config::RuntimeConfig;
@@ -211,7 +210,7 @@ pub fn probe_machine() -> MachineCaps {
 /// NVIDIA 探测：两段式。先问 `compute_cap`（需要驱动 ≥ 510），拿不到再退回
 /// `nvidia-smi -L` 的卡名映射（老卡老驱动也能判个八九不离十）。
 fn probe_nvidia() -> (bool, Option<u32>) {
-    if let Ok(o) = Command::new("nvidia-smi")
+    if let Ok(o) = crate::subprocess::hidden("nvidia-smi")
         .args(["--query-gpu=compute_cap", "--format=csv,noheader"])
         .output()
     {
@@ -223,7 +222,7 @@ fn probe_nvidia() -> (bool, Option<u32>) {
             // 成功但值是 N/A（驱动太老）：继续走 -L 的卡名兜底
         }
     }
-    match Command::new("nvidia-smi").arg("-L").output() {
+    match crate::subprocess::hidden("nvidia-smi").arg("-L").output() {
         Ok(o) if o.status.success() => {
             let text = String::from_utf8_lossy(&o.stdout);
             (true, smi_list_first_name(&text).as_deref().and_then(cc_from_gpu_name))
@@ -319,7 +318,7 @@ fn vulkan_loader_present() -> bool {
 }
 
 fn vulkaninfo_gpus_nonempty() -> bool {
-    Command::new("vulkaninfo")
+    crate::subprocess::hidden("vulkaninfo")
         .arg("--summary")
         .output()
         .map(|o| {
@@ -611,10 +610,34 @@ pub struct BackendProbeReport {
     pub error: Option<String>,
 }
 
+impl BackendProbeReport {
+    /// 兜底报告：探测本身没跑起来（线程 panic / 内部错误）时给前端一个确定形状，
+    /// 免得前端拿到 `undefined` 后整块 UI 不渲染。
+    pub fn unavailable(message: String) -> Self {
+        Self {
+            configured_device: String::new(),
+            requested: "auto".into(),
+            available: false,
+            backend: String::new(),
+            reason: message.clone(),
+            source: "reject".into(),
+            recommendation: String::new(),
+            recommendation_reason: String::new(),
+            machine_cuda: false,
+            machine_vulkan: false,
+            cuda_compute_cap: None,
+            cuda_runnable: false,
+            gpus: Vec::new(),
+            manifest_found: false,
+            manifest_flavors: Vec::new(),
+            error: Some(message),
+        }
+    }
+}
+
 /// manifest 里可安装的 MOSS 后端集合
 #[derive(Debug, Clone, PartialEq)]
-pub struct ManifestFlavors {
-    /// manifest 是否找到
+pub struct ManifestFlavors {    /// manifest 是否找到
     pub found: bool,
     /// id=="moss" 的条目声明的 flavor（去重、小写，保持出现顺序）
     pub flavors: Vec<String>,
@@ -623,8 +646,7 @@ pub struct ManifestFlavors {
 /// 读取 manifest 中 id=="moss" 的 flavor 集合。
 /// manifest 未找到 → found=false（前端退化显示全部四项）；
 /// 找到但没有 moss 条目 → found=true + 空集合（前端不给选任何具体 flavor）。
-pub fn read_manifest_flavors(manifest_path: Option<&Path>) -> ManifestFlavors {
-    let Some(path) = manifest_path else {
+pub fn read_manifest_flavors(manifest_path: Option<&Path>) -> ManifestFlavors {    let Some(path) = manifest_path else {
         return ManifestFlavors { found: false, flavors: Vec::new() };
     };
     let Ok(text) = std::fs::read_to_string(path) else {
@@ -727,7 +749,7 @@ pub fn probe_backend(
 /// 跑 `info <model>` 拿 stderr（`[mt I] backend:` 行在其内）。
 /// 显式设备才设 MTD_DEVICE——这样实测到的后端与转写时真实生效的一致。
 fn run_info(binary: &Path, model: &Path, req: DeviceRequest) -> Result<String, String> {
-    let mut cmd = Command::new(binary);
+    let mut cmd = crate::subprocess::hidden(binary);
     cmd.arg("info").arg(model);
     match req {
         DeviceRequest::Auto => {}
@@ -757,7 +779,7 @@ fn run_info(binary: &Path, model: &Path, req: DeviceRequest) -> Result<String, S
 
 /// Vulkan 枚举到的 GPU 名（vulkaninfo --summary）；无 Vulkan 时为空
 pub fn probe_vulkan_gpus() -> Vec<String> {
-    Command::new("vulkaninfo")
+    crate::subprocess::hidden("vulkaninfo")
         .arg("--summary")
         .output()
         .map(|o| {
@@ -773,8 +795,12 @@ pub fn probe_vulkan_gpus() -> Vec<String> {
 /// Tauri 命令：探测 MOSS 后端（设备下拉 + 硬报错展示）
 ///
 /// device 省略时按当前配置的 moss_device 判定；传入时按该设备判定（下拉预览）。
+///
+/// **必须 async**：探测要跑 `moss info`（加载几百 MB GGUF 元数据）+ `nvidia-smi`
+/// + `vulkaninfo`，几秒钟。Tauri 的同步命令跑在主线程上，之前正是它把整个窗口
+/// 冻住（真机反馈 2026-10-29：连拖动窗口都卡）。这里丢到 blocking 线程池执行。
 #[tauri::command]
-pub fn probe_moss_backend(
+pub async fn probe_moss_backend(
     app: tauri::AppHandle,
     device: Option<String>,
 ) -> BackendProbeReport {
@@ -782,7 +808,18 @@ pub fn probe_moss_backend(
         app.path().app_data_dir().ok().map(|d| d.join("runtime")),
     );
     let config = RuntimeConfig::load(&runtime_dir).unwrap_or_default();
-    probe_backend(&runtime_dir, &config, device.as_deref(), &manifest_candidates(&app, &runtime_dir))
+    let candidates = manifest_candidates(&app, &runtime_dir);
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        probe_backend(&runtime_dir, &config, device.as_deref(), &candidates)
+    })
+    .await;
+    match result {
+        Ok(report) => report,
+        Err(e) => {
+            // 探测线程 panic 不该让前端拿到 undefined：给一份"不可用"报告
+            BackendProbeReport::unavailable(format!("后端探测失败: {e}"))
+        }
+    }
 }
 
 /// manifest 候选路径：runtime 目录内 → Tauri 打包布局（exe 同级 runtime/ 或

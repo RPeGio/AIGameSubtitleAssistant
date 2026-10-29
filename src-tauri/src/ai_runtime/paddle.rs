@@ -6,7 +6,7 @@ use crate::ai_runtime::{OcrError, OcrProvider, OcrResult, RuntimeConfig};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
@@ -104,7 +104,7 @@ impl PaddleProvider {
             runtime_dir.join(&config.python_path)
         };
 
-        let mut cmd = Command::new(&python);
+        let mut cmd = crate::subprocess::hidden(&python);
         cmd.arg(&worker_script)
             .env("PYTHONPATH", &pythonpath)
             // paddleocr 3.x 基于 paddlex，模型缓存目录走 PADDLE_PDX_CACHE_HOME

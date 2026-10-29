@@ -409,6 +409,11 @@ pub trait AsrProvider: Send + Sync {
     fn describe(&self) -> String {
         String::new()
     }
+    /// 后台预热（启动后由管理器的后台线程调用一次）。
+    ///
+    /// 默认空实现——探测成本高的引擎（MOSS 要跑 `info` 加载 GGUF 元数据）在这里做，
+    /// **不要**放进构造函数，否则会把 setup 阶段的主线程卡住（真机反馈 2026-10-29）。
+    fn warm_up(&self) {}
     /// 实测生效的推理后端（如 "CUDA0"/"Vulkan1"/"CPU"），默认空。
     /// 仅 MOSS 有实证来源（spawn 时 info 的 [mt I] backend 行）；其余引擎
     /// 实测需拉起重依赖子进程，欢迎页探针不做。
@@ -585,11 +590,24 @@ impl AsrManager {
         // 双引擎并存：各自按路径字段是否齐全决定是否真的拉起 provider
         let funasr = build_funasr(&config, &runtime_dir);
         let moss = build_moss(&config, &runtime_dir);
+        let funasr: Arc<dyn AsrProvider> = Arc::from(funasr);
+        let moss: Arc<dyn AsrProvider> = Arc::from(moss);
+        // 预热放到后台：MOSS 的 `info` 要加载几百 MB GGUF 元数据，放在构造里会在
+        // setup 阶段冻住主线程（窗口出来一片死寂、连拖动都卡）。这里起一个线程跑
+        // warm_up()，命令与转写各自另有兜底，就绪状态照旧如实上报。
+        {
+            let providers = vec![Arc::clone(&funasr), Arc::clone(&moss)];
+            std::thread::spawn(move || {
+                for p in providers {
+                    p.warm_up();
+                }
+            });
+        }
         Self {
             config: RwLock::new(config),
             runtime_dir,
-            funasr: RwLock::new(Arc::from(funasr)),
-            moss: RwLock::new(Arc::from(moss)),
+            funasr: RwLock::new(funasr),
+            moss: RwLock::new(moss),
             transcribing: AtomicBool::new(false),
         }
     }

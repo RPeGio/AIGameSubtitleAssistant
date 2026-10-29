@@ -10,6 +10,7 @@ pub mod asr;           // ASR 语音识别流水线（Phase 3）
 pub mod llm;           // LLM 推理流水线（Phase 5）
 pub mod fuse;          // AI 融合流水线（Phase 4）
 pub mod export;        // 导出（Phase 6 实现）
+pub mod subprocess;    // 子进程静默启动约定（CREATE_NO_WINDOW）
 
 use ai_runtime::{config::resolve_runtime_dir, AsrManager, EmbedManager, LlmManager, OcrManager, RuntimeConfig};
 use tauri::Manager; // app.path() 等
