@@ -94,7 +94,10 @@ runtime/
 > The CUDA/cuDNN runtime libraries are **not shipped** (CUDA EULA 1.2.2 forbids distributing the SDK
 > as a stand-alone product): after the OCR baseline lands, the installer pulls the eight `nvidia-*`
 > wheels with `pip` from a PyPI mirror (~1.7 GB, Huawei Cloud by default, `--require-hashes`). For development you can still use the step-by-step scripts
-> (`bootstrap_ocr.ps1` etc.). How the artifacts are built is described in
+> (`bootstrap_ocr.ps1` etc.). A flaky connection is no longer fatal: the downloader works in
+> 64 MB segments with resume (cache under `<runtime>\.downloads\`), tunable via
+> `-SegmentMB` / `-NoResume` / `-MaxAttempts`, and multiple sources come from the manifest's
+> `urls[]` (contract §4.5). How the artifacts are built is described in
 > `scripts/package_ocr_runtime.ps1` and design doc §8.11.
 
 ### Key config.json fields

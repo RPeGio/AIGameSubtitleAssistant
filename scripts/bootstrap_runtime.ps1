@@ -39,6 +39,10 @@ flavor 解析规则（每个条目独立匹配）：
   -SkipGpuLibs          跳过 CUDA 运行库的 pip 阶段（排障/离线用）
   -PipUseProxy          pip 阶段沿用系统代理（默认临时绕过：国内镜像直连更快）
   -Force                忽略已安装标记，强制重装
+  -SegmentMB <int>      分段大小（MB），默认 64：按此把每个资产切成若干段下载，
+                        断流只损失当前段，已下的段跨进程保留（见契约 §4.5）
+  -NoResume             丢弃 .downloads 里已下的分段，从头开始（排障用）
+  -MaxAttempts <int>    单段最多尝试次数，默认 3
   -Manifest <path>      覆盖内置清单（离线/自测用）
   -RuntimeDir <path>    落地根目录，默认 <仓库>/runtime；Rust 侧会传绝对路径
 
@@ -54,6 +58,9 @@ param(
   [switch]$PipUseProxy,
   [switch]$SkipGpuLibs,
   [switch]$Force,
+  [int]$SegmentMB = 64,
+  [switch]$NoResume,
+  [int]$MaxAttempts = 3,
   [string]$Manifest = "",
   [string]$RuntimeDir = ""
 )
@@ -334,13 +341,135 @@ function Save-State {
   [System.IO.File]::WriteAllText($stateFile, $json, (New-Object System.Text.UTF8Encoding($false)))
 }
 
-# ─── 下载（WebClient 异步 + 轮询进度，PS 5.1 可用）──────────────────────
+# ─── 下载（curl 分段 + 断点续传 + 多源回退）─────────────────────────────
+# 为什么不用 WebClient：它没有续传，断流就从 0 开始（实测一次 1.77 GB 的包在 57%
+# 断掉后整包重下）；也没有分段，单流在跨境链路上往往只有 0.1–0.5 MB/s。
+# 改用系统自带的 curl.exe（Win10 1803+ 均有）：
+#   · 按 -SegmentMB 切成若干段，每段一个文件，失败只重下这一段；
+#   · 段文件落在 <runtime>\.downloads\<id>-<sha8>\，跨进程保留 ⇒ 下次运行接着下；
+#   · curl -C 依赖服务端支持 Range，所以**先探测 206**：不支持就退回单流，
+#     否则对忽略 Range 的镜像用续传会把文件越下越大（实测 curl -C - 把 1770 MB
+#     下成 2036 MB）。
 function Resolve-Url([string]$url) {
   if (-not $Mirror) { return $url }
   if ($url -match "^https?://") { return "$Mirror$url" }   # 代理前缀拼接，不插分隔符
   return "$($Mirror.TrimEnd('/'))/$($url.TrimStart('/'))"
 }
 
+# 候选源：清单的 urls[]（顺序即优先级）→ 镜像前缀 → 直连；去重保序
+function Get-UrlCandidates($it) {
+  $list = New-Object System.Collections.ArrayList
+  foreach ($u in @($it.urls)) { if ($u) { [void]$list.Add([string]$u) } }
+  if ($it.url) {
+    if ($Mirror) { [void]$list.Add((Resolve-Url ([string]$it.url))) }
+    [void]$list.Add([string]$it.url)
+  }
+  $seen = @{}
+  $out = @()
+  foreach ($u in $list) { if (-not $seen.ContainsKey($u)) { $seen[$u] = $true; $out += $u } }
+  return $out
+}
+
+function Get-FileLength([string]$p) {
+  if (Test-Path -LiteralPath $p) { return [int64](Get-Item -LiteralPath $p).Length }
+  return [int64]0
+}
+
+# 人类可读体积（只在 stderr/事件 detail 里用，不参与协议）
+function Format-MB([int64]$bytes) {
+  if ($bytes -ge 1GB) { return ("{0:N2} GB" -f ($bytes / 1GB)) }
+  return ("{0:N1} MB" -f ($bytes / 1MB))
+}
+
+# 探测 Range 支持：返回 @{ ok; length }（length=0 表示服务端没给总长）
+function Test-RangeSupport([string]$url) {
+  try {
+    $out = & curl.exe -sS -L --max-time 25 -r 0-0 -D - -o NUL $url 2>$null
+    $text = ($out | Out-String)
+    if ($text -match "(?m)^HTTP/[0-9.]+ 206") {
+      $len = [int64]0
+      if ($text -match "(?i)Content-Range:\s*bytes\s+0-0/(\d+)") { $len = [int64]$Matches[1] }
+      return @{ ok = $true; length = $len }
+    }
+  } catch { }
+  return @{ ok = $false; length = [int64]0 }
+}
+
+# 下载一段（含段内续传：已落地的字节不再重下）。失败抛异常，由调用方重试。
+# $progress 是 scriptblock，收一个参数 = 本段已拿到的字节数（用于总进度）。
+function Invoke-CurlSegment([string]$url, [string]$segFile, [int64]$offset, [int64]$length, [scriptblock]$progress) {
+  $piece = "$segFile.curlpart"
+
+  # 上次被中断时留下的 .curlpart 是本段的**连续前缀**（每次尝试都从 offset+已下 开始
+  # 写一个全新文件），先并进段文件 ⇒ 跨进程续传真的从断点继续，而不是重下整段。
+  if ((Test-Path -LiteralPath $piece) -and (Get-FileLength $piece) -gt 0) {
+    $fin0 = [System.IO.File]::Open($segFile, [System.IO.FileMode]::Append)
+    $inp0 = [System.IO.File]::OpenRead($piece)
+    try { $inp0.CopyTo($fin0) } finally { $inp0.Dispose(); $fin0.Dispose() }
+    Remove-Item -LiteralPath $piece -Force -ErrorAction SilentlyContinue
+  }
+
+  $have = Get-FileLength $segFile
+  if ($have -gt $length) { Remove-Item -LiteralPath $segFile -Force; $have = 0 }
+  if ($have -eq $length -and $length -gt 0) { return }
+
+  Remove-Item -LiteralPath $piece -Force -ErrorAction SilentlyContinue
+
+  $from = $offset + $have
+  $to = $offset + $length - 1
+  $curlArgs = @(
+    "-sS", "-L", "--fail", "--retry", "2", "--retry-delay", "2",
+    "--connect-timeout", "25", "--speed-limit", "1024", "--speed-time", "90",
+    "-r", "$from-$to", "-o", $piece, $url
+  )
+
+  # 直接造 Process：Start-Process -PassThru 拿到的对象在进程退出后 ExitCode 常为
+  # 空（本机实测每次都拿到空串，导致"下完了却判失败"），.NET API 才稳。
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = "curl.exe"
+  $psi.Arguments = (($curlArgs | ForEach-Object { '"' + ([string]$_).Replace('"', '\"') + '"' }) -join ' ')
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $psi.RedirectStandardError = $true
+  $proc = [System.Diagnostics.Process]::Start($psi)
+  $errTask = $proc.StandardError.ReadToEndAsync()
+  $lastPct = -1
+  $lastTick = Get-Date
+  while (-not $proc.HasExited) {
+    Start-Sleep -Milliseconds 250
+    if ($progress) {
+      $got = [int64]$have + (Get-FileLength $piece)
+      $pct = if ($length -gt 0) { [math]::Floor(([double]$got / [double]$length) * 100) } else { 0 }
+      if ($pct -ne $lastPct -or ((Get-Date) - $lastTick).TotalSeconds -ge 3) {
+        & $progress $got
+        $lastPct = $pct
+        $lastTick = Get-Date
+      }
+    }
+  }
+  $proc.WaitForExit()
+  $code = $proc.ExitCode
+  $err = ""
+  try { $err = ((@($errTask.Result) -join " ")).Trim() } catch { }
+  $proc.Dispose()
+
+  $got = Get-FileLength $piece
+  if ($code -ne 0 -or $got -le 0) {
+    if ($err) { $err = ($err -split "`r?`n" | Select-Object -Last 2) -join " / " }
+    throw "SEGMENT_FAILED 段 $from-$to（curl 退出码 $code，$got 字节）：$err"
+  }
+  # 追加进段文件（curl 的 --append 只用于上传，下载续传只能自己拼）
+  $fin = [System.IO.File]::Open($segFile, [System.IO.FileMode]::Append)
+  $inp = [System.IO.File]::OpenRead($piece)
+  try { $inp.CopyTo($fin) } finally { $inp.Dispose(); $fin.Dispose() }
+  Remove-Item -LiteralPath $piece -Force -ErrorAction SilentlyContinue
+
+  $now = Get-FileLength $segFile
+  if ($now -gt $length) { throw "SEGMENT_OVERRUN 段 $offset 有 $now 字节，超过 $length（服务端没按 Range 返回？）" }
+  if ($now -lt $length) { throw "SEGMENT_SHORT 段 $offset 只有 $now/$length 字节" }
+}
+
+# 单流兜底（源不支持 Range 时用；不做续传，避免对忽略 Range 的镜像越下越大）
 function Invoke-Download([string]$url, [string]$dest, $item, $flavor, [int64]$expectedSize) {
   $wc = New-Object System.Net.WebClient
   $wc.Headers.Add("User-Agent", "gsa-bootstrap/1")
@@ -377,6 +506,124 @@ function Invoke-Download([string]$url, [string]$dest, $item, $flavor, [int64]$ex
   } finally {
     $wc.Dispose()
   }
+}
+
+# 按顺序拼接分段并核对总长
+function Join-Segments([string[]]$files, [string]$dest, [int64]$expectedSize) {
+  $tmp = "$dest.joining"
+  Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+  $out = [System.IO.File]::Create($tmp)
+  try {
+    foreach ($f in $files) {
+      $inp = [System.IO.File]::OpenRead($f)
+      try { $inp.CopyTo($out) } finally { $inp.Dispose() }
+    }
+  } finally { $out.Dispose() }
+  $len = Get-FileLength $tmp
+  if ($expectedSize -gt 0 -and $len -ne $expectedSize) {
+    throw "JOIN_MISMATCH 拼装后 $len 字节，期望 $expectedSize"
+  }
+  Move-Item -LiteralPath $tmp -Destination $dest -Force
+}
+
+# 入口：选源 → 分段下载（可续传）→ 拼接；源不支持 Range 时退回单流
+function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $flavor) {
+  # 分段依赖系统自带 curl（Windows 10 1803+ 都有）；老系统上别硬失败，退回单流
+  if ($SegmentMB -gt 0 -and -not (Get-Command curl.exe -ErrorAction SilentlyContinue)) {
+    Log "未找到 curl.exe（Win10 1803+ 自带），退回单流下载（无分段、无续传）"
+    $SegmentMB = 0
+  }
+
+  $expectedSize = [int64]0
+  if ($it.size) { $expectedSize = [int64]$it.size }
+  $candidates = @(Get-UrlCandidates $it)
+  if ($candidates.Count -eq 0) { throw "清单条目 $id 没有任何 url" }
+
+  $rangeUrl = $null
+  $plainUrl = $null
+  foreach ($u in $candidates) {
+    if ($SegmentMB -le 0) { $plainUrl = $u; break }
+    $probe = Test-RangeSupport $u
+    if ($probe.ok) {
+      if ($probe.length -gt 0) { $expectedSize = $probe.length }
+      $rangeUrl = $u
+      Log "分段下载源：$u（支持 Range，总长 $(Format-MB $expectedSize)）"
+      break
+    }
+    if (-not $plainUrl) { $plainUrl = $u }
+    Log "跳过 $u（不支持 Range，或探测失败）"
+  }
+
+  # 不支持 Range / 未知长度 / 关掉分段 ⇒ 单流，且逐个候选源回退
+  # （镜像前缀会把 localhost 之类也拼成死的，必须靠回退兜住）
+  if (-not $rangeUrl -or $expectedSize -le 0) {
+    $lastErr = $null
+    foreach ($u in $candidates) {
+      try {
+        Log "单流下载：$u"
+        Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
+        Invoke-Download $u $dest $id $flavor $expectedSize
+        return
+      } catch {
+        $lastErr = $_.Exception.Message
+        Log "单流源失败（$u）：$lastErr"
+      }
+    }
+    throw "所有候选源都失败：$lastErr"
+  }
+
+  $segBytes = [int64]$SegmentMB * 1MB
+  $count = [int]([math]::Ceiling([double]$expectedSize / [double]$segBytes))
+  if ($count -lt 1) { $count = 1 }
+  if (-not (Test-Path -LiteralPath $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null }
+
+  $resumeBytes = 0
+  for ($k = 0; $k -lt $count; $k++) {
+    $off = [int64]$k * $segBytes
+    $len = [math]::Min($segBytes, $expectedSize - $off)
+    $resumeBytes += [int64][math]::Min((Get-FileLength (Join-Path $cacheDir ("seg{0:d3}.bin" -f $k))), $len)
+  }
+  if ($resumeBytes -gt 0) { Log "续传：缓存里已有 $(Format-MB $resumeBytes)，只需补 $(Format-MB ($expectedSize - $resumeBytes))" }
+  else { Log "分段下载：$count 段 × $(Format-MB $segBytes)，缓存 $cacheDir" }
+
+  $files = @()
+  $doneBytes = [int64]0
+  for ($i = 0; $i -lt $count; $i++) {
+    $off = [int64]$i * $segBytes
+    $len = [math]::Min($segBytes, $expectedSize - $off)
+    $seg = Join-Path $cacheDir ("seg{0:d3}.bin" -f $i)
+    $files += $seg
+    if ($NoResume) { Remove-Item -LiteralPath $seg -Force -ErrorAction SilentlyContinue }
+
+    $baseBytes = $doneBytes
+    $idx = $i
+    $emit = {
+      param($sofar)
+      $total = $baseBytes + $sofar
+      $pct = [math]::Round(([double]$total / [double]$expectedSize) * 100, 1)
+      $evt = @{ event = "progress"; item = $id; phase = "download"; percent = $pct; detail = "下载中 $(Format-MB $total)/$(Format-MB $expectedSize)（第 $($idx + 1)/$count 段）" }
+      if ($flavor) { $evt.flavor = $flavor }
+      Emit $evt
+    }
+
+    if ((Get-FileLength $seg) -eq $len -and $len -gt 0) { $doneBytes += $len; continue }
+    $attempt = 0
+    while ($true) {
+      $attempt++
+      try {
+        Invoke-CurlSegment $rangeUrl $seg $off $len $emit
+        break
+      } catch {
+        if ($attempt -ge $MaxAttempts) { throw }
+        Log "第 $($i + 1)/$count 段失败（$($_.Exception.Message)），第 $attempt/$MaxAttempts 次，2 秒后重试"
+        Start-Sleep -Seconds 2
+      }
+    }
+    $doneBytes += $len
+  }
+
+  Join-Segments $files $dest $expectedSize
+  Remove-Item -LiteralPath $cacheDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 function Get-Sha256([string]$path) {
@@ -416,18 +663,12 @@ foreach ($it in $selected) {
   $tmpDir = [System.IO.Path]::GetDirectoryName($tmpZip) | Join-Path -ChildPath ([System.IO.Path]::GetFileNameWithoutExtension($tmpZip))
   $ok = $true
   try {
-    # 1) 下载
-    $absoluteUrl = [string]$it.url
-    $url = Resolve-Url $absoluteUrl
-    Log "下载 $label ← $url"
+    # 1) 下载（分段 + 断点续传 + 多源回退；候选源在函数内部按顺序探测）
+    $cacheDir = Join-Path $runtime (".downloads\" + $id + "-" + $expectedSha.Substring(0, 8))
     try {
-      Invoke-Download $url $tmpZip $id $flavor ([int64]$it.size)
+      Invoke-SegmentedDownload $it $tmpZip $cacheDir $id $flavor
     } catch {
-      if ($Mirror -and $absoluteUrl -match "^https?://") {
-        Log "镜像失败（$($_.Exception.Message)），回退直连"
-        Emit @{ event = "progress"; item = $id; phase = "download"; percent = 0; detail = "镜像不可用，回退直连" }
-        Invoke-Download $absoluteUrl $tmpZip $id $flavor ([int64]$it.size)
-      } else { throw }
+      throw [System.InvalidOperationException]::new("DOWNLOAD_FAILED $($_.Exception.Message)")
     }
 
     # 2) 校验

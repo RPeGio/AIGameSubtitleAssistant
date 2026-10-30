@@ -395,6 +395,18 @@ all mean the product does not run.
   (observed once: 119/319 entries) ⇒ `New-Zip` verifies the entry count after packing **and**
   checks `tar -tf`'s exit code (a truncated zip does not necessarily have fewer entries; tar reads
   names from local headers first and errors afterwards).
-- **Not done (on record)**: resumable downloads (user decision on 2026-10-30: "not now"); the OCR
-  install gate UI (block project entry until OCR is installed) belongs to the frontend wiring and
-  ships together with 11c.
+- **Downloader rework (added the same day, 2026-10-30)**: a dropped connection no longer restarts
+  from zero. `bootstrap_runtime.ps1` now does "multi-source candidates + byte-range segments +
+  in-segment resume", **without repacking any asset** (the largest pack is 502 MB; repacking and
+  re-uploading costs more than it saves). Candidate order: `urls[]` → `-Mirror` prefix → `url`
+  direct. Each candidate is probed with `curl -r 0-0` for `206`; sources that ignore Range
+  (gh-proxy does this for large files) are used single-stream and **never resumed** (`curl -C -`
+  appends duplicates when Range is ignored — measured: a 1770 MB download grew to 2036 MB). Segments
+  live in `<runtime>\.downloads\<id>-<sha8>\`, and a leftover `.curlpart` is merged into the segment
+  file on the next run ⇒ resume across processes. Measured: a 20 MB asset in 5 segments, and after a
+  kill it logged `续传：缓存里已有 3.0 MB，只需补 17.0 MB` and still matched the manifest SHA256; the
+  real 295.6 MB `deps-ocr` came down through gh-proxy in 5 segments.
+- **Still not done (on record)**: the OCR install gate UI (block project entry until OCR is installed)
+  belongs to the frontend wiring and ships together with 11c; the external acceleration options
+  (ModelScope as primary source / self-hosted Cloudflare Worker reverse proxy) are researched but not
+  deployed — see the survey summary at the end of §8.11.

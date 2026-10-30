@@ -93,6 +93,8 @@ runtime/
 > **CUDA/cuDNN 运行库不打包分发**（CUDA EULA 1.2.2 禁止当独立产品公开分发），装完 OCR 后由安装器
 > 用 `pip` 从 PyPI 镜像现拉 8 个 `nvidia-*` 轮子（约 1.7 GB，缺省华为云源，`--require-hashes`）。
 > 开发期仍可用 `scripts/bootstrap_ocr.ps1` 等分步脚本自行搭建。
+> 网络差也不用担心断流：下载器按 64 MB 分段、断点续传（缓存 `<runtime>\.downloads\`），
+> 并可 `-SegmentMB` / `-NoResume` / `-MaxAttempts` 调整；多源用清单里的 `urls[]`（见契约 §4.5）。
 > 发版物的打包方式见 `scripts/package_ocr_runtime.ps1` 与设计文档 §8.11。
 
 ### config.json 关键字段

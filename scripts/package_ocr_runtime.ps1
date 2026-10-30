@@ -292,6 +292,12 @@ function Invoke-Smoke([string]$work, [string]$python, [string]$flavor, [string]$
   $text = ($res.results | ForEach-Object { $_.text }) -join " "
   if (-not $text.Trim()) { throw "冒烟失败：OCR 没有识别出任何文字" }
   Log "冒烟通过（$flavor，$([math]::Round($sw.Elapsed.TotalSeconds,1))s）：识别到「$text」"
+
+  # 冒烟日志落在工作树根 ⇒ 打包会把它们一起发出去（里面是本机绝对路径与构建痕迹）。
+  # 实测漏过一次：cpu 包里带了 smoke.stderr.log（3.3 KB，含 F:\gsbocr\...）。
+  Remove-Item -LiteralPath $errLog -Force -ErrorAction SilentlyContinue
+  Get-ChildItem -LiteralPath $work -Filter "smoke.*.log" -File -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
 }
 
 # ─── 4. 打包 ─────────────────────────────────────────────────────────────
@@ -349,6 +355,10 @@ function New-Zip([string]$zip, [string]$work, [string[]]$paths, [string]$label) 
 }
 
 function New-Package([string]$work, [string]$flavor, [string[]]$topDirs) {
+  # 兜底：冒烟日志绝不能进包（Invoke-Smoke 已删一次，这里再清一次防漏）
+  Get-ChildItem -LiteralPath $work -Filter "smoke.*.log" -File -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+
   $stamp = Join-Path $work ".ocr-runtime"
   $meta = @(
     "version=$OcrRuntimeVersion",

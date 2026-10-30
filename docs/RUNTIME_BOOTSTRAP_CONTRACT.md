@@ -39,11 +39,16 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
 
 | 参数 | 取值 | 说明 |
 |---|---|---|
-| `-Items <ids>` | 逗号分隔的条目 id | 本期 manifest 只有 `moss`；后续见 §4 |
+| `-Items <ids>` | 逗号分隔的条目 id | 缺省 `moss,models-moss,deps-ocr,deps-ocr-gpu`；`deps-ocr-cuda-libs` 是"要 CUDA 运行库"的开关，不是清单条目（§4.3） |
 | `-Flavor <auto\|cpu\|cuda\|vulkan>` | 默认 `auto` | `auto` = L0 机器能力探测，判定顺序同 `backend_probe`：**nvidia-smi → vulkaninfo → cpu** |
 | `-Mirror <url>` | 默认 gh-proxy 代理前缀 | **代理前缀语义**（见 §4.1），非资源基址 |
 | `-Force` | 开关 | 忽略已安装标记，强制重装 |
 | `-Manifest <path>` | 默认 app 内置 manifest | 覆盖内置清单（离线/自测用） |
+| `-SegmentMB <n>` | 默认 `64`，`0` = 不分段 | 分段大小；见 §4.5 |
+| `-NoResume` | 开关 | 不读、不留 `.downloads` 缓存（每次从头下） |
+| `-MaxAttempts <n>` | 默认 `3` | 单段失败重试次数 |
+| `-PipMirror <url>` | 默认华为云 | CUDA 运行库 pip 索引（§4.3）；`-SkipGpuLibs` 可整段跳过 |
+| `-PipUseProxy` | 开关 | **默认清空 `HTTP(S)_PROXY`** 跑 pip（代理常拉慢 pip），加了才走代理 |
 
 - **无参运行** = `-Items moss -Flavor auto`，即「首启默认动作」。
 
@@ -154,6 +159,7 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
 | `flavor` | ✖ | 缺省 = 该条目与 flavor 无关 |
 | `optional` | ✖ | `true` = 该条目在当前机器没有匹配 flavor 时**静默跳过**（不计失败）。OCR 的 CUDA 增量专用（AMD/Intel 机器 `-Flavor auto` 会选到 vulkan，而 OCR 没有 vulkan 版） |
 | `url` | ✔ | 下载地址，**写绝对地址**；`-Mirror` 缺省时按 §4.1 拼接 |
+| `urls` | ✖ | 多源候选（字符串数组，**顺序即优先级**）。存在时排在 `-Mirror` 拼接结果与 `url` 之前，见 §4.5。Rust 侧不消费该字段（`parse_manifest_items` 只取 `id/flavor/sha256/size/unpacked_size`），它是**下载器的输入** |
 | `sha256` | ✔ | 下载物哈希，校验不过 = 退出码 2 |
 | `size` | ✔ | 字节数，用于磁盘预检 |
 | `unpacked_size` | ✖ | 解压后字节数。**有它就按它做预检**：`Σ下载 + Σ解压 + 最大单包解压 + 100 MB`（最后一项是临时目录与 dest 同时存在的那一份；早先漏了它，cuda 的 2.69 GB 包正好卡在这个差额上），没有才退回老的 `size × 3`。OCR 的 `deps` 有 24 065 个文件、压缩率只有 ~3 倍以内，`×3` 会低估 |
@@ -238,6 +244,30 @@ installer 侧实测（2026-10-24）确认过、且容易踩的三点：
 
 ⇒ 换 flavor = 覆盖 `runtime/bin` 下的同名文件 + 重写 `runtime/bin/.backend`。
 这也是 installer 侧「装另一种 flavor 前需 -Force 或先清理旧 flavor」的原因。
+
+### 4.5 下载：多源候选 + 分段 + 断点续传（2026-10-30）
+
+大陆到 GitHub Releases 实测 0.07–0.43 MB/s 且会断流，断流后旧实现（`WebClient.DownloadFileTaskAsync`）
+**只能从头再来**——`deps-ocr-cuda-libs` 1.77 GB 连断三次就是在这个点上废掉的。现在改成
+「按字节区间分段 + 段内续传 + 多源回退」，**不重打包资产、不加 shard 文件**（现有资产最大 502 MB，
+重打包重传的代价远大于收益）。
+
+| 环节 | 规则 |
+|---|---|
+| 候选源顺序 | `urls[]`（若有）→ `-Mirror` 前缀拼接（§4.1）→ `url` 直连。去重且保序 |
+| Range 探测 | 每个候选先 `curl -r 0-0` 看是否 `206` + `Content-Range`；**不支持就只用它走单流、且不做续传**（gh-proxy 对大文件忽略 Range，`curl -C -` 会重复追加，实测把 1770 MB 下成 2036 MB） |
+| 分段 | `-SegmentMB`（默认 64）；按总长切段，逐段 `curl -r from-to` 落到 `<runtime>\.downloads\<id>-<sha8>\segNNN.bin` |
+| 段内续传 | 每段先写 `<segNNN>.bin.curlpart`；**下次运行先把它并进段文件**再算剩余区间 ⇒ 跨进程从断点继续 |
+| 失败重试 | 段级 `-MaxAttempts`（默认 3），间隔 2 s；单流路径逐个候选源回退，全败抛 `所有候选源都失败` |
+| 关闭续传 | `-NoResume`（每次清空 `.downloads`）；`-SegmentMB 0` 直接走单流 |
+| 收尾 | 所有段拼成 `<zip>.joining` → 校验总长 → 改名后进 SHA256 校验；成功后删 `.downloads` |
+
+实测（2026-10-30，本机 2.6 MB/s 限速服务 + 真实 gh-proxy）：
+
+- 20 MB 资产 / 4 MB 段：5 段成功；不支持 Range 时正确回退单流并**换源成功**（镜像 404 → 直连）；
+- 中途 `Stop-Process` 杀掉 → 重跑从断点继续（`续传：缓存里已有 3.0 MB，只需补 17.0 MB`），
+  预置段文件做确定性验证时最终 SHA256 与清单一致；
+- 真实网络：295.6 MB 的 `deps-ocr` 切 5 段经 gh-proxy 下载完成，`item_done`。
 
 ---
 
