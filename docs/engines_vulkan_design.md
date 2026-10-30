@@ -227,6 +227,8 @@
 
 ## 7. 本分支之外：FunASR 字级时间戳（独立验证项）
 
+> **2026-10-30 更新：FunASR 已退役、不参与分发**，本节保留的是机制结论（供日后查证/复现），不再作为待办。
+
 `scripts/funasr_worker.py:219` 注释称 Fun-ASR-Nano 的 `sentence_info` 含**字级 timestamp** 且断句后处理依赖它，`:243` 直接消费，`:70-73` 用 `len(ts) < 2` 决定"整段不切分"。
 
 **已查明的机制（funasr 1.4.16 源码）**：Nano 只有一条时间戳通路——**CTC 强制对齐**（`fun_asr_nano/model.py:965-966,1057-1071` → `torchaudio.functional.forced_align`），**全仓不存在"按字数均分"的插值代码**。闸门在 `checkpoint_utils.py:22-47 disable_incomplete_ctc()`：checkpoint 缺 `ctc_decoder.*`/`ctc.*` 键时把 CTC 头置空，于是 `result` 连 `timestamps` 键都没有；随后 `auto/auto_model.py:1163-1187`（**本 worker 走这条**：不配 `punc_model` ⇒ 退化到 `vad_segment` 模式）拿不到 ts 时 `logging.error("No timestamp found in ASR result. …")`，令 `ts = []`、`start/end` 退化为 **VAD 段边界**。⇒ 那样的话 `:70-73` 的切分分支就是死代码，字级时间戳只剩段级精度（最长 30 s）。

@@ -1,4 +1,4 @@
-﻿# Development Guide
+# Development Guide
 
 English | [中文](development.md)
 
@@ -11,7 +11,7 @@ This document is for collaborators who want to understand the codebase or contri
 | Desktop shell | Tauri 2 (`protocol-asset`, dialog / opener plugins) |
 | Frontend | Vue 3 + TypeScript + Pinia + Vue Router + Naive UI + Tailwind CSS 4 + Vite 6 |
 | Backend | Rust 2021 (tauri / serde / image / uuid / ffmpeg-sidecar) |
-| AI | PaddleOCR (Python worker), FunASR / MOSS (ASR), multilingual-e5-small + unified transition DP (fusion), llama.cpp + Qwen2.5-3B (LLM, test bench) |
+| AI | PaddleOCR (Python worker), MOSS (ASR, the only engine), multilingual-e5-small + unified transition DP (fusion).<br>FunASR and llama.cpp + Qwen2.5-3B are retired and not distributed (code kept, see the Retired components section below) |
 
 Constraint: **fully offline**. The Rust side has no HTTP client and makes no network requests; every AI capability runs as a local subprocess.
 
@@ -74,16 +74,16 @@ runtime/
 ├── python/              # embedded CPython 3.12.10 (NuGet package)
 ├── deps/                # OCR pip deps (--target isolated)
 ├── deps_gpu/            # OCR GPU-only pieces (optional, bootstrap_ocr_gpu.ps1; runtime PYTHONPATH=deps_gpu;deps)
-├── deps_funasr/         # FunASR pip deps (torch isolated from paddle)
+├── deps_funasr/         # [retired] FunASR pip deps (script kept, never installed by the product)
 ├── deps_embed/          # vector-recall pip deps (onnxruntime CPU + tokenizers, fusion)
 ├── models/
 │   ├── paddleocr/       # PP-OCRv5 cache
-│   ├── funasr/          # Fun-ASR-Nano + VAD + speaker models (modelscope cache)
+│   ├── funasr/          # [retired] Fun-ASR-Nano + VAD + speaker models
 │   ├── embed/           # multilingual-e5-small (ONNX qint8, fusion)
 │   ├── moss/            # moss-transcribe-<quant>.gguf
-│   └── qwen/            # qwen2.5-3b-instruct-q4_k_m.gguf (optional, test bench)
+│   └── qwen/            # [retired] qwen2.5-3b-instruct (historical test bench)
 ├── worker/              # worker scripts copied by bootstrap
-└── bin/                 # moss-transcribe.exe, bin/llm/ (llama.cpp)
+└── bin/                 # moss-transcribe.exe (+ ggml backend DLLs), bin/llm/ ([retired] llama.cpp)
 ```
 
 ### Key config.json fields
@@ -94,10 +94,21 @@ runtime/
 | `ocr_model` | `mobile` (default) or `server` (PP-OCRv5 tier) |
 | `language` / `dev_debug` | OCR language; debug frame dump (`temp/`) |
 | `moss_binary` / `moss_model` / `moss_threads` / `moss_device` | MOSS; `moss_device`: empty=auto (ggml chooses) / cpu / cuda / vulkan (explicit request unavailable = hard error, see below) |
-| `llm_binary` / `llm_model` / `llm_threads` | llama.cpp (optional, fusion-capability test bench only) |
-| `asr_provider` | `moss` / `funasr` / empty=auto |
-| `funasr_worker` / `funasr_deps` / `funasr_model_dir` / `funasr_device` / `funasr_language` / `funasr_timeout_minutes` | FunASR |
+| `llm_binary` / `llm_model` / `llm_threads` | [retired] llama.cpp (historical test bench only) |
+| `asr_provider` | `moss` / empty=auto (`funasr` retired, accepted only for compatibility) |
+| `funasr_worker` / `funasr_deps` / `funasr_model_dir` / `funasr_device` / `funasr_language` / `funasr_timeout_minutes` | [retired] FunASR |
 | `embed_worker` / `embed_model` / `embed_tokenizer` / `embed_deps_dir` | Fusion worker script / E5-small model / tokenizer / deps paths; written by `bootstrap_embed.ps1`, shared by product fusion and the lab; **all four must be set together, or all left empty** |
+
+### Retired components (2026-10-30)
+
+The product keeps a single ASR engine, MOSS. The two implementations below are **not distributed**, but their code and scripts stay in the repo:
+
+| Component | Status | Where it lives |
+|---|---|---|
+| FunASR (Fun-ASR-Nano + VAD + cam++ speaker) | Not shipped in the installer and absent from `runtime/manifest.json`; no UI entry (`AsrView` / `AppStatusBar` render MOSS only) | `scripts/bootstrap_funasr.ps1`, `scripts/funasr_worker.py`, `src-tauri/src/ai_runtime/funasr.rs` |
+| Local LLM (llama.cpp + Qwen2.5-3B) | Same; fusion moved to vector recall + unified transition DP, and the LLM only ever appeared in the historical test bench | `scripts/bootstrap_llm.ps1`, `src-tauri/src/ai_runtime/llm.rs` |
+
+Why they stay: reproducing historical defects (e.g. the LLM-route experiments behind [benchmark/FUSE_PIPELINE_DEFECTS.md](../benchmark/FUSE_PIPELINE_DEFECTS.md) F13) requires being able to rebuild those environments. **Never** reference them again in the release flow, `bundle.resources`, `runtime/manifest.json`, or any user-facing text.
 
 ### MOSS backend and three-device benchmark (2026-10-19)
 

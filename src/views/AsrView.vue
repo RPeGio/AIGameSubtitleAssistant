@@ -40,21 +40,17 @@ const asrParams = ref<AsrRunParams>({
   language: null,
 });
 
-/// 引擎展示顺序：MOSS 为主力（GPU 更快、说话人分离更好），FunASR 仅作 fallback
-const ENGINE_ORDER = ["moss", "funasr"] as const;
+/// 唯一转写引擎：MOSS（FunASR 已弃用、不再分发，前端不留入口）
+const ENGINE_ORDER = ["moss"] as const;
 
 const ENGINE_INFO: Record<string, { title: string; sub: string }> = {
   moss: {
     title: "MOSS-Transcribe-Diarize",
-    sub: "推荐 · GPU 更快 · 说话人分离更好",
-  },
-  funasr: {
-    title: "FunASR + diarize",
-    sub: "备用 fallback · 较慢、说话人分离较弱",
+    sub: "GPU 更快 · 说话人分离更好",
   },
 };
 
-/// 两引擎运行环境（展开时探测，禁用不可用引擎）
+/// 引擎运行环境（展开时探测；未就绪时禁用运行按钮并给出原因）
 const asrEngines = ref<AsrEngineStatus[]>([]);
 
 /// 探测失败（asrEngines 为空）时直通：不阻塞用户，运行失败由错误提示兜底
@@ -83,28 +79,6 @@ function engineStateTitle(engine: string): string {
     return probeFailed() ? "探测失败，可直接尝试运行" : "正在探测运行环境";
   }
   return s.ready ? "运行环境就绪" : s.message || "未配置";
-}
-
-const maxSpeakerOptions = [2, 3, 4, 5, 6];
-
-const languageOptions = [
-  { label: "自动检测", value: "auto" },
-  { label: "中文", value: "zh" },
-  { label: "English", value: "en" },
-  { label: "日本語", value: "ja" },
-];
-
-/// MOSS 自动估计说话人 / 自动识别多语言，两个参数对它无意义
-const mossOnly = computed(() => asrParams.value.engine === "moss");
-
-function onMaxSpeakers(e: Event) {
-  const raw = (e.target as HTMLSelectElement).value;
-  asrParams.value.max_speakers = raw === "auto" ? null : Number(raw);
-}
-
-function onLanguage(e: Event) {
-  const raw = (e.target as HTMLSelectElement).value;
-  asrParams.value.language = raw === "auto" ? null : raw;
 }
 
 async function openAsrPanel() {
@@ -470,50 +444,8 @@ async function startEmbedOcr() {
           </div>
         </div>
 
-        <div class="sblk">
-          <span class="bt">转写参数</span>
-          <div class="prow">
-            <div class="pcell">
-              <span class="pl">最大说话人数量</span>
-              <span class="selwrap">
-                <select
-                  class="selbox"
-                  :value="asrParams.max_speakers ?? 'auto'"
-                  :disabled="mossOnly"
-                  @change="onMaxSpeakers"
-                >
-                  <option value="auto">自动估计</option>
-                  <option v-for="n in maxSpeakerOptions" :key="n" :value="n">
-                    {{ n }} 人
-                  </option>
-                </select>
-                <AppIcon name="chev-d" :size="11" />
-              </span>
-            </div>
-            <div class="pcell">
-              <span class="pl">识别语言</span>
-              <span class="selwrap">
-                <select
-                  class="selbox"
-                  :value="asrParams.language ?? 'auto'"
-                  :disabled="mossOnly"
-                  @change="onLanguage"
-                >
-                  <option v-for="o in languageOptions" :key="o.value" :value="o.value">
-                    {{ o.label }}
-                  </option>
-                </select>
-                <AppIcon name="chev-d" :size="11" />
-              </span>
-            </div>
-          </div>
-          <span v-if="mossOnly" class="enote">
-            MOSS 自动估计说话人并自动识别多语言，无需指定；切到 FunASR 才需要手动设
-          </span>
-        </div>
-
         <!-- MOSS 推理设备（第 12 项）：写入 runtime/config.json，重启生效 -->
-        <div v-if="mossOnly" class="sblk">
+        <div class="sblk">
           <span class="bt">推理设备</span>
           <div class="prow">
             <div class="pcell">

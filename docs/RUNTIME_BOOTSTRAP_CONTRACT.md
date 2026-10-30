@@ -22,8 +22,8 @@
 ## 1. 目标
 
 用户机器首次启动时 runtime 为空。本期只做**一个条目**（`moss`），但安装器从第一天起
-按「多条目 + 多 flavor」设计，后续条目（`deps-ocr` / `deps-funasr` / `deps-embed` /
-`models-moss`）只加 manifest 条目、不改脚本逻辑。
+按「多条目 + 多 flavor」设计，后续条目（`deps-ocr` / `deps-embed` / `models-moss`）只加
+manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作废，不要再为其登记条目。）
 
 分发形态（已达成共识）：**预构建二进制为主、自构建兜底**。MOSS 上游 LICENSE 实为 MIT，
 可合法再分发；模型仍走原渠道（HF / ModelScope，带哈希）。
@@ -120,7 +120,7 @@
 
 | 字段 | 必填 | 语义 |
 |---|---|---|
-| `id` | ✔ | 条目 id（`moss` / `deps-ocr` / `deps-funasr` / `deps-embed` / `models-moss`） |
+| `id` | ✔ | 条目 id（`moss` / `deps-ocr` / `deps-embed` / `models-moss`；`deps-funasr` 已随 FunASR 退役作废） |
 | `flavor` | ✖ | 缺省 = 该条目与 flavor 无关 |
 | `url` | ✔ | 下载地址，**写绝对地址**；`-Mirror` 缺省时按 §4.1 拼接 |
 | `sha256` | ✔ | 下载物哈希，校验不过 = 退出码 2 |

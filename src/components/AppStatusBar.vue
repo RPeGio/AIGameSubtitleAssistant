@@ -27,9 +27,9 @@ const metaText = computed(() => {
 });
 
 // ── 引擎段：显示"当前实际可用的引擎"，只做只读浅探测 ──────────
-/// MOSS 为主力、FunASR 为 fallback，故按此优先级取第一个就绪的
-const ENGINE_PRIORITY = ["moss", "funasr"] as const;
-const ENGINE_LABEL: Record<string, string> = { moss: "MOSS", funasr: "FunASR" };
+/// 只剩 MOSS 一个引擎（FunASR 已弃用、不再分发）；后端仍会把它一并报上来，这里按白名单过滤
+const ENGINE_PRIORITY = ["moss"] as const;
+const ENGINE_LABEL: Record<string, string> = { moss: "MOSS" };
 
 const asrEngines = ref<AsrEngineStatus[] | null>(null);
 const embedReady = ref<boolean | null>(null);

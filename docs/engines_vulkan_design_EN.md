@@ -227,6 +227,8 @@ Rationale: the MOSS gap between CPU and GPU is an order of magnitude (the canoni
 
 ## 7. Outside this branch: FunASR character-level timestamps (a separate verification item)
 
+> **Update 2026-10-30: FunASR is retired and no longer distributed.** This section keeps the mechanism findings for future reference/reproduction; it is no longer a pending task.
+
 The comment at `scripts/funasr_worker.py:219` claims Fun-ASR-Nano's `sentence_info` carries **character-level timestamps** and that sentence post-processing depends on them; `:243` consumes them directly, and `:70-73` uses `len(ts) < 2` to decide "do not split this segment".
 
 **The mechanism as established from source (funasr 1.4.16)**: Nano has exactly one timestamp path — **CTC forced alignment** (`fun_asr_nano/model.py:965-966,1057-1071` → `torchaudio.functional.forced_align`) — and **no code anywhere in the repo interpolates timestamps evenly across characters**. The gate is `checkpoint_utils.py:22-47 disable_incomplete_ctc()`: when the checkpoint lacks the `ctc_decoder.*` / `ctc.*` keys it nulls the CTC head, so `result` does not even carry a `timestamps` key; `auto/auto_model.py:1163-1187` (**the branch this worker takes**, because it configures no `punc_model` and therefore degrades to `vad_segment` mode) then logs `No timestamp found in ASR result. …`, sets `ts = []`, and degrades `start`/`end` to **VAD segment boundaries**. In that case `:70-73`'s splitting branch is dead code and character-level timing is only segment-level (up to 30 s).

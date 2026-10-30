@@ -198,22 +198,22 @@ export interface AsrSegment {
 }
 
 export interface AsrRunParams {
-  /// 引擎："funasr" | "moss"
+  /// 引擎：固定 "moss"（FunASR 已弃用，前端不再提供入口）
   engine: string;
-  /// 说话人上限：null = 自动估计（仅 funasr+diarize 生效；moss 忽略）
+  /// 说话人上限：前沿固定 null（MOSS 自动估计）。字段保留是因为后端 payload 仍收这两个键
   max_speakers: number | null;
-  /// 识别语言：null = 自动检测（仅 funasr 生效；moss 自动识别）
+  /// 识别语言：前沿固定 null（MOSS 自动识别多语言）。同上，仅保留 payload 形状
   language: string | null;
 }
 
 export interface AsrEngineStatus {
-  /// "funasr" | "moss"
+  /// "moss"（后端可能仍返回已弃用的 funasr 条目，前端忽略）
   engine: string;
   ready: boolean;
   message: string;
-  /// 配置的推理设备：moss 为 ""（=auto，ggml 自动选优）/ cpu / cuda / vulkan；funasr 为 cpu / cuda
+  /// 配置的推理设备：""（=auto，ggml 自动选优）/ cpu / cuda / vulkan
   device: string;
-  /// 实测生效后端（仅 moss 有值，如 "CUDA0"/"Vulkan1"/"CPU"）；与 device 不同：device=vulkan 时 ggml 静默降级后实测可能仍是 CUDA0
+  /// 实测生效后端（如 "CUDA0"/"Vulkan1"/"CPU"）；与 device 不同：device=vulkan 时 ggml 静默降级后实测可能仍是 CUDA0
   effective_backend?: string | null;
 }
 

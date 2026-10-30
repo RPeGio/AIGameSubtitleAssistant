@@ -29,7 +29,7 @@ Video input ──► OCR + timing & transcription (speech ASR / on-screen hards
 ## Features
 
 - **Text corpus collecting (OCR)**: frame a subtitle region on the quest recording; use change detection to skip unchanged frames; PaddleOCR recognition with majority-vote merging produces game text decoupled from the timeline. Subtitle screenshots can also be OCR'd directly, or text can be pasted / imported if text corpuses has already existed in any platform.
-- **Timing & transcription**: the transcript side of the clip (the timing source) has **two parallel options** — they may coexist in one project, and fusion consumes both. **Speech ASR** (voiced quests: timing comes from speech activity): two engines — MOSS-Transcribe-Diarize 0.9B (automatic diarization, the most accurate) or FunASR (Fun-ASR-Nano, fast on a local GPU). Tag each speaker track as "game speech" (provides a timeline for fusion) or "streamer speech" (transcription / export only) in one click.
+- **Timing & transcription**: the transcript side of the clip (the timing source) has **two parallel options** — they may coexist in one project, and fusion consumes both. **Speech ASR** (voiced quests: timing comes from speech activity): the engine is MOSS-Transcribe-Diarize 0.9B (automatic diarization, cpu / cuda / vulkan with automatic best-backend selection; FunASR is retired and no longer distributed). Tag each speaker track as "game speech" (provides a timeline for fusion) or "streamer speech" (transcription / export only) in one click.
 - **Hardsub OCR (embed_ocr)** (unvoiced quests: timing comes from on-screen text changes): OCR a framed hardsub region on the clip video to build an embedded-subtitle track, coexisting with ASR tracks and fed to fusion as game-content segments.
 - **AI fusion**: reliable corpus text replaces the transcript-side text while the transcript-side timing is kept. It is implemented as **local multilingual vector recall (multilingual-e5-small qint8, ONNX / CPU) + a unified transition DP**: each transcript segment recalls candidates from the corpus, a global monotonic DP (advance / reuse / reset / unmatch) then picks the overall best path, and matched segments copy the corpus text **verbatim** in code (no character names are produced). The four benchmark cases score **210/236** scored segments, rising to **226/236 (95.8%)** with the "should-not-match" mask enabled. After fusion the same page shows a **confidence audit table** listing suspicious segments by risk tier (masked / reset / reused / unmatched / low score) with four manual verdicts (**keep / replace from candidates / pick from the full corpus / mark as unmatched**), persisted with the project. The former LLM route (llama.cpp + Qwen2.5-3B index mapping) measured **no cross-language semantic alignment** (see [benchmark/FUSE_PIPELINE_DEFECTS.md](benchmark/FUSE_PIPELINE_DEFECTS.md) F13) and has been retired.
 - **Timeline editing**: multi-track timeline (split / merge / drag / snap / segment swap), video preview sync, undo & redo, per-event proofreading list.
@@ -57,7 +57,7 @@ A project mounts **two video sources**: `source` (the quest recording — the OC
 | [Node.js](https://nodejs.org/) 18+ (20 LTS recommended) + [pnpm](https://pnpm.io/) | Frontend build |
 | Rust stable (MSVC toolchain) | Desktop build; see [Tauri prerequisites](https://tauri.app/start/prerequisites/) |
 | FFmpeg + ffprobe | Install yourself and add to `PATH`; the app never downloads it |
-| NVIDIA GPU (optional) | FunASR defaults to CUDA 12.4; llama.cpp / MOSS support cpu / cuda / vulkan backends — use cpu without a GPU(transcription time increases severalfold) |
+| NVIDIA GPU (optional) | MOSS supports cpu / cuda / vulkan (the first-launch self-check picks the best one); without a GPU it falls back to cpu (transcription time increases severalfold) |
 
 The AI modules together occupy about 13.9 GB of disk (models + Python dependencies); the E5-small qint8 model used by vector fusion adds about 113 MB.
 
@@ -75,17 +75,16 @@ The AI runtime is provisioned by the PowerShell bootstrap scripts under `scripts
 # ① OCR (required: used by the corpus page and the hardsub track; also the Python base for the others)
 powershell -ExecutionPolicy Bypass -File scripts/bootstrap_ocr.ps1
 
-# ② ASR — pick one or install both: MOSS (recommended; cpu backend by default; a GPU binary must first be self-built via build_moss.ps1)
+# ② ASR: MOSS (the only engine; cpu backend by default; a GPU binary is either self-built via build_moss.ps1
+#     or installed by the app's "install runtime" action, which picks the backend automatically)
 powershell -ExecutionPolicy Bypass -File scripts/bootstrap_moss.ps1 [-Backend cpu]
-#     or FunASR (defaults to -Device cuda)
-powershell -ExecutionPolicy Bypass -File scripts/bootstrap_funasr.ps1 [-Device cpu]
 
 # ③ Vector fusion (required by AI fusion; CPU inference, model ≈ 113 MB)
 powershell -ExecutionPolicy Bypass -File scripts/bootstrap_embed.ps1
-
-# ④ LLM (optional: only the fusion-capability test bench run_llm uses it; product fusion no longer needs it)
-powershell -ExecutionPolicy Bypass -File scripts/bootstrap_llm.ps1 [-Backend cpu]
 ```
+
+> Retired, not distributed: FunASR (`bootstrap_funasr.ps1`) and the local LLM (`bootstrap_llm.ps1`, llama.cpp + Qwen2.5-3B).
+> Both scripts stay in the repo for reproducing historical issues; product builds and the runtime manifest never reference them.
 
 Useful parameters: `-HfMirror https://hf-mirror.com` (model mirror), `-GitMirror https://gh-proxy.com/` (GitHub mirror), `-PipMirror https://mirrors.aliyun.com/pypi/simple` (pip mirror), `-Force` (reinstall / re-download). See each script's header comment for details.
 
@@ -135,7 +134,7 @@ pnpm tauri build   # produce installers (note: runtime-resource bundling is not 
 
 ## Roadmap
 
-**Done**: the full four-page workbench (corpus → timing + transcribe → fuse → edit/export), the OCR pipeline (region selection / change detection / majority vote / multi-frame merge), FunASR + MOSS dual ASR engines with speaker diarization, the hardsub OCR track, AI fusion (local vector recall + unified transition DP, including the **post-fusion confidence audit table**), multi-track timeline editing with undo/redo, single-track multi-format export, autosave.
+**Done**: the full four-page workbench (corpus → timing + transcribe → fuse → edit/export), the OCR pipeline (region selection / change detection / majority vote / multi-frame merge), the MOSS ASR engine with speaker diarization (cpu / cuda / vulkan, best backend picked automatically), the hardsub OCR track, AI fusion (local vector recall + unified transition DP, including the **post-fusion confidence audit table**), multi-track timeline editing with undo/redo, single-track multi-format export, autosave.
 
 **In progress / to improve**: runtime-resource bundling (installer distribution); further calibration of the fusion confidence signals — `score` is not a correctness signal, so the audit tiers are hints only (see [benchmark/FUSE_THRESHOLD_CALIBRATION.md](benchmark/FUSE_THRESHOLD_CALIBRATION.md) §7.9⑥).
 
@@ -147,7 +146,7 @@ pnpm tauri build   # produce installers (note: runtime-resource bundling is not 
 - No installer — the AI environment is set up by scripts; models are downloaded at setup time, not by the app (which only performs readiness checks).
 - FFmpeg must be provided by the user (added to `PATH`).
 - Fusion output still needs per-event manual proofreading: at any threshold the precision of `score` stays close to the error base rate (4.2%), so it is **not a correctness signal** and the audit table only provides structural hints (see [benchmark/FUSE_THRESHOLD_CALIBRATION.md](benchmark/FUSE_THRESHOLD_CALIBRATION.md) §7.9⑥). In the "same line, different speakers" case ([F14](benchmark/FUSE_PIPELINE_DEFECTS.md)) the mis-bound row's text is verbatim identical — subtitle content is unaffected — but the audit table's speaker attribution may be wrong; experiments ruled out an algorithm-side fix, so it is left to human judgement.
-- The default LLM, Qwen2.5-3B-Instruct (**optional**, used only by the fusion-capability test bench), uses the **Qwen Research license** (commercial use requires separate permission) — see [THIRD_PARTY.md](THIRD_PARTY.md).
+- The local LLM (llama.cpp + Qwen2.5-3B-Instruct) is **retired and not distributed**: the historical implementation remains only as the fusion-capability test bench, and Qwen uses the **Qwen Research license** (commercial use requires separate permission) — see [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## License
 
