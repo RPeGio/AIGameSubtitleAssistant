@@ -80,7 +80,7 @@ runtime/
 ├── models/
 │   ├── paddleocr/       # PP-OCRv5 cache (shipped in the OCR pack)
 │   ├── funasr/          # [retired] Fun-ASR-Nano + VAD + speaker models
-│   ├── embed/           # multilingual-e5-small (ONNX qint8, fusion)
+│   ├── embed/           # multilingual-e5-small (ONNX qint8; shipped in the embed pack)
 │   ├── moss/            # moss-transcribe-<quant>.gguf
 │   └── qwen/            # [retired] qwen2.5-3b-instruct (historical test bench)
 ├── worker/              # worker scripts copied by bootstrap
@@ -89,12 +89,15 @@ runtime/
 
 > **Everything is installed on first launch**: `scripts/bootstrap_runtime.ps1` reads
 > `src-tauri/resources/runtime/manifest.json` and downloads `moss` (cpu/cuda/vulkan chosen by
-> device), `models-moss` (the gguf) and the two OCR packs (`deps-ocr` / `deps-ocr-gpu`;
-> the latter is `optional` and is skipped on non-NVIDIA machines), verifying SHA256 before extracting.
+> device), `models-moss` (the gguf), the two OCR packs (`deps-ocr` / `deps-ocr-gpu`;
+> the latter is `optional` and is skipped on non-NVIDIA machines) and the vector-fusion pack
+> `deps-embed` (26 CPU-only wheels + the e5-small model + the workers; it reuses the OCR pack's
+> `python/`), verifying SHA256 before extracting.
 > The CUDA/cuDNN runtime libraries are **not shipped** (CUDA EULA 1.2.2 forbids distributing the SDK
 > as a stand-alone product): after the OCR baseline lands, the installer pulls the eight `nvidia-*`
 > wheels with `pip` from a PyPI mirror (~1.7 GB, Huawei Cloud by default, `--require-hashes`). For development you can still use the step-by-step scripts
-> (`bootstrap_ocr.ps1` etc.). A flaky connection is no longer fatal: the downloader works in
+> (`bootstrap_ocr.ps1` etc.). Packaging: `scripts/package_ocr_runtime.ps1` (§8.11) and
+> `scripts/package_embed_runtime.ps1` (§8.12). A flaky connection is no longer fatal: the downloader works in
 > 64 MB segments with resume (cache under `<runtime>\.downloads\`), tunable via
 > `-SegmentMB` / `-NoResume` / `-MaxAttempts`, and multiple sources come from the manifest's
 > `urls[]` (contract §4.5). How the artifacts are built is described in

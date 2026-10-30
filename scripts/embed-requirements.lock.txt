@@ -1,0 +1,34 @@
+# 向量融合（embed）运行时 — 依赖钉子清单（供 package_embed_runtime.ps1 构建分发包）
+#
+# 生成方式（2026-10-30）：在 bootstrap_embed.ps1 装好的 runtime/deps_embed 上执行
+#   python -m pip freeze --path runtime/deps_embed
+# 26 个包，与 deps_embed/ 里 *.dist-info 数量一致（地面真值）。
+# 与 scripts/embed-requirements.txt（若存在）的关系同 OCR：那个只列顶层包、传递依赖随上游漂移；
+# 分发物要字节可复现，所以这里全钉死。升级任何一行都要重跑打包与冒烟。
+# 校验：package_embed_runtime.ps1 构建后会自动比对一次，不一致拒绝打包。
+anyio==4.15.1
+certifi==2026.7.22
+click==8.5.0
+colorama==0.4.6
+coloredlogs==15.0.1
+filelock==4.0.10
+flatbuffers==25.12.19
+fsspec==2026.9.0
+h11==0.16.0
+hf-xet==1.6.0
+httpcore==1.0.9
+httpx==0.28.1
+huggingface_hub==1.32.0
+humanfriendly==10.0
+idna==3.20
+mpmath==1.3.0
+numpy==2.5.3
+onnxruntime==1.20.1
+packaging==26.3
+protobuf==7.36.2
+pyreadline3==3.5.6
+PyYAML==6.0.3
+sympy==1.14.0
+tokenizers==0.23.2
+tqdm==4.70.1
+typing_extensions==4.16.0

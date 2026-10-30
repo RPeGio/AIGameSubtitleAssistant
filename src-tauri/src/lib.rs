@@ -79,6 +79,7 @@ pub fn run() {
             ai_runtime::backend_probe::probe_moss_backend,
             ai_runtime::config::set_moss_device,
             ai_runtime::installed_state::probe_moss_install,
+            ai_runtime::installed_state::probe_embed_install,
             ai_runtime::runtime_install::precheck_runtime_disk,
             ai_runtime::runtime_install::install_runtime,
             ai_runtime::runtime_install::cancel_runtime_install,

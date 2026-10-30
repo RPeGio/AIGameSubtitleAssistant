@@ -39,7 +39,7 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
 
 | 参数 | 取值 | 说明 |
 |---|---|---|
-| `-Items <ids>` | 逗号分隔的条目 id | 缺省 `moss,models-moss,deps-ocr,deps-ocr-gpu`；`deps-ocr-cuda-libs` 是"要 CUDA 运行库"的开关，不是清单条目（§4.3） |
+| `-Items <ids>` | 逗号分隔的条目 id | 缺省 `moss,models-moss,deps-ocr,deps-ocr-gpu,deps-embed`；`deps-ocr-cuda-libs` 是"要 CUDA 运行库"的开关，不是清单条目（§4.3） |
 | `-Flavor <auto\|cpu\|cuda\|vulkan>` | 默认 `auto` | `auto` = L0 机器能力探测，判定顺序同 `backend_probe`：**nvidia-smi → vulkaninfo → cpu** |
 | `-Mirror <url>` | 默认 gh-proxy 代理前缀 | **代理前缀语义**（见 §4.1），非资源基址 |
 | `-Force` | 开关 | 忽略已安装标记，强制重装 |
@@ -83,10 +83,11 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
 ## 4. manifest 规范
 
 - **落点**：`src-tauri/resources/runtime/manifest.json`，**随 app 发布并提交进仓库**。
-  - **状态（2026-10-30 修订）**：清单共 **6 条**——`id=moss` 三条（cpu / vulkan / cuda，`dest` 全为
+  - **状态（2026-10-30 修订）**：清单共 **7 条**——`id=moss` 三条（cpu / vulkan / cuda，`dest` 全为
     `bin`）+ `id=models-moss` 一条（gguf 模型，**不带 flavor**，`dest=models/moss`）
     + `id=deps-ocr` 一条（OCR 运行时，`flavor=cpu`，**`dest="."`**，带 `unpacked_size`）
-    + `id=deps-ocr-gpu` 一条（OCR 的 CUDA 增量，`flavor=cuda` + **`optional`**，`dest="."`）。
+    + `id=deps-ocr-gpu` 一条（OCR 的 CUDA 增量，`flavor=cuda` + **`optional`**，`dest="."`）
+    + `id=deps-embed` 一条（向量融合运行时，**不带 flavor**，`dest="."`，带 `unpacked_size`）。
   - **CUDA/cuDNN 运行库不进清单、不做资产**（原 `deps-ocr-cuda-libs` 条目已删除）：
     改由 `bootstrap_runtime.ps1` 在安装时用 `pip` 从 PyPI 镜像现拉（`nvidia-*` 共 8 个轮子，
     钉子版本 + 官方 sha256，见 §4.2）。理由两条：
@@ -148,6 +149,14 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
       "size": 502533301,
       "unpacked_size": 996251695,
       "dest": "."
+    },
+    {
+      "id": "deps-embed",
+      "url": "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/embed-runtime-v1/embed-runtime.zip",
+      "sha256": "…",
+      "size": 157386205,
+      "unpacked_size": 345868793,
+      "dest": "."
     }
   ]
 }
@@ -170,7 +179,7 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
   这要求解压实现**保留目录结构**——早期实现按文件名平铺（`Join-Path $destDir $f.Name`），
   对 moss（11 个平铺文件）刚好没暴露，对 OCR 会把 `python/` `deps/` 压成同名文件堆。
   现实现用 `Copy-Item <tmp>\* -Destination <dest> -Recurse -Force`，对两种包都正确。
-- **`-Items` 缺省 = `moss,models-moss,deps-ocr,deps-ocr-gpu`**：
+- **`-Items` 缺省 = `moss,models-moss,deps-ocr,deps-ocr-gpu,deps-embed`**：
   二进制、模型、OCR 三样缺一不可用（`probe_moss_install` 报 `model_missing`，OCR 则直接进不了
   项目）。`deps-ocr-gpu` 在缺省里但带 `optional`：非 NVIDIA 机器 `-Flavor auto` 选到
   cpu/vulkan，没有匹配 flavor ⇒ 自动跳过，不会让对方白下 1.5 GB。

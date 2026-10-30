@@ -108,8 +108,54 @@ pub(crate) fn ocr_paths(config: &RuntimeConfig, runtime_dir: &Path) -> (PathBuf,
     )
 }
 
-// ─── OCR 数据与错误 ──────────────────────────────────────
+/// 安装器约定的向量融合（embed）标准布局（与 manifest 条目 `deps-embed` 的 `dest: "."` 一致）
+pub(crate) const EMBED_WORKER_REL: &str = "worker/embed_worker.py";
+pub(crate) const EMBED_DEPS_REL: &str = "deps_embed";
+pub(crate) const EMBED_MODEL_REL: &str =
+    "models/embed/multilingual-e5-small/model_qint8_avx512_vnni.onnx";
+pub(crate) const EMBED_TOKENIZER_REL: &str =
+    "models/embed/multilingual-e5-small/tokenizer.json";
 
+/// embed 运行时的关键路径：(python, worker, 依赖目录, 模型, tokenizer)。
+///
+/// 与 `moss_paths` / `ocr_paths` 同一动机：一键安装只解包、不写 config.json，
+/// 所以配置为空时必须回退到标准布局——否则"刚装完"会被判成"未配置"，
+/// 用户看到的是装好了却不能用（PR43 前 MOSS/OCR 都踩过这个坑）。
+///
+/// embed 复用 OCR 包带来的 `python/python.exe`（不单独分发解释器），
+/// 因此 `deps-embed` 的安装前置是 `deps-ocr` 已装。
+pub(crate) fn embed_paths(
+    config: &RuntimeConfig,
+    runtime_dir: &Path,
+) -> (PathBuf, PathBuf, PathBuf, PathBuf, PathBuf) {
+    fn pick(value: &str, rel: &str, runtime_dir: &Path, want_dir: bool) -> PathBuf {
+        let std_path = resolve_path(rel, runtime_dir);
+        let value = value.trim();
+        if value.is_empty() {
+            return std_path;
+        }
+        let custom = resolve_path(value, runtime_dir);
+        let ok = if want_dir {
+            custom.is_dir()
+        } else {
+            custom.is_file()
+        };
+        if ok {
+            custom
+        } else {
+            std_path
+        }
+    }
+    (
+        pick(&config.python_path, OCR_PYTHON_REL, runtime_dir, false),
+        pick(&config.embed_worker, EMBED_WORKER_REL, runtime_dir, false),
+        pick(&config.embed_deps_dir, EMBED_DEPS_REL, runtime_dir, true),
+        pick(&config.embed_model, EMBED_MODEL_REL, runtime_dir, false),
+        pick(&config.embed_tokenizer, EMBED_TOKENIZER_REL, runtime_dir, false),
+    )
+}
+
+// ─── OCR 数据与错误 ──────────────────────────────────────
 /// 单张帧图像的 OCR 识别结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OcrResult {
@@ -389,6 +435,46 @@ mod tests {
         assert_eq!(deps, dir.join("dep"));
         assert_eq!(models, dir.join("mdl"));
         assert_eq!(worker, dir.join("w.py"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn embed_paths_fall_back_to_standard_layout() {
+        // 与 moss/ocr 同一个坑：一键安装不写 config.json，default() 的字段全是空的
+        let dir = std::env::temp_dir().join(format!("gsa_embed_paths_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (python, worker, deps, model, tokenizer) =
+            embed_paths(&RuntimeConfig::default(), &dir);
+        assert_eq!(python, dir.join(OCR_PYTHON_REL));
+        assert_eq!(worker, dir.join(EMBED_WORKER_REL));
+        assert_eq!(deps, dir.join(EMBED_DEPS_REL));
+        assert_eq!(model, dir.join(EMBED_MODEL_REL));
+        assert_eq!(tokenizer, dir.join(EMBED_TOKENIZER_REL));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn embed_paths_keep_existing_custom_paths() {
+        let dir = std::env::temp_dir().join(format!("gsa_embed_custom_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("dep")).unwrap();
+        std::fs::write(dir.join("py.exe"), "x").unwrap();
+        std::fs::write(dir.join("w.py"), "x").unwrap();
+        std::fs::write(dir.join("m.onnx"), "x").unwrap();
+        std::fs::write(dir.join("t.json"), "x").unwrap();
+        let mut cfg = RuntimeConfig::default();
+        cfg.python_path = "py.exe".into();
+        cfg.embed_worker = "w.py".into();
+        cfg.embed_deps_dir = "dep".into();
+        cfg.embed_model = "m.onnx".into();
+        cfg.embed_tokenizer = "t.json".into();
+        let (python, worker, deps, model, tokenizer) = embed_paths(&cfg, &dir);
+        assert_eq!(python, dir.join("py.exe"));
+        assert_eq!(worker, dir.join("w.py"));
+        assert_eq!(deps, dir.join("dep"));
+        assert_eq!(model, dir.join("m.onnx"));
+        assert_eq!(tokenizer, dir.join("t.json"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -37,8 +37,23 @@ def _find_repo_root(start):
     return os.path.abspath(os.path.join(start, ".."))
 
 
-REPO_ROOT = _find_repo_root(_HERE)
-RUNTIME = os.path.join(REPO_ROOT, "runtime")
+def _resolve_runtime(start):
+    """start = 本文件所在目录（仓内 `scripts/` 或部署 `runtime/worker/`）。
+
+    部署形态下 `<runtime>/worker/fuse_core.py` 的父目录**就是** runtime，
+    但它上面没有与 `scripts/` 并列的 `runtime/`，`_find_repo_root` 会退化成
+    `<runtime>/runtime` ⇒ 模型路径失效（冒烟实测 `os error 3`）。
+    所以先认「父目录里有 models/embed 或 deps_embed」这一条，再退回仓内启发式。
+    """
+    parent = os.path.dirname(start)
+    if os.path.isdir(os.path.join(parent, "models", "embed")) or os.path.isdir(
+        os.path.join(parent, "deps_embed")
+    ):
+        return parent
+    return os.path.join(_find_repo_root(start), "runtime")
+
+
+RUNTIME = _resolve_runtime(_HERE)
 DEPS_EMBED = os.path.join(RUNTIME, "deps_embed")
 MODELS_EMBED = os.path.join(RUNTIME, "models", "embed")
 

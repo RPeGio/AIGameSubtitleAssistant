@@ -410,3 +410,42 @@ all mean the product does not run.
   belongs to the frontend wiring and ships together with 11c; the external acceleration options
   (ModelScope as primary source / self-hosted Cloudflare Worker reverse proxy) are researched but not
   deployed — see the survey summary at the end of §8.11.
+
+### 8.12 Vector-fusion (embed) runtime joins the distribution (`deps-embed`, 2026-10-30)
+
+**Why it must ship**: vector fusion is the main OCR↔ASR pairing path. `src-tauri/src/fuse/mod.rs:230`
+calls `run_embed_worker(...)` and turns any failure into `Err("向量融合失败：…")` — there is **no
+fallback**, so like OCR this is not an optional component.
+
+| Item | Value |
+|---|---|
+| Asset | `embed-runtime.zip` (release `embed-runtime-v1`) |
+| Size | 157,386,205 B (2.20x compression) → 345,868,793 B unpacked |
+| Contents | `deps_embed/` (26 pinned wheels, 6,737 files), `models/embed/multilingual-e5-small/` (112.9 MB ONNX + 16.3 MB tokenizer), `worker/{embed_worker.py,fuse_core.py}`, `.embed-runtime` |
+| Manifest | 7th entry `id=deps-embed`, **no flavor**, `dest="."`, with `unpacked_size` |
+| Prerequisite | `deps-ocr` installed (it reuses that pack's `python/python.exe`, saving 47 MB) |
+
+- **Why one pack and no flavors**: these 26 wheels are **CPU-only onnxruntime** — there is no
+  CUDA/DirectML variant, so "pick a pack by GPU" does not exist here. e5-small is a 112 MB int8 ONNX
+  model that runs in tens of milliseconds per line on CPU; building a GPU path for it would be
+  over-engineering.
+- **Why reuse the OCR Python**: the interpreter and stdlib are backend-agnostic; shipping a second copy
+  would add 47 MB and a second version to keep in sync. The cost is an implicit dependency between
+  entries, which is documented rather than encoded — a `requires` field was **not** added, because one
+  prerequisite does not justify a schema change (ordering lives in `-Items` and in the docs).
+- **Packager** `scripts/package_embed_runtime.ps1`: clean work tree → install the 26 wheels from
+  `embed-requirements.lock.txt` and compare against the lock line by line (refuse to pack on any
+  mismatch) → copy model + workers → **smoke test** (really spawn the worker on two segments and
+  assert `ok=true`, segment count, `stats.matched`) → `tar` pack with entry-count verification and
+  `smoke*.log` cleanup.
+- **Deployment-only bug fixed on the way**: `scripts/fuse_core.py` located the runtime root by walking
+  up for a directory containing **both** `scripts/` and `runtime/`. On a user machine the deployed
+  `runtime/worker/` has no `scripts/` above it, so it degraded to `<runtime>/runtime` ⇒ model paths
+  broke (`Exception: 系统找不到指定的路径 (os error 3)` in the smoke test). It now prefers "my parent
+  directory has `models/embed` or `deps_embed`" and keeps the repo heuristic as a fallback. **This can
+  never show up on a dev machine** (the repo root has both `scripts/` and `runtime/`), which is exactly
+  why the smoke test has to run in a deployment-shaped work tree.
+- **Rust side**: new `embed_paths(config, runtime_dir)` (same shape as `moss_paths`/`ocr_paths`, empty
+  config falls back to the standard layout); `embed.rs` uses it and checks each file before spawning,
+  so users see "reinstall deps-embed" instead of a Python `os error 3`; new command
+  `probe_embed_install`. `cargo test --lib`: **335 passed**.

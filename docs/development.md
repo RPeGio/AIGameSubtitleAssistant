@@ -76,11 +76,11 @@ runtime/
 ├── deps/                # OCR pip 依赖（--target 隔离；现随 OCR 包分发）
 ├── deps_gpu/            # OCR GPU 专有件（可选，随 OCR 的 cuda 包分发；运行时 PYTHONPATH=deps_gpu;deps）
 ├── deps_funasr/         # 【已退役】FunASR pip 依赖（脚本保留，产品不再安装）
-├── deps_embed/          # 向量召回 pip 依赖（onnxruntime CPU + tokenizers，融合用）
+├── deps_embed/          # 向量召回 pip 依赖（onnxruntime CPU + tokenizers；现随 embed 包分发）
 ├── models/
 │   ├── paddleocr/       # PP-OCRv5 缓存（随 OCR 包分发）
 │   ├── funasr/          # 【已退役】Fun-ASR-Nano + VAD + 说话人模型
-│   ├── embed/           # multilingual-e5-small（ONNX qint8，融合用）
+│   ├── embed/           # multilingual-e5-small（ONNX qint8；现随 embed 包分发）
 │   ├── moss/            # moss-transcribe-q5_k.gguf（随 runtime manifest 分发）
 │   └── qwen/            # 【已退役】qwen2.5-3b-instruct（历史测试台）
 ├── worker/              # bootstrap 拷贝的 worker 脚本
@@ -88,14 +88,16 @@ runtime/
 ```
 
 > **首次启动即装齐**：`scripts/bootstrap_runtime.ps1` 按 `src-tauri/resources/runtime/manifest.json`
-> 下载 `moss`（按设备选 cpu/cuda/vulkan）、`models-moss`（gguf）与 OCR 两包
-> （`deps-ocr` / `deps-ocr-gpu`；后者 `optional`，非 NVIDIA 机器自动跳过），校验 SHA256 后解压。
+> 下载 `moss`（按设备选 cpu/cuda/vulkan）、`models-moss`（gguf）、OCR 两包
+> （`deps-ocr` / `deps-ocr-gpu`；后者 `optional`，非 NVIDIA 机器自动跳过）与向量融合包
+> `deps-embed`（26 个 CPU 包 + e5-small 模型 + worker，复用 OCR 包的 `python/`），校验 SHA256 后解压。
 > **CUDA/cuDNN 运行库不打包分发**（CUDA EULA 1.2.2 禁止当独立产品公开分发），装完 OCR 后由安装器
 > 用 `pip` 从 PyPI 镜像现拉 8 个 `nvidia-*` 轮子（约 1.7 GB，缺省华为云源，`--require-hashes`）。
 > 开发期仍可用 `scripts/bootstrap_ocr.ps1` 等分步脚本自行搭建。
 > 网络差也不用担心断流：下载器按 64 MB 分段、断点续传（缓存 `<runtime>\.downloads\`），
 > 并可 `-SegmentMB` / `-NoResume` / `-MaxAttempts` 调整；多源用清单里的 `urls[]`（见契约 §4.5）。
-> 发版物的打包方式见 `scripts/package_ocr_runtime.ps1` 与设计文档 §8.11。
+> 发版物的打包方式见 `scripts/package_ocr_runtime.ps1`（§8.11）与
+> `scripts/package_embed_runtime.ps1`（§8.12）。
 
 ### config.json 关键字段
 

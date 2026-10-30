@@ -24,6 +24,11 @@ pub const INSTALLED_FILE: &str = ".installed.json";
 /// 不带 flavor；二进制才是按 flavor 分三条的那个 `moss`。
 pub const MODEL_ID: &str = "models-moss";
 
+/// 清单里向量融合（embed）运行时的条目 id。
+/// 与 flavor 无关：这 26 个包是纯 CPU 的 onnxruntime，没有 CUDA/DirectML 变体，
+/// 所以全平台只有一条；它复用 OCR 包带来的 `python/python.exe`。
+pub const EMBED_ID: &str = "deps-embed";
+
 /// `.installed.json` 里单个条目的内容
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct InstalledItem {
@@ -346,6 +351,33 @@ pub fn probe_moss_install(app: tauri::AppHandle) -> InstallStatus {
         Some(&model),
         manifest.as_deref(),
         "moss",
+    )
+}
+
+/// Tauri 命令：已装 embed（向量融合）运行时的状态比对。
+///
+/// "二进制"取 `python/python.exe`（embed 复用 OCR 包的解释器），"模型"取 onnx 文件：
+/// 这两者任一缺失都等于向量融合跑不了，所以一次比对就能给出可读结论。
+#[tauri::command]
+pub fn probe_embed_install(app: tauri::AppHandle) -> InstallStatus {
+    use tauri::Manager;
+
+    let runtime_dir = super::config::resolve_runtime_dir(
+        app.path().app_data_dir().ok().map(|d| d.join("runtime")),
+    );
+    let config = super::RuntimeConfig::load(&runtime_dir).unwrap_or_default();
+    let (python, _worker, _deps, model, _tokenizer) =
+        super::embed_paths(&config, &runtime_dir);
+    let manifest = super::backend_probe::find_manifest(&super::backend_probe::manifest_candidates(
+        &app,
+        &runtime_dir,
+    ));
+    evaluate(
+        &runtime_dir,
+        &python,
+        Some(&model),
+        manifest.as_deref(),
+        EMBED_ID,
     )
 }
 

@@ -28,7 +28,7 @@ flavor 解析规则（每个条目独立匹配）：
   - 退出码：0 全成功 / 1 预检失败 / 2 校验失败 / 3 部分条目失败 / 4 未知错误。
 
 参数：
-  -Items <ids>          逗号分隔的条目 id，默认 moss,models-moss,deps-ocr,deps-ocr-gpu
+  -Items <ids>          逗号分隔的条目 id，默认 moss,models-moss,deps-ocr,deps-ocr-gpu,deps-embed
                         （首启一次性装齐：ASR 二进制 + 模型 + OCR 运行时；GPU 那条约
                         在非 NVIDIA 机器上会被静默跳过。老调用方仍可显式带上
                         deps-ocr-cuda-libs 表示"要 CUDA 运行库"，它由 pip 阶段处理）
@@ -51,7 +51,7 @@ flavor 解析规则（每个条目独立匹配）：
   powershell -ExecutionPolicy Bypass -File scripts/bootstrap_runtime.ps1 -Flavor vulkan -Force
 #>
 param(
-  [string]$Items = "moss,models-moss,deps-ocr,deps-ocr-gpu",
+  [string]$Items = "moss,models-moss,deps-ocr,deps-ocr-gpu,deps-embed",
   [string]$Flavor = "auto",
   [string]$Mirror = "https://gh-proxy.com/",
   [string]$PipMirror = "https://repo.huaweicloud.com/repository/pypi/simple",

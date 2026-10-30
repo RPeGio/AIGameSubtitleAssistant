@@ -404,3 +404,38 @@ gh release upload  moss-runtime-v1 moss-cuda.zip
   `deps-ocr` 分 5 段经 gh-proxy 下完。
 - **仍未做（留档）**：OCR 的安装门禁 UI（未装 OCR 时不许进项目）属前端接线，与 11c 一并做；
   外网加速（ModelScope 主源 / 自建 CF Worker 反代）已调研未落地，见 §8.11 的调研结论。
+
+### 8.12 向量融合（embed）运行时并入分发（`deps-embed`，2026-10-30）
+
+**为什么必须分发**：向量融合是 OCR↔ASR 配对的主路径，`src-tauri/src/fuse/mod.rs:230` 调
+`run_embed_worker(...)`，失败即 `Err("向量融合失败：…")`，**没有降级路径**。所以它和 OCR 一样
+不属于"可选件"。
+
+| 项 | 值 |
+|---|---|
+| 资产 | `embed-runtime.zip`（Release `embed-runtime-v1`） |
+| 体积 | 157,386,205 B（压缩比 2.20x）→ 解压 345,868,793 B |
+| 内容 | `deps_embed/`（26 个钉子包，6,737 个文件合计）、`models/embed/multilingual-e5-small/`（ONNX 112.9 MB + tokenizer 16.3 MB）、`worker/{embed_worker.py,fuse_core.py}`、`.embed-runtime` |
+| 清单 | 第 7 条 `id=deps-embed`，**不带 flavor**，`dest="."`，带 `unpacked_size` |
+| 前置 | `deps-ocr` 已装（复用它的 `python/python.exe`，省 47 MB） |
+
+- **为什么单包、不按 flavor 拆**：这 26 个包是**纯 CPU 的 onnxruntime**，没有 CUDA/DirectML
+  变体，也就不存在"按显卡选包"。e5-small 是 112 MB 的 int8 ONNX，CPU 上几十毫秒/条，
+  再为它做 GPU 版属于过度设计。
+- **为什么复用 OCR 的 Python**：解释器与标准库与后端无关，单独再发一份只会让安装体积
+  +47 MB、还多一处版本不一致的风险。代价是条目之间有隐性依赖，已写进清单说明（`requires`
+  字段**没有**引入——一个前置依赖不值得扩 schema，写在 `-Items` 顺序与文档里即可）。
+- **打包脚本** `scripts/package_embed_runtime.ps1`：洗白 → 按 `embed-requirements.lock.txt`
+  装 26 包并与 lock 逐行比对（不一致拒绝打包）→ 拷模型与 worker → **冒烟**（真起 worker 跑
+  2 段语料，断言 `ok=true`、段数、`stats.matched`）→ `tar` 建包 + 条目数校验 + `smoke*.log`
+  清理。
+- **顺带修掉的部署期缺陷（真 bug）**：`scripts/fuse_core.py` 的运行时根靠"上溯找同时含
+  `scripts/` 与 `runtime/` 的目录"定位，装到用户机后 `runtime/worker/` 上面**没有** `scripts/`，
+  于是退化成 `<runtime>/runtime` ⇒ 模型路径失效（冒烟实测 `Exception: 系统找不到指定的路径
+  (os error 3)`）。改为优先认「本文件父目录里有 `models/embed` 或 `deps_embed`」，仓内
+  启发式留作兜底。**这条在开发机上永远不会暴露**（仓根同时有 `scripts/` 与 `runtime/`），
+  只有把包打进用户机才炸——所以冒烟必须在"像部署目录"的工作树里跑。
+- **Rust 侧**：新增 `embed_paths(config, runtime_dir)`（与 `moss_paths`/`ocr_paths` 同源，
+  空配置回退标准布局），`embed.rs` 改用它并在起子进程前逐项判文件存在（给出"请重装
+  deps-embed"这类可读结论，而不是让 Python 抛 `os error 3`）；新增命令
+  `probe_embed_install`。`cargo test --lib` **335 passed**。
