@@ -11,7 +11,7 @@
 | 桌面壳 | Tauri 2（`protocol-asset`、dialog / opener 插件） |
 | 前端 | Vue 3 + TypeScript + Pinia + Vue Router + Naive UI + Tailwind CSS 4 + Vite 6 |
 | 后端 | Rust 2021（tauri / serde / image / uuid） |
-| AI | PaddleOCR（Python worker）、FunASR / MOSS（ASR）、multilingual-e5-small + 统一转移 DP（融合）、llama.cpp + Qwen2.5-3B（LLM，测试台） |
+| AI | PaddleOCR（Python worker）、MOSS（ASR，唯一引擎）、multilingual-e5-small + 统一转移 DP（融合）。<br>FunASR 与 llama.cpp + Qwen2.5-3B 已退役、不参与分发（代码保留，见下文「已退役组件」） |
 
 约束：**完全离线**。Rust 侧无 HTTP 客户端，应用不做任何网络请求；所有 AI 能力通过本地子进程实现。
 
@@ -71,20 +71,33 @@
 ```
 runtime/
 ├── config.json          # 唯一配置文件（bootstrap 脚本合并写入）
-├── python/              # 内嵌 CPython 3.12.10（NuGet 包解压）
-├── deps/                # OCR pip 依赖（--target 隔离）
-├── deps_gpu/            # OCR GPU 专有件（可选，bootstrap_ocr_gpu.ps1；运行时 PYTHONPATH=deps_gpu;deps）
-├── deps_funasr/         # FunASR pip 依赖（torch 与 paddle 依赖隔离）
-├── deps_embed/          # 向量召回 pip 依赖（onnxruntime CPU + tokenizers，融合用）
+├── .installed.json      # 一键安装器的落盘状态（哪些条目装了、hash、时间）
+├── python/              # 内嵌 CPython 3.12.10（NuGet 包解压；现随 OCR 包分发）
+├── deps/                # OCR pip 依赖（--target 隔离；现随 OCR 包分发）
+├── deps_gpu/            # OCR GPU 专有件（可选，随 OCR 的 cuda 包分发；运行时 PYTHONPATH=deps_gpu;deps）
+├── deps_funasr/         # 【已退役】FunASR pip 依赖（脚本保留，产品不再安装）
+├── deps_embed/          # 向量召回 pip 依赖（onnxruntime CPU + tokenizers；现随 embed 包分发）
 ├── models/
-│   ├── paddleocr/       # PP-OCRv5 缓存
-│   ├── funasr/          # Fun-ASR-Nano + VAD + 说话人模型（modelscope 缓存）
-│   ├── embed/           # multilingual-e5-small（ONNX qint8，融合用）
-│   ├── moss/            # moss-transcribe-<quant>.gguf
-│   └── qwen/            # qwen2.5-3b-instruct-q4_k_m.gguf（可选，测试台）
+│   ├── paddleocr/       # PP-OCRv5 缓存（随 OCR 包分发）
+│   ├── funasr/          # 【已退役】Fun-ASR-Nano + VAD + 说话人模型
+│   ├── embed/           # multilingual-e5-small（ONNX qint8；现随 embed 包分发）
+│   ├── moss/            # moss-transcribe-q5_k.gguf（随 runtime manifest 分发）
+│   └── qwen/            # 【已退役】qwen2.5-3b-instruct（历史测试台）
 ├── worker/              # bootstrap 拷贝的 worker 脚本
-└── bin/                 # moss-transcribe.exe、bin/llm/（llama.cpp）
+└── bin/                 # moss-transcribe.exe（+ ggml 后端 DLL）、bin/llm/（【已退役】llama.cpp）
 ```
+
+> **首次启动即装齐**：`scripts/bootstrap_runtime.ps1` 按 `src-tauri/resources/runtime/manifest.json`
+> 下载 `moss`（按设备选 cpu/cuda/vulkan）、`models-moss`（gguf）、OCR 两包
+> （`deps-ocr` / `deps-ocr-gpu`；后者 `optional`，非 NVIDIA 机器自动跳过）与向量融合包
+> `deps-embed`（26 个 CPU 包 + e5-small 模型 + worker，复用 OCR 包的 `python/`），校验 SHA256 后解压。
+> **CUDA/cuDNN 运行库不打包分发**（CUDA EULA 1.2.2 禁止当独立产品公开分发），装完 OCR 后由安装器
+> 用 `pip` 从 PyPI 镜像现拉 8 个 `nvidia-*` 轮子（约 1.7 GB，缺省华为云源，`--require-hashes`）。
+> 开发期仍可用 `scripts/bootstrap_ocr.ps1` 等分步脚本自行搭建。
+> 网络差也不用担心断流：下载器按 64 MB 分段、断点续传（缓存 `<runtime>\.downloads\`），
+> 并可 `-SegmentMB` / `-NoResume` / `-MaxAttempts` 调整；多源用清单里的 `urls[]`（见契约 §4.5）。
+> 发版物的打包方式见 `scripts/package_ocr_runtime.ps1`（§8.11）与
+> `scripts/package_embed_runtime.ps1`（§8.12）。
 
 ### config.json 关键字段
 
@@ -94,10 +107,21 @@ runtime/
 | `ocr_model` | `mobile`（默认）或 `server`（PP-OCRv5 档位） |
 | `language` / `dev_debug` | OCR 语言、调试帧落盘（`temp/`） |
 | `moss_binary` / `moss_model` / `moss_threads` / `moss_device` | MOSS 配置；`moss_device`：空=auto（ggml 自选）/ cpu / cuda / vulkan（显式请求不可用时硬报错，见下节） |
-| `llm_binary` / `llm_model` / `llm_threads` | llama.cpp 配置（可选，仅融合能力测试台） |
-| `asr_provider` | `moss` / `funasr` / 空=自动 |
-| `funasr_worker` / `funasr_deps` / `funasr_model_dir` / `funasr_device` / `funasr_language` / `funasr_timeout_minutes` | FunASR 配置 |
+| `llm_binary` / `llm_model` / `llm_threads` | 【已退役】llama.cpp 配置（仅历史测试台） |
+| `asr_provider` | `moss` / 空=自动（`funasr` 已退役，仅作兼容值） |
+| `funasr_worker` / `funasr_deps` / `funasr_model_dir` / `funasr_device` / `funasr_language` / `funasr_timeout_minutes` | 【已退役】FunASR 配置 |
 | `embed_worker` / `embed_model` / `embed_tokenizer` / `embed_deps_dir` | 融合 worker 脚本 / E5-small 模型 / 分词器 / 依赖路径；由 `bootstrap_embed.ps1` 写入，产品融合与实验台共用；**四个字段整组必配或整组为空** |
+
+### 已退役组件（2026-10-30）
+
+产品只保留 MOSS 一个 ASR 引擎。以下两套实现**不参与分发**，但代码与脚本仍留在仓库里：
+
+| 组件 | 现状 | 保留在哪 |
+|---|---|---|
+| FunASR（Fun-ASR-Nano + VAD + cam++ 说话人） | 不随安装包发布、不进 `runtime/manifest.json`；前端无入口（`AsrView` / `AppStatusBar` 只渲染 MOSS） | `scripts/bootstrap_funasr.ps1`、`scripts/funasr_worker.py`、`src-tauri/src/ai_runtime/funasr.rs` |
+| 本地 LLM（llama.cpp + Qwen2.5-3B） | 同上；融合早已改为「向量召回 + 统一转移 DP」，LLM 只在历史测试台出现过 | `scripts/bootstrap_llm.ps1`、`src-tauri/src/ai_runtime/llm.rs` |
+
+为什么留着：历史缺陷复现（如 [benchmark/FUSE_PIPELINE_DEFECTS.md](../benchmark/FUSE_PIPELINE_DEFECTS.md) F13 的 LLM 路线实验）需要能原样把环境搭起来。**不要**在发布流程、`bundle.resources`、`runtime/manifest.json` 或任何面向用户的文案里再引用它们。
 
 ### MOSS 后端与三设备实测（2026-10-19）
 

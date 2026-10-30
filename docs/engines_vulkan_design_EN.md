@@ -227,6 +227,8 @@ Rationale: the MOSS gap between CPU and GPU is an order of magnitude (the canoni
 
 ## 7. Outside this branch: FunASR character-level timestamps (a separate verification item)
 
+> **Update 2026-10-30: FunASR is retired and no longer distributed.** This section keeps the mechanism findings for future reference/reproduction; it is no longer a pending task.
+
 The comment at `scripts/funasr_worker.py:219` claims Fun-ASR-Nano's `sentence_info` carries **character-level timestamps** and that sentence post-processing depends on them; `:243` consumes them directly, and `:70-73` uses `len(ts) < 2` to decide "do not split this segment".
 
 **The mechanism as established from source (funasr 1.4.16)**: Nano has exactly one timestamp path — **CTC forced alignment** (`fun_asr_nano/model.py:965-966,1057-1071` → `torchaudio.functional.forced_align`) — and **no code anywhere in the repo interpolates timestamps evenly across characters**. The gate is `checkpoint_utils.py:22-47 disable_incomplete_ctc()`: when the checkpoint lacks the `ctc_decoder.*` / `ctc.*` keys it nulls the CTC head, so `result` does not even carry a `timestamps` key; `auto/auto_model.py:1163-1187` (**the branch this worker takes**, because it configures no `punc_model` and therefore degrades to `vad_segment` mode) then logs `No timestamp found in ASR result. …`, sets `ts = []`, and degrades `start`/`end` to **VAD segment boundaries**. In that case `:70-73`'s splitting branch is dead code and character-level timing is only segment-level (up to 30 s).
@@ -323,4 +325,127 @@ Also new and now closed: **`.installed.json` reconciliation** (previously "not t
 - **Script side** (`scripts/bootstrap_runtime.ps1`): stdout is pure JSONL (`start` / `progress` / `item_skip` / `item_done` / `item_fail` / `error` / `done`, `done` always last), human diagnostics go to stderr; exit codes `0` success / `1` pre-check failure / `2` verification failure / `3` some items failed / `4` unknown error; `-Flavor auto` runs the L0 probe (`nvidia-smi` compute capability ≥ 7.5 → `vulkan-1.dll` → cpu); disk pre-check (download size ×3 + 100 MB) before any download; mirror failure falls back to a direct connection; unpacking only after SHA256 matches; on success it writes `runtime/.installed.json` and supports `item_skip`.
 - **Rust side** (`src-tauri/src/ai_runtime/runtime_install.rs`): the `precheck_runtime_disk` / `install_runtime` / `cancel_runtime_install` commands, progress forwarded line by line over `runtime-install-progress`; cancel kills the process tree via `taskkill /T /F`; only one install task may run at a time.
 - **Why they are decoupled**: child-process I/O lives in `stream_child` plus the exit-code mapping `summarize`, neither of which touches Tauri, so the unit tests can drive a **real script in a real child process** (`end_to_end_bogus_item_reports_failure`, `cancel_stops_waiting`) instead of mocking things.
-- **Leftover**: in packaged form the script is not shipped with the app yet (`bundle.resources` maps only the manifest). `bootstrap_candidates` already reserves the `resources/scripts/bootstrap_runtime.ps1` slot; one more resource mapping is all it takes.
+- **Leftover**: in packaged form the script is not shipped with the app yet (`bundle.resources` maps only the manifest). `bootstrap_candidates` already reserves the `resources/scripts/bootstrap_runtime.ps1` slot; one more resource mapping is all it takes. (Checked 2026-10-30: that mapping and `scripts/sync_bundle_resources.mjs` landed on `feat/misc-fixes` as `bd8ee43`; this branch does not have it yet.)
+
+### 8.10 Model joins the distribution (`models-moss`, 2026-10-30)
+
+> Why: `probe_moss_install` only looked at the binary, so after "install runtime" the card showed **ok** and the first transcription then failed with `MOSS 模型不存在`. The 618 MB gguf was in no manifest and had no automatic path.
+
+- **Release**: `models-moss.zip` = 626,397,892 B, sha256 `809f8999ac51ef0836b9324b2c1ad6a40e520b42f69dfc60c260dd01ab9a8cb1`, published as a fourth asset of Release `moss-runtime-v1` (assets are appended to the same tag; the version number does not change).
+- **Manifest**: a fourth entry `{id:"models-moss", dest:"models/moss"}` with **no `flavor` and no `backend_marker`** — all three backends share the same q5_k model, and device probing is irrelevant to it.
+- **Default items**: `-Items` in `bootstrap_runtime.ps1` changed from `moss` to **`moss,models-moss`** (you need both).
+- **Script fix**: the flavor candidate set for `-Flavor auto` is now the **union over the selected items**. The old code looked at `items[0]` only, so installing just `models-moss` was rejected with "no usable flavor in the manifest". Both paths were exercised on a live run (`models-moss` alone → `auto: 所选条目与 flavor 无关，跳过设备探测`, exit 0; `models-moss,moss` → `auto 选择: cpu`, both `item_done`, and a second run reports `item_skip` for both).
+- **State machine**: `evaluate` gained `model_missing` (binary present, gguf absent ⇒ cannot run, ranked above the version-only verdicts), and the "no `.installed.json` record" branch now also runs the model check.
+- **Empty config = standard layout**: the one-click install only unpacks and never writes `config.json`, so empty `moss_binary` / `moss_model` must fall back to `bin/moss-transcribe.exe` and `models/moss/moss-transcribe-q5_k.gguf` (new `moss_paths()`, used by `MossProvider::spawn`, `probe_moss_backend` and `probe_moss_install`). Otherwise `resolve_path("")` resolves to the runtime directory itself and a freshly installed runtime is reported as `file_missing`.
+- **BOM tolerance**: `parse_installed` / `parse_manifest_items` strip a UTF-8 BOM before parsing — PowerShell 5.1's `Set-Content -Encoding UTF8` adds one, and serde_json treats it as a syntax error, which would silently turn the whole manifest into "empty" and lose every status.
+### 8.11 OCR runtime joins the distribution (`deps-ocr` / `deps-ocr-gpu` + CUDA libs fetched by pip, 2026-10-30)
+
+**Goal**: OCR is the engine "almost everyone will use", so it must work before the user starts
+work on a project ⇒ the first launch installs everything in one go (`moss` + `models-moss` + the
+two OCR packs + the CUDA runtime libraries). Missing binary, missing model, or missing OCR runtime
+all mean the product does not run.
+
+- **Shape (A)**: the OCR runtime ships as a single archive that **preserves directory structure**
+  (`python/` `deps/` `models/paddleocr/` `worker/`) with `dest: "."` in the manifest. Bundling it
+  into the installer was rejected (every user would pay +350 MB); splitting it per component was
+  rejected too (state machine ×N, a wall of progress rows). Relocatability was verified on a real
+  machine: after copying the tree elsewhere `sys.prefix` follows, and `import paddleocr/numpy/cv2`
+  all succeed (3.4.0 / 2.5.3 / 4.10.0) ⇒ no pip and no venv on the user's machine.
+- **Pinned lists**: `scripts/ocr-requirements.lock.txt` (61 packages) and
+  `scripts/ocr-gpu-requirements.lock.txt` (9 packages) generated from
+  `pip freeze --path runtime/deps(_gpu)`; `package_ocr_runtime.ps1` freezes again after install and
+  compares line by line, refusing to package on any drift (the artifact must be byte-reproducible).
+- **Artifacts** (Release `ocr-runtime-v1`):
+  | asset | size | unpacked | flavor |
+  |---|---|---|---|
+  | `ocr-runtime-cpu.zip` | 309,975,635 | 911,575,386 | cpu |
+  | `ocr-runtime-cuda-paddle.zip` | 502,533,301 | 996,251,695 | cuda (optional) |
+  An earlier third asset, `ocr-runtime-cuda-libs.zip` (1,856,518,097 / 2,693,178,035 unpacked), held
+  the `nvidia/*` runtime libraries. At 1.86 GB it sat right on GitHub's hard **2 GiB** per-asset limit
+  (the 2,378,095,332 B archive was rejected with 422 `size must be less than 2147483648`), so it has
+  been **withdrawn** — see the next bullet.
+- **CUDA/cuDNN runtime libraries are fetched by pip at install time (revised 2026-10-30)**: the eight
+  `nvidia/*` wheels are no longer packaged; the installer pulls them into the same `deps_gpu/` with
+  the `pip` that ships inside the OCR baseline. Two reasons:
+  1. **Licensing** -- CUDA Toolkit EULA 1.2.2 forbids distributing the SDK "as a stand-alone product",
+     and 1.1.2 requires distributable parts be "accessed only by your application"; hosting a zip of
+     bare DLLs behind a public direct link violates both.
+  2. **Size** -- 1.86 GB sat right on the per-asset cap mentioned above.
+  Implementation: `$GpuLibs` in `bootstrap_runtime.ps1` (8 x `name==version + sha256`) and
+  `pip install --no-deps --require-hashes --target deps_gpu`; the default index is the **Huawei Cloud
+  PyPI mirror** (measured 10.3 MB/s; Aliyun 0.79, upstream PyPI 0.09). The pip phase **clears
+  `HTTP(S)_PROXY`** unless `-PipUseProxy` is passed -- a domestic mirror is slower through a proxy
+  (0.13-0.7 MB/s measured). Real run: 2,568.4 MB / 258 files landed; a second run yields `item_skip`.
+  Events look like any other item (`item = "deps-ocr-cuda-libs"`), so the frontend is unchanged.
+- **flavor rules (now extended to OCR)**: the global `-Flavor` is a **preference**, not a command;
+  each entry resolves it on its own: ① exact match wins; ② otherwise fall back to the entry's
+  `cpu` variant (an AMD/Intel box picks `vulkan` under `auto`, and OCR has no vulkan build);
+  ③ still no match and the entry is `optional` ⇒ skip silently, otherwise record a failure.
+- **Three script fixes**: structure-preserving extraction (the old code flattened by file name and
+  would have turned `python/` and `deps/` into a pile of same-named files), `unpacked_size` used by
+  the disk precheck, and `optional` semantics.
+- **Disk precheck formula (fixed)**: `Σdownload + Σunpacked + max single unpacked + 100 MB` (plus
+  1.73 GB + 2.51 GB when the pip phase runs). The
+  last term is the copy that exists in the temp staging dir and in `dest` at the same time; it used
+  to be missing, so the check passed "needs 6.87 GB, 7.53 GB free" and then the 2.69 GB CUDA pack
+  failed mid-extraction with `There is not enough space on the disk.` (observed: exit code 3,
+  `item_fail`).
+- **Truncation guard in the packager**: when the disk fills up `tar.exe` only prints `Write error`
+  and still leaves a truncated zip that can be hashed, uploaded, and only blows up on extraction
+  (observed once: 119/319 entries) ⇒ `New-Zip` verifies the entry count after packing **and**
+  checks `tar -tf`'s exit code (a truncated zip does not necessarily have fewer entries; tar reads
+  names from local headers first and errors afterwards).
+- **Downloader rework (added the same day, 2026-10-30)**: a dropped connection no longer restarts
+  from zero. `bootstrap_runtime.ps1` now does "multi-source candidates + byte-range segments +
+  in-segment resume", **without repacking any asset** (the largest pack is 502 MB; repacking and
+  re-uploading costs more than it saves). Candidate order: `urls[]` → `-Mirror` prefix → `url`
+  direct. Each candidate is probed with `curl -r 0-0` for `206`; sources that ignore Range
+  (gh-proxy does this for large files) are used single-stream and **never resumed** (`curl -C -`
+  appends duplicates when Range is ignored — measured: a 1770 MB download grew to 2036 MB). Segments
+  live in `<runtime>\.downloads\<id>-<sha8>\`, and a leftover `.curlpart` is merged into the segment
+  file on the next run ⇒ resume across processes. Measured: a 20 MB asset in 5 segments, and after a
+  kill it logged `续传：缓存里已有 3.0 MB，只需补 17.0 MB` and still matched the manifest SHA256; the
+  real 295.6 MB `deps-ocr` came down through gh-proxy in 5 segments.
+- **Still not done (on record)**: the OCR install gate UI (block project entry until OCR is installed)
+  belongs to the frontend wiring and ships together with 11c; the external acceleration options
+  (ModelScope as primary source / self-hosted Cloudflare Worker reverse proxy) are researched but not
+  deployed — see the survey summary at the end of §8.11.
+
+### 8.12 Vector-fusion (embed) runtime joins the distribution (`deps-embed`, 2026-10-30)
+
+**Why it must ship**: vector fusion is the main OCR↔ASR pairing path. `src-tauri/src/fuse/mod.rs:230`
+calls `run_embed_worker(...)` and turns any failure into `Err("向量融合失败：…")` — there is **no
+fallback**, so like OCR this is not an optional component.
+
+| Item | Value |
+|---|---|
+| Asset | `embed-runtime.zip` (release `embed-runtime-v1`) |
+| Size | 157,386,205 B (2.20x compression) → 345,868,793 B unpacked |
+| Contents | `deps_embed/` (26 pinned wheels, 6,737 files), `models/embed/multilingual-e5-small/` (112.9 MB ONNX + 16.3 MB tokenizer), `worker/{embed_worker.py,fuse_core.py}`, `.embed-runtime` |
+| Manifest | 7th entry `id=deps-embed`, **no flavor**, `dest="."`, with `unpacked_size` |
+| Prerequisite | `deps-ocr` installed (it reuses that pack's `python/python.exe`, saving 47 MB) |
+
+- **Why one pack and no flavors**: these 26 wheels are **CPU-only onnxruntime** — there is no
+  CUDA/DirectML variant, so "pick a pack by GPU" does not exist here. e5-small is a 112 MB int8 ONNX
+  model that runs in tens of milliseconds per line on CPU; building a GPU path for it would be
+  over-engineering.
+- **Why reuse the OCR Python**: the interpreter and stdlib are backend-agnostic; shipping a second copy
+  would add 47 MB and a second version to keep in sync. The cost is an implicit dependency between
+  entries, which is documented rather than encoded — a `requires` field was **not** added, because one
+  prerequisite does not justify a schema change (ordering lives in `-Items` and in the docs).
+- **Packager** `scripts/package_embed_runtime.ps1`: clean work tree → install the 26 wheels from
+  `embed-requirements.lock.txt` and compare against the lock line by line (refuse to pack on any
+  mismatch) → copy model + workers → **smoke test** (really spawn the worker on two segments and
+  assert `ok=true`, segment count, `stats.matched`) → `tar` pack with entry-count verification and
+  `smoke*.log` cleanup.
+- **Deployment-only bug fixed on the way**: `scripts/fuse_core.py` located the runtime root by walking
+  up for a directory containing **both** `scripts/` and `runtime/`. On a user machine the deployed
+  `runtime/worker/` has no `scripts/` above it, so it degraded to `<runtime>/runtime` ⇒ model paths
+  broke (`Exception: 系统找不到指定的路径 (os error 3)` in the smoke test). It now prefers "my parent
+  directory has `models/embed` or `deps_embed`" and keeps the repo heuristic as a fallback. **This can
+  never show up on a dev machine** (the repo root has both `scripts/` and `runtime/`), which is exactly
+  why the smoke test has to run in a deployment-shaped work tree.
+- **Rust side**: new `embed_paths(config, runtime_dir)` (same shape as `moss_paths`/`ocr_paths`, empty
+  config falls back to the standard layout); `embed.rs` uses it and checks each file before spawning,
+  so users see "reinstall deps-embed" instead of a Python `os error 3`; new command
+  `probe_embed_install`. `cargo test --lib`: **335 passed**.

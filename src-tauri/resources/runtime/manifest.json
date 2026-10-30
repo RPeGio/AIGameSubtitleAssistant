@@ -1,6 +1,6 @@
 {
     "version":  "1",
-    "generated_at":  "2026-10-22T15:52:05Z",
+    "generated_at":  "2026-10-30T14:40:00Z",
     "items":  [
                   {
                       "id":  "moss",
@@ -28,6 +28,39 @@
                       "size":  651834262,
                       "dest":  "bin",
                       "backend_marker":  "cuda"
-                  }
-              ]
+                  },
+                  {
+                      "id":  "models-moss",
+                      "url":  "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/models-moss.zip",
+                      "sha256":  "809f8999ac51ef0836b9324b2c1ad6a40e520b42f69dfc60c260dd01ab9a8cb1",
+                      "size":  626397892,
+                      "dest":  "models/moss"
+                  },
+                  {
+                      "id":  "deps-ocr",
+                      "flavor":  "cpu",
+                      "url":  "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/ocr-runtime-v1/ocr-runtime-cpu.zip",
+                      "sha256":  "33dc6e0e0cdcd9f7c21d72581252a35398558e03f8794dbeee145253cd6208cc",
+                      "size":  309803561,
+                      "unpacked_size":  911518754,
+                      "dest":  "."
+                  },
+                  {
+                      "id":  "deps-ocr-gpu",
+                      "flavor":  "cuda",
+                      "optional":  true,
+                      "url":  "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/ocr-runtime-v1/ocr-runtime-cuda-paddle.zip",
+                      "sha256":  "f5745d592baf83e4f23730d26deeb6cb2e662b61c151f04f8154e4edd74c66fc",
+                      "size":  502533301,
+                      "unpacked_size":  996251695,
+                      "dest":  "."
+                  },
+                  {
+                      "id":  "deps-embed",
+                      "url":  "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/embed-runtime-v1/embed-runtime.zip",
+                      "sha256":  "1771e9e67f751ab96470e2955d93653756acd4ad3c868c891cc22a1296ba1884",
+                      "size":  157386205,
+                      "unpacked_size":  345868793,
+                      "dest":  "."
+                  }              ]
 }

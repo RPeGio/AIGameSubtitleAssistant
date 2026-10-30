@@ -5,7 +5,7 @@
 use crate::ai_runtime::{OcrError, OcrProvider, OcrResult, RuntimeConfig};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -78,16 +78,25 @@ fn parse_response(line: &str) -> Result<Vec<OcrResult>, OcrError> {
 impl PaddleProvider {
     /// 启动 worker 子进程并探测就绪。探测失败不视为致命，仅 ready=false。
     pub fn spawn(config: &RuntimeConfig, runtime_dir: &Path) -> Result<Self, OcrError> {
-        let worker_script = runtime_dir.join(&config.worker_script);
-        let deps_dir = runtime_dir.join(&config.deps_dir);
-        let model_dir = runtime_dir.join(&config.model_dir);
+        // 四个路径统一走 ocr_paths：配置为空时回退标准布局（一键安装不写 config.json，
+        // 直接 join("") 会会把 runtime 目录当成 python、脚本、模型目录本身）
+        let (python, deps_dir, model_dir, worker_script) =
+            crate::ai_runtime::ocr_paths(config, runtime_dir);
 
-        // GPU 加速（可选，见 scripts/bootstrap_ocr_gpu.ps1）：GSA_OCR_DEVICE 非空且
-        // runtime/deps_gpu 存在时，PYTHONPATH 拼成 "deps_gpu;deps"——GPU 版 paddle 优先，
-        // 其余依赖复用 CPU 版目录；未启用时与既有行为完全一致（仅 deps）
-        let device = std::env::var("GSA_OCR_DEVICE").unwrap_or_default();
-        let device = device.trim().to_string();
-        let gpu_deps = runtime_dir.join("deps_gpu");
+        // GPU 加速（可选，见 scripts/package_ocr_runtime.ps1 -Flavor cuda）：显式指定设备
+        // （config.ocr_device 或环境变量 GSA_OCR_DEVICE）且 runtime/deps_gpu 存在时，
+        // PYTHONPATH 拼成 "deps_gpu;deps"——GPU 版 paddle 优先，其余依赖复用 CPU 版目录；
+        // 未启用时与既有行为完全一致（仅 deps）
+        let device = {
+            // 环境变量优先：开发期临时切换设备不该去改 config.json
+            let from_env = std::env::var("GSA_OCR_DEVICE").unwrap_or_default();
+            if from_env.trim().is_empty() {
+                config.ocr_device.trim().to_string()
+            } else {
+                from_env.trim().to_string()
+            }
+        };
+        let gpu_deps = crate::ai_runtime::resolve_path(crate::ai_runtime::OCR_DEPS_GPU_REL, runtime_dir);
         let pythonpath = if !device.is_empty() && gpu_deps.is_dir() {
             std::env::join_paths([gpu_deps.as_path(), deps_dir.as_path()])
                 .map(|p| p.to_string_lossy().into_owned())
@@ -96,14 +105,8 @@ impl PaddleProvider {
             deps_dir.to_string_lossy().into_owned()
         };
 
-        // python_path 支持相对 runtime 的写法（如 "python/python.exe"，机器无关）；
-        // 绝对路径（老配置）原样使用
-        let python = if Path::new(&config.python_path).is_absolute() {
-            PathBuf::from(&config.python_path)
-        } else {
-            runtime_dir.join(&config.python_path)
-        };
-
+        // python 路径由 ocr_paths 统一给出（绝对路径，配置为空时回退 runtime/python）；
+        // 用 subprocess::hidden 起进程，避免控制台闪窗（真机回归 bd8ee43）
         let mut cmd = crate::subprocess::hidden(&python);
         cmd.arg(&worker_script)
             .env("PYTHONPATH", &pythonpath)
@@ -302,6 +305,7 @@ mod tests {
             model_dir: "models/paddleocr".into(),
             language: "ch".into(),
             ocr_model: "mobile".into(),
+        ocr_device: String::new(),
             dev_debug: true,
             moss_binary: String::new(),
             moss_model: String::new(),

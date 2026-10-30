@@ -1,4 +1,6 @@
 // ─── FunASR 转写 Worker Provider ───────────────────────────
+// 【已退役 · 不参与分发】FunASR 已不是产品引擎（前端无入口、运行时不随安装包发布、
+// 不进 runtime manifest；2026-10-30 决策）。代码保留仅为历史缺陷复现，新功能不要再接。
 // 一次性子进程：`python funasr_worker.py <audio.wav>`，stdout 输出 JSON 段数组。
 // 复用 runtime/python 解释器，依赖装在独立目录 deps_funasr（避免与 paddleocr
 // 的 deps 版本冲突），模型缓存 models/funasr（ModelScope 源，bootstrap 预下载）。

@@ -38,8 +38,124 @@ pub(crate) fn resolve_path(p: &str, runtime_dir: &Path) -> PathBuf {
     }
 }
 
-// ─── OCR 数据与错误 ──────────────────────────────────────
+/// 安装器约定的 MOSS 标准布局（与 manifest 条目的 `dest` 一致）
+pub(crate) const MOSS_BINARY_REL: &str = "bin/moss-transcribe.exe";
+pub(crate) const MOSS_MODEL_REL: &str = "models/moss/moss-transcribe-q5_k.gguf";
 
+/// 解析 MOSS 的二进制与模型路径。
+///
+/// 为什么空字段要回退到标准布局：一键安装（欢迎页自检卡片）只解包文件、**不写
+/// config.json**，所以"刚装完、配置还没生成"是正常状态。此时若把空字段当成
+/// runtime 目录本身（`resolve_path("")` 的结果），就会把已装好的运行时判成
+/// "文件缺失"——用户看到的是装完反而坏了。用户自定义过路径时 config 里一定有值，
+/// 回退不会被触发。
+pub(crate) fn moss_paths(config: &RuntimeConfig, runtime_dir: &Path) -> (PathBuf, PathBuf) {
+    let binary = if config.moss_binary.trim().is_empty() {
+        resolve_path(MOSS_BINARY_REL, runtime_dir)
+    } else {
+        resolve_path(&config.moss_binary, runtime_dir)
+    };
+    let model = if config.moss_model.trim().is_empty() {
+        resolve_path(MOSS_MODEL_REL, runtime_dir)
+    } else {
+        resolve_path(&config.moss_model, runtime_dir)
+    };
+    (binary, model)
+}
+
+/// 安装器约定的 OCR 标准布局（与 manifest 条目 `deps-ocr` 的 `dest: "."` 一致）
+pub(crate) const OCR_PYTHON_REL: &str = "python/python.exe";
+pub(crate) const OCR_DEPS_REL: &str = "deps";
+pub(crate) const OCR_DEPS_GPU_REL: &str = "deps_gpu";
+pub(crate) const OCR_MODELS_REL: &str = "models/paddleocr";
+pub(crate) const OCR_WORKER_REL: &str = "worker/ocr_worker.py";
+
+/// OCR 运行时的四个关键路径：(python 可执行, 依赖目录, 模型目录, worker 脚本)。
+///
+/// 与 `moss_paths` 同一动机：一键安装只解包、不写 config.json，所以配置为空时
+/// 必须回退到标准布局，否则会把刚装好的运行时判成"缺失"。
+///
+/// 这里比 `moss_paths` 多一条判据：**配置值指向的东西在磁盘上不存在时也回退**。
+/// 原因是 `RuntimeConfig::default()` 的 `python_path` 是历史占位值 "python"
+/// （不是 "python/python.exe"），按字面 join 会得到一个目录；安装器又不会写
+/// config.json。存在性判定能让"刚装完"和"老的占位配置"都落到标准布局。
+/// 用户自定义过路径时那个路径通常存在，回退不会被触发。
+/// 注意 `deps_gpu` 是**可选**增量（只有 NVIDIA 机器会有），不参与这里的解析。
+pub(crate) fn ocr_paths(config: &RuntimeConfig, runtime_dir: &Path) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+    fn pick(value: &str, rel: &str, runtime_dir: &Path, want_dir: bool) -> PathBuf {
+        let std_path = resolve_path(rel, runtime_dir);
+        let value = value.trim();
+        if value.is_empty() {
+            return std_path;
+        }
+        let custom = resolve_path(value, runtime_dir);
+        let ok = if want_dir {
+            custom.is_dir()
+        } else {
+            custom.is_file()
+        };
+        if ok {
+            custom
+        } else {
+            std_path
+        }
+    }
+    (
+        pick(&config.python_path, OCR_PYTHON_REL, runtime_dir, false),
+        pick(&config.deps_dir, OCR_DEPS_REL, runtime_dir, true),
+        pick(&config.model_dir, OCR_MODELS_REL, runtime_dir, true),
+        pick(&config.worker_script, OCR_WORKER_REL, runtime_dir, false),
+    )
+}
+
+/// 安装器约定的向量融合（embed）标准布局（与 manifest 条目 `deps-embed` 的 `dest: "."` 一致）
+pub(crate) const EMBED_WORKER_REL: &str = "worker/embed_worker.py";
+pub(crate) const EMBED_DEPS_REL: &str = "deps_embed";
+pub(crate) const EMBED_MODEL_REL: &str =
+    "models/embed/multilingual-e5-small/model_qint8_avx512_vnni.onnx";
+pub(crate) const EMBED_TOKENIZER_REL: &str =
+    "models/embed/multilingual-e5-small/tokenizer.json";
+
+/// embed 运行时的关键路径：(python, worker, 依赖目录, 模型, tokenizer)。
+///
+/// 与 `moss_paths` / `ocr_paths` 同一动机：一键安装只解包、不写 config.json，
+/// 所以配置为空时必须回退到标准布局——否则"刚装完"会被判成"未配置"，
+/// 用户看到的是装好了却不能用（PR43 前 MOSS/OCR 都踩过这个坑）。
+///
+/// embed 复用 OCR 包带来的 `python/python.exe`（不单独分发解释器），
+/// 因此 `deps-embed` 的安装前置是 `deps-ocr` 已装。
+pub(crate) fn embed_paths(
+    config: &RuntimeConfig,
+    runtime_dir: &Path,
+) -> (PathBuf, PathBuf, PathBuf, PathBuf, PathBuf) {
+    fn pick(value: &str, rel: &str, runtime_dir: &Path, want_dir: bool) -> PathBuf {
+        let std_path = resolve_path(rel, runtime_dir);
+        let value = value.trim();
+        if value.is_empty() {
+            return std_path;
+        }
+        let custom = resolve_path(value, runtime_dir);
+        let ok = if want_dir {
+            custom.is_dir()
+        } else {
+            custom.is_file()
+        };
+        if ok {
+            custom
+        } else {
+            std_path
+        }
+    }
+    (
+        pick(&config.python_path, OCR_PYTHON_REL, runtime_dir, false),
+        pick(&config.embed_worker, EMBED_WORKER_REL, runtime_dir, false),
+        pick(&config.embed_deps_dir, EMBED_DEPS_REL, runtime_dir, true),
+        pick(&config.embed_model, EMBED_MODEL_REL, runtime_dir, false),
+        pick(&config.embed_tokenizer, EMBED_TOKENIZER_REL, runtime_dir, false),
+    )
+}
+
+// ─── OCR 数据与错误 ──────────────────────────────────────
 /// 单张帧图像的 OCR 识别结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OcrResult {
@@ -205,8 +321,10 @@ pub struct OcrManager {
 
 impl OcrManager {
     pub fn new(config: RuntimeConfig, runtime_dir: PathBuf) -> Self {
-        // 已配置 worker 脚本则走 Paddle；否则用 None 占位
-        let kind = if config.worker_script.is_empty() {
+        // 已配置 worker 脚本、或标准布局里已有 worker（一键安装后没有 config.json）
+        // 都走 Paddle；都没有才用 None 占位
+        let worker = ocr_paths(&config, &runtime_dir).3;
+        let kind = if config.worker_script.is_empty() && !worker.is_file() {
             OcrProviderKind::None
         } else {
             OcrProviderKind::Paddle
@@ -280,6 +398,84 @@ mod tests {
         let status = manager.status();
         assert_eq!(status.provider, "none");
         assert!(!status.ready);
+    }
+
+    #[test]
+    fn ocr_paths_fall_back_to_standard_layout() {
+        // 安装器只解包、不写 config.json，且 default() 里 python_path 是历史占位值
+        // "python"（目录，不是 python/python.exe）——两种情形都必须落到标准布局
+        let dir = std::env::temp_dir().join(format!("gsa_ocr_paths_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (python, deps, models, worker) = ocr_paths(&RuntimeConfig::default(), &dir);
+        assert_eq!(python, dir.join(OCR_PYTHON_REL));
+        assert_eq!(deps, dir.join(OCR_DEPS_REL));
+        assert_eq!(models, dir.join(OCR_MODELS_REL));
+        assert_eq!(worker, dir.join(OCR_WORKER_REL));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ocr_paths_keep_existing_custom_paths() {
+        // 自定义路径存在时必须用它（不能被回退逻辑吃掉）
+        let dir = std::env::temp_dir().join(format!("gsa_ocr_custom_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("py")).unwrap();
+        std::fs::create_dir_all(dir.join("dep")).unwrap();
+        std::fs::create_dir_all(dir.join("mdl")).unwrap();
+        std::fs::write(dir.join("py\\python.exe"), "x").unwrap();
+        std::fs::write(dir.join("w.py"), "x").unwrap();
+        let mut cfg = RuntimeConfig::default();
+        cfg.python_path = "py/python.exe".into();
+        cfg.deps_dir = "dep".into();
+        cfg.model_dir = "mdl".into();
+        cfg.worker_script = "w.py".into();
+        let (python, deps, models, worker) = ocr_paths(&cfg, &dir);
+        assert_eq!(python, dir.join("py\\python.exe"));
+        assert_eq!(deps, dir.join("dep"));
+        assert_eq!(models, dir.join("mdl"));
+        assert_eq!(worker, dir.join("w.py"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn embed_paths_fall_back_to_standard_layout() {
+        // 与 moss/ocr 同一个坑：一键安装不写 config.json，default() 的字段全是空的
+        let dir = std::env::temp_dir().join(format!("gsa_embed_paths_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (python, worker, deps, model, tokenizer) =
+            embed_paths(&RuntimeConfig::default(), &dir);
+        assert_eq!(python, dir.join(OCR_PYTHON_REL));
+        assert_eq!(worker, dir.join(EMBED_WORKER_REL));
+        assert_eq!(deps, dir.join(EMBED_DEPS_REL));
+        assert_eq!(model, dir.join(EMBED_MODEL_REL));
+        assert_eq!(tokenizer, dir.join(EMBED_TOKENIZER_REL));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn embed_paths_keep_existing_custom_paths() {
+        let dir = std::env::temp_dir().join(format!("gsa_embed_custom_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("dep")).unwrap();
+        std::fs::write(dir.join("py.exe"), "x").unwrap();
+        std::fs::write(dir.join("w.py"), "x").unwrap();
+        std::fs::write(dir.join("m.onnx"), "x").unwrap();
+        std::fs::write(dir.join("t.json"), "x").unwrap();
+        let mut cfg = RuntimeConfig::default();
+        cfg.python_path = "py.exe".into();
+        cfg.embed_worker = "w.py".into();
+        cfg.embed_deps_dir = "dep".into();
+        cfg.embed_model = "m.onnx".into();
+        cfg.embed_tokenizer = "t.json".into();
+        let (python, worker, deps, model, tokenizer) = embed_paths(&cfg, &dir);
+        assert_eq!(python, dir.join("py.exe"));
+        assert_eq!(worker, dir.join("w.py"));
+        assert_eq!(deps, dir.join("dep"));
+        assert_eq!(model, dir.join("m.onnx"));
+        assert_eq!(tokenizer, dir.join("t.json"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

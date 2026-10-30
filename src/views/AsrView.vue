@@ -40,21 +40,17 @@ const asrParams = ref<AsrRunParams>({
   language: null,
 });
 
-/// 引擎展示顺序：MOSS 为主力（GPU 更快、说话人分离更好），FunASR 仅作 fallback
-const ENGINE_ORDER = ["moss", "funasr"] as const;
+/// 唯一转写引擎：MOSS（FunASR 已弃用、不再分发，前端不留入口）
+const ENGINE_ORDER = ["moss"] as const;
 
 const ENGINE_INFO: Record<string, { title: string; sub: string }> = {
   moss: {
     title: "MOSS-Transcribe-Diarize",
-    sub: "推荐 · GPU 更快 · 说话人分离更好",
-  },
-  funasr: {
-    title: "FunASR + diarize",
-    sub: "备用 fallback · 较慢、说话人分离较弱",
+    sub: "GPU 更快 · 说话人分离更好",
   },
 };
 
-/// 两引擎运行环境（展开时探测，禁用不可用引擎）
+/// 引擎运行环境（展开时探测；未就绪时禁用运行按钮并给出原因）
 const asrEngines = ref<AsrEngineStatus[]>([]);
 
 /// 探测失败（asrEngines 为空）时直通：不阻塞用户，运行失败由错误提示兜底
@@ -85,28 +81,6 @@ function engineStateTitle(engine: string): string {
   return s.ready ? "运行环境就绪" : s.message || "未配置";
 }
 
-const maxSpeakerOptions = [2, 3, 4, 5, 6];
-
-const languageOptions = [
-  { label: "自动检测", value: "auto" },
-  { label: "中文", value: "zh" },
-  { label: "English", value: "en" },
-  { label: "日本語", value: "ja" },
-];
-
-/// MOSS 自动估计说话人 / 自动识别多语言，两个参数对它无意义
-const mossOnly = computed(() => asrParams.value.engine === "moss");
-
-function onMaxSpeakers(e: Event) {
-  const raw = (e.target as HTMLSelectElement).value;
-  asrParams.value.max_speakers = raw === "auto" ? null : Number(raw);
-}
-
-function onLanguage(e: Event) {
-  const raw = (e.target as HTMLSelectElement).value;
-  asrParams.value.language = raw === "auto" ? null : raw;
-}
-
 async function openAsrPanel() {
   try {
     asrEngines.value = await projectStore.getAsrEngines();
@@ -115,8 +89,6 @@ async function openAsrPanel() {
   }
   await loadMossProbe();
   mossDevice.value = mossProbe.value?.configured_device || "auto";
-  const funasr = asrEngines.value.find((e) => e.engine === "funasr");
-  funasrDevice.value = funasr?.device || "cuda";
 }
 
 // ── MOSS 推理设备（第 12 项）────────────────────────────
@@ -200,40 +172,6 @@ async function onDeviceChange(e: Event) {
     mossDevice.value = mossProbe.value?.configured_device || "auto";
   } finally {
     deviceSaving.value = false;
-  }
-}
-
-// ── FunASR 推理设备（第 12 项遗留）──────────────────────
-/// FunASR 走 PyTorch：只有 cpu / cuda 两种落点，cuda 不可用时 worker 侧自动
-/// 回退 CPU（scripts/funasr_worker.py），所以这里不做硬校验。
-const funasrDevice = ref<string>("cuda");
-const funasrSaving = ref(false);
-
-const FUNASR_DEVICE_OPTIONS = [
-  { value: "cuda", label: "CUDA（推荐；不可用时自动回退 CPU）" },
-  { value: "cpu", label: "CPU（最慢，但一定可用）" },
-];
-
-const FUNASR_DEVICE_DOC = [
-  "FunASR 用 PyTorch 推理，只有 CPU / CUDA 两种设备（没有 Vulkan 后端）。",
-  "选 CUDA 但本机没有可用 CUDA 时，worker 会自动回退 CPU 并在日志里说明——这是软回退，不会报错。",
-  "保存后立即重建 FunASR provider 生效；转写进行中会拒绝切换。",
-].join("\n");
-
-async function onFunasrDeviceChange(e: Event) {
-  const value = (e.target as HTMLSelectElement).value;
-  funasrSaving.value = true;
-  try {
-    const res = await projectStore.setFunasrDevice(value);
-    message.success(res.message);
-    funasrDevice.value = res.device;
-    asrEngines.value = await projectStore.getAsrEngines();
-  } catch (err) {
-    message.error(String(err));
-    const funasr = asrEngines.value.find((x) => x.engine === "funasr");
-    funasrDevice.value = funasr?.device || "cuda";
-  } finally {
-    funasrSaving.value = false;
   }
 }
 
@@ -504,50 +442,8 @@ async function startEmbedOcr() {
           </div>
         </div>
 
-        <div class="sblk">
-          <span class="bt">转写参数</span>
-          <div class="prow">
-            <div class="pcell">
-              <span class="pl">最大说话人数量</span>
-              <span class="selwrap">
-                <select
-                  class="selbox"
-                  :value="asrParams.max_speakers ?? 'auto'"
-                  :disabled="mossOnly"
-                  @change="onMaxSpeakers"
-                >
-                  <option value="auto">自动估计</option>
-                  <option v-for="n in maxSpeakerOptions" :key="n" :value="n">
-                    {{ n }} 人
-                  </option>
-                </select>
-                <AppIcon name="chev-d" :size="11" />
-              </span>
-            </div>
-            <div class="pcell">
-              <span class="pl">识别语言</span>
-              <span class="selwrap">
-                <select
-                  class="selbox"
-                  :value="asrParams.language ?? 'auto'"
-                  :disabled="mossOnly"
-                  @change="onLanguage"
-                >
-                  <option v-for="o in languageOptions" :key="o.value" :value="o.value">
-                    {{ o.label }}
-                  </option>
-                </select>
-                <AppIcon name="chev-d" :size="11" />
-              </span>
-            </div>
-          </div>
-          <span v-if="mossOnly" class="enote">
-            MOSS 自动估计说话人并自动识别多语言，无需指定；切到 FunASR 才需要手动设
-          </span>
-        </div>
-
         <!-- MOSS 推理设备（第 12 项）：写入 runtime/config.json，切设备立即生效 -->
-        <div v-if="mossOnly" class="sblk">
+        <div class="sblk">
           <span class="bt">推理设备</span>
           <div class="prow">
             <div class="pcell">
@@ -578,33 +474,6 @@ async function startEmbedOcr() {
             未读取到安装清单，暂显示全部设备选项
           </span>
           <span class="enote">选中即保存并立即生效；显式指定但本机不具备时会直接报错，不会静默降级</span>
-        </div>
-
-        <!-- FunASR 推理设备（第 12 项遗留）：PyTorch 后端，仅 cpu / cuda -->
-        <div v-if="!mossOnly" class="sblk">
-          <span class="bt">推理设备</span>
-          <div class="prow">
-            <div class="pcell">
-              <span class="pl">
-                <span class="pl-t">FunASR 推理设备</span>
-                <InfoDot :text="FUNASR_DEVICE_DOC" title="FunASR 推理设备" />
-              </span>
-              <span class="selwrap">
-                <select
-                  class="selbox"
-                  :value="funasrDevice"
-                  :disabled="funasrSaving"
-                  @change="onFunasrDeviceChange"
-                >
-                  <option v-for="o in FUNASR_DEVICE_OPTIONS" :key="o.value" :value="o.value">
-                    {{ o.label }}
-                  </option>
-                </select>
-                <AppIcon name="chev-d" :size="11" />
-              </span>
-            </div>
-          </div>
-          <span class="enote">选中即保存并立即生效；CUDA 不可用时 worker 自动回退 CPU</span>
         </div>
 
         <!-- 说话人标记：每条 ASR 轨标记为主播语音 / 游戏内容（"选择即生效"）。

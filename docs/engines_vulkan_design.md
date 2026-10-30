@@ -227,6 +227,8 @@
 
 ## 7. 本分支之外：FunASR 字级时间戳（独立验证项）
 
+> **2026-10-30 更新：FunASR 已退役、不参与分发**，本节保留的是机制结论（供日后查证/复现），不再作为待办。
+
 `scripts/funasr_worker.py:219` 注释称 Fun-ASR-Nano 的 `sentence_info` 含**字级 timestamp** 且断句后处理依赖它，`:243` 直接消费，`:70-73` 用 `len(ts) < 2` 决定"整段不切分"。
 
 **已查明的机制（funasr 1.4.16 源码）**：Nano 只有一条时间戳通路——**CTC 强制对齐**（`fun_asr_nano/model.py:965-966,1057-1071` → `torchaudio.functional.forced_align`），**全仓不存在"按字数均分"的插值代码**。闸门在 `checkpoint_utils.py:22-47 disable_incomplete_ctc()`：checkpoint 缺 `ctc_decoder.*`/`ctc.*` 键时把 CTC 头置空，于是 `result` 连 `timestamps` 键都没有；随后 `auto/auto_model.py:1163-1187`（**本 worker 走这条**：不配 `punc_model` ⇒ 退化到 `vad_segment` 模式）拿不到 ts 时 `logging.error("No timestamp found in ASR result. …")`，令 `ts = []`、`start/end` 退化为 **VAD 段边界**。⇒ 那样的话 `:70-73` 的切分分支就是死代码，字级时间戳只剩段级精度（最长 30 s）。
@@ -323,4 +325,117 @@ gh release upload  moss-runtime-v1 moss-cuda.zip
 - **脚本侧**（`scripts/bootstrap_runtime.ps1`）：stdout 纯 JSONL（`start` / `progress` / `item_skip` / `item_done` / `item_fail` / `error` / `done`，末行必 `done`），人类诊断走 stderr；退出码 `0` 成功 / `1` 预检失败 / `2` 校验失败 / `3` 部分条目失败 / `4` 未知错误；`-Flavor auto` 走 L0 探测（`nvidia-smi` 算力 ≥ 7.5 → `vulkan-1.dll` → cpu），下载前做磁盘预检（下载量 ×3 + 100 MB），镜像失败自动回退直连，SHA256 通过后才解压，成功后写 `runtime/.installed.json` 并支持 `item_skip`。
 - **Rust 侧**（`src-tauri/src/ai_runtime/runtime_install.rs`）：`precheck_runtime_disk` / `install_runtime` / `cancel_runtime_install` 三个命令，进度经 `runtime-install-progress` 逐条转发；取消用 `taskkill /T /F` 杀进程树；同一时刻只允许一个安装任务。
 - **为什么两者解耦**：子进程读写收敛在 `stream_child` + 退出码映射 `summarize` 两个不碰 Tauri 的函数里，单测可以用**真脚本、真子进程**跑通（`end_to_end_bogus_item_reports_failure`、`cancel_stops_waiting`），不必为测试造 mock。
-- **遗留**：打包形态下脚本未随 app 发布（`bundle.resources` 目前只映射 manifest）。`bootstrap_candidates` 已预留 `resources/scripts/bootstrap_runtime.ps1` 位置，补一条资源映射即可。
+- **遗留**：打包形态下脚本未随 app 发布（`bundle.resources` 目前只映射 manifest）。`bootstrap_candidates` 已预留 `resources/scripts/bootstrap_runtime.ps1` 位置，补一条资源映射即可。（2026-10-30 核对：该映射已由 `feat/misc-fixes` 的 `bd8ee43` 与 `scripts/sync_bundle_resources.mjs` 补齐，本分支尚未合入。）
+
+### 8.10 模型并入分发（`models-moss`，2026-10-30）
+
+> 起因：`probe_moss_install` 只看二进制 ⇒ 用户点完「安装运行时」显示 **ok**，第一次转写才报
+> `MOSS 模型不存在`。gguf 有 618 MB，此前既不在清单里、也没有任何自动通路。
+
+- **发布**：`models-moss.zip` = 626,397,892 B，sha256 `809f8999ac51ef0836b9324b2c1ad6a40e520b42f69dfc60c260dd01ab9a8cb1`，
+  与三个 `moss-*.zip` 一起挂在 Release `moss-runtime-v1` 上（同一 tag 追加资产，不改版本号）。
+- **清单**：第 4 条 `{id:"models-moss", dest:"models/moss"}`，**不带 `flavor` 与 `backend_marker`**
+  ——三种后端共用同一份 q5_k，设备探测与模型无关。
+- **缺省条目**：`bootstrap_runtime.ps1` 的 `-Items` 从 `moss` 改为 **`moss,models-moss`**（缺一不可）。
+- **脚本修复**：`-Flavor auto` 的可用集合改为**本次选中条目的并集**。原实现只看
+  `items[0]`，于是 `-Items models-moss` 单装模型时被误判成「清单里没有可用的 flavor」而直接失败；
+  实测复现与修复后各跑一遍（`models-moss` 单装 → `auto: 所选条目与 flavor 无关，跳过设备探测`，
+  退出码 0；`models-moss,moss` 组合 → `auto 选择: cpu`，两项 `item_done`，再跑一次两项 `item_skip`）。
+- **状态机**：`evaluate` 增加 `model_missing`（二进制在、gguf 不在 ⇒ 跑不了，优先于版本类结论），
+  并在「无 `.installed.json` 记录」的分支上也过一遍模型检查。
+- **空字段 = 标准布局**：一键安装只解包、不写 `config.json`，因此 `moss_binary` / `moss_model`
+  为空时必须回退到 `bin/moss-transcribe.exe` 与 `models/moss/moss-transcribe-q5_k.gguf`
+  （新增 `moss_paths()`，`MossProvider::spawn`、`probe_moss_backend`、`probe_moss_install` 三处统一）。
+  否则 `resolve_path("")` 会解析成 runtime 目录本身，把刚装好的运行时判成 `file_missing`。
+- **BOM 容错**：`parse_installed` / `parse_manifest_items` 读文件前先剥 UTF-8 BOM
+  ——PowerShell 5.1 的 `Set-Content -Encoding UTF8` 会加 BOM，而 serde_json 见 BOM 即语法错误，
+  整份清单会被当成空 ⇒ 状态全丢。
+### 8.11 OCR 运行时并入分发（`deps-ocr` / `deps-ocr-gpu` + CUDA 运行库 pip 现拉，2026-10-30）
+
+**目标**：OCR 是"用户几乎必用"的引擎，必须在开始使用项目前就能用 ⇒ 首次启动一次装齐
+（`moss` + `models-moss` + OCR 两包 + CUDA 运行库）。二进制与模型、OCR 运行时缺任一项，产品都跑不起来。
+
+- **形态选择（A）**：OCR 运行时打成一个**保留目录结构**的包（`python/` `deps/`
+  `models/paddleocr/` `worker/`），清单里 `dest: "."`。不采用"打进安装包"——那会让所有用户
+  多付 350 MB；也不按组件拆成多个条目——状态机×N、用户看到一堆进度项。
+  可重定位性实测：整树拷到别处后 `sys.prefix` 自动跟随，`import paddleocr/numpy/cv2` 均成功
+  （3.4.0 / 2.5.3 / 4.10.0），所以用户机不需要 pip、不需要 venv。
+- **钉子清单**：`scripts/ocr-requirements.lock.txt`（61 包）与
+  `scripts/ocr-gpu-requirements.lock.txt`（9 包），由 `pip freeze --path runtime/deps(_gpu)`
+  生成；`package_ocr_runtime.ps1` 装完再 freeze 一次逐行比对，不一致拒绝打包（分发物必须字节可复现）。
+- **产物**（`ocr-runtime-v1` Release）：
+  | 资产 | size | unpacked | flavor |
+  |---|---|---|---|
+  | `ocr-runtime-cpu.zip` | 309,975,635 | 911,575,386 | cpu |
+  | `ocr-runtime-cuda-paddle.zip` | 502,533,301 | 996,251,695 | cuda（optional） |
+  原先还有 `ocr-runtime-cuda-libs.zip`（1,856,518,097 / 解压 2,693,178,035），**已撤下不再分发**，
+  理由见下一条。
+- **CUDA/cuDNN 运行库改为安装时 pip 现拉（2026-10-30 修订）**：`nvidia/{cublas,cudnn,…}`
+  共 8 个轮子不再打包，由安装器用 OCR 基线自带的 `pip` 从 PyPI 镜像拉取到同一个 `deps_gpu/`。
+  两条理由：
+  ① **许可**——CUDA Toolkit EULA 1.2.2 禁止把 SDK「作为独立产品分发」，1.1.2 要求可分发部分
+  「仅你的应用可访问」；把这堆裸 DLL 打成 zip 挂公开直链给任意人下载同时违反两条。
+  ② **体积**——它一家 1.86 GB，贴死 GitHub 单资产 **2 GiB** 上限（整包 2,378,095,332 B 上传被
+  422 `size must be less than 2147483648` 拒绝）。
+  实现：`bootstrap_runtime.ps1` 的 `$GpuLibs`（8 条 `名称==版本 + sha256`）+ `pip install --no-deps
+  --require-hashes --target deps_gpu`，缺省索引 **华为云 PyPI 镜像**（实测 10.3 MB/s；阿里云 0.79、
+  官方源 0.09）。`pip` 阶段默认**临时清空 `HTTP(S)_PROXY`**——国内镜像走代理反而慢（实测代理下
+  0.13–0.7 MB/s）。实测落地 2,568.4 MB / 258 文件，二次运行 `item_skip`。
+  事件与普通条目同形（`item = "deps-ocr-cuda-libs"`），前端无感。
+- **flavor 规则（对 OCR 引入）**：全局 `-Flavor` 是**偏好**不是命令，每个条目自行匹配：
+  ① 有精确 flavor 用它；② 否则回退该条目的 `cpu` 版（AMD/Intel 机器 `auto` 选到 vulkan，
+  而 OCR 没有 vulkan 版）；③ 仍无匹配且条目带 `optional` ⇒ 静默跳过，非 optional ⇒ 记失败。
+- **脚本三处修复**：结构保留解压（原实现按文件名平铺，会把 `python/` `deps/` 压成同名文件堆）、
+  `unpacked_size` 参与预检、`optional` 语义。
+- **磁盘预检公式（已修正）**：`Σ下载 + Σ解压 + 最大单包解压 + 100 MB`，要走 pip 阶段时再加
+  `1.73 GB + 2.51 GB`。最后一项是"临时解压目录与 dest 同时存在"的那一份；早先漏了它，
+  报"需要 6.87 GB、可用 7.53 GB"放行，结果 cuda 的 2.69 GB 包在解压阶段报
+  `There is not enough space on the disk.`（实测退出码 3、`item_fail`）。
+- **打包脚本的防截断**：`tar.exe` 在磁盘写满时只打一行 `Write error` 就退出，却留下一个能被
+  sha256 计算、能上传、解压时才炸的截断包（实测一次只剩 119/319 条目）⇒ `New-Zip` 建包后必须
+  点条目数，并检查 `tar -tf` 的退出码（截断包未必少条目，tar 会顺着本地头读完名字再报错）。
+- **下载器改造（2026-10-30 同日补上）**：断流不再从零开始。`bootstrap_runtime.ps1` 改为
+  「多源候选 + 按字节区间分段 + 段内续传」，**不重打包资产**（现有最大包 502 MB，重打包重传的
+  代价大于收益）。候选顺序 `urls[]` → `-Mirror` 前缀 → `url` 直连；每段先 `curl -r 0-0` 探 206，
+  不支持 Range 的源（gh-proxy 对大文件即如此）只走单流、且不续传（`curl -C -` 在忽略 Range 时
+  会重复追加，实测把 1770 MB 下成 2036 MB）。缓存落在 `<runtime>\.downloads\<id>-<sha8>\`，
+  半截的 `.curlpart` 下次运行先并进段文件 ⇒ 跨进程续传。实测：20 MB 资产 5 段成功、断流后
+  `续传：缓存里已有 3.0 MB，只需补 17.0 MB` 并最终 SHA256 相符；真实网络 295.6 MB 的
+  `deps-ocr` 分 5 段经 gh-proxy 下完。
+- **仍未做（留档）**：OCR 的安装门禁 UI（未装 OCR 时不许进项目）属前端接线，与 11c 一并做；
+  外网加速（ModelScope 主源 / 自建 CF Worker 反代）已调研未落地，见 §8.11 的调研结论。
+
+### 8.12 向量融合（embed）运行时并入分发（`deps-embed`，2026-10-30）
+
+**为什么必须分发**：向量融合是 OCR↔ASR 配对的主路径，`src-tauri/src/fuse/mod.rs:230` 调
+`run_embed_worker(...)`，失败即 `Err("向量融合失败：…")`，**没有降级路径**。所以它和 OCR 一样
+不属于"可选件"。
+
+| 项 | 值 |
+|---|---|
+| 资产 | `embed-runtime.zip`（Release `embed-runtime-v1`） |
+| 体积 | 157,386,205 B（压缩比 2.20x）→ 解压 345,868,793 B |
+| 内容 | `deps_embed/`（26 个钉子包，6,737 个文件合计）、`models/embed/multilingual-e5-small/`（ONNX 112.9 MB + tokenizer 16.3 MB）、`worker/{embed_worker.py,fuse_core.py}`、`.embed-runtime` |
+| 清单 | 第 7 条 `id=deps-embed`，**不带 flavor**，`dest="."`，带 `unpacked_size` |
+| 前置 | `deps-ocr` 已装（复用它的 `python/python.exe`，省 47 MB） |
+
+- **为什么单包、不按 flavor 拆**：这 26 个包是**纯 CPU 的 onnxruntime**，没有 CUDA/DirectML
+  变体，也就不存在"按显卡选包"。e5-small 是 112 MB 的 int8 ONNX，CPU 上几十毫秒/条，
+  再为它做 GPU 版属于过度设计。
+- **为什么复用 OCR 的 Python**：解释器与标准库与后端无关，单独再发一份只会让安装体积
+  +47 MB、还多一处版本不一致的风险。代价是条目之间有隐性依赖，已写进清单说明（`requires`
+  字段**没有**引入——一个前置依赖不值得扩 schema，写在 `-Items` 顺序与文档里即可）。
+- **打包脚本** `scripts/package_embed_runtime.ps1`：洗白 → 按 `embed-requirements.lock.txt`
+  装 26 包并与 lock 逐行比对（不一致拒绝打包）→ 拷模型与 worker → **冒烟**（真起 worker 跑
+  2 段语料，断言 `ok=true`、段数、`stats.matched`）→ `tar` 建包 + 条目数校验 + `smoke*.log`
+  清理。
+- **顺带修掉的部署期缺陷（真 bug）**：`scripts/fuse_core.py` 的运行时根靠"上溯找同时含
+  `scripts/` 与 `runtime/` 的目录"定位，装到用户机后 `runtime/worker/` 上面**没有** `scripts/`，
+  于是退化成 `<runtime>/runtime` ⇒ 模型路径失效（冒烟实测 `Exception: 系统找不到指定的路径
+  (os error 3)`）。改为优先认「本文件父目录里有 `models/embed` 或 `deps_embed`」，仓内
+  启发式留作兜底。**这条在开发机上永远不会暴露**（仓根同时有 `scripts/` 与 `runtime/`），
+  只有把包打进用户机才炸——所以冒烟必须在"像部署目录"的工作树里跑。
+- **Rust 侧**：新增 `embed_paths(config, runtime_dir)`（与 `moss_paths`/`ocr_paths` 同源，
+  空配置回退标准布局），`embed.rs` 改用它并在起子进程前逐项判文件存在（给出"请重装
+  deps-embed"这类可读结论，而不是让 Python 抛 `os error 3`）；新增命令
+  `probe_embed_install`。`cargo test --lib` **335 passed**。

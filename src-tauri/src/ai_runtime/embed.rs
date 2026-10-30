@@ -115,25 +115,33 @@ pub fn run_embed_worker(
     runtime_dir: &Path,
     req: &EmbedRequest,
 ) -> Result<(Vec<EmbedSegmentOut>, EmbedStats), EmbedError> {
-    let configured = !config.embed_worker.is_empty();
-    if !configured {
-        return Err(EmbedError::NotReady(
-            "向量融合未配置（runtime/config.json 缺 embed_* 字段）".into(),
-        ));
-    }
-    let python = crate::ai_runtime::resolve_path(&config.python_path, runtime_dir);
-    let worker = crate::ai_runtime::resolve_path(&config.embed_worker, runtime_dir);
-    let deps = crate::ai_runtime::resolve_path(&config.embed_deps_dir, runtime_dir);
+    // 路径统一由 embed_paths 解析：配置为空/占位值时回退标准布局
+    // （一键安装只解包、不写 config.json，"刚装完不能用"就是这么来的）
+    let (python, worker, deps, model, tokenizer) =
+        crate::ai_runtime::embed_paths(config, runtime_dir);
     if !python.is_file() {
         return Err(EmbedError::NotReady(format!(
-            "Python 解释器不存在: {}",
+            "Python 解释器不存在: {}（向量融合复用 OCR 包的 python，请先安装运行时）",
             python.display()
         )));
     }
     if !worker.is_file() {
         return Err(EmbedError::NotReady(format!(
-            "fuse worker 脚本不存在: {}（请先跑 scripts/bootstrap_embed.ps1）",
+            "fuse worker 脚本不存在: {}（请先安装运行时，清单条目 deps-embed）",
             worker.display()
+        )));
+    }
+    // 模型/分词器缺失时不必等到子进程报 os error 3，直接给出可读结论
+    if !model.is_file() {
+        return Err(EmbedError::NotReady(format!(
+            "向量融合模型不存在: {}（请重装运行时补全 deps-embed）",
+            model.display()
+        )));
+    }
+    if !tokenizer.is_file() {
+        return Err(EmbedError::NotReady(format!(
+            "向量融合分词器不存在: {}（请重装运行时补全 deps-embed）",
+            tokenizer.display()
         )));
     }
 

@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use tauri::Manager;
 
 use super::config::RuntimeConfig;
-use super::resolve_path;
 
 /// 配置里的 moss_device 请求值；"" 归一为 Auto
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -695,8 +694,7 @@ pub fn probe_backend(
         .unwrap_or_else(|| configured_device.clone());
     let req = normalize_device_request(&requested_raw);
 
-    let binary = resolve_path(&config.moss_binary, runtime_dir);
-    let model = resolve_path(&config.moss_model, runtime_dir);
+    let (binary, model) = super::moss_paths(config, runtime_dir);
     let caps = probe_machine();
     let assets = probe_assets(&binary);
 

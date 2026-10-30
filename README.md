@@ -29,7 +29,7 @@ GameSubtitleAssistant 面向游戏剧情实况翻译（烤肉）、切片和字�
 ## 功能特性
 
 - **文本语料收集（OCR）**：对剧情录屏框选游戏字幕区域，通过变化检测跳过未变化帧，PaddleOCR 识别 + 多数投票合并，产出与时间轴解耦的「可靠游戏文本」；在其它平台已有游戏语料的情况下也支持直接识别字幕截图或粘贴/导入纯文本。
-- **打轴+转写**：切片视频的转写侧（时间轴来源）有**两种可选方案**（并列，可同时存在于同一工程，融合侧统一消费）——**语音 ASR**（有配音：时间轴来自语音活动）：双引擎可选——MOSS-Transcribe-Diarize 0.9B（说话人分离最强且自动，更准）或 FunASR（Fun-ASR-Nano，本地 GPU 更快）；一键把每条说话人轨标记为「游戏内容」（提供时间轴参与融合）或「主播语音」（仅供字幕转写导出）。
+- **打轴+转写**：切片视频的转写侧（时间轴来源）有**两种可选方案**（并列，可同时存在于同一工程，融合侧统一消费）——**语音 ASR**（有配音：时间轴来自语音活动）：引擎为 MOSS-Transcribe-Diarize 0.9B（说话人分离自动，cpu / cuda / vulkan 三后端自动选优；FunASR 已弃用、不再分发）；一键把每条说话人轨标记为「游戏内容」（提供时间轴参与融合）或「主播语音」（仅供字幕转写导出）。
 - **嵌字 OCR（embed_ocr）**（无配音：时间轴来自画面文字变化）：对切片视频框选画面内嵌字幕区域跑 OCR，产出嵌字轨——与 ASR 轨并存，供融合作为游戏内容段。
 - **AI 融合**：用可靠语料替换转写侧文本、时间轴沿用转写侧。实现为**本地多语言向量召回（multilingual-e5-small qint8，ONNX / CPU）+ 统一转移 DP**：逐段在语料中召回候选，再由全局单调 DP（前进 / 复用 / 回退 / 不配）求整体最优路径，命中段由代码**逐字复制语料原文**（不产出角色名）。四案例计分段 **210/236**，开启「该不配」掩码后 **226/236（95.8%）**。融合后同页给出**置信度审计表**——按风险分层罗列可疑段（掩码 / 回退 / 复用 / 未命中 / 低分），支持**保留 / 候选替换 / 全语料选择 / 不配**四种人工裁决，改判结果随工程持久化。历史 LLM 路线（llama.cpp + Qwen2.5-3B 按编号对应）实测**未做跨语言语义对齐**（见 [benchmark/FUSE_PIPELINE_DEFECTS.md](benchmark/FUSE_PIPELINE_DEFECTS.md) F13），已退役。
 - **时间轴编辑**：多轨时间轴（分割 / 合并 / 拖拽 / 吸附 / 分段互换）、视频预览联动、撤销重做、逐条校对列表。
@@ -56,7 +56,7 @@ GameSubtitleAssistant 面向游戏剧情实况翻译（烤肉）、切片和字�
 | [Node.js](https://nodejs.org/) 18+（建议 20 LTS）+ [pnpm](https://pnpm.io/) | 前端构建 |
 | Rust stable（MSVC 工具链） | 桌面端编译，见 [Tauri 前置要求](https://tauri.app/zh-cn/start/prerequisites/) |
 | FFmpeg + ffprobe | **已内嵌**（LGPL 共享构建，随安装包分发，见 [THIRD_PARTY.md](THIRD_PARTY.md)）——源码检出后需先跑 `scripts/fetch_ffmpeg.ps1`；缺失时回退系统 `PATH` |
-| NVIDIA GPU（可选） | FunASR 默认 CUDA 12.4；llama.cpp / MOSS 支持 cpu / cuda / vulkan 后端，无 GPU 用 cpu（转写时间延长数倍） |
+| NVIDIA GPU（可选） | MOSS 支持 cpu / cuda / vulkan 三种后端（首次启动自检自动选最优，无 GPU 用 cpu，转写时间延长数倍） |
 
 各 AI 模块合计占用 13.9 GB 左右磁盘空间（模型 + Python 依赖）；向量融合的 E5-small qint8 模型另约 113 MB。
 
@@ -74,17 +74,15 @@ AI 运行环境通过 `scripts/` 下的 PowerShell 引导脚本搭建，脚本�
 # ① OCR（必装：语料页与嵌字轴依赖它；也是其它脚本的 Python 基础）
 powershell -ExecutionPolicy Bypass -File scripts/bootstrap_ocr.ps1
 
-# ② ASR 二选一或都装：MOSS（推荐，默认 cpu 后端；GPU 版二进制需先用 build_moss.ps1 自构建）
+# ② ASR：MOSS（唯一引擎，默认 cpu 后端；GPU 版二进制用 build_moss.ps1 自构建，或让 app 的「安装运行时」自动选）
 powershell -ExecutionPolicy Bypass -File scripts/bootstrap_moss.ps1 [-Backend cpu]
-#   或 FunASR（需 GPU 时默认 -Device cuda）
-powershell -ExecutionPolicy Bypass -File scripts/bootstrap_funasr.ps1 [-Device cpu]
 
 # ③ 向量融合（必装：AI 融合依赖；CPU 推理，模型约 113 MB）
 powershell -ExecutionPolicy Bypass -File scripts/bootstrap_embed.ps1
-
-# ④ LLM（可选：仅供融合能力测试台 run_llm 使用，产品融合不再依赖）
-powershell -ExecutionPolicy Bypass -File scripts/bootstrap_llm.ps1 [-Backend cpu]
 ```
+
+> 已弃用、不参与分发：FunASR（`bootstrap_funasr.ps1`）与本地 LLM（`bootstrap_llm.ps1`，llama.cpp + Qwen2.5-3B）。
+> 两个脚本仍留在仓库里，仅用于开发期复现历史问题；产品构建与运行时清单都不会引用它们。
 
 常用参数：`-HfMirror https://hf-mirror.com`（模型镜像）、`-GitMirror https://gh-proxy.com/`（GitHub 镜像）、`-PipMirror https://mirrors.aliyun.com/pypi/simple`（pip 镜像）、`-Force`（重装/重下）。详见各脚本头部注释。
 
@@ -134,7 +132,7 @@ pnpm tauri build   # 产出安装包（注：运行时资源打包尚未配置�
 
 ## 路线图
 
-**已完成**：四页工作台全链路（语料 → 打轴+转写 → 融合 → 编辑导出）、OCR 流水线（区域框选 / 变化检测 / 多数投票 / 多帧合并）、FunASR + MOSS 双 ASR 引擎与说话人分离、嵌字 OCR 轴、AI 融合（本地向量召回 + 统一转移 DP，含**融合后置信度审计表**）、多轨时间轴编辑与撤销重做、单轨多格式导出、自动保存。
+**已完成**：四页工作台全链路（语料 → 打轴+转写 → 融合 → 编辑导出）、OCR 流水线（区域框选 / 变化检测 / 多数投票 / 多帧合并）、MOSS ASR 引擎与说话人分离（cpu / cuda / vulkan 自动选优）、嵌字 OCR 轴、AI 融合（本地向量召回 + 统一转移 DP，含**融合后置信度审计表**）、多轨时间轴编辑与撤销重做、单轨多格式导出、自动保存。
 
 **进行中 / 待改进**：运行时资源打包（安装包分发）；融合置信度信号的进一步标定——`score` 不是正确性判据，审计表分层只作提示（依据见 [benchmark/FUSE_THRESHOLD_CALIBRATION.md](benchmark/FUSE_THRESHOLD_CALIBRATION.md) §7.9⑥）。
 
@@ -146,7 +144,7 @@ pnpm tauri build   # 产出安装包（注：运行时资源打包尚未配置�
 - 无安装包，AI 环境依赖脚本搭建；模型在安装阶段下载，应用内不自动下载（仅有就绪检测）。
 - FFmpeg/ffprobe 已内嵌（LGPL 共享构建，随安装包分发）；源码检出后若未跑 `scripts/fetch_ffmpeg.ps1`，会回退到 `PATH` 上的 ffmpeg。
 - 融合产出仍需逐条人工校对：`score` 在任何阈值下的精确率都接近错误基准率（4.2%），**不能作为正确性判据**，审计表只提供结构化分层提示（依据见 [benchmark/FUSE_THRESHOLD_CALIBRATION.md](benchmark/FUSE_THRESHOLD_CALIBRATION.md) §7.9⑥）；「同台词跨说话人」场景（[F14](benchmark/FUSE_PIPELINE_DEFECTS.md)）错绑行的文本逐字相同、字幕内容不受影响，但审计表的说话人归属展示可能不准，该场景经实验否决算法侧修复、走人工裁决。
-- 默认 LLM 为 Qwen2.5-3B-Instruct（**可选**，仅供融合能力测试台使用），采用 **Qwen Research 许可**（商用需另行授权），详见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+- 本地 LLM（llama.cpp + Qwen2.5-3B-Instruct）**已退役、不参与分发**：历史实现仅保留在代码里作融合能力测试台，Qwen 采用 **Qwen Research 许可**（商用需另行授权），详见 [THIRD_PARTY.md](THIRD_PARTY.md)。
 
 ## 许可证
 

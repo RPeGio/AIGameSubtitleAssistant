@@ -22,8 +22,8 @@
 ## 1. 目标
 
 用户机器首次启动时 runtime 为空。本期只做**一个条目**（`moss`），但安装器从第一天起
-按「多条目 + 多 flavor」设计，后续条目（`deps-ocr` / `deps-funasr` / `deps-embed` /
-`models-moss`）只加 manifest 条目、不改脚本逻辑。
+按「多条目 + 多 flavor」设计，后续条目（`deps-ocr` / `deps-embed` / `models-moss`）只加
+manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作废，不要再为其登记条目。）
 
 分发形态（已达成共识）：**预构建二进制为主、自构建兜底**。MOSS 上游 LICENSE 实为 MIT，
 可合法再分发；模型仍走原渠道（HF / ModelScope，带哈希）。
@@ -39,11 +39,16 @@
 
 | 参数 | 取值 | 说明 |
 |---|---|---|
-| `-Items <ids>` | 逗号分隔的条目 id | 本期 manifest 只有 `moss`；后续见 §4 |
+| `-Items <ids>` | 逗号分隔的条目 id | 缺省 `moss,models-moss,deps-ocr,deps-ocr-gpu,deps-embed`；`deps-ocr-cuda-libs` 是"要 CUDA 运行库"的开关，不是清单条目（§4.3） |
 | `-Flavor <auto\|cpu\|cuda\|vulkan>` | 默认 `auto` | `auto` = L0 机器能力探测，判定顺序同 `backend_probe`：**nvidia-smi → vulkaninfo → cpu** |
 | `-Mirror <url>` | 默认 gh-proxy 代理前缀 | **代理前缀语义**（见 §4.1），非资源基址 |
 | `-Force` | 开关 | 忽略已安装标记，强制重装 |
 | `-Manifest <path>` | 默认 app 内置 manifest | 覆盖内置清单（离线/自测用） |
+| `-SegmentMB <n>` | 默认 `64`，`0` = 不分段 | 分段大小；见 §4.5 |
+| `-NoResume` | 开关 | 不读、不留 `.downloads` 缓存（每次从头下） |
+| `-MaxAttempts <n>` | 默认 `3` | 单段失败重试次数 |
+| `-PipMirror <url>` | 默认华为云 | CUDA 运行库 pip 索引（§4.3）；`-SkipGpuLibs` 可整段跳过 |
+| `-PipUseProxy` | 开关 | **默认清空 `HTTP(S)_PROXY`** 跑 pip（代理常拉慢 pip），加了才走代理 |
 
 - **无参运行** = `-Items moss -Flavor auto`，即「首启默认动作」。
 
@@ -78,9 +83,21 @@
 ## 4. manifest 规范
 
 - **落点**：`src-tauri/resources/runtime/manifest.json`，**随 app 发布并提交进仓库**。
-  - **状态（2026-10-24）**：真清单已由本分支落库（内容由 installer 侧生成，`version:"1"`，
-    三个 `id=moss` 条目 cpu / vulkan / cuda，`dest` 全为 `bin`）；`tauri.conf.json` 的
-    `bundle.resources` 本分支已加一行 `"resources": ["resources/runtime/manifest.json"]`
+  - **状态（2026-10-30 修订）**：清单共 **7 条**——`id=moss` 三条（cpu / vulkan / cuda，`dest` 全为
+    `bin`）+ `id=models-moss` 一条（gguf 模型，**不带 flavor**，`dest=models/moss`）
+    + `id=deps-ocr` 一条（OCR 运行时，`flavor=cpu`，**`dest="."`**，带 `unpacked_size`）
+    + `id=deps-ocr-gpu` 一条（OCR 的 CUDA 增量，`flavor=cuda` + **`optional`**，`dest="."`）
+    + `id=deps-embed` 一条（向量融合运行时，**不带 flavor**，`dest="."`，带 `unpacked_size`）。
+  - **CUDA/cuDNN 运行库不进清单、不做资产**（原 `deps-ocr-cuda-libs` 条目已删除）：
+    改由 `bootstrap_runtime.ps1` 在安装时用 `pip` 从 PyPI 镜像现拉（`nvidia-*` 共 8 个轮子，
+    钉子版本 + 官方 sha256，见 §4.2）。理由两条：
+    ① **许可**——CUDA Toolkit EULA 1.2.2 禁止把 SDK「作为独立产品分发」，1.1.2 要求可分发部分
+    「仅你的应用可访问」；把裸 DLL 打成 zip 挂公开直链给任意人下载同时违反这两条。
+    ② **体积**——`nvidia/` 一家 1.86 GB 打包 / 2.69 GB 解压，贴死 GitHub 单资产 **2 GiB** 上限
+    （`gh` 会 422 `size must be less than 2147483648`）。
+    脚本仍接受在 `-Items` 里出现 `deps-ocr-cuda-libs`（视作"要 CUDA 运行库"的开关），
+    但它**不再是清单条目**，也不会产生对应下载。
+    `tauri.conf.json` 的 `bundle.resources` 已有 `"resources/runtime/manifest.json"`
     ——installer 侧**不要再重复加**（重复加会变成合并冲突）。
   - **打包落点**：数组形式会**保留目录结构** ⇒ 清单实际落在
     `$RESOURCES/resources/runtime/manifest.json`（不是 `$RESOURCES/runtime/…`）。
@@ -96,7 +113,7 @@
 ```json
 {
   "version": "1",
-  "generated_at": "2026-10-21T00:00:00Z",
+  "generated_at": "2026-10-30T03:01:00Z",
   "items": [
     {
       "id": "moss",
@@ -106,6 +123,40 @@
       "size": 123456789,
       "dest": "bin",
       "backend_marker": "cuda"
+    },
+    {
+      "id": "models-moss",
+      "url": "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/models-moss.zip",
+      "sha256": "…",
+      "size": 626397892,
+      "dest": "models/moss"
+    },
+    {
+      "id": "deps-ocr",
+      "flavor": "cpu",
+      "url": "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/ocr-runtime-v1/ocr-runtime-cpu.zip",
+      "sha256": "…",
+      "size": 0,
+      "unpacked_size": 0,
+      "dest": "."
+    },
+    {
+      "id": "deps-ocr-gpu",
+      "flavor": "cuda",
+      "optional": true,
+      "url": "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/ocr-runtime-v1/ocr-runtime-cuda-paddle.zip",
+      "sha256": "…",
+      "size": 502533301,
+      "unpacked_size": 996251695,
+      "dest": "."
+    },
+    {
+      "id": "deps-embed",
+      "url": "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/embed-runtime-v1/embed-runtime.zip",
+      "sha256": "…",
+      "size": 157386205,
+      "unpacked_size": 345868793,
+      "dest": "."
     }
   ]
 }
@@ -113,17 +164,34 @@
 
 | 字段 | 必填 | 语义 |
 |---|---|---|
-| `id` | ✔ | 条目 id（`moss` / `deps-ocr` / `deps-funasr` / `deps-embed` / `models-moss`） |
+| `id` | ✔ | 条目 id（`moss` / `deps-ocr` / `deps-ocr-gpu` / `deps-embed` / `models-moss`；`deps-funasr` 已随 FunASR 退役作废；`deps-ocr-cuda-libs` 已改为 pip 阶段，**不是清单条目**） |
 | `flavor` | ✖ | 缺省 = 该条目与 flavor 无关 |
+| `optional` | ✖ | `true` = 该条目在当前机器没有匹配 flavor 时**静默跳过**（不计失败）。OCR 的 CUDA 增量专用（AMD/Intel 机器 `-Flavor auto` 会选到 vulkan，而 OCR 没有 vulkan 版） |
 | `url` | ✔ | 下载地址，**写绝对地址**；`-Mirror` 缺省时按 §4.1 拼接 |
+| `urls` | ✖ | 多源候选（字符串数组，**顺序即优先级**）。存在时排在 `-Mirror` 拼接结果与 `url` 之前，见 §4.5。Rust 侧不消费该字段（`parse_manifest_items` 只取 `id/flavor/sha256/size/unpacked_size`），它是**下载器的输入** |
 | `sha256` | ✔ | 下载物哈希，校验不过 = 退出码 2 |
 | `size` | ✔ | 字节数，用于磁盘预检 |
-| `dest` | ✔ | 相对 runtime 目录的落地路径（**moss 三个 flavor 一律 `bin`**，见 §4.2） |
+| `unpacked_size` | ✖ | 解压后字节数。**有它就按它做预检**：`Σ下载 + Σ解压 + 最大单包解压 + 100 MB`（最后一项是临时目录与 dest 同时存在的那一份；早先漏了它，cuda 的 2.69 GB 包正好卡在这个差额上），没有才退回老的 `size × 3`。OCR 的 `deps` 有 24 065 个文件、压缩率只有 ~3 倍以内，`×3` 会低估 |
+| `dest` | ✔ | 相对 runtime 目录的落地路径（**moss 三个 flavor 一律 `bin`**，见 §4.2；模型是 `models/moss`；**OCR 两个条目是 `"."`**，因为包内自带 `python/` `deps/` `models/paddleocr/` `worker/` 一级目录） |
 | `backend_marker` | ✖ | 写入落地目录的 `.backend` 标记（`cuda` / `vulkan`；cpu 版写 `cpu` 或不写） |
 
-- **flavor 与 id 的组合**：本期只有 `moss` 一个条目，但 `moss` 条目按 flavor 拆成多条
-  （`id=moss, flavor=cuda` / `id=moss, flavor=vulkan` / `id=moss, flavor=cpu`），
-  由 `-Flavor` 选择。
+- **`dest: "."` 的含义**：包内**保留自己的子目录结构**，直接展开到 runtime 根。
+  这要求解压实现**保留目录结构**——早期实现按文件名平铺（`Join-Path $destDir $f.Name`），
+  对 moss（11 个平铺文件）刚好没暴露，对 OCR 会把 `python/` `deps/` 压成同名文件堆。
+  现实现用 `Copy-Item <tmp>\* -Destination <dest> -Recurse -Force`，对两种包都正确。
+- **`-Items` 缺省 = `moss,models-moss,deps-ocr,deps-ocr-gpu,deps-embed`**：
+  二进制、模型、OCR 三样缺一不可用（`probe_moss_install` 报 `model_missing`，OCR 则直接进不了
+  项目）。`deps-ocr-gpu` 在缺省里但带 `optional`：非 NVIDIA 机器 `-Flavor auto` 选到
+  cpu/vulkan，没有匹配 flavor ⇒ 自动跳过，不会让对方白下 1.5 GB。
+  老调用方仍可显式把 `deps-ocr-cuda-libs` 放进 `-Items`，它只作为"要 CUDA 运行库"的开关，
+  不查清单、不产生下载，由 §4.2 的 pip 阶段满足。
+
+- **flavor 与 id 的组合**：
+  - `moss` 按 flavor 拆成多条（`id=moss, flavor=cuda` / `vulkan` / `cpu`），由 `-Flavor` 选择；
+  - `models-moss` **不带 flavor**：三种后端共用同一份 gguf，选择时直接命中，不参与设备探测；
+  - 选 flavor 的可用集合 = **本次 `-Items` 选中条目的并集**（不是"第一个条目的"）。
+    若选中的条目全都不带 flavor，`-Flavor auto` 直接跳过设备探测——曾经只看
+    `items[0]`，导致 `-Items models-moss` 单装模型时被误判成"清单里没有可用的 flavor"。
 
 ### 4.1 `url` × `-Mirror` 的组合语义（已澄清）
 
@@ -151,7 +219,26 @@ installer 侧实现（已与前端侧对齐）：
 3. L1 资产探测 `probe_assets()` 固定读**二进制同目录**的 `.backend` 与
    `ggml-cuda.dll` / `ggml-vulkan.dll`（`backend_probe.rs:209-222`）。
 
-### 4.3 交付物是 zip（不是 7z）、以及解压的三个坑
+### 4.3 CUDA/cuDNN 运行库：安装时 pip 现拉（不是清单条目）
+
+`deps-ocr-gpu` 包里**只有 paddle 本体**；`nvidia/{cublas,cudnn,...}` 那 2.7 GB 由安装器在本地
+用 OCR 基线自带的 `pip` 拉取，落到同一个 `runtime/deps_gpu`。这一段的契约：
+
+| 项 | 值 |
+|---|---|
+| 触发条件 | `-Flavor` 解析结果为 `cuda`，且本次装了 `deps-ocr-gpu`（或调用方显式在 `-Items` 里写了 `deps-ocr-cuda-libs`） |
+| 执行者 | `runtime/python/python.exe -m pip install`（因此**必须先装 `deps-ocr`**；缺 python 时该条目 `item_fail` 并给出提示） |
+| 索引 | `-PipMirror`，缺省 `https://repo.huaweicloud.com/repository/pypi/simple`（实测 10.3 MB/s；阿里云 0.79、官方源 0.09；清华 TUNA 的目录接口会 403） |
+| 钉版本 | 8 个 `nvidia-*` 轮子的 `==版本` + `--require-hashes`（sha256 取自 PyPI 官方元数据），清单在 `bootstrap_runtime.ps1` 的 `$GpuLibs` |
+| 关闭方式 | `-SkipGpuLibs`（排障/离线）；`-PipUseProxy` 沿用系统代理（默认**临时清空** `HTTP(S)_PROXY`——国内镜像走代理反而慢） |
+| 事件 | 与普通条目完全同形，`item = "deps-ocr-cuda-libs"`：`start` → 8×`progress`（phase=download，percent 12.5→100）→ `item_done`（detail 带落地文件数）|
+| 幂等 | `.installed.json` 里记该条目的 `sha256` = **8 个包版本+哈希的内容摘要**；版本或任一哈希变化即视为需要重装 |
+| 失败 | `item_fail` + 退出码 3（与其它条目一致） |
+
+实测（2026-10-30，本机）：8 个轮子 1771 MB → 落地 `deps_gpu/nvidia` **2,568.4 MB / 258 文件**，
+二次运行走 `item_skip`（0.5 s）。
+
+### 4.4 交付物是 zip（不是 7z）、以及解压的三个坑
 
 实际发布的资源是 **zip**（`moss-runtime-v1` 下的 `moss-cpu.zip` / `moss-vulkan.zip` /
 `moss-cuda.zip`）。**不要按扩展名写死 `.7z`**——那是早期示例留下的，会 404。
@@ -166,6 +253,30 @@ installer 侧实测（2026-10-24）确认过、且容易踩的三点：
 
 ⇒ 换 flavor = 覆盖 `runtime/bin` 下的同名文件 + 重写 `runtime/bin/.backend`。
 这也是 installer 侧「装另一种 flavor 前需 -Force 或先清理旧 flavor」的原因。
+
+### 4.5 下载：多源候选 + 分段 + 断点续传（2026-10-30）
+
+大陆到 GitHub Releases 实测 0.07–0.43 MB/s 且会断流，断流后旧实现（`WebClient.DownloadFileTaskAsync`）
+**只能从头再来**——`deps-ocr-cuda-libs` 1.77 GB 连断三次就是在这个点上废掉的。现在改成
+「按字节区间分段 + 段内续传 + 多源回退」，**不重打包资产、不加 shard 文件**（现有资产最大 502 MB，
+重打包重传的代价远大于收益）。
+
+| 环节 | 规则 |
+|---|---|
+| 候选源顺序 | `urls[]`（若有）→ `-Mirror` 前缀拼接（§4.1）→ `url` 直连。去重且保序 |
+| Range 探测 | 每个候选先 `curl -r 0-0` 看是否 `206` + `Content-Range`；**不支持就只用它走单流、且不做续传**（gh-proxy 对大文件忽略 Range，`curl -C -` 会重复追加，实测把 1770 MB 下成 2036 MB） |
+| 分段 | `-SegmentMB`（默认 64）；按总长切段，逐段 `curl -r from-to` 落到 `<runtime>\.downloads\<id>-<sha8>\segNNN.bin` |
+| 段内续传 | 每段先写 `<segNNN>.bin.curlpart`；**下次运行先把它并进段文件**再算剩余区间 ⇒ 跨进程从断点继续 |
+| 失败重试 | 段级 `-MaxAttempts`（默认 3），间隔 2 s；单流路径逐个候选源回退，全败抛 `所有候选源都失败` |
+| 关闭续传 | `-NoResume`（每次清空 `.downloads`）；`-SegmentMB 0` 直接走单流 |
+| 收尾 | 所有段拼成 `<zip>.joining` → 校验总长 → 改名后进 SHA256 校验；成功后删 `.downloads` |
+
+实测（2026-10-30，本机 2.6 MB/s 限速服务 + 真实 gh-proxy）：
+
+- 20 MB 资产 / 4 MB 段：5 段成功；不支持 Range 时正确回退单流并**换源成功**（镜像 404 → 直连）；
+- 中途 `Stop-Process` 杀掉 → 重跑从断点继续（`续传：缓存里已有 3.0 MB，只需补 17.0 MB`），
+  预置段文件做确定性验证时最终 SHA256 与清单一致；
+- 真实网络：295.6 MB 的 `deps-ocr` 切 5 段经 gh-proxy 下载完成，`item_done`。
 
 ---
 
@@ -345,20 +456,26 @@ invoke("probe_moss_install")   // 无参，只读，不改任何文件
 
 | `state` | 含义 |
 |---|---|
-| `ok` | 已装且与清单 sha256 一致 |
+| `ok` | 已装且与清单 sha256 一致，**且模型在** |
 | `update_available` | 已装但 sha256 与清单不同（清单换了版本） |
 | `not_installed` | 无 `.installed.json` 记录（或有记录但二进制没装） |
 | `file_missing` | 有记录、二进制却不在 ⇒ 优先报「能跑」问题，不比较版本 |
+| `model_missing` | 二进制在、**gguf 不在** ⇒ 同样跑不了，优先于版本类结论（2026-10-30 新增） |
 | `flavor_not_in_manifest` | 装的 flavor 当前清单里没有（清单被精简或换过发布） |
 | `manifest_missing` | 找不到清单 |
 | `unknown` | 坏 JSON / 缺 sha256 字段 ⇒ 当「无记录」处理，不让元数据问题挡住 ASR |
 
-约束：判据**只认 sha256**（zip 不可字节复现，版本号证明不了内容一致）；只管
-`runtime/bin/moss-transcribe.exe`，**模型缺失不归它管**（归 `check_asr_engines`）；`flavor`
-与二进制同目录 `.backend` 标记不一致时只在 `message` 里附注（以 L2 实测为准）。
+约束：判据**只认 sha256**（zip 不可字节复现，版本号证明不了内容一致）；二进制与模型
+**都要查**（`model_missing` 的由来：模型 618 MB，此前不进清单、也没人查，于是"装完显示
+ok、第一次转写才报 `MOSS 模型不存在`"）；`flavor` 与二进制同目录 `.backend` 标记不一致时
+只在 `message` 里附注（以 L2 实测为准）。
 ⇒ 本命令的数据源是 installer 写的 `runtime/.installed.json`：在
 `scripts/bootstrap_runtime.ps1` 落地前，它会稳定返回 `not_installed` / `unknown`，
 这是**预期**，不是 bug。
+⇒ **空字段 = 标准布局**：一键安装只解包、不写 `config.json`，所以 `moss_binary` /
+`moss_model` 为空时必须回退到 `bin/moss-transcribe.exe` 与
+`models/moss/moss-transcribe-q5_k.gguf`（`moss_paths()`）。否则 `resolve_path("")`
+会解析成 runtime 目录本身，把刚装好的运行时判成 `file_missing`——装完反而显示坏了。
 
 ### 8.5 安装器命令（installer 侧 `runtime_install.rs` 交付，前端 11c 已接线）
 
