@@ -88,9 +88,11 @@ runtime/
 ```
 
 > **首次启动即装齐**：`scripts/bootstrap_runtime.ps1` 按 `src-tauri/resources/runtime/manifest.json`
-> 下载 `moss`（按设备选 cpu/cuda/vulkan）、`models-moss`（gguf）与 OCR 三包
-> （`deps-ocr` / `deps-ocr-gpu` / `deps-ocr-cuda-libs`，后两条 `optional`，非 NVIDIA 机器自动跳过），
-> 校验 SHA256 后解压。开发期仍可用 `scripts/bootstrap_ocr.ps1` 等分步脚本自行搭建。
+> 下载 `moss`（按设备选 cpu/cuda/vulkan）、`models-moss`（gguf）与 OCR 两包
+> （`deps-ocr` / `deps-ocr-gpu`；后者 `optional`，非 NVIDIA 机器自动跳过），校验 SHA256 后解压。
+> **CUDA/cuDNN 运行库不打包分发**（CUDA EULA 1.2.2 禁止当独立产品公开分发），装完 OCR 后由安装器
+> 用 `pip` 从 PyPI 镜像现拉 8 个 `nvidia-*` 轮子（约 1.7 GB，缺省华为云源，`--require-hashes`）。
+> 开发期仍可用 `scripts/bootstrap_ocr.ps1` 等分步脚本自行搭建。
 > 发版物的打包方式见 `scripts/package_ocr_runtime.ps1` 与设计文档 §8.11。
 
 ### config.json 关键字段

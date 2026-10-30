@@ -338,12 +338,12 @@ Also new and now closed: **`.installed.json` reconciliation** (previously "not t
 - **State machine**: `evaluate` gained `model_missing` (binary present, gguf absent ⇒ cannot run, ranked above the version-only verdicts), and the "no `.installed.json` record" branch now also runs the model check.
 - **Empty config = standard layout**: the one-click install only unpacks and never writes `config.json`, so empty `moss_binary` / `moss_model` must fall back to `bin/moss-transcribe.exe` and `models/moss/moss-transcribe-q5_k.gguf` (new `moss_paths()`, used by `MossProvider::spawn`, `probe_moss_backend` and `probe_moss_install`). Otherwise `resolve_path("")` resolves to the runtime directory itself and a freshly installed runtime is reported as `file_missing`.
 - **BOM tolerance**: `parse_installed` / `parse_manifest_items` strip a UTF-8 BOM before parsing — PowerShell 5.1's `Set-Content -Encoding UTF8` adds one, and serde_json treats it as a syntax error, which would silently turn the whole manifest into "empty" and lose every status.
-### 8.11 OCR runtime joins the distribution (`deps-ocr` / `deps-ocr-gpu` / `deps-ocr-cuda-libs`, 2026-10-30)
+### 8.11 OCR runtime joins the distribution (`deps-ocr` / `deps-ocr-gpu` + CUDA libs fetched by pip, 2026-10-30)
 
 **Goal**: OCR is the engine "almost everyone will use", so it must work before the user starts
 work on a project ⇒ the first launch installs everything in one go (`moss` + `models-moss` + the
-three OCR packs). Missing binary, missing model, or missing OCR runtime all mean the product does
-not run.
+two OCR packs + the CUDA runtime libraries). Missing binary, missing model, or missing OCR runtime
+all mean the product does not run.
 
 - **Shape (A)**: the OCR runtime ships as a single archive that **preserves directory structure**
   (`python/` `deps/` `models/paddleocr/` `worker/`) with `dest: "."` in the manifest. Bundling it
@@ -360,13 +360,23 @@ not run.
   |---|---|---|---|
   | `ocr-runtime-cpu.zip` | 309,975,635 | 911,575,386 | cpu |
   | `ocr-runtime-cuda-paddle.zip` | 502,533,301 | 996,251,695 | cuda (optional) |
-  | `ocr-runtime-cuda-libs.zip` | 1,856,518,097 | 2,693,178,035 | cuda (optional) |
-  **Why the CUDA pack is split in two**: GitHub enforces a hard **2 GiB** limit per release asset;
-  the whole 2,378,095,332 B archive was rejected with 422
-  `size must be less than 2147483648`, and `deps_gpu/nvidia/` alone is 2.7 GB. Split by content
-  ("paddle proper" vs "nvidia runtime libs"), both halves unpack into the same `deps_gpu/` prefix
-  and are two independent manifest entries — **both must be installed** (a missing `.pyd` or `.dll`
-  blows up at `import` time).
+  An earlier third asset, `ocr-runtime-cuda-libs.zip` (1,856,518,097 / 2,693,178,035 unpacked), held
+  the `nvidia/*` runtime libraries. At 1.86 GB it sat right on GitHub's hard **2 GiB** per-asset limit
+  (the 2,378,095,332 B archive was rejected with 422 `size must be less than 2147483648`), so it has
+  been **withdrawn** — see the next bullet.
+- **CUDA/cuDNN runtime libraries are fetched by pip at install time (revised 2026-10-30)**: the eight
+  `nvidia/*` wheels are no longer packaged; the installer pulls them into the same `deps_gpu/` with
+  the `pip` that ships inside the OCR baseline. Two reasons:
+  1. **Licensing** -- CUDA Toolkit EULA 1.2.2 forbids distributing the SDK "as a stand-alone product",
+     and 1.1.2 requires distributable parts be "accessed only by your application"; hosting a zip of
+     bare DLLs behind a public direct link violates both.
+  2. **Size** -- 1.86 GB sat right on the per-asset cap mentioned above.
+  Implementation: `$GpuLibs` in `bootstrap_runtime.ps1` (8 x `name==version + sha256`) and
+  `pip install --no-deps --require-hashes --target deps_gpu`; the default index is the **Huawei Cloud
+  PyPI mirror** (measured 10.3 MB/s; Aliyun 0.79, upstream PyPI 0.09). The pip phase **clears
+  `HTTP(S)_PROXY`** unless `-PipUseProxy` is passed -- a domestic mirror is slower through a proxy
+  (0.13-0.7 MB/s measured). Real run: 2,568.4 MB / 258 files landed; a second run yields `item_skip`.
+  Events look like any other item (`item = "deps-ocr-cuda-libs"`), so the frontend is unchanged.
 - **flavor rules (now extended to OCR)**: the global `-Flavor` is a **preference**, not a command;
   each entry resolves it on its own: ① exact match wins; ② otherwise fall back to the entry's
   `cpu` variant (an AMD/Intel box picks `vulkan` under `auto`, and OCR has no vulkan build);
@@ -374,7 +384,8 @@ not run.
 - **Three script fixes**: structure-preserving extraction (the old code flattened by file name and
   would have turned `python/` and `deps/` into a pile of same-named files), `unpacked_size` used by
   the disk precheck, and `optional` semantics.
-- **Disk precheck formula (fixed)**: `Σdownload + Σunpacked + max single unpacked + 100 MB`. The
+- **Disk precheck formula (fixed)**: `Σdownload + Σunpacked + max single unpacked + 100 MB` (plus
+  1.73 GB + 2.51 GB when the pip phase runs). The
   last term is the copy that exists in the temp staging dir and in `dest` at the same time; it used
   to be missing, so the check passed "needs 6.87 GB, 7.53 GB free" and then the 2.69 GB CUDA pack
   failed mid-extraction with `There is not enough space on the disk.` (observed: exit code 3,

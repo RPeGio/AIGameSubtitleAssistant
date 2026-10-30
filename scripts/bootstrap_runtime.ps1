@@ -10,6 +10,13 @@ bootstrap_runtime.ps1 —— 按 manifest 安装 runtime（多条目 / 多 flavo
 脚本按「多条目 + 多 flavor」写：后续 deps-embed 只加 manifest 条目，不改本脚本逻辑
 （无 flavor 的条目直接选中，不参与设备探测）。
 
+CUDA/cuDNN 运行库不再打包分发，改为安装时用 pip 现拉（见下）：
+  - 资产本身是 NVIDIA 的 cudart/cublas/cudnn 轮子。CUDA EULA 1.2.2 禁止「作为独立产品分发」，
+    1.1.2 要求「仅你的应用可访问」；把它们打成 zip 挂公开直链给任意人下载同时踩这两条。
+  - 改为让用户机器从 PyPI 镜像按钉子清单直拉：许可上由用户自己获取，我们不参与再分发；
+    顺带把最大的 1.86 GB 资产从发布里去掉（越过了 GitHub 单资产 2 GiB 上限，也少一个断流点）。
+  - 触发条件：flavor 解析为 cuda 且 OCR 基线就位（pip 用的是 runtime/python/python.exe）。
+
 flavor 解析规则（每个条目独立匹配）：
   1) 有与请求 flavor 相同的条目 → 用它；
   2) 否则该条目有 cpu 版 → 回退 cpu（例：AMD 机 auto 选到 vulkan，OCR 没有 vulkan 版）；
@@ -21,11 +28,16 @@ flavor 解析规则（每个条目独立匹配）：
   - 退出码：0 全成功 / 1 预检失败 / 2 校验失败 / 3 部分条目失败 / 4 未知错误。
 
 参数：
-  -Items <ids>          逗号分隔的条目 id，默认 moss,models-moss,deps-ocr,deps-ocr-gpu,deps-ocr-cuda-libs
+  -Items <ids>          逗号分隔的条目 id，默认 moss,models-moss,deps-ocr,deps-ocr-gpu
                         （首启一次性装齐：ASR 二进制 + 模型 + OCR 运行时；GPU 那条约
-                        在非 NVIDIA 机器上会被静默跳过）
+                        在非 NVIDIA 机器上会被静默跳过。老调用方仍可显式带上
+                        deps-ocr-cuda-libs 表示"要 CUDA 运行库"，它由 pip 阶段处理）
   -Flavor <auto|cpu|cuda|vulkan>  默认 auto（L0 探测：nvidia-smi → vulkaninfo → cpu）
   -Mirror <前缀>        代理前缀（默认 gh-proxy），传空串 "" 表示直连；见契约 §4.1
+  -PipMirror <index-url>  CUDA 运行库的 PyPI 索引，默认华为云（实测 10 MB/s；
+                        传空串 = 官方 PyPI；清华 TUNA 目录接口会 403，别用）
+  -SkipGpuLibs          跳过 CUDA 运行库的 pip 阶段（排障/离线用）
+  -PipUseProxy          pip 阶段沿用系统代理（默认临时绕过：国内镜像直连更快）
   -Force                忽略已安装标记，强制重装
   -Manifest <path>      覆盖内置清单（离线/自测用）
   -RuntimeDir <path>    落地根目录，默认 <仓库>/runtime；Rust 侧会传绝对路径
@@ -35,9 +47,12 @@ flavor 解析规则（每个条目独立匹配）：
   powershell -ExecutionPolicy Bypass -File scripts/bootstrap_runtime.ps1 -Flavor vulkan -Force
 #>
 param(
-  [string]$Items = "moss,models-moss,deps-ocr,deps-ocr-gpu,deps-ocr-cuda-libs",
+  [string]$Items = "moss,models-moss,deps-ocr,deps-ocr-gpu",
   [string]$Flavor = "auto",
   [string]$Mirror = "https://gh-proxy.com/",
+  [string]$PipMirror = "https://repo.huaweicloud.com/repository/pypi/simple",
+  [switch]$PipUseProxy,
+  [switch]$SkipGpuLibs,
   [switch]$Force,
   [string]$Manifest = "",
   [string]$RuntimeDir = ""
@@ -54,6 +69,22 @@ $scriptDir = $PSScriptRoot
 $root = (Resolve-Path (Join-Path $scriptDir "..")).Path
 if (-not $RuntimeDir) { $RuntimeDir = Join-Path $root "runtime" }
 $runtime = [System.IO.Path]::GetFullPath($RuntimeDir)
+
+# CUDA 运行库的钉子清单（源：scripts/ocr-gpu-requirements.lock.txt 去掉 paddlepaddle-gpu，
+# 那个随 deps-ocr-gpu 包分发）。--require-hashes 要求逐条带 sha256，这里是 win_amd64 轮子的官方摘要。
+$GpuLibs = @(
+  @{ name = "nvidia-cublas-cu12";     ver = "12.6.4.1"; size = 434535301; sha256 = "9e4fa264f4d8a4eb0cdbd34beadc029f453b3bafae02401e999cf3d5a5af75f8" },
+  @{ name = "nvidia-cuda-runtime-cu12"; ver = "12.6.77"; size = 891773;   sha256 = "86c58044c824bf3c173c49a2dbc7a6c8b53cb4e4dca50068be0bf64e9dab3f7f" },
+  @{ name = "nvidia-cudnn-cu12";      ver = "9.9.0.52"; size = 767785830; sha256 = "d53036b7edad1a85b5d59580defc91e30326746fde21ffc701eb8b4d4695eca1" },
+  @{ name = "nvidia-cufft-cu12";      ver = "11.3.0.4"; size = 199356881; sha256 = "6048ebddfb90d09d2707efb1fd78d4e3a77cb3ae4dc60e19aab6be0ece2ae464" },
+  @{ name = "nvidia-curand-cu12";     ver = "10.3.7.77"; size = 55783873; sha256 = "6d6d935ffba0f3d439b7cd968192ff068fafd9018dbf1b85b37261b13cfc9905" },
+  @{ name = "nvidia-cusolver-cu12";   ver = "11.7.1.2"; size = 149287877; sha256 = "6813f9d8073f555444a8705f3ab0296d3e1cb37a16d694c5fc8b862a0d8706d7" },
+  @{ name = "nvidia-cusparse-cu12";   ver = "12.5.4.2"; size = 213712630; sha256 = "4acb8c08855a26d737398cba8fb6f8f5045d93f82612b4cfd84645a2332ccf20" },
+  @{ name = "nvidia-nvjitlink-cu12";  ver = "12.9.86"; size = 35584936; sha256 = "cc6fcec260ca843c10e34c936921a1c426b351753587fdd638e8cff7b16bb9db" }
+)
+$GpuLibsDownloadBytes = [int64]0
+foreach ($g in $GpuLibs) { $GpuLibsDownloadBytes += [int64]$g.size }
+$GpuLibsUnpackedBytes = [int64]2693178035   # 实测 deps_gpu/nvidia 落地大小
 
 # ─── 事件输出（唯一允许写 stdout 的通道）────────────────────────────────
 $script:emittedDone = $false
@@ -181,7 +212,12 @@ if ($Flavor -eq "auto") {
 
 $selected = @()
 $failedEarly = @()
+# deps-ocr-cuda-libs 是"虚拟条目"：清单里没有对应的下载包（CUDA 运行库改为安装时 pip 现拉），
+# 出现在 -Items 里只表示"要 CUDA 运行库"，由后面的 pip 阶段满足。
+$GpuLibsId = "deps-ocr-cuda-libs"
+$wantGpuLibs = $false
 foreach ($id in $itemIds) {
+  if ($id -eq $GpuLibsId) { $wantGpuLibs = $true; continue }
   $cands = @($allItems | Where-Object { $_.id -eq $id })
   if ($cands.Count -eq 0) {
     Emit @{ event = "item_fail"; item = $id; detail = "清单里没有条目 $id" }
@@ -210,7 +246,11 @@ foreach ($id in $itemIds) {
   $selected += $pick[0]
 }
 
-if ($selected.Count -eq 0) {
+# 是否要现拉 CUDA 运行库：flavor 落到 cuda 且本次装了 OCR 的 GPU 增量包（或调用方显式点了 id）
+$willFetchGpuLibs = (-not $SkipGpuLibs) -and ($effectiveFlavor -eq "cuda") -and
+  ($wantGpuLibs -or (@($selected | Where-Object { $_.id -eq "deps-ocr-gpu" }).Count -gt 0))
+
+if ($selected.Count -eq 0 -and -not $willFetchGpuLibs) {
   Emit-Done 3 @() @() @($failedEarly)
   exit 3
 }
@@ -253,12 +293,17 @@ if ($unpackedBytes -gt 0) {
 else {
   $requiredBytes = [int64]($downloadBytes * 3) + 100MB
 }
+# CUDA 运行库走 pip，不在清单里，但同样吃盘：8 个轮子 1.73 GiB + 解包后 2.51 GiB。
+if ($willFetchGpuLibs) {
+  $requiredBytes += $GpuLibsDownloadBytes + $GpuLibsUnpackedBytes
+}
 $freeBytes = Get-FreeBytes $runtime
 if ($null -ne $freeBytes -and $freeBytes -lt $requiredBytes) {
   $gb = { param($b) [math]::Round($b / 1GB, 2) }
-  Stop-Fatal "磁盘空间不足：需要约 $(& $gb $requiredBytes) GB（下载 $( & $gb $downloadBytes ) GB + 解压余量），可用 $(& $gb $freeBytes) GB" 1
+  $extra = if ($willFetchGpuLibs) { "（含 CUDA 运行库 $( & $gb ($GpuLibsDownloadBytes + $GpuLibsUnpackedBytes) ) GB）" } else { "" }
+  Stop-Fatal "磁盘空间不足：需要约 $(& $gb $requiredBytes) GB$extra（下载 $( & $gb $downloadBytes ) GB + 解压余量），可用 $(& $gb $freeBytes) GB" 1
 }
-Log "磁盘预检通过：需要约 $([math]::Round($requiredBytes / 1GB, 2)) GB，可用 $([math]::Round($freeBytes / 1GB, 2)) GB"
+Log "磁盘预检通过：需要约 $([math]::Round($requiredBytes / 1GB, 2)) GB$(if ($willFetchGpuLibs) { '（含 CUDA 运行库）' })，可用 $([math]::Round($freeBytes / 1GB, 2)) GB"
 
 # ─── 已安装状态 ─────────────────────────────────────────────────────────
 $stateFile = Join-Path $runtime ".installed.json"
@@ -438,6 +483,121 @@ foreach ($it in $selected) {
   } finally {
     Remove-Item $tmpZip -Force -ErrorAction SilentlyContinue
     Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
+# ─── CUDA 运行库：pip 现拉（不打包、不再分发）────────────────────────────
+# 为什么不用 zip：CUDA EULA 禁止把 SDK 当独立产品分发，并要求"仅你的应用可访问"。
+# 让用户机器自己从 PyPI 镜像按钉子清单拉取，我们只发版本号 + 官方摘要。
+function Install-GpuLibs {
+  $id = $GpuLibsId
+  $depsGpu = Join-Path $runtime "deps_gpu"
+  $pythonExe = Join-Path $runtime "python\python.exe"
+  if (-not (Test-Path $pythonExe)) {
+    Emit @{ event = "item_fail"; item = $id; flavor = "cuda"; detail = "找不到 $pythonExe —— CUDA 运行库用 OCR 基线里的 pip 安装，请先装 deps-ocr" }
+    return "fail"
+  }
+
+  # 指纹 = 清单内容摘要：版本或任一 sha256 变了就要重装
+  $fpText = (@($GpuLibs | ForEach-Object { "$($_.name)==$($_.ver):$($_.sha256)" }) -join "`n")
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $lockHash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($fpText))) -replace "-", "").ToLower()
+  } finally { $sha.Dispose() }
+
+  $nvidiaDir = Join-Path $depsGpu "nvidia"
+  $prev = $stateItems[$id]
+  if (-not $Force -and $prev -and ([string]$prev.sha256).ToLower() -eq $lockHash -and (Test-Path $nvidiaDir)) {
+    if (@(Get-ChildItem $nvidiaDir -Directory -ErrorAction SilentlyContinue).Count -ge 4) {
+      Emit @{ event = "item_skip"; item = $id; detail = "CUDA 运行库已就绪（版本一致）" }
+      return "skip"
+    }
+  }
+
+  Emit @{ event = "start"; item = $id; flavor = "cuda"; detail = "开始拉取 CUDA 运行库（$( [math]::Round($GpuLibsDownloadBytes / 1MB) ) MB，$( $GpuLibs.Count ) 个轮子）" }
+  Log "CUDA 运行库：pip 从 $PipMirror 拉取 $($GpuLibs.Count) 个轮子（$( [math]::Round($GpuLibsDownloadBytes / 1MB) ) MB）"
+
+  $reqFile = Join-Path ([System.IO.Path]::GetTempPath()) ("gsa_gpulibs_" + [guid]::NewGuid().ToString("N").Substring(0, 8) + ".txt")
+  $errFile = [System.IO.Path]::ChangeExtension($reqFile, ".err.log")
+  $lines = @($GpuLibs | ForEach-Object { "$($_.name)==$($_.ver) --hash=sha256:$($_.sha256)" })
+  [System.IO.File]::WriteAllLines($reqFile, $lines, (New-Object System.Text.UTF8Encoding($false)))
+
+  $pipArgs = @(
+    "-m", "pip", "install",
+    "--no-deps", "--only-binary=:all:", "--require-hashes",
+    "--no-cache-dir", "--disable-pip-version-check", "--no-input",
+    "--progress-bar", "off", "--upgrade",
+    "--target", $depsGpu,
+    "-r", $reqFile
+  )
+  if ($PipMirror) { $pipArgs += @("--index-url", $PipMirror) }
+
+  # 国内镜像直连最快；系统代理（尤其高延迟节点）会把 10 MB/s 拖到 1 MB/s 以下
+  $savedProxy = @{ HTTP_PROXY = $env:HTTP_PROXY; HTTPS_PROXY = $env:HTTPS_PROXY; ALL_PROXY = $env:ALL_PROXY }
+  $restoreProxy = $false
+  if (-not $PipUseProxy) {
+    $env:HTTP_PROXY = $null; $env:HTTPS_PROXY = $null; $env:ALL_PROXY = $null
+    if ($savedProxy.HTTP_PROXY -or $savedProxy.HTTPS_PROXY) {
+      Log "检测到系统代理，pip 阶段已临时绕过（国内镜像不需要代理）"
+      $restoreProxy = $true
+    }
+  }
+
+  $ok = $false
+  $detail = ""
+  try {
+    $seen = 0
+    $total = $GpuLibs.Count
+    & $pythonExe @pipArgs 2> $errFile | ForEach-Object {
+      $line = [string]$_
+      if ($line -match "^\s*Downloading\s+(\S+)") {
+        $seen++
+        $pct = [math]::Round(($seen / $total) * 100, 1)
+        Emit @{ event = "progress"; item = $id; flavor = "cuda"; phase = "download"; percent = $pct; detail = "拉取 $($Matches[1])（$seen/$total）" }
+      }
+    }
+    $code = $LASTEXITCODE
+    if ($code -ne 0) {
+      $tail = @()
+      if (Test-Path $errFile) { $tail = @(Get-Content $errFile -Encoding UTF8 | Where-Object { $_.Trim() } | Select-Object -Last 5) }
+      throw [System.InvalidOperationException]::new("pip 退出码 $code" + $(if ($tail.Count) { "：" + ($tail -join " / ") } else { "" }))
+    }
+    $files = @(Get-ChildItem $depsGpu -Recurse -File -ErrorAction SilentlyContinue).Count
+    if ($files -eq 0) { throw [System.InvalidOperationException]::new("pip 成功但 $depsGpu 为空") }
+    $detail = "CUDA 运行库就绪（$files 个文件）"
+    $ok = $true
+  } catch {
+    $detail = $_.Exception.Message
+    $ok = $false
+  } finally {
+    if ($restoreProxy) {
+      $env:HTTP_PROXY = $savedProxy.HTTP_PROXY; $env:HTTPS_PROXY = $savedProxy.HTTPS_PROXY; $env:ALL_PROXY = $savedProxy.ALL_PROXY
+    }
+    Remove-Item $reqFile -Force -ErrorAction SilentlyContinue
+    Remove-Item $errFile -Force -ErrorAction SilentlyContinue
+  }
+
+  if ($ok) {
+    $stateItems[$id] = [pscustomobject]@{
+      flavor         = "cuda"
+      sha256         = $lockHash
+      source_version = "pip:" + $(($GpuLibs | ForEach-Object { "$($_.name)=$($_.ver)" }) -join ",")
+      installed_at   = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    }
+    Save-State
+    Emit @{ event = "item_done"; item = $id; flavor = "cuda"; phase = "extract"; detail = $detail }
+    return "ok"
+  }
+  Emit @{ event = "item_fail"; item = $id; flavor = "cuda"; detail = $detail }
+  Log "CUDA 运行库安装失败：$detail"
+  return "fail"
+}
+
+if ($willFetchGpuLibs) {
+  switch (Install-GpuLibs) {
+    "ok"   { $installed += $GpuLibsId }
+    "skip" { $skipped += $GpuLibsId }
+    default { $failed += $GpuLibsId }
   }
 }
 

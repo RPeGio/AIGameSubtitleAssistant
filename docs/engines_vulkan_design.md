@@ -350,10 +350,10 @@ gh release upload  moss-runtime-v1 moss-cuda.zip
 - **BOM 容错**：`parse_installed` / `parse_manifest_items` 读文件前先剥 UTF-8 BOM
   ——PowerShell 5.1 的 `Set-Content -Encoding UTF8` 会加 BOM，而 serde_json 见 BOM 即语法错误，
   整份清单会被当成空 ⇒ 状态全丢。
-### 8.11 OCR 运行时并入分发（`deps-ocr` / `deps-ocr-gpu` / `deps-ocr-cuda-libs`，2026-10-30）
+### 8.11 OCR 运行时并入分发（`deps-ocr` / `deps-ocr-gpu` + CUDA 运行库 pip 现拉，2026-10-30）
 
 **目标**：OCR 是"用户几乎必用"的引擎，必须在开始使用项目前就能用 ⇒ 首次启动一次装齐
-（`moss` + `models-moss` + OCR 三包）。二进制与模型、OCR 运行时缺任一项，产品都跑不起来。
+（`moss` + `models-moss` + OCR 两包 + CUDA 运行库）。二进制与模型、OCR 运行时缺任一项，产品都跑不起来。
 
 - **形态选择（A）**：OCR 运行时打成一个**保留目录结构**的包（`python/` `deps/`
   `models/paddleocr/` `worker/`），清单里 `dest: "."`。不采用"打进安装包"——那会让所有用户
@@ -368,21 +368,31 @@ gh release upload  moss-runtime-v1 moss-cuda.zip
   |---|---|---|---|
   | `ocr-runtime-cpu.zip` | 309,975,635 | 911,575,386 | cpu |
   | `ocr-runtime-cuda-paddle.zip` | 502,533,301 | 996,251,695 | cuda（optional） |
-  | `ocr-runtime-cuda-libs.zip` | 1,856,518,097 | 2,693,178,035 | cuda（optional） |
-  **为什么 CUDA 拆两块**：GitHub 单个 release 资产硬上限 **2 GiB**，整包 2,378,095,332 B 上传
-  被 422 `size must be less than 2147483648` 拒绝；而 `deps_gpu` 里 `nvidia/` 单独就 2.7 GB。
-  按"paddle 本体 / nvidia 运行库"切分，两半都指同一 `deps_gpu/` 前缀，清单里是两条彼此独立的
-  条目，**必须一起装**（缺 `.pyd` 或缺 `.dll` 都在 import 阶段炸）。
+  原先还有 `ocr-runtime-cuda-libs.zip`（1,856,518,097 / 解压 2,693,178,035），**已撤下不再分发**，
+  理由见下一条。
+- **CUDA/cuDNN 运行库改为安装时 pip 现拉（2026-10-30 修订）**：`nvidia/{cublas,cudnn,…}`
+  共 8 个轮子不再打包，由安装器用 OCR 基线自带的 `pip` 从 PyPI 镜像拉取到同一个 `deps_gpu/`。
+  两条理由：
+  ① **许可**——CUDA Toolkit EULA 1.2.2 禁止把 SDK「作为独立产品分发」，1.1.2 要求可分发部分
+  「仅你的应用可访问」；把这堆裸 DLL 打成 zip 挂公开直链给任意人下载同时违反两条。
+  ② **体积**——它一家 1.86 GB，贴死 GitHub 单资产 **2 GiB** 上限（整包 2,378,095,332 B 上传被
+  422 `size must be less than 2147483648` 拒绝）。
+  实现：`bootstrap_runtime.ps1` 的 `$GpuLibs`（8 条 `名称==版本 + sha256`）+ `pip install --no-deps
+  --require-hashes --target deps_gpu`，缺省索引 **华为云 PyPI 镜像**（实测 10.3 MB/s；阿里云 0.79、
+  官方源 0.09）。`pip` 阶段默认**临时清空 `HTTP(S)_PROXY`**——国内镜像走代理反而慢（实测代理下
+  0.13–0.7 MB/s）。实测落地 2,568.4 MB / 258 文件，二次运行 `item_skip`。
+  事件与普通条目同形（`item = "deps-ocr-cuda-libs"`），前端无感。
 - **flavor 规则（对 OCR 引入）**：全局 `-Flavor` 是**偏好**不是命令，每个条目自行匹配：
   ① 有精确 flavor 用它；② 否则回退该条目的 `cpu` 版（AMD/Intel 机器 `auto` 选到 vulkan，
   而 OCR 没有 vulkan 版）；③ 仍无匹配且条目带 `optional` ⇒ 静默跳过，非 optional ⇒ 记失败。
 - **脚本三处修复**：结构保留解压（原实现按文件名平铺，会把 `python/` `deps/` 压成同名文件堆）、
   `unpacked_size` 参与预检、`optional` 语义。
-- **磁盘预检公式（已修正）**：`Σ下载 + Σ解压 + 最大单包解压 + 100 MB`。最后一项是"临时解压目录
-  与 dest 同时存在"的那一份；早先漏了它，报"需要 6.87 GB、可用 7.53 GB"放行，结果 cuda 的
-  2.69 GB 包在解压阶段报 `There is not enough space on the disk.`（实测退出码 3、`item_fail`）。
+- **磁盘预检公式（已修正）**：`Σ下载 + Σ解压 + 最大单包解压 + 100 MB`，要走 pip 阶段时再加
+  `1.73 GB + 2.51 GB`。最后一项是"临时解压目录与 dest 同时存在"的那一份；早先漏了它，
+  报"需要 6.87 GB、可用 7.53 GB"放行，结果 cuda 的 2.69 GB 包在解压阶段报
+  `There is not enough space on the disk.`（实测退出码 3、`item_fail`）。
 - **打包脚本的防截断**：`tar.exe` 在磁盘写满时只打一行 `Write error` 就退出，却留下一个能被
   sha256 计算、能上传、解压时才炸的截断包（实测一次只剩 119/319 条目）⇒ `New-Zip` 建包后必须
   点条目数，并检查 `tar -tf` 的退出码（截断包未必少条目，tar 会顺着本地头读完名字再报错）。
-- **未做（留档）**：断点续传（用户 2026-10-30 决定"先不做"）；OCR 的安装门禁 UI（未装 OCR 时
-  不许进项目）属前端接线，与 11c 一并做。
+- **未做（留档）**：断点续传（用户 2026-10-30 决定"先不做"）；分片 + 多源 manifest（已调研，
+  待定）；OCR 的安装门禁 UI（未装 OCR 时不许进项目）属前端接线，与 11c 一并做。

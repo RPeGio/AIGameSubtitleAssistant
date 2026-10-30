@@ -363,24 +363,25 @@ function New-Package([string]$work, [string]$flavor, [string[]]$topDirs) {
     return @(New-Zip (Join-Path $OutDir "ocr-runtime-cpu.zip") $work @(".") "ocr-runtime-cpu")
   }
 
-  # cuda 增量：GitHub 单个 release 资产硬上限 2 GiB（超了 gh 直接 422
-  # "size must be less than 2147483648"），而 deps_gpu 里 nvidia/ 一家就 2.7 GB。
-  # 所以按「paddle 本体」与「nvidia 运行库」拆成两个资产 —— 两者都必须在清单里列出、
-  # 由安装器一起下载，缺一个 OCR 就跑不起来（缺 .pyd 或缺 .dll 都在 import 时炸）。
+  # cuda 增量：只打 paddle 本体。
+  # nvidia/ 那 2.7 GB 的 CUDA/cuDNN 运行库**不打包、不发布**：
+  #   - 许可：CUDA EULA 1.2.2 禁止「作为独立产品分发」，1.1.2 要求「仅你的应用可访问」，
+  #     把这堆裸 DLL 挂公开直链给任意人下载同时踩这两条；
+  #   - 体积：它一家就超过 GitHub 单资产 2 GiB 上限（gh 会 422 "size must be less than 2147483648"）。
+  # 改由 bootstrap_runtime.ps1 在安装时用 pip 从 PyPI 镜像现拉（钉子版本 + 官方 sha256）。
+  # 本脚本仍然会装一份到工作树里，只为了在开发机上跑 GPU 冒烟。
   $paddleDist = @(Get-ChildItem (Join-Path $work "deps_gpu") -Directory -Filter "paddlepaddle_gpu-*.dist-info")
   if ($paddleDist.Count -ne 1) {
     throw "deps_gpu 下应恰有一个 paddlepaddle_gpu-*.dist-info，实际 $($paddleDist.Count) 个"
   }
-  $nvidiaDists = @(Get-ChildItem (Join-Path $work "deps_gpu") -Directory -Filter "nvidia_*.dist-info" | ForEach-Object { "deps_gpu/$($_.Name)" })
 
   $paddlePart = @("deps_gpu/paddle", "deps_gpu/$($paddleDist[0].Name)") +
                 @(if (Test-Path (Join-Path $work "deps_gpu/bin")) { "deps_gpu/bin" }) +
                 @(".ocr-runtime")
-  $libsPart = @("deps_gpu/nvidia") + $nvidiaDists + @(".ocr-runtime")
 
+  Log "CUDA 运行库不打包（改由安装时 pip 现拉，见 bootstrap_runtime.ps1 的 pip 阶段）"
   return @(
-    (New-Zip (Join-Path $OutDir "ocr-runtime-cuda-paddle.zip") $work $paddlePart "ocr-runtime-cuda-paddle"),
-    (New-Zip (Join-Path $OutDir "ocr-runtime-cuda-libs.zip") $work $libsPart "ocr-runtime-cuda-libs")
+    (New-Zip (Join-Path $OutDir "ocr-runtime-cuda-paddle.zip") $work $paddlePart "ocr-runtime-cuda-paddle")
   )
 }
 

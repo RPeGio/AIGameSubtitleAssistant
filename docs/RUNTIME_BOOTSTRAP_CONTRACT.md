@@ -78,15 +78,19 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
 ## 4. manifest 规范
 
 - **落点**：`src-tauri/resources/runtime/manifest.json`，**随 app 发布并提交进仓库**。
-  - **状态（2026-10-30）**：清单共 **7 条**——`id=moss` 三条（cpu / vulkan / cuda，`dest` 全为
+  - **状态（2026-10-30 修订）**：清单共 **6 条**——`id=moss` 三条（cpu / vulkan / cuda，`dest` 全为
     `bin`）+ `id=models-moss` 一条（gguf 模型，**不带 flavor**，`dest=models/moss`）
     + `id=deps-ocr` 一条（OCR 运行时，`flavor=cpu`，**`dest="."`**，带 `unpacked_size`）
-    + `id=deps-ocr-gpu` 一条（OCR 的 CUDA 增量之一，`flavor=cuda` + **`optional`**，`dest="."`）
-    + `id=deps-ocr-cuda-libs` 一条（CUDA 增量的第二半，同上 `optional`，`dest="."`）。
-    后两条是同一个 `deps_gpu/` 的两个切块，**必须一起装**：GitHub 单个 release 资产硬上限
-    **2 GiB**，而 `nvidia/` 单独就有 2.7 GB，超限上传会被 422 `size must be less than 2147483648`
-    拒绝。拆成 `ocr-runtime-cuda-paddle.zip`（502.5 MB）与 `ocr-runtime-cuda-libs.zip`（1.86 GB）
-    两个资产、两条清单，缺任一半 OCR 在 `import` 阶段就炸（缺 `.pyd` 或缺 `.dll`）。
+    + `id=deps-ocr-gpu` 一条（OCR 的 CUDA 增量，`flavor=cuda` + **`optional`**，`dest="."`）。
+  - **CUDA/cuDNN 运行库不进清单、不做资产**（原 `deps-ocr-cuda-libs` 条目已删除）：
+    改由 `bootstrap_runtime.ps1` 在安装时用 `pip` 从 PyPI 镜像现拉（`nvidia-*` 共 8 个轮子，
+    钉子版本 + 官方 sha256，见 §4.2）。理由两条：
+    ① **许可**——CUDA Toolkit EULA 1.2.2 禁止把 SDK「作为独立产品分发」，1.1.2 要求可分发部分
+    「仅你的应用可访问」；把裸 DLL 打成 zip 挂公开直链给任意人下载同时违反这两条。
+    ② **体积**——`nvidia/` 一家 1.86 GB 打包 / 2.69 GB 解压，贴死 GitHub 单资产 **2 GiB** 上限
+    （`gh` 会 422 `size must be less than 2147483648`）。
+    脚本仍接受在 `-Items` 里出现 `deps-ocr-cuda-libs`（视作"要 CUDA 运行库"的开关），
+    但它**不再是清单条目**，也不会产生对应下载。
     `tauri.conf.json` 的 `bundle.resources` 已有 `"resources/runtime/manifest.json"`
     ——installer 侧**不要再重复加**（重复加会变成合并冲突）。
   - **打包落点**：数组形式会**保留目录结构** ⇒ 清单实际落在
@@ -139,16 +143,6 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
       "size": 502533301,
       "unpacked_size": 996251695,
       "dest": "."
-    },
-    {
-      "id": "deps-ocr-cuda-libs",
-      "flavor": "cuda",
-      "optional": true,
-      "url": "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/ocr-runtime-v1/ocr-runtime-cuda-libs.zip",
-      "sha256": "…",
-      "size": 1856518097,
-      "unpacked_size": 2693178035,
-      "dest": "."
     }
   ]
 }
@@ -156,7 +150,7 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
 
 | 字段 | 必填 | 语义 |
 |---|---|---|
-| `id` | ✔ | 条目 id（`moss` / `deps-ocr` / `deps-ocr-gpu` / `deps-ocr-cuda-libs` / `deps-embed` / `models-moss`；`deps-funasr` 已随 FunASR 退役作废） |
+| `id` | ✔ | 条目 id（`moss` / `deps-ocr` / `deps-ocr-gpu` / `deps-embed` / `models-moss`；`deps-funasr` 已随 FunASR 退役作废；`deps-ocr-cuda-libs` 已改为 pip 阶段，**不是清单条目**） |
 | `flavor` | ✖ | 缺省 = 该条目与 flavor 无关 |
 | `optional` | ✖ | `true` = 该条目在当前机器没有匹配 flavor 时**静默跳过**（不计失败）。OCR 的 CUDA 增量专用（AMD/Intel 机器 `-Flavor auto` 会选到 vulkan，而 OCR 没有 vulkan 版） |
 | `url` | ✔ | 下载地址，**写绝对地址**；`-Mirror` 缺省时按 §4.1 拼接 |
@@ -170,10 +164,12 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
   这要求解压实现**保留目录结构**——早期实现按文件名平铺（`Join-Path $destDir $f.Name`），
   对 moss（11 个平铺文件）刚好没暴露，对 OCR 会把 `python/` `deps/` 压成同名文件堆。
   现实现用 `Copy-Item <tmp>\* -Destination <dest> -Recurse -Force`，对两种包都正确。
-- **`-Items` 缺省 = `moss,models-moss,deps-ocr,deps-ocr-gpu,deps-ocr-cuda-libs`**：
+- **`-Items` 缺省 = `moss,models-moss,deps-ocr,deps-ocr-gpu`**：
   二进制、模型、OCR 三样缺一不可用（`probe_moss_install` 报 `model_missing`，OCR 则直接进不了
-  项目）。两条 `deps-ocr-*` 都在缺省里但带 `optional`：非 NVIDIA 机器 `-Flavor auto` 选到
-  cpu/vulkan，没有匹配 flavor ⇒ 自动跳过，不会让对方白下 2.25 GB。
+  项目）。`deps-ocr-gpu` 在缺省里但带 `optional`：非 NVIDIA 机器 `-Flavor auto` 选到
+  cpu/vulkan，没有匹配 flavor ⇒ 自动跳过，不会让对方白下 1.5 GB。
+  老调用方仍可显式把 `deps-ocr-cuda-libs` 放进 `-Items`，它只作为"要 CUDA 运行库"的开关，
+  不查清单、不产生下载，由 §4.2 的 pip 阶段满足。
 
 - **flavor 与 id 的组合**：
   - `moss` 按 flavor 拆成多条（`id=moss, flavor=cuda` / `vulkan` / `cpu`），由 `-Flavor` 选择；
@@ -208,7 +204,26 @@ installer 侧实现（已与前端侧对齐）：
 3. L1 资产探测 `probe_assets()` 固定读**二进制同目录**的 `.backend` 与
    `ggml-cuda.dll` / `ggml-vulkan.dll`（`backend_probe.rs:209-222`）。
 
-### 4.3 交付物是 zip（不是 7z）、以及解压的三个坑
+### 4.3 CUDA/cuDNN 运行库：安装时 pip 现拉（不是清单条目）
+
+`deps-ocr-gpu` 包里**只有 paddle 本体**；`nvidia/{cublas,cudnn,...}` 那 2.7 GB 由安装器在本地
+用 OCR 基线自带的 `pip` 拉取，落到同一个 `runtime/deps_gpu`。这一段的契约：
+
+| 项 | 值 |
+|---|---|
+| 触发条件 | `-Flavor` 解析结果为 `cuda`，且本次装了 `deps-ocr-gpu`（或调用方显式在 `-Items` 里写了 `deps-ocr-cuda-libs`） |
+| 执行者 | `runtime/python/python.exe -m pip install`（因此**必须先装 `deps-ocr`**；缺 python 时该条目 `item_fail` 并给出提示） |
+| 索引 | `-PipMirror`，缺省 `https://repo.huaweicloud.com/repository/pypi/simple`（实测 10.3 MB/s；阿里云 0.79、官方源 0.09；清华 TUNA 的目录接口会 403） |
+| 钉版本 | 8 个 `nvidia-*` 轮子的 `==版本` + `--require-hashes`（sha256 取自 PyPI 官方元数据），清单在 `bootstrap_runtime.ps1` 的 `$GpuLibs` |
+| 关闭方式 | `-SkipGpuLibs`（排障/离线）；`-PipUseProxy` 沿用系统代理（默认**临时清空** `HTTP(S)_PROXY`——国内镜像走代理反而慢） |
+| 事件 | 与普通条目完全同形，`item = "deps-ocr-cuda-libs"`：`start` → 8×`progress`（phase=download，percent 12.5→100）→ `item_done`（detail 带落地文件数）|
+| 幂等 | `.installed.json` 里记该条目的 `sha256` = **8 个包版本+哈希的内容摘要**；版本或任一哈希变化即视为需要重装 |
+| 失败 | `item_fail` + 退出码 3（与其它条目一致） |
+
+实测（2026-10-30，本机）：8 个轮子 1771 MB → 落地 `deps_gpu/nvidia` **2,568.4 MB / 258 文件**，
+二次运行走 `item_skip`（0.5 s）。
+
+### 4.4 交付物是 zip（不是 7z）、以及解压的三个坑
 
 实际发布的资源是 **zip**（`moss-runtime-v1` 下的 `moss-cpu.zip` / `moss-vulkan.zip` /
 `moss-cuda.zip`）。**不要按扩展名写死 `.7z`**——那是早期示例留下的，会 404。
