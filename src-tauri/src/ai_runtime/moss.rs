@@ -11,9 +11,7 @@
 // moss-transcribe 孤儿进程（异常崩溃等可能绕过退出钩子，导致多实例抢 CPU）。
 
 use crate::ai_runtime::backend_probe;
-use crate::ai_runtime::{
-    resolve_path, AsrError, AsrProvider, AsrSegment, AsrTranscribeOptions, RuntimeConfig,
-};
+use crate::ai_runtime::{moss_paths, AsrError, AsrProvider, AsrSegment, AsrTranscribeOptions, RuntimeConfig};
 use serde::Deserialize;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -241,8 +239,7 @@ pub struct MossProvider {
 impl MossProvider {
     /// 构造 provider 并用 `info <model>` 探测 GGUF 可加载。探测失败不视为致命，仅 ready=false。
     pub fn spawn(config: &RuntimeConfig, runtime_dir: &Path) -> Result<Self, AsrError> {
-        let binary = resolve_path(&config.moss_binary, runtime_dir);
-        let model = resolve_path(&config.moss_model, runtime_dir);
+        let (binary, model) = moss_paths(config, runtime_dir);
 
         if !binary.is_file() {
             return Err(AsrError::Worker(format!(
@@ -578,6 +575,7 @@ impl AsrProvider for MossProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai_runtime::resolve_path;
 
     #[test]
     fn test_parse_segments_ok() {

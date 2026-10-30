@@ -323,4 +323,28 @@ gh release upload  moss-runtime-v1 moss-cuda.zip
 - **脚本侧**（`scripts/bootstrap_runtime.ps1`）：stdout 纯 JSONL（`start` / `progress` / `item_skip` / `item_done` / `item_fail` / `error` / `done`，末行必 `done`），人类诊断走 stderr；退出码 `0` 成功 / `1` 预检失败 / `2` 校验失败 / `3` 部分条目失败 / `4` 未知错误；`-Flavor auto` 走 L0 探测（`nvidia-smi` 算力 ≥ 7.5 → `vulkan-1.dll` → cpu），下载前做磁盘预检（下载量 ×3 + 100 MB），镜像失败自动回退直连，SHA256 通过后才解压，成功后写 `runtime/.installed.json` 并支持 `item_skip`。
 - **Rust 侧**（`src-tauri/src/ai_runtime/runtime_install.rs`）：`precheck_runtime_disk` / `install_runtime` / `cancel_runtime_install` 三个命令，进度经 `runtime-install-progress` 逐条转发；取消用 `taskkill /T /F` 杀进程树；同一时刻只允许一个安装任务。
 - **为什么两者解耦**：子进程读写收敛在 `stream_child` + 退出码映射 `summarize` 两个不碰 Tauri 的函数里，单测可以用**真脚本、真子进程**跑通（`end_to_end_bogus_item_reports_failure`、`cancel_stops_waiting`），不必为测试造 mock。
-- **遗留**：打包形态下脚本未随 app 发布（`bundle.resources` 目前只映射 manifest）。`bootstrap_candidates` 已预留 `resources/scripts/bootstrap_runtime.ps1` 位置，补一条资源映射即可。
+- **遗留**：打包形态下脚本未随 app 发布（`bundle.resources` 目前只映射 manifest）。`bootstrap_candidates` 已预留 `resources/scripts/bootstrap_runtime.ps1` 位置，补一条资源映射即可。（2026-10-30 核对：该映射已由 `feat/misc-fixes` 的 `bd8ee43` 与 `scripts/sync_bundle_resources.mjs` 补齐，本分支尚未合入。）
+
+### 8.10 模型并入分发（`models-moss`，2026-10-30）
+
+> 起因：`probe_moss_install` 只看二进制 ⇒ 用户点完「安装运行时」显示 **ok**，第一次转写才报
+> `MOSS 模型不存在`。gguf 有 618 MB，此前既不在清单里、也没有任何自动通路。
+
+- **发布**：`models-moss.zip` = 626,397,892 B，sha256 `809f8999ac51ef0836b9324b2c1ad6a40e520b42f69dfc60c260dd01ab9a8cb1`，
+  与三个 `moss-*.zip` 一起挂在 Release `moss-runtime-v1` 上（同一 tag 追加资产，不改版本号）。
+- **清单**：第 4 条 `{id:"models-moss", dest:"models/moss"}`，**不带 `flavor` 与 `backend_marker`**
+  ——三种后端共用同一份 q5_k，设备探测与模型无关。
+- **缺省条目**：`bootstrap_runtime.ps1` 的 `-Items` 从 `moss` 改为 **`moss,models-moss`**（缺一不可）。
+- **脚本修复**：`-Flavor auto` 的可用集合改为**本次选中条目的并集**。原实现只看
+  `items[0]`，于是 `-Items models-moss` 单装模型时被误判成「清单里没有可用的 flavor」而直接失败；
+  实测复现与修复后各跑一遍（`models-moss` 单装 → `auto: 所选条目与 flavor 无关，跳过设备探测`，
+  退出码 0；`models-moss,moss` 组合 → `auto 选择: cpu`，两项 `item_done`，再跑一次两项 `item_skip`）。
+- **状态机**：`evaluate` 增加 `model_missing`（二进制在、gguf 不在 ⇒ 跑不了，优先于版本类结论），
+  并在「无 `.installed.json` 记录」的分支上也过一遍模型检查。
+- **空字段 = 标准布局**：一键安装只解包、不写 `config.json`，因此 `moss_binary` / `moss_model`
+  为空时必须回退到 `bin/moss-transcribe.exe` 与 `models/moss/moss-transcribe-q5_k.gguf`
+  （新增 `moss_paths()`，`MossProvider::spawn`、`probe_moss_backend`、`probe_moss_install` 三处统一）。
+  否则 `resolve_path("")` 会解析成 runtime 目录本身，把刚装好的运行时判成 `file_missing`。
+- **BOM 容错**：`parse_installed` / `parse_manifest_items` 读文件前先剥 UTF-8 BOM
+  ——PowerShell 5.1 的 `Set-Content -Encoding UTF8` 会加 BOM，而 serde_json 见 BOM 即语法错误，
+  整份清单会被当成空 ⇒ 状态全丢。

@@ -78,9 +78,9 @@
 ## 4. manifest 规范
 
 - **落点**：`src-tauri/resources/runtime/manifest.json`，**随 app 发布并提交进仓库**。
-  - **状态（2026-10-24）**：真清单已由本分支落库（内容由 installer 侧生成，`version:"1"`，
-    三个 `id=moss` 条目 cpu / vulkan / cuda，`dest` 全为 `bin`）；`tauri.conf.json` 的
-    `bundle.resources` 本分支已加一行 `"resources": ["resources/runtime/manifest.json"]`
+  - **状态（2026-10-30）**：清单共 4 条——`id=moss` 三条（cpu / vulkan / cuda，`dest` 全为
+    `bin`）+ `id=models-moss` 一条（gguf 模型，**不带 flavor**，`dest=models/moss`）。
+    `tauri.conf.json` 的 `bundle.resources` 已有 `"resources/runtime/manifest.json"`
     ——installer 侧**不要再重复加**（重复加会变成合并冲突）。
   - **打包落点**：数组形式会**保留目录结构** ⇒ 清单实际落在
     `$RESOURCES/resources/runtime/manifest.json`（不是 `$RESOURCES/runtime/…`）。
@@ -96,7 +96,7 @@
 ```json
 {
   "version": "1",
-  "generated_at": "2026-10-21T00:00:00Z",
+  "generated_at": "2026-10-30T03:01:00Z",
   "items": [
     {
       "id": "moss",
@@ -106,6 +106,13 @@
       "size": 123456789,
       "dest": "bin",
       "backend_marker": "cuda"
+    },
+    {
+      "id": "models-moss",
+      "url": "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/models-moss.zip",
+      "sha256": "…",
+      "size": 626397892,
+      "dest": "models/moss"
     }
   ]
 }
@@ -118,12 +125,17 @@
 | `url` | ✔ | 下载地址，**写绝对地址**；`-Mirror` 缺省时按 §4.1 拼接 |
 | `sha256` | ✔ | 下载物哈希，校验不过 = 退出码 2 |
 | `size` | ✔ | 字节数，用于磁盘预检 |
-| `dest` | ✔ | 相对 runtime 目录的落地路径（**moss 三个 flavor 一律 `bin`**，见 §4.2） |
+| `dest` | ✔ | 相对 runtime 目录的落地路径（**moss 三个 flavor 一律 `bin`**，见 §4.2；模型是 `models/moss`） |
 | `backend_marker` | ✖ | 写入落地目录的 `.backend` 标记（`cuda` / `vulkan`；cpu 版写 `cpu` 或不写） |
 
-- **flavor 与 id 的组合**：本期只有 `moss` 一个条目，但 `moss` 条目按 flavor 拆成多条
-  （`id=moss, flavor=cuda` / `id=moss, flavor=vulkan` / `id=moss, flavor=cpu`），
-  由 `-Flavor` 选择。
+- **flavor 与 id 的组合**：
+  - `moss` 按 flavor 拆成多条（`id=moss, flavor=cuda` / `vulkan` / `cpu`），由 `-Flavor` 选择；
+  - `models-moss` **不带 flavor**：三种后端共用同一份 gguf，选择时直接命中，不参与设备探测；
+  - 选 flavor 的可用集合 = **本次 `-Items` 选中条目的并集**（不是"第一个条目的"）。
+    若选中的条目全都不带 flavor，`-Flavor auto` 直接跳过设备探测——曾经只看
+    `items[0]`，导致 `-Items models-moss` 单装模型时被误判成"清单里没有可用的 flavor"。
+- **`-Items` 缺省 = `moss,models-moss`**：二进制与模型缺一不可，"装完却没有模型"
+  等于没装（`probe_moss_install` 会报 `model_missing`，§8.4）。
 
 ### 4.1 `url` × `-Mirror` 的组合语义（已澄清）
 
@@ -342,20 +354,26 @@ invoke("probe_moss_install")   // 无参，只读，不改任何文件
 
 | `state` | 含义 |
 |---|---|
-| `ok` | 已装且与清单 sha256 一致 |
+| `ok` | 已装且与清单 sha256 一致，**且模型在** |
 | `update_available` | 已装但 sha256 与清单不同（清单换了版本） |
 | `not_installed` | 无 `.installed.json` 记录（或有记录但二进制没装） |
 | `file_missing` | 有记录、二进制却不在 ⇒ 优先报「能跑」问题，不比较版本 |
+| `model_missing` | 二进制在、**gguf 不在** ⇒ 同样跑不了，优先于版本类结论（2026-10-30 新增） |
 | `flavor_not_in_manifest` | 装的 flavor 当前清单里没有（清单被精简或换过发布） |
 | `manifest_missing` | 找不到清单 |
 | `unknown` | 坏 JSON / 缺 sha256 字段 ⇒ 当「无记录」处理，不让元数据问题挡住 ASR |
 
-约束：判据**只认 sha256**（zip 不可字节复现，版本号证明不了内容一致）；只管
-`runtime/bin/moss-transcribe.exe`，**模型缺失不归它管**（归 `check_asr_engines`）；`flavor`
-与二进制同目录 `.backend` 标记不一致时只在 `message` 里附注（以 L2 实测为准）。
+约束：判据**只认 sha256**（zip 不可字节复现，版本号证明不了内容一致）；二进制与模型
+**都要查**（`model_missing` 的由来：模型 618 MB，此前不进清单、也没人查，于是"装完显示
+ok、第一次转写才报 `MOSS 模型不存在`"）；`flavor` 与二进制同目录 `.backend` 标记不一致时
+只在 `message` 里附注（以 L2 实测为准）。
 ⇒ 本命令的数据源是 installer 写的 `runtime/.installed.json`：在
 `scripts/bootstrap_runtime.ps1` 落地前，它会稳定返回 `not_installed` / `unknown`，
 这是**预期**，不是 bug。
+⇒ **空字段 = 标准布局**：一键安装只解包、不写 `config.json`，所以 `moss_binary` /
+`moss_model` 为空时必须回退到 `bin/moss-transcribe.exe` 与
+`models/moss/moss-transcribe-q5_k.gguf`（`moss_paths()`）。否则 `resolve_path("")`
+会解析成 runtime 目录本身，把刚装好的运行时判成 `file_missing`——装完反而显示坏了。
 
 
 ---

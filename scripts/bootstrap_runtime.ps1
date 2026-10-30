@@ -1,9 +1,11 @@
 ﻿<#
 bootstrap_runtime.ps1 —— 按 manifest 安装 runtime（多条目 / 多 flavor 的通用安装器）
 
-本期只有 moss 一个条目（按 flavor 拆成 cpu / vulkan / cuda 三条），但脚本从第一天起按
-「多条目 + 多 flavor」写：后续 deps-ocr / deps-funasr / deps-embed / models-moss 只加
-manifest 条目，不改本脚本逻辑。
+本期条目：
+  - moss         按 flavor 拆成 cpu / vulkan / cuda 三条（二进制 + ggml 后端）
+  - models-moss  不带 flavor 的一条（gguf 模型，三种后端共用同一份）
+脚本按「多条目 + 多 flavor」写：后续 deps-ocr / deps-embed 只加 manifest 条目，
+不改本脚本逻辑（无 flavor 的条目直接选中，不参与设备探测）。
 
 与前端/配置侧的接口见 docs/RUNTIME_BOOTSTRAP_CONTRACT.md：
   - stdout 只输出 JSONL 事件（start / progress / item_done / item_skip / item_fail /
@@ -11,7 +13,7 @@ manifest 条目，不改本脚本逻辑。
   - 退出码：0 全成功 / 1 预检失败 / 2 校验失败 / 3 部分条目失败 / 4 未知错误。
 
 参数：
-  -Items <ids>          逗号分隔的条目 id，默认 moss
+  -Items <ids>          逗号分隔的条目 id，默认 moss,models-moss（二进制 + 模型缺一不可）
   -Flavor <auto|cpu|cuda|vulkan>  默认 auto（L0 探测：nvidia-smi → vulkaninfo → cpu）
   -Mirror <前缀>        代理前缀（默认 gh-proxy），传空串 "" 表示直连；见契约 §4.1
   -Force                忽略已安装标记，强制重装
@@ -23,7 +25,7 @@ manifest 条目，不改本脚本逻辑。
   powershell -ExecutionPolicy Bypass -File scripts/bootstrap_runtime.ps1 -Flavor vulkan -Force
 #>
 param(
-  [string]$Items = "moss",
+  [string]$Items = "moss,models-moss",
   [string]$Flavor = "auto",
   [string]$Mirror = "https://gh-proxy.com/",
   [switch]$Force,
@@ -147,14 +149,24 @@ function Resolve-AutoFlavor([string[]]$available) {
 }
 
 # ─── 选条目 ─────────────────────────────────────────────────────────────
-$availableFlavors = @($allItems | Where-Object { $_.id -eq $itemIds[0] -and $_.flavor } | ForEach-Object { ([string]$_.flavor).ToLower() } | Select-Object -Unique)
+# 可用 flavor 取「本次要装的条目」的并集，而不是只看第一条：
+# 条目可能不带 flavor（models-moss 与后端无关），也可能同一 id 多个 flavor（moss）。
+# 全都无 flavor ⇒ 不需要定 flavor（显式清空，避免后面按 "" 过滤把有 flavor 的条目漏掉）。
+$flavored = @($allItems | Where-Object { $itemIds -contains $_.id -and $_.flavor })
+$availableFlavors = @($flavored | ForEach-Object { ([string]$_.flavor).ToLower() } | Select-Object -Unique)
 $effectiveFlavor = $Flavor
 if ($Flavor -eq "auto") {
-  $effectiveFlavor = Resolve-AutoFlavor $availableFlavors
-  if (-not $effectiveFlavor) {
-    Stop-Fatal "清单里没有可用的 flavor（可用：$($availableFlavors -join ', ')）" 1
+  if ($availableFlavors.Count -eq 0) {
+    $effectiveFlavor = ""
+    Log "auto: 所选条目与 flavor 无关，跳过设备探测"
   }
-  Log "auto 选择: $effectiveFlavor"
+  else {
+    $effectiveFlavor = Resolve-AutoFlavor $availableFlavors
+    if (-not $effectiveFlavor) {
+      Stop-Fatal "清单里没有可用的 flavor（可用：$($availableFlavors -join ', ')）" 1
+    }
+    Log "auto 选择: $effectiveFlavor"
+  }
 }
 
 $selected = @()

@@ -38,6 +38,31 @@ pub(crate) fn resolve_path(p: &str, runtime_dir: &Path) -> PathBuf {
     }
 }
 
+/// 安装器约定的 MOSS 标准布局（与 manifest 条目的 `dest` 一致）
+pub(crate) const MOSS_BINARY_REL: &str = "bin/moss-transcribe.exe";
+pub(crate) const MOSS_MODEL_REL: &str = "models/moss/moss-transcribe-q5_k.gguf";
+
+/// 解析 MOSS 的二进制与模型路径。
+///
+/// 为什么空字段要回退到标准布局：一键安装（欢迎页自检卡片）只解包文件、**不写
+/// config.json**，所以"刚装完、配置还没生成"是正常状态。此时若把空字段当成
+/// runtime 目录本身（`resolve_path("")` 的结果），就会把已装好的运行时判成
+/// "文件缺失"——用户看到的是装完反而坏了。用户自定义过路径时 config 里一定有值，
+/// 回退不会被触发。
+pub(crate) fn moss_paths(config: &RuntimeConfig, runtime_dir: &Path) -> (PathBuf, PathBuf) {
+    let binary = if config.moss_binary.trim().is_empty() {
+        resolve_path(MOSS_BINARY_REL, runtime_dir)
+    } else {
+        resolve_path(&config.moss_binary, runtime_dir)
+    };
+    let model = if config.moss_model.trim().is_empty() {
+        resolve_path(MOSS_MODEL_REL, runtime_dir)
+    } else {
+        resolve_path(&config.moss_model, runtime_dir)
+    };
+    (binary, model)
+}
+
 // ─── OCR 数据与错误 ──────────────────────────────────────
 
 /// 单张帧图像的 OCR 识别结果
@@ -571,7 +596,10 @@ impl AsrManager {
         } else {
             Box::new(AsrNoneProvider)
         };
-        let moss = if !config.moss_binary.is_empty() && !config.moss_model.is_empty() {
+        // MOSS：配置里写过，或标准布局里已经有二进制（一键安装只解包、不写 config.json）
+        let (moss_bin, _) = moss_paths(&config, &runtime_dir);
+        let moss_configured = !config.moss_binary.is_empty() || !config.moss_model.is_empty();
+        let moss = if moss_configured || moss_bin.is_file() {
             create_asr_provider(AsrProviderKind::Moss, &config, &runtime_dir)
         } else {
             Box::new(AsrNoneProvider)

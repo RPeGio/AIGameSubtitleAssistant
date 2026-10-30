@@ -618,7 +618,8 @@
 |---|---|
 | `probe_moss_backend`（判定 / `reason` / `source` / `recommendation` / `manifest_flavors` / `cuda_compute_cap` / `cuda_runnable` / `gpus` / `error`） | ✅ 就绪（第 12 项 + P5 `351cd5a`） |
 | `set_moss_device`（落盘，下次启动生效） | ✅ 就绪（`a8e8010`） |
-| `probe_moss_install`（已装运行时 vs 清单，七态） | ✅ 命令就绪（P6 `80eda1d`）；数据源 `runtime/.installed.json` 自 `7d3f8d5` 起由 `scripts/bootstrap_runtime.ps1` 写入（`install_runtime` 跑完即落盘），未跑过安装时仍返回 `not_installed` / `unknown`，属预期 |
+| `probe_moss_install`（已装运行时 vs 清单，**八态**） | ✅ 命令就绪（P6 `80eda1d`）；数据源 `runtime/.installed.json` 自 `7d3f8d5` 起由 `scripts/bootstrap_runtime.ps1` 写入（`install_runtime` 跑完即落盘），未跑过安装时仍返回 `not_installed` / `unknown`，属预期。**2026-10-30 起多一态 `model_missing`**：装了二进制却缺 gguf（模型单独成条目，见下一行），不再谎报 `ok` |
+| `models-moss`（gguf 模型条目：清单 + Release 资产） | ✅ 已发布（2026-10-30）：`models-moss.zip` 626,397,892 B / sha256 `809f8999…9a8cb1`，挂在 Release `moss-runtime-v1` 上；清单第 4 条 `dest=models/moss`、**不带 flavor**（三种后端共用一份 q5_k）。二进制与模型缺一不可 ⇒ `bootstrap_runtime.ps1` 的 `-Items` 缺省改为 `moss,models-moss` |
 | `check_asr_engines.effective_backend`（L2 实测） | ✅ 已有（PR#48） |
 | `scripts/bootstrap_moss.ps1 -Backend <cpu\|cuda\|vulkan>`（现存脚本，可作指引） | ✅ 可用；注意默认 `cpu`，要 GPU 必须显式传 `-Backend`，也支持 `-BinaryUrl` + `-BinarySha256` 指向发布包 |
 | `scripts/bootstrap_runtime.ps1`（契约 §2 新入口 + §3 JSONL 进度） | ✅ 已交付（`7d3f8d5`，分支 `feat/runtime-bootstrap`）：stdout 纯 JSONL（`start`/`progress`/`item_skip`/`item_done`/`item_fail`/`error`/`done`，末行必 `done`），退出码 0/1/2/3/4，多条目 + 多 flavor，`-Flavor auto` 走 L0 探测，下载前磁盘预检，镜像失败回退直连，SHA256 校验通过才解压，写 `runtime/.installed.json`（已装且哈希一致 → `item_skip`，`-Force` 重装） |
@@ -631,7 +632,7 @@
   - OCR / Embed 卡同口径：未就绪时把 `check_ocr_runtime` / `check_embed_runtime` 的失败原文摊到卡面（现在只有状态点 + `title` 悬停看）；
   - 仍然「自检不阻塞」，只在真正运行引擎时硬拦。
 - **11b 命令指引层（可立即做）**：未就绪时给一条**可复制**的命令（`scripts/bootstrap_moss.ps1 -Backend vulkan` 这一代）；若要判断脚本是否存在，加一个只读命令 `probe_bootstrap_scripts`（返回脚本存在与路径），不让前端猜路径。
-- **11c 静默 bootstrap（阻塞已解除，2026-10-28）**：执行体 `scripts/bootstrap_runtime.ps1` 与 Rust 侧基础设施（spawn / JSONL 进度事件 / 取消 / 磁盘预检）已由分发侧随 `7d3f8d5` 交付。本分支剩下的是**接线**：首次启动或用户点「安装」时先调 `precheck_runtime_disk`，再调 `install_runtime`（`items` / `flavor` / `force`），监听 `runtime-install-progress` 渲染进度，取消按钮调 `cancel_runtime_install`。**遗留一条**：打包形态下脚本尚未随 app 发布（`bundle.resources` 只有 manifest，`bootstrap_candidates` 已留 `resources/scripts/bootstrap_runtime.ps1` 位置），需分发侧补 `tauri.conf.json` 的资源映射。
+- **11c 静默 bootstrap（阻塞已解除，2026-10-28）**：执行体 `scripts/bootstrap_runtime.ps1` 与 Rust 侧基础设施（spawn / JSONL 进度事件 / 取消 / 磁盘预检）已由分发侧随 `7d3f8d5` 交付。本分支剩下的是**接线**：首次启动或用户点「安装」时先调 `precheck_runtime_disk`，再调 `install_runtime`（`items` / `flavor` / `force`），监听 `runtime-install-progress` 渲染进度，取消按钮调 `cancel_runtime_install`。**遗留一条**：打包形态下脚本尚未随 app 发布（`bundle.resources` 只有 manifest，`bootstrap_candidates` 已留 `resources/scripts/bootstrap_runtime.ps1` 位置），需分发侧补 `tauri.conf.json` 的资源映射。（2026-10-30 核对：`feat/misc-fixes` 的 `bd8ee43` + `scripts/sync_bundle_resources.mjs` 已在那边补齐 `resources/scripts/*` 与构建期同步，本分支尚未合入 ⇒ 合并后此条关闭。）
 
 **依赖/前置**：11a/11b 已全部满足（命令齐、契约齐）；11c 的执行体与子进程基础设施已就位（`7d3f8d5`），只剩前端接线与打包形态的脚本发布，见上表。
 

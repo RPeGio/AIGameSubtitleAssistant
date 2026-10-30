@@ -1,6 +1,6 @@
 {
     "version":  "1",
-    "generated_at":  "2026-10-22T15:52:05Z",
+    "generated_at":  "2026-10-30T03:01:00Z",
     "items":  [
                   {
                       "id":  "moss",
@@ -28,6 +28,13 @@
                       "size":  651834262,
                       "dest":  "bin",
                       "backend_marker":  "cuda"
+                  },
+                  {
+                      "id":  "models-moss",
+                      "url":  "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/models-moss.zip",
+                      "sha256":  "809f8999ac51ef0836b9324b2c1ad6a40e520b42f69dfc60c260dd01ab9a8cb1",
+                      "size":  626397892,
+                      "dest":  "models/moss"
                   }
               ]
 }

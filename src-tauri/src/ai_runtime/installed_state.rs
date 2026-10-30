@@ -19,6 +19,11 @@ use std::path::Path;
 /// 安装器写的状态文件名（runtime 目录下）
 pub const INSTALLED_FILE: &str = ".installed.json";
 
+/// 清单里模型条目的 id。
+/// 模型与后端无关（cpu/cuda/vulkan 共用同一份 gguf），所以在清单里是独立条目、
+/// 不带 flavor；二进制才是按 flavor 分三条的那个 `moss`。
+pub const MODEL_ID: &str = "models-moss";
+
 /// `.installed.json` 里单个条目的内容
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct InstalledItem {
@@ -70,12 +75,18 @@ impl InstallStatus {
 
 // ─── 解析（容错，纯函数）─────────────────────────────────
 
+/// 去掉 UTF-8 BOM：这两个文件都是"工具写出来的"（manifest 由发布脚本生成、
+/// `.installed.json` 由安装器写），而 serde_json 见到 BOM 会直接判语法错误
+fn strip_bom(text: &str) -> &str {
+    text.strip_prefix('\u{feff}').unwrap_or(text)
+}
+
 /// 解析 `.installed.json`：`items` 是对象，键为 id。
 /// 坏 JSON / 缺字段一律当"没有记录"，不报错（这类文件是安装器写的，
 /// 启动侧不该因为一个字段缺失就让用户没法用 ASR）。
 pub fn parse_installed(text: &str) -> BTreeMap<String, InstalledItem> {
     let mut out = BTreeMap::new();
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(text) else {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(strip_bom(text)) else {
         return out;
     };
     let Some(items) = json.get("items").and_then(|v| v.as_object()) else {
@@ -105,7 +116,7 @@ pub fn parse_installed(text: &str) -> BTreeMap<String, InstalledItem> {
 /// 解析 manifest 的 `items` 数组（id / flavor / sha256 / size 四字段）
 pub fn parse_manifest_items(text: &str) -> Vec<ManifestEntry> {
     let mut out = Vec::new();
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(text) else {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(strip_bom(text)) else {
         return out;
     };
     let Some(items) = json.get("items").and_then(|v| v.as_array()) else {
@@ -135,11 +146,16 @@ pub fn parse_manifest_items(text: &str) -> Vec<ManifestEntry> {
 ///
 /// - `runtime_dir`：运行时的根目录（`.installed.json` 在此）
 /// - `binary`：解析后的 moss 可执行文件（判断"装的东西还在不在"）
+/// - `model`：解析后的 gguf 路径（None = 不检查模型）
 /// - `manifest_path`：找到的清单路径（None = 没找到）
 /// - `id`：清单里的条目 id（本项目固定 "moss"）
+///
+/// 检查顺序按"修起来的代价"排：先"没有可执行文件"，再"没有模型"（两者都等于跑不了），
+/// 然后才是版本类结论（清单缺失 / 后端下线 / 有更新）——后者都能跑，只是需要提示。
 pub fn evaluate(
     runtime_dir: &Path,
     binary: &Path,
+    model: Option<&Path>,
     manifest_path: Option<&Path>,
     id: &str,
 ) -> InstallStatus {
@@ -168,7 +184,11 @@ pub fn evaluate(
         };
         st.declared_sha256 = declared(manifest_path, id, "").map(|e| e.sha256);
         st.declared_size = declared(manifest_path, id, "").map(|e| e.size);
-        return st;
+        if !binary_ok {
+            return st;
+        }
+        // 二进制在但模型没了，同样是跑不了——不能因为"没安装记录"就只报 unknown
+        return with_model_check(st, model, "找到 MOSS 二进制（无安装记录）");
     };
 
     let declared_entry = declared(manifest_path, id, &inst.flavor);
@@ -187,6 +207,16 @@ pub fn evaluate(
             flavor_label(&inst.flavor),
             binary.display()
         );
+        return with_marker_note(st, binary, &inst);
+    }
+
+    // 二进制在、模型没了：状态上"已安装"但一说句话就炸，必须先报这个
+    st = with_model_check(
+        st,
+        model,
+        &format!("MOSS 运行时已装（{} 版）", flavor_label(&inst.flavor)),
+    );
+    if st.state == "model_missing" {
         return with_marker_note(st, binary, &inst);
     }
 
@@ -231,6 +261,23 @@ pub fn evaluate(
         );
     }
     with_marker_note(st, binary, &inst)
+}
+
+/// 模型缺失时把状态改成 `model_missing`（二进制在、模型不在 = 跑不了）
+fn with_model_check(st: InstallStatus, model: Option<&Path>, ctx: &str) -> InstallStatus {
+    let Some(model) = model else { return st };
+    if model.is_file() {
+        return st;
+    }
+    InstallStatus {
+        state: "model_missing".to_string(),
+        message: format!(
+            "{ctx}，但模型文件不存在：{}。请重新安装运行时补全模型（清单条目 {}），或把模型放回该路径",
+            model.display(),
+            MODEL_ID
+        ),
+        ..st
+    }
 }
 
 /// 在清单里找同 id（且同 flavor，flavor 空 = 任意）的条目
@@ -282,12 +329,20 @@ pub fn probe_moss_install(app: tauri::AppHandle) -> InstallStatus {
         app.path().app_data_dir().ok().map(|d| d.join("runtime")),
     );
     let config = super::RuntimeConfig::load(&runtime_dir).unwrap_or_default();
-    let binary = super::resolve_path(&config.moss_binary, &runtime_dir);
+    // 路径解析与 provider 同源（空配置回退标准布局），否则会出现
+    // "卡片说未安装、转写其实能跑"这种两套说法
+    let (binary, model) = super::moss_paths(&config, &runtime_dir);
     let manifest = super::backend_probe::find_manifest(&super::backend_probe::manifest_candidates(
         &app,
         &runtime_dir,
     ));
-    evaluate(&runtime_dir, &binary, manifest.as_deref(), "moss")
+    evaluate(
+        &runtime_dir,
+        &binary,
+        Some(&model),
+        manifest.as_deref(),
+        "moss",
+    )
 }
 
 // ─── 单测 ───────────────────────────────────────────────
@@ -350,7 +405,7 @@ mod tests {
                 "sha256":"e848847289982b8322262341aa133e40b8f152ee563b8af63e3412e4eb6a89b5",
                 "size":16139894,"dest":"bin"}]}"#,
         );
-        let st = evaluate(&dir, &dir.join("moss-transcribe.exe"), Some(&mf), "moss");
+        let st = evaluate(&dir, &dir.join("moss-transcribe.exe"), None, Some(&mf), "moss");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&mf);
         assert_eq!(st.state, "ok");
@@ -365,7 +420,7 @@ mod tests {
             "upd",
             r#"{"items":[{"id":"moss","flavor":"vulkan","sha256":"deadbeef","size":2}]}"#,
         );
-        let st = evaluate(&dir, &dir.join("moss-transcribe.exe"), Some(&mf), "moss");
+        let st = evaluate(&dir, &dir.join("moss-transcribe.exe"), None, Some(&mf), "moss");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&mf);
         assert_eq!(st.state, "update_available");
@@ -377,7 +432,7 @@ mod tests {
     fn evaluate_file_missing_beats_version_check() {
         // 记录说装了，但 exe 不在了（目录被删/被移动）⇒ 最该修的是"装回来"
         let dir = setup("miss", Some(INSTALLED_VK), Some("vulkan"), false);
-        let st = evaluate(&dir, &dir.join("moss-transcribe.exe"), None, "moss");
+        let st = evaluate(&dir, &dir.join("moss-transcribe.exe"), None, None, "moss");
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(st.state, "file_missing");
         assert!(st.message.contains("重新安装"), "{}", st.message);
@@ -386,7 +441,7 @@ mod tests {
     #[test]
     fn evaluate_not_installed_when_no_record_and_no_exe() {
         let dir = setup("none", None, None, false);
-        let st = evaluate(&dir, &dir.join("moss-transcribe.exe"), None, "moss");
+        let st = evaluate(&dir, &dir.join("moss-transcribe.exe"), None, None, "moss");
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(st.state, "not_installed");
     }
@@ -395,7 +450,7 @@ mod tests {
     fn evaluate_unknown_when_exe_present_but_no_record() {
         // 手工解压/旧安装器：文件在、没记录 ⇒ 不谎报"未安装"
         let dir = setup("manual", None, Some("cpu"), true);
-        let st = evaluate(&dir, &dir.join("moss-transcribe.exe"), None, "moss");
+        let st = evaluate(&dir, &dir.join("moss-transcribe.exe"), None, None, "moss");
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(st.state, "unknown");
         assert!(st.message.contains(INSTALLED_FILE), "{}", st.message);
@@ -408,7 +463,7 @@ mod tests {
             "flav",
             r#"{"items":[{"id":"moss","flavor":"cpu","sha256":"aa","size":1}]}"#,
         );
-        let st = evaluate(&dir, &dir.join("moss-transcribe.exe"), Some(&mf), "moss");
+        let st = evaluate(&dir, &dir.join("moss-transcribe.exe"), None, Some(&mf), "moss");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&mf);
         assert_eq!(st.state, "flavor_not_in_manifest");
@@ -418,7 +473,7 @@ mod tests {
     #[test]
     fn evaluate_manifest_missing_still_reports_installed() {
         let dir = setup("nomf", Some(INSTALLED_VK), Some("vulkan"), true);
-        let st = evaluate(&dir, &dir.join("moss-transcribe.exe"), None, "moss");
+        let st = evaluate(&dir, &dir.join("moss-transcribe.exe"), None, None, "moss");
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(st.state, "manifest_missing");
         assert_eq!(st.installed.as_ref().unwrap().flavor, "vulkan");
@@ -432,11 +487,99 @@ mod tests {
             "mark",
             r#"{"items":[{"id":"moss","flavor":"vulkan","sha256":"e848847289982b8322262341aa133e40b8f152ee563b8af63e3412e4eb6a89b5","size":1}]}"#,
         );
-        let st = evaluate(&dir, &dir.join("moss-transcribe.exe"), Some(&mf), "moss");
+        let st = evaluate(&dir, &dir.join("moss-transcribe.exe"), None, Some(&mf), "moss");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&mf);
         assert_eq!(st.state, "ok");
         assert!(st.message.contains(".backend 标记为 cuda"), "{}", st.message);
+    }
+
+    // ─── 模型缺失态（清单条目 models-moss 落地后新增）────────
+
+    /// 造一份"二进制与记录都正常、清单也一致"的现场，返回 (dir, manifest)
+    fn setup_healthy(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = setup(tag, Some(INSTALLED_VK), Some("vulkan"), true);
+        let mf = manifest_with(
+            tag,
+            r#"{"version":"1","items":[{"id":"moss","flavor":"vulkan","url":"u",
+                "sha256":"e848847289982b8322262341aa133e40b8f152ee563b8af63e3412e4eb6a89b5",
+                "size":16139894,"dest":"bin"}]}"#,
+        );
+        (dir, mf)
+    }
+
+    #[test]
+    fn evaluate_model_missing_beats_version_ok() {
+        // 这正是修复前那个"装完显示 ok、一说话就炸"的现场
+        let (dir, mf) = setup_healthy("modmiss");
+        let model = dir.join("models").join("moss").join("moss-transcribe-q5_k.gguf");
+        let st = evaluate(
+            &dir,
+            &dir.join("moss-transcribe.exe"),
+            Some(&model),
+            Some(&mf),
+            "moss",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&mf);
+        assert_eq!(st.state, "model_missing", "模型缺失必须压过 ok");
+        assert!(st.message.contains(MODEL_ID), "文案要指出清单条目：{}", st.message);
+        assert!(st.message.contains("重新安装"), "{}", st.message);
+    }
+
+    #[test]
+    fn evaluate_model_present_keeps_ok() {
+        let (dir, mf) = setup_healthy("modok");
+        let model_dir = dir.join("models").join("moss");
+        std::fs::create_dir_all(&model_dir).unwrap();
+        let model = model_dir.join("moss-transcribe-q5_k.gguf");
+        std::fs::write(&model, b"gguf").unwrap();
+        let st = evaluate(
+            &dir,
+            &dir.join("moss-transcribe.exe"),
+            Some(&model),
+            Some(&mf),
+            "moss",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&mf);
+        assert_eq!(st.state, "ok");
+    }
+
+    #[test]
+    fn evaluate_model_missing_without_record_still_reports() {
+        // 手工解包（无 .installed.json）但模型没跟过来：也要说"模型缺失"，别只说 unknown
+        let dir = setup("modnorec", None, Some("cpu"), true);
+        let model = dir.join("models").join("moss").join("x.gguf");
+        let st = evaluate(&dir, &dir.join("moss-transcribe.exe"), Some(&model), None, "moss");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(st.state, "model_missing");
+    }
+
+    #[test]
+    fn evaluate_no_model_check_when_none() {
+        // model=None 表示调用方不关心模型（例如只查二进制）——不能凭空报缺失
+        let (dir, mf) = setup_healthy("modnone");
+        let st = evaluate(&dir, &dir.join("moss-transcribe.exe"), None, Some(&mf), "moss");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&mf);
+        assert_eq!(st.state, "ok");
+    }
+
+    #[test]
+    fn moss_paths_fall_back_to_standard_layout() {
+        // 卡片安装只解包、不写 config.json：空配置必须解析到标准布局，
+        // 否则"装完"会被判成 file_missing
+        let cfg = super::super::RuntimeConfig::default();
+        let (bin, model) = super::super::moss_paths(&cfg, Path::new("R:/rt"));
+        assert_eq!(
+            bin,
+            Path::new("R:/rt").join(super::super::MOSS_BINARY_REL)
+        );
+        assert_eq!(
+            model,
+            Path::new("R:/rt").join(super::super::MOSS_MODEL_REL)
+        );
     }
 
     /// 随包 manifest 与"清单里 cpu 条目"的一致性是安装器契约的一部分；
@@ -449,5 +592,20 @@ mod tests {
         assert_eq!(v[0].flavor, "vulkan");
         assert_eq!(v[0].sha256, "abc");
         assert_eq!(v[0].size, 7);
+    }
+
+    /// 两个文件都是"工具写出来的"：PowerShell 5.1 的 `Set-Content -Encoding UTF8`
+    /// 会加 BOM，而 serde_json 见到 BOM 直接判语法错误（会退化成"什么都没装"）
+    #[test]
+    fn parsers_tolerate_utf8_bom() {
+        let installed = "\u{feff}{\"version\":1,\"items\":{\"moss\":{\"flavor\":\"cpu\",\"sha256\":\"ab\"}}}";
+        let map = parse_installed(installed);
+        assert_eq!(map.get("moss").map(|i| i.flavor.as_str()), Some("cpu"));
+
+        let manifest = "\u{feff}{\"items\":[{\"id\":\"models-moss\",\"sha256\":\"cd\",\"size\":9}]}";
+        let items = parse_manifest_items(manifest);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "models-moss");
+        assert_eq!(items[0].flavor, "", "无 flavor 的条目应保留为空串");
     }
 }
