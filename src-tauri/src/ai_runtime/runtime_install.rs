@@ -161,6 +161,25 @@ pub fn precheck_disk_with(
     }
 
     let want_auto = flavor.is_empty() || flavor.eq_ignore_ascii_case("auto");
+    let pick = |e: &super::installed_state::ManifestEntry| -> u64 {
+        // 有 unpacked_size 就按「下载 + 解压 + 解压」算：解压要同时存在于临时目录与
+        // dest 两份，峰值 = 2×解压 + 下载。没有真值时退回 size × 3 的经验值。
+        match e.unpacked_size {
+            Some(u) if u > 0 => e.size.saturating_add(u).saturating_add(u),
+            _ => e.size.saturating_mul(EXPANSION_FACTOR),
+        }
+    };
+    let required = if want_auto {
+        // auto：保守取该 id 所有 flavor 里最贵的那个
+        entries.iter().map(pick).max().unwrap_or(0)
+    } else {
+        entries
+            .iter()
+            .find(|e| e.flavor.eq_ignore_ascii_case(flavor))
+            .map(pick)
+            .unwrap_or(0)
+    }
+    .saturating_add(SAFETY_MARGIN);
     let size = if want_auto {
         entries.iter().map(|e| e.size).max().unwrap_or(0)
     } else {
@@ -170,7 +189,6 @@ pub fn precheck_disk_with(
             .map(|e| e.size)
             .unwrap_or(0)
     };
-    let required = size.saturating_mul(EXPANSION_FACTOR).saturating_add(SAFETY_MARGIN);
 
     let ok = match free_bytes {
         Some(free) => free >= required,
@@ -762,6 +780,26 @@ mod tests {
         assert_eq!(
             pre.required_bytes,
             651_834_262 * EXPANSION_FACTOR + SAFETY_MARGIN
+        );
+    }
+
+    #[test]
+    fn precheck_uses_unpacked_size_when_declared() {
+        // OCR 的包带 unpacked_size：峰值 = 下载 + 解压(临时) + 解压(dest) + 余量，
+        // 不能用 size × 3 —— 那样对 24k 个文件的 deps 会低估。
+        let manifest = r#"{"items":[{"id":"deps-ocr","flavor":"cpu","sha256":"a","size":1000,"unpacked_size":9000}]}"#;
+        let pre = precheck_disk_with(Some(manifest), Some(u64::MAX), "deps-ocr", "cpu");
+        assert_eq!(pre.required_bytes, 1000 + 9000 + 9000 + SAFETY_MARGIN);
+    }
+
+    #[test]
+    fn precheck_falls_back_when_unpacked_size_absent_or_zero() {
+        let manifest = r#"{"items":[{"id":"deps-ocr","flavor":"cpu","sha256":"a","size":1000,"unpacked_size":0}]}"#;
+        let pre = precheck_disk_with(Some(manifest), Some(u64::MAX), "deps-ocr", "cpu");
+        assert_eq!(
+            pre.required_bytes,
+            1000 * EXPANSION_FACTOR + SAFETY_MARGIN,
+            "unpacked_size 为 0 应退回经验值"
         );
     }
 

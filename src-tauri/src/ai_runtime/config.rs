@@ -31,6 +31,10 @@ pub struct RuntimeConfig {
     /// OCR 模型档位："mobile"（快，默认）| "server"（慢，更准）
     #[serde(default = "default_ocr_model")]
     pub ocr_model: String,
+    /// OCR 推理设备：空 = CPU/自动（默认）| "gpu:0" 等（走 CUDA 版 paddle，需 runtime/deps_gpu）。
+    /// 环境变量 GSA_OCR_DEVICE 优先于此字段（开发期临时覆盖用）
+    #[serde(default)]
+    pub ocr_device: String,
     /// 开发期调试：帧输出到仓库根 temp/ 并打印各环节日志（默认关闭；
     /// 调试时在 runtime/config.json 手动设 true，普通运行写入系统临时目录并自动清理）
     #[serde(default = "default_dev_debug")]
@@ -123,6 +127,7 @@ impl Default for RuntimeConfig {
             model_dir: String::new(),
             language: "ch".into(),
             ocr_model: default_ocr_model(),
+        ocr_device: String::new(),
             dev_debug: default_dev_debug(),
             moss_binary: String::new(),
             moss_model: String::new(),
@@ -410,6 +415,7 @@ mod tests {
             model_dir: "models/paddleocr".into(),
             language: "ch".into(),
             ocr_model: "mobile".into(),
+        ocr_device: String::new(),
             dev_debug: true,
             moss_binary: "bin/moss-transcribe.exe".into(),
             moss_model: "models/moss/moss-transcribe-q5_k.gguf".into(),
@@ -501,6 +507,7 @@ mod tests {
             model_dir: "models/paddleocr".into(),
             language: "ch".into(),
             ocr_model: "mobile".into(),
+        ocr_device: String::new(),
             dev_debug: true,
             moss_binary: "moss-transcribe.exe".into(),
             moss_model: "models/moss/moss-transcribe-q5_k.gguf".into(),

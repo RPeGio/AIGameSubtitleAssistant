@@ -338,3 +338,52 @@ Also new and now closed: **`.installed.json` reconciliation** (previously "not t
 - **State machine**: `evaluate` gained `model_missing` (binary present, gguf absent ⇒ cannot run, ranked above the version-only verdicts), and the "no `.installed.json` record" branch now also runs the model check.
 - **Empty config = standard layout**: the one-click install only unpacks and never writes `config.json`, so empty `moss_binary` / `moss_model` must fall back to `bin/moss-transcribe.exe` and `models/moss/moss-transcribe-q5_k.gguf` (new `moss_paths()`, used by `MossProvider::spawn`, `probe_moss_backend` and `probe_moss_install`). Otherwise `resolve_path("")` resolves to the runtime directory itself and a freshly installed runtime is reported as `file_missing`.
 - **BOM tolerance**: `parse_installed` / `parse_manifest_items` strip a UTF-8 BOM before parsing — PowerShell 5.1's `Set-Content -Encoding UTF8` adds one, and serde_json treats it as a syntax error, which would silently turn the whole manifest into "empty" and lose every status.
+### 8.11 OCR runtime joins the distribution (`deps-ocr` / `deps-ocr-gpu` / `deps-ocr-cuda-libs`, 2026-10-30)
+
+**Goal**: OCR is the engine "almost everyone will use", so it must work before the user starts
+work on a project ⇒ the first launch installs everything in one go (`moss` + `models-moss` + the
+three OCR packs). Missing binary, missing model, or missing OCR runtime all mean the product does
+not run.
+
+- **Shape (A)**: the OCR runtime ships as a single archive that **preserves directory structure**
+  (`python/` `deps/` `models/paddleocr/` `worker/`) with `dest: "."` in the manifest. Bundling it
+  into the installer was rejected (every user would pay +350 MB); splitting it per component was
+  rejected too (state machine ×N, a wall of progress rows). Relocatability was verified on a real
+  machine: after copying the tree elsewhere `sys.prefix` follows, and `import paddleocr/numpy/cv2`
+  all succeed (3.4.0 / 2.5.3 / 4.10.0) ⇒ no pip and no venv on the user's machine.
+- **Pinned lists**: `scripts/ocr-requirements.lock.txt` (61 packages) and
+  `scripts/ocr-gpu-requirements.lock.txt` (9 packages) generated from
+  `pip freeze --path runtime/deps(_gpu)`; `package_ocr_runtime.ps1` freezes again after install and
+  compares line by line, refusing to package on any drift (the artifact must be byte-reproducible).
+- **Artifacts** (Release `ocr-runtime-v1`):
+  | asset | size | unpacked | flavor |
+  |---|---|---|---|
+  | `ocr-runtime-cpu.zip` | 309,975,635 | 911,575,386 | cpu |
+  | `ocr-runtime-cuda-paddle.zip` | 502,533,301 | 996,251,695 | cuda (optional) |
+  | `ocr-runtime-cuda-libs.zip` | 1,856,518,097 | 2,693,178,035 | cuda (optional) |
+  **Why the CUDA pack is split in two**: GitHub enforces a hard **2 GiB** limit per release asset;
+  the whole 2,378,095,332 B archive was rejected with 422
+  `size must be less than 2147483648`, and `deps_gpu/nvidia/` alone is 2.7 GB. Split by content
+  ("paddle proper" vs "nvidia runtime libs"), both halves unpack into the same `deps_gpu/` prefix
+  and are two independent manifest entries — **both must be installed** (a missing `.pyd` or `.dll`
+  blows up at `import` time).
+- **flavor rules (now extended to OCR)**: the global `-Flavor` is a **preference**, not a command;
+  each entry resolves it on its own: ① exact match wins; ② otherwise fall back to the entry's
+  `cpu` variant (an AMD/Intel box picks `vulkan` under `auto`, and OCR has no vulkan build);
+  ③ still no match and the entry is `optional` ⇒ skip silently, otherwise record a failure.
+- **Three script fixes**: structure-preserving extraction (the old code flattened by file name and
+  would have turned `python/` and `deps/` into a pile of same-named files), `unpacked_size` used by
+  the disk precheck, and `optional` semantics.
+- **Disk precheck formula (fixed)**: `Σdownload + Σunpacked + max single unpacked + 100 MB`. The
+  last term is the copy that exists in the temp staging dir and in `dest` at the same time; it used
+  to be missing, so the check passed "needs 6.87 GB, 7.53 GB free" and then the 2.69 GB CUDA pack
+  failed mid-extraction with `There is not enough space on the disk.` (observed: exit code 3,
+  `item_fail`).
+- **Truncation guard in the packager**: when the disk fills up `tar.exe` only prints `Write error`
+  and still leaves a truncated zip that can be hashed, uploaded, and only blows up on extraction
+  (observed once: 119/319 entries) ⇒ `New-Zip` verifies the entry count after packing **and**
+  checks `tar -tf`'s exit code (a truncated zip does not necessarily have fewer entries; tar reads
+  names from local headers first and errors afterwards).
+- **Not done (on record)**: resumable downloads (user decision on 2026-10-30: "not now"); the OCR
+  install gate UI (block project entry until OCR is installed) belongs to the frontend wiring and
+  ships together with 11c.

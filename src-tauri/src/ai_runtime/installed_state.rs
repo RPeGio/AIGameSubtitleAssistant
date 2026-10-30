@@ -44,6 +44,9 @@ pub struct ManifestEntry {
     pub flavor: String,
     pub sha256: String,
     pub size: u64,
+    /// 解压后字节数（清单可选字段）。OCR 的 `deps` 有 2.4 万个文件、压缩率只有
+    /// ~3 倍以内，用 `size × 3` 估预检会低估到装不下 —— 有真值就用真值。
+    pub unpacked_size: Option<u64>,
 }
 
 /// 比对结论（给欢迎页/自检卡片展示）
@@ -135,6 +138,7 @@ pub fn parse_manifest_items(text: &str) -> Vec<ManifestEntry> {
             flavor: s("flavor").to_ascii_lowercase(),
             sha256: s("sha256").to_ascii_lowercase(),
             size: item.get("size").and_then(|v| v.as_u64()).unwrap_or(0),
+            unpacked_size: item.get("unpacked_size").and_then(|v| v.as_u64()),
         });
     }
     out

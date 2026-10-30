@@ -1,6 +1,6 @@
 {
     "version":  "1",
-    "generated_at":  "2026-10-30T03:01:00Z",
+    "generated_at":  "2026-10-30T05:55:00Z",
     "items":  [
                   {
                       "id":  "moss",
@@ -35,6 +35,35 @@
                       "sha256":  "809f8999ac51ef0836b9324b2c1ad6a40e520b42f69dfc60c260dd01ab9a8cb1",
                       "size":  626397892,
                       "dest":  "models/moss"
+                  },
+                  {
+                      "id":  "deps-ocr",
+                      "flavor":  "cpu",
+                      "url":  "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/ocr-runtime-v1/ocr-runtime-cpu.zip",
+                      "sha256":  "f912f8244e60baf0067c6c31e72ae8eefdbca1f8066707d310cf8719657784f2",
+                      "size":  309975635,
+                      "unpacked_size":  911575386,
+                      "dest":  "."
+                  },
+                  {
+                      "id":  "deps-ocr-gpu",
+                      "flavor":  "cuda",
+                      "optional":  true,
+                      "url":  "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/ocr-runtime-v1/ocr-runtime-cuda-paddle.zip",
+                      "sha256":  "eed84dbaef7fd70b99bedfb15af4999f2cac8bad8cc2e5072815f2be0bc14f63",
+                      "size":  502533301,
+                      "unpacked_size":  996251695,
+                      "dest":  "."
+                  },
+                  {
+                      "id":  "deps-ocr-cuda-libs",
+                      "flavor":  "cuda",
+                      "optional":  true,
+                      "url":  "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/ocr-runtime-v1/ocr-runtime-cuda-libs.zip",
+                      "sha256":  "bd529455d9ed1da4dda2f703965fb2310d16891182cabb6f27d949568b533977",
+                      "size":  1856518097,
+                      "unpacked_size":  2693178035,
+                      "dest":  "."
                   }
               ]
 }

@@ -71,13 +71,14 @@
 ```
 runtime/
 ├── config.json          # 唯一配置文件（bootstrap 脚本合并写入）
-├── python/              # 内嵌 CPython 3.12.10（NuGet 包解压）
-├── deps/                # OCR pip 依赖（--target 隔离）
-├── deps_gpu/            # OCR GPU 专有件（可选，bootstrap_ocr_gpu.ps1；运行时 PYTHONPATH=deps_gpu;deps）
+├── .installed.json      # 一键安装器的落盘状态（哪些条目装了、hash、时间）
+├── python/              # 内嵌 CPython 3.12.10（NuGet 包解压；现随 OCR 包分发）
+├── deps/                # OCR pip 依赖（--target 隔离；现随 OCR 包分发）
+├── deps_gpu/            # OCR GPU 专有件（可选，随 OCR 的 cuda 包分发；运行时 PYTHONPATH=deps_gpu;deps）
 ├── deps_funasr/         # 【已退役】FunASR pip 依赖（脚本保留，产品不再安装）
 ├── deps_embed/          # 向量召回 pip 依赖（onnxruntime CPU + tokenizers，融合用）
 ├── models/
-│   ├── paddleocr/       # PP-OCRv5 缓存
+│   ├── paddleocr/       # PP-OCRv5 缓存（随 OCR 包分发）
 │   ├── funasr/          # 【已退役】Fun-ASR-Nano + VAD + 说话人模型
 │   ├── embed/           # multilingual-e5-small（ONNX qint8，融合用）
 │   ├── moss/            # moss-transcribe-q5_k.gguf（随 runtime manifest 分发）
@@ -85,6 +86,12 @@ runtime/
 ├── worker/              # bootstrap 拷贝的 worker 脚本
 └── bin/                 # moss-transcribe.exe（+ ggml 后端 DLL）、bin/llm/（【已退役】llama.cpp）
 ```
+
+> **首次启动即装齐**：`scripts/bootstrap_runtime.ps1` 按 `src-tauri/resources/runtime/manifest.json`
+> 下载 `moss`（按设备选 cpu/cuda/vulkan）、`models-moss`（gguf）与 OCR 三包
+> （`deps-ocr` / `deps-ocr-gpu` / `deps-ocr-cuda-libs`，后两条 `optional`，非 NVIDIA 机器自动跳过），
+> 校验 SHA256 后解压。开发期仍可用 `scripts/bootstrap_ocr.ps1` 等分步脚本自行搭建。
+> 发版物的打包方式见 `scripts/package_ocr_runtime.ps1` 与设计文档 §8.11。
 
 ### config.json 关键字段
 

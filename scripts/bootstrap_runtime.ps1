@@ -4,8 +4,16 @@ bootstrap_runtime.ps1 —— 按 manifest 安装 runtime（多条目 / 多 flavo
 本期条目：
   - moss         按 flavor 拆成 cpu / vulkan / cuda 三条（二进制 + ggml 后端）
   - models-moss  不带 flavor 的一条（gguf 模型，三种后端共用同一份）
-脚本按「多条目 + 多 flavor」写：后续 deps-ocr / deps-embed 只加 manifest 条目，
-不改本脚本逻辑（无 flavor 的条目直接选中，不参与设备探测）。
+  - deps-ocr     OCR 运行时基线，flavor cpu（python + deps + models/paddleocr + worker）
+  - deps-ocr-gpu OCR 的 CUDA 增量包，flavor cuda + optional（只有 NVIDIA 机器才装，
+                 deps_gpu 叠加在 deps 之上，运行时 PYTHONPATH=deps_gpu;deps）
+脚本按「多条目 + 多 flavor」写：后续 deps-embed 只加 manifest 条目，不改本脚本逻辑
+（无 flavor 的条目直接选中，不参与设备探测）。
+
+flavor 解析规则（每个条目独立匹配）：
+  1) 有与请求 flavor 相同的条目 → 用它；
+  2) 否则该条目有 cpu 版 → 回退 cpu（例：AMD 机 auto 选到 vulkan，OCR 没有 vulkan 版）；
+  3) 否则可选条目（optional）→ 静默跳过；非可选 → 记为失败（退出码 3）。
 
 与前端/配置侧的接口见 docs/RUNTIME_BOOTSTRAP_CONTRACT.md：
   - stdout 只输出 JSONL 事件（start / progress / item_done / item_skip / item_fail /
@@ -13,7 +21,9 @@ bootstrap_runtime.ps1 —— 按 manifest 安装 runtime（多条目 / 多 flavo
   - 退出码：0 全成功 / 1 预检失败 / 2 校验失败 / 3 部分条目失败 / 4 未知错误。
 
 参数：
-  -Items <ids>          逗号分隔的条目 id，默认 moss,models-moss（二进制 + 模型缺一不可）
+  -Items <ids>          逗号分隔的条目 id，默认 moss,models-moss,deps-ocr,deps-ocr-gpu,deps-ocr-cuda-libs
+                        （首启一次性装齐：ASR 二进制 + 模型 + OCR 运行时；GPU 那条约
+                        在非 NVIDIA 机器上会被静默跳过）
   -Flavor <auto|cpu|cuda|vulkan>  默认 auto（L0 探测：nvidia-smi → vulkaninfo → cpu）
   -Mirror <前缀>        代理前缀（默认 gh-proxy），传空串 "" 表示直连；见契约 §4.1
   -Force                忽略已安装标记，强制重装
@@ -25,7 +35,7 @@ bootstrap_runtime.ps1 —— 按 manifest 安装 runtime（多条目 / 多 flavo
   powershell -ExecutionPolicy Bypass -File scripts/bootstrap_runtime.ps1 -Flavor vulkan -Force
 #>
 param(
-  [string]$Items = "moss,models-moss",
+  [string]$Items = "moss,models-moss,deps-ocr,deps-ocr-gpu,deps-ocr-cuda-libs",
   [string]$Flavor = "auto",
   [string]$Mirror = "https://gh-proxy.com/",
   [switch]$Force,
@@ -180,7 +190,18 @@ foreach ($id in $itemIds) {
   }
   # 条目本身不带 flavor（与 flavor 无关）→ 直接选；否则按请求的 flavor 过滤
   $pick = @($cands | Where-Object { -not $_.flavor -or ([string]$_.flavor).ToLower() -eq $effectiveFlavor })
+  # 没有精确匹配时回退该条目的 cpu 版本：deps-ocr 只有 cpu/cuda 两版，而 AMD 机上
+  # auto 会落到 vulkan（moss 有、OCR 没有）——这时应装 OCR 的 cpu 基线，而不是整轮失败。
+  if ($pick.Count -eq 0 -and $effectiveFlavor) {
+    $pick = @($cands | Where-Object { ([string]$_.flavor).ToLower() -eq "cpu" })
+    if ($pick.Count -gt 0) { Log "条目 $id 没有 $effectiveFlavor 版本，回退 cpu" }
+  }
   if ($pick.Count -eq 0) {
+    # 可选条目（如 GPU 增量包）：本机设备用不上就跳过，不算失败
+    if (@($cands | Where-Object { $_.optional }).Count -gt 0) {
+      Log "跳过可选条目 $id（没有 $effectiveFlavor 版本）"
+      continue
+    }
     $known = @($cands | ForEach-Object { ([string]$_.flavor).ToLower() }) -join ", "
     Emit @{ event = "item_fail"; item = $id; flavor = $effectiveFlavor; detail = "清单里没有 $id 的 $effectiveFlavor 版本（可用：$known）" }
     $failedEarly += $id
@@ -212,9 +233,26 @@ function Get-FreeBytes([string]$path) {
 }
 
 $downloadBytes = [int64]0
-foreach ($it in $selected) { if ($it.size) { $downloadBytes += [int64]$it.size } }
-# 余量：下载临时文件 + 解压（zip 展开经验约 2 倍）+ 固定余量
-$requiredBytes = [int64]($downloadBytes * 3) + 100MB
+$unpackedBytes = [int64]0
+$maxUnpacked = [int64]0
+foreach ($it in $selected) {
+  if ($it.size) { $downloadBytes += [int64]$it.size }
+  if ($it.unpacked_size) {
+    $unpackedBytes += [int64]$it.unpacked_size
+    # 峰值出现在"解到临时目录 + 再拷进 dest"的那一刻：当前这一项会出现两份
+    if ([int64]$it.unpacked_size -gt $maxUnpacked) { $maxUnpacked = [int64]$it.unpacked_size }
+  }
+}
+# 有 unpacked_size 就用真实值（OCR 的 deps 24k 个 .py/.pyd，zip 只压到 ~2.5 倍）；
+# 没有就退回粗糙的 3 倍估算。
+# 峰值 = Σ下载 + Σ解压 + 最大单包解压（临时目录与 dest 同时存在的那一份）+ 余量。
+# 早先漏了最后一项，cuda 的 2.7 GB 包正好卡在这个差额上（真机上吃到"磁盘空间不足"）。
+if ($unpackedBytes -gt 0) {
+  $requiredBytes = [int64]($downloadBytes + $unpackedBytes + $maxUnpacked) + 100MB
+}
+else {
+  $requiredBytes = [int64]($downloadBytes * 3) + 100MB
+}
 $freeBytes = Get-FreeBytes $runtime
 if ($null -ne $freeBytes -and $freeBytes -lt $requiredBytes) {
   $gb = { param($b) [math]::Round($b / 1GB, 2) }
@@ -356,19 +394,17 @@ foreach ($it in $selected) {
       throw [System.InvalidOperationException]::new("HASH_MISMATCH 期望 $expectedSha 实际 $actualSha")
     }
 
-    # 3) 解压（先解到临时目录再平铺搬入，规避 zip 条目的 ./ 前导）
+    # 3) 解压（保留目录结构：moss 包是平铺的，等价于原来的逐文件搬入；
+    #    OCR 包带 python/、deps/、models/paddleocr/ 子目录，平铺会把 24k 个文件
+    #    压成一堆同名文件。Copy -Recurse 也比逐个 Move 快一个数量级。）
     $extractEvt = @{ event = "progress"; item = $id; phase = "extract"; percent = 0; detail = "解压" }
     if ($flavor) { $extractEvt.flavor = $flavor }
     Emit $extractEvt
     if (Test-Path $tmpDir) { Remove-Item $tmpDir -Recurse -Force }
     Expand-Archive -Path $tmpZip -DestinationPath $tmpDir -Force
     if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
-    $moved = 0
-    foreach ($f in @(Get-ChildItem $tmpDir -Recurse -File)) {
-      $target = Join-Path $destDir $f.Name
-      Move-Item -Path $f.FullName -Destination $target -Force
-      $moved++
-    }
+    Copy-Item -Path (Join-Path $tmpDir "*") -Destination $destDir -Recurse -Force
+    $moved = @(Get-ChildItem $tmpDir -Recurse -File).Count
     if ($moved -eq 0) { throw [System.InvalidOperationException]::new("压缩包内没有文件") }
 
     # 4) 落地标记（.backend 只是缓存提示，判据永远是 L2 实测）

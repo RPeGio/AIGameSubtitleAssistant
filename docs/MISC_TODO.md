@@ -623,6 +623,7 @@
 | `check_asr_engines.effective_backend`（L2 实测） | ✅ 已有（PR#48） |
 | `scripts/bootstrap_moss.ps1 -Backend <cpu\|cuda\|vulkan>`（现存脚本，可作指引） | ✅ 可用；注意默认 `cpu`，要 GPU 必须显式传 `-Backend`，也支持 `-BinaryUrl` + `-BinarySha256` 指向发布包 |
 | `scripts/bootstrap_runtime.ps1`（契约 §2 新入口 + §3 JSONL 进度） | ✅ 已交付（`7d3f8d5`，分支 `feat/runtime-bootstrap`）：stdout 纯 JSONL（`start`/`progress`/`item_skip`/`item_done`/`item_fail`/`error`/`done`，末行必 `done`），退出码 0/1/2/3/4，多条目 + 多 flavor，`-Flavor auto` 走 L0 探测，下载前磁盘预检，镜像失败回退直连，SHA256 校验通过才解压，写 `runtime/.installed.json`（已装且哈希一致 → `item_skip`，`-Force` 重装） |
+| `deps-ocr` / `deps-ocr-gpu` / `deps-ocr-cuda-libs`（OCR 运行时三条目） | ✅ 已发布（2026-10-30）：`ocr-runtime-v1` Release 上三个资产——`ocr-runtime-cpu.zip` 309,975,635 B（解压 911,575,386，`flavor=cpu`）、`ocr-runtime-cuda-paddle.zip` 502,533,301 B（解压 996,251,695）、`ocr-runtime-cuda-libs.zip` 1,856,518,097 B（解压 2,693,178,035），后两条 `flavor=cuda` + `optional`。CUDA 侧拆两块是 **GitHub 单资产 2 GiB 硬上限**（整包 2.38 GB 上传被 422 拒绝），两半缺一不可。三个包都带 `unpacked_size`，磁盘预检按 `Σ下载 + Σ解压 + 最大单包解压 + 100 MB` 算（早先漏最后一项，cuda 的 2.69 GB 包正好卡在这个差额上） |
 | Rust 侧「起子进程 + 读 JSONL + 进度事件 + 取消 + 磁盘预检」 | ✅ 已交付（`7d3f8d5`）：`src-tauri/src/ai_runtime/runtime_install.rs`，命令 `precheck_runtime_disk` / `install_runtime` / `cancel_runtime_install`，进度走 `runtime-install-progress` 事件，取消用 `taskkill /T /F` 杀进程树，同一时刻只允许一个安装任务 |
 
 **规划（2026-10-28 拆三步，11a/11b 不阻塞）**

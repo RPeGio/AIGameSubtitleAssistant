@@ -78,8 +78,15 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
 ## 4. manifest 规范
 
 - **落点**：`src-tauri/resources/runtime/manifest.json`，**随 app 发布并提交进仓库**。
-  - **状态（2026-10-30）**：清单共 4 条——`id=moss` 三条（cpu / vulkan / cuda，`dest` 全为
-    `bin`）+ `id=models-moss` 一条（gguf 模型，**不带 flavor**，`dest=models/moss`）。
+  - **状态（2026-10-30）**：清单共 **7 条**——`id=moss` 三条（cpu / vulkan / cuda，`dest` 全为
+    `bin`）+ `id=models-moss` 一条（gguf 模型，**不带 flavor**，`dest=models/moss`）
+    + `id=deps-ocr` 一条（OCR 运行时，`flavor=cpu`，**`dest="."`**，带 `unpacked_size`）
+    + `id=deps-ocr-gpu` 一条（OCR 的 CUDA 增量之一，`flavor=cuda` + **`optional`**，`dest="."`）
+    + `id=deps-ocr-cuda-libs` 一条（CUDA 增量的第二半，同上 `optional`，`dest="."`）。
+    后两条是同一个 `deps_gpu/` 的两个切块，**必须一起装**：GitHub 单个 release 资产硬上限
+    **2 GiB**，而 `nvidia/` 单独就有 2.7 GB，超限上传会被 422 `size must be less than 2147483648`
+    拒绝。拆成 `ocr-runtime-cuda-paddle.zip`（502.5 MB）与 `ocr-runtime-cuda-libs.zip`（1.86 GB）
+    两个资产、两条清单，缺任一半 OCR 在 `import` 阶段就炸（缺 `.pyd` 或缺 `.dll`）。
     `tauri.conf.json` 的 `bundle.resources` 已有 `"resources/runtime/manifest.json"`
     ——installer 侧**不要再重复加**（重复加会变成合并冲突）。
   - **打包落点**：数组形式会**保留目录结构** ⇒ 清单实际落在
@@ -113,6 +120,35 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
       "sha256": "…",
       "size": 626397892,
       "dest": "models/moss"
+    },
+    {
+      "id": "deps-ocr",
+      "flavor": "cpu",
+      "url": "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/ocr-runtime-v1/ocr-runtime-cpu.zip",
+      "sha256": "…",
+      "size": 0,
+      "unpacked_size": 0,
+      "dest": "."
+    },
+    {
+      "id": "deps-ocr-gpu",
+      "flavor": "cuda",
+      "optional": true,
+      "url": "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/ocr-runtime-v1/ocr-runtime-cuda-paddle.zip",
+      "sha256": "…",
+      "size": 502533301,
+      "unpacked_size": 996251695,
+      "dest": "."
+    },
+    {
+      "id": "deps-ocr-cuda-libs",
+      "flavor": "cuda",
+      "optional": true,
+      "url": "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/ocr-runtime-v1/ocr-runtime-cuda-libs.zip",
+      "sha256": "…",
+      "size": 1856518097,
+      "unpacked_size": 2693178035,
+      "dest": "."
     }
   ]
 }
@@ -120,13 +156,24 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
 
 | 字段 | 必填 | 语义 |
 |---|---|---|
-| `id` | ✔ | 条目 id（`moss` / `deps-ocr` / `deps-embed` / `models-moss`；`deps-funasr` 已随 FunASR 退役作废） |
+| `id` | ✔ | 条目 id（`moss` / `deps-ocr` / `deps-ocr-gpu` / `deps-ocr-cuda-libs` / `deps-embed` / `models-moss`；`deps-funasr` 已随 FunASR 退役作废） |
 | `flavor` | ✖ | 缺省 = 该条目与 flavor 无关 |
+| `optional` | ✖ | `true` = 该条目在当前机器没有匹配 flavor 时**静默跳过**（不计失败）。OCR 的 CUDA 增量专用（AMD/Intel 机器 `-Flavor auto` 会选到 vulkan，而 OCR 没有 vulkan 版） |
 | `url` | ✔ | 下载地址，**写绝对地址**；`-Mirror` 缺省时按 §4.1 拼接 |
 | `sha256` | ✔ | 下载物哈希，校验不过 = 退出码 2 |
 | `size` | ✔ | 字节数，用于磁盘预检 |
-| `dest` | ✔ | 相对 runtime 目录的落地路径（**moss 三个 flavor 一律 `bin`**，见 §4.2；模型是 `models/moss`） |
+| `unpacked_size` | ✖ | 解压后字节数。**有它就按它做预检**：`Σ下载 + Σ解压 + 最大单包解压 + 100 MB`（最后一项是临时目录与 dest 同时存在的那一份；早先漏了它，cuda 的 2.69 GB 包正好卡在这个差额上），没有才退回老的 `size × 3`。OCR 的 `deps` 有 24 065 个文件、压缩率只有 ~3 倍以内，`×3` 会低估 |
+| `dest` | ✔ | 相对 runtime 目录的落地路径（**moss 三个 flavor 一律 `bin`**，见 §4.2；模型是 `models/moss`；**OCR 两个条目是 `"."`**，因为包内自带 `python/` `deps/` `models/paddleocr/` `worker/` 一级目录） |
 | `backend_marker` | ✖ | 写入落地目录的 `.backend` 标记（`cuda` / `vulkan`；cpu 版写 `cpu` 或不写） |
+
+- **`dest: "."` 的含义**：包内**保留自己的子目录结构**，直接展开到 runtime 根。
+  这要求解压实现**保留目录结构**——早期实现按文件名平铺（`Join-Path $destDir $f.Name`），
+  对 moss（11 个平铺文件）刚好没暴露，对 OCR 会把 `python/` `deps/` 压成同名文件堆。
+  现实现用 `Copy-Item <tmp>\* -Destination <dest> -Recurse -Force`，对两种包都正确。
+- **`-Items` 缺省 = `moss,models-moss,deps-ocr,deps-ocr-gpu,deps-ocr-cuda-libs`**：
+  二进制、模型、OCR 三样缺一不可用（`probe_moss_install` 报 `model_missing`，OCR 则直接进不了
+  项目）。两条 `deps-ocr-*` 都在缺省里但带 `optional`：非 NVIDIA 机器 `-Flavor auto` 选到
+  cpu/vulkan，没有匹配 flavor ⇒ 自动跳过，不会让对方白下 2.25 GB。
 
 - **flavor 与 id 的组合**：
   - `moss` 按 flavor 拆成多条（`id=moss, flavor=cuda` / `vulkan` / `cpu`），由 `-Flavor` 选择；
@@ -134,8 +181,6 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
   - 选 flavor 的可用集合 = **本次 `-Items` 选中条目的并集**（不是"第一个条目的"）。
     若选中的条目全都不带 flavor，`-Flavor auto` 直接跳过设备探测——曾经只看
     `items[0]`，导致 `-Items models-moss` 单装模型时被误判成"清单里没有可用的 flavor"。
-- **`-Items` 缺省 = `moss,models-moss`**：二进制与模型缺一不可，"装完却没有模型"
-  等于没装（`probe_moss_install` 会报 `model_missing`，§8.4）。
 
 ### 4.1 `url` × `-Mirror` 的组合语义（已澄清）
 

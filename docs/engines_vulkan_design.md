@@ -350,3 +350,39 @@ gh release upload  moss-runtime-v1 moss-cuda.zip
 - **BOM 容错**：`parse_installed` / `parse_manifest_items` 读文件前先剥 UTF-8 BOM
   ——PowerShell 5.1 的 `Set-Content -Encoding UTF8` 会加 BOM，而 serde_json 见 BOM 即语法错误，
   整份清单会被当成空 ⇒ 状态全丢。
+### 8.11 OCR 运行时并入分发（`deps-ocr` / `deps-ocr-gpu` / `deps-ocr-cuda-libs`，2026-10-30）
+
+**目标**：OCR 是"用户几乎必用"的引擎，必须在开始使用项目前就能用 ⇒ 首次启动一次装齐
+（`moss` + `models-moss` + OCR 三包）。二进制与模型、OCR 运行时缺任一项，产品都跑不起来。
+
+- **形态选择（A）**：OCR 运行时打成一个**保留目录结构**的包（`python/` `deps/`
+  `models/paddleocr/` `worker/`），清单里 `dest: "."`。不采用"打进安装包"——那会让所有用户
+  多付 350 MB；也不按组件拆成多个条目——状态机×N、用户看到一堆进度项。
+  可重定位性实测：整树拷到别处后 `sys.prefix` 自动跟随，`import paddleocr/numpy/cv2` 均成功
+  （3.4.0 / 2.5.3 / 4.10.0），所以用户机不需要 pip、不需要 venv。
+- **钉子清单**：`scripts/ocr-requirements.lock.txt`（61 包）与
+  `scripts/ocr-gpu-requirements.lock.txt`（9 包），由 `pip freeze --path runtime/deps(_gpu)`
+  生成；`package_ocr_runtime.ps1` 装完再 freeze 一次逐行比对，不一致拒绝打包（分发物必须字节可复现）。
+- **产物**（`ocr-runtime-v1` Release）：
+  | 资产 | size | unpacked | flavor |
+  |---|---|---|---|
+  | `ocr-runtime-cpu.zip` | 309,975,635 | 911,575,386 | cpu |
+  | `ocr-runtime-cuda-paddle.zip` | 502,533,301 | 996,251,695 | cuda（optional） |
+  | `ocr-runtime-cuda-libs.zip` | 1,856,518,097 | 2,693,178,035 | cuda（optional） |
+  **为什么 CUDA 拆两块**：GitHub 单个 release 资产硬上限 **2 GiB**，整包 2,378,095,332 B 上传
+  被 422 `size must be less than 2147483648` 拒绝；而 `deps_gpu` 里 `nvidia/` 单独就 2.7 GB。
+  按"paddle 本体 / nvidia 运行库"切分，两半都指同一 `deps_gpu/` 前缀，清单里是两条彼此独立的
+  条目，**必须一起装**（缺 `.pyd` 或缺 `.dll` 都在 import 阶段炸）。
+- **flavor 规则（对 OCR 引入）**：全局 `-Flavor` 是**偏好**不是命令，每个条目自行匹配：
+  ① 有精确 flavor 用它；② 否则回退该条目的 `cpu` 版（AMD/Intel 机器 `auto` 选到 vulkan，
+  而 OCR 没有 vulkan 版）；③ 仍无匹配且条目带 `optional` ⇒ 静默跳过，非 optional ⇒ 记失败。
+- **脚本三处修复**：结构保留解压（原实现按文件名平铺，会把 `python/` `deps/` 压成同名文件堆）、
+  `unpacked_size` 参与预检、`optional` 语义。
+- **磁盘预检公式（已修正）**：`Σ下载 + Σ解压 + 最大单包解压 + 100 MB`。最后一项是"临时解压目录
+  与 dest 同时存在"的那一份；早先漏了它，报"需要 6.87 GB、可用 7.53 GB"放行，结果 cuda 的
+  2.69 GB 包在解压阶段报 `There is not enough space on the disk.`（实测退出码 3、`item_fail`）。
+- **打包脚本的防截断**：`tar.exe` 在磁盘写满时只打一行 `Write error` 就退出，却留下一个能被
+  sha256 计算、能上传、解压时才炸的截断包（实测一次只剩 119/319 条目）⇒ `New-Zip` 建包后必须
+  点条目数，并检查 `tar -tf` 的退出码（截断包未必少条目，tar 会顺着本地头读完名字再报错）。
+- **未做（留档）**：断点续传（用户 2026-10-30 决定"先不做"）；OCR 的安装门禁 UI（未装 OCR 时
+  不许进项目）属前端接线，与 11c 一并做。

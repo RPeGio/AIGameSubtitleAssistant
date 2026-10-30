@@ -1,0 +1,22 @@
+# OCR 运行时 — GPU 增量依赖（钉子清单，供 package_ocr_runtime.ps1 -Flavor cuda 构建）
+#
+# 生成方式（2026-10-30）：在 bootstrap_ocr_gpu.ps1 装好的 runtime/deps_gpu 上执行
+#   python -m pip freeze --path runtime/deps_gpu
+# 语义：增量叠加，不是替代 —— 运行时 PYTHONPATH = "deps_gpu;deps"，
+#   纯 Python 依赖（numpy/protobuf/pillow…）一律复用 CPU 基线的 deps，保证 CPU/GPU
+#   精度对比可归因到 CUDA 本身（见 bootstrap_ocr_gpu.ps1 文件头）。
+# 构建约束（改之前先读 bootstrap_ocr_gpu.ps1:86-104 的三条注释）：
+#   1) paddlepaddle-gpu 与 7 个 nvidia-* 必须一次 pip 调用装完（共享 nvidia/ 命名空间，
+#      分两次会互相清空）；
+#   2) cuDNN 要 9.9（轮子按 9.9 编译，索引上只有 9.5），且只从 PyPI 有 —— 必须
+#      先装到临时目录再拷入，否则 pip 的卸载逻辑会清掉上面那 7 个；
+#   3) paddle 官方索引：https://www.paddlepaddle.org.cn/packages/stable/cu126/
+nvidia-cublas-cu12==12.6.4.1
+nvidia-cuda-runtime-cu12==12.6.77
+nvidia-cudnn-cu12==9.9.0.52
+nvidia-cufft-cu12==11.3.0.4
+nvidia-curand-cu12==10.3.7.77
+nvidia-cusolver-cu12==11.7.1.2
+nvidia-cusparse-cu12==12.5.4.2
+nvidia-nvjitlink-cu12==12.9.86
+paddlepaddle-gpu==3.2.2

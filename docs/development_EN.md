@@ -71,13 +71,14 @@ Constraint: **fully offline**. The Rust side has no HTTP client and makes no net
 ```
 runtime/
 ├── config.json          # the single config file (merged writes by bootstrap scripts)
-├── python/              # embedded CPython 3.12.10 (NuGet package)
-├── deps/                # OCR pip deps (--target isolated)
-├── deps_gpu/            # OCR GPU-only pieces (optional, bootstrap_ocr_gpu.ps1; runtime PYTHONPATH=deps_gpu;deps)
+├── .installed.json      # one-click installer state (which items are installed, hashes, timestamps)
+├── python/              # embedded CPython 3.12.10 (NuGet package; now shipped in the OCR pack)
+├── deps/                # OCR pip deps (--target isolated; now shipped in the OCR pack)
+├── deps_gpu/            # OCR GPU-only pieces (optional, shipped in the OCR cuda pack; runtime PYTHONPATH=deps_gpu;deps)
 ├── deps_funasr/         # [retired] FunASR pip deps (script kept, never installed by the product)
 ├── deps_embed/          # vector-recall pip deps (onnxruntime CPU + tokenizers, fusion)
 ├── models/
-│   ├── paddleocr/       # PP-OCRv5 cache
+│   ├── paddleocr/       # PP-OCRv5 cache (shipped in the OCR pack)
 │   ├── funasr/          # [retired] Fun-ASR-Nano + VAD + speaker models
 │   ├── embed/           # multilingual-e5-small (ONNX qint8, fusion)
 │   ├── moss/            # moss-transcribe-<quant>.gguf
@@ -85,6 +86,14 @@ runtime/
 ├── worker/              # worker scripts copied by bootstrap
 └── bin/                 # moss-transcribe.exe (+ ggml backend DLLs), bin/llm/ ([retired] llama.cpp)
 ```
+
+> **Everything is installed on first launch**: `scripts/bootstrap_runtime.ps1` reads
+> `src-tauri/resources/runtime/manifest.json` and downloads `moss` (cpu/cuda/vulkan chosen by
+> device), `models-moss` (the gguf) and the three OCR packs (`deps-ocr` / `deps-ocr-gpu` /
+> `deps-ocr-cuda-libs`; the latter two are `optional` and are skipped on non-NVIDIA machines),
+> verifying SHA256 before extracting. For development you can still use the step-by-step scripts
+> (`bootstrap_ocr.ps1` etc.). How the artifacts are built is described in
+> `scripts/package_ocr_runtime.ps1` and design doc §8.11.
 
 ### Key config.json fields
 
