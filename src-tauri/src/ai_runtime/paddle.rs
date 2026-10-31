@@ -8,7 +8,7 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// 与 worker 的 stdio 通道
 struct WorkerIo {
@@ -16,16 +16,20 @@ struct WorkerIo {
     stdout: BufReader<ChildStdout>,
 }
 
-/// PaddleOCR provider —— 内部用 Mutex 串行化子进程通信
-pub struct PaddleProvider {
+/// 真正的状态：包在 Arc 里，启动探针要能在后台线程上跑
+struct Inner {
     child: Mutex<Child>,
     io: Mutex<WorkerIo>,
     ready: AtomicBool,
     /// 最近一次错误（供 describe() 向状态探测展示）
     last_error: Mutex<Option<String>>,
+    /// 启动探测是否已经跑完（成功或失败都算跑完）
+    probed: AtomicBool,
+    /// 串行化「首次探测」：后台线程在探，用户同时点 OCR 也不能并发读同一根管道
+    probe_lock: Mutex<()>,
 }
 
-impl Drop for PaddleProvider {
+impl Drop for Inner {
     fn drop(&mut self) {
         if let Ok(mut child) = self.child.lock() {
             let _ = child.kill();
@@ -33,6 +37,95 @@ impl Drop for PaddleProvider {
         }
     }
 }
+
+/// PaddleOCR provider —— 内部用 Mutex 串行化子进程通信。
+///
+/// **构造不阻塞**：`spawn()` 只起子进程，就绪握手（`ping`，要等 Python 把
+/// paddleocr + 模型加载完，实测本机 6.4 s）放到后台线程；`is_ready()` 在握手完成前
+/// 一直是 false，`describe()` 给出「正在启动」。真机回归 2026-10-29：这段握手原本
+/// 在 `OcrManager::new`（`setup` 里调用）同步跑完，导致启动即卡死几秒。
+pub struct PaddleProvider {
+    inner: Arc<Inner>,
+}
+
+impl PaddleProvider {
+    fn new_inner(child: Child, stdin: ChildStdin, stdout: ChildStdout) -> Arc<Inner> {
+        Arc::new(Inner {
+            child: Mutex::new(child),
+            io: Mutex::new(WorkerIo {
+                stdin: BufWriter::new(stdin),
+                stdout: BufReader::new(stdout),
+            }),
+            ready: AtomicBool::new(false),
+            last_error: Mutex::new(None),
+            probed: AtomicBool::new(false),
+            probe_lock: Mutex::new(()),
+        })
+    }
+}
+
+impl Inner {
+    fn set_error(&self, msg: &str) {
+        if let Ok(mut slot) = self.last_error.lock() {
+            *slot = Some(msg.to_string());
+        }
+    }
+
+    fn ping(&self) -> Result<(), OcrError> {
+        let mut io = self
+            .io
+            .lock()
+            .map_err(|_| OcrError::Worker("worker io 锁被污染".into()))?;
+        io.stdin.write_all(b"{\"id\":0,\"cmd\":\"ping\"}\n")?;
+        io.stdin.flush()?;
+
+        let mut line = String::new();
+        let n = io.stdout.read_line(&mut line)?;
+        if n == 0 {
+            return Err(OcrError::Worker("worker 已退出（ping 无响应）".into()));
+        }
+
+        let v: serde_json::Value = serde_json::from_str(&line)
+            .map_err(|e| OcrError::Worker(format!("ping 响应解析失败: {}", e)))?;
+        if v.get("ok").and_then(|o| o.as_bool()) != Some(true) {
+            let err = v
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("ping 返回失败");
+            return Err(OcrError::Worker(err.to_string()));
+        }
+        Ok(())
+    }
+
+    /// 跑一次启动探测（幂等）。后台预热线程与首次 `recognize_batch` 都会走这里：
+    /// 谁先到谁跑，后来者等 `probe_lock` 而不是并发读管道。
+    fn ensure_probed(&self) {
+        if self.probed.load(Ordering::Acquire) {
+            return;
+        }
+        let _guard = match self.probe_lock.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if self.probed.load(Ordering::Acquire) {
+            return;
+        }
+        match self.ping() {
+            Ok(()) => {
+                if let Ok(mut slot) = self.last_error.lock() {
+                    *slot = None;
+                }
+                self.ready.store(true, Ordering::SeqCst);
+            }
+            Err(e) => {
+                self.ready.store(false, Ordering::SeqCst);
+                self.set_error(&e.to_string());
+            }
+        }
+        self.probed.store(true, Ordering::Release);
+    }
+}
+
 
 // ─── 协议纯函数（可单测）──────────────────────────────────
 
@@ -153,55 +246,12 @@ impl PaddleProvider {
             .take()
             .ok_or_else(|| OcrError::Worker("无法获取 worker stdout".into()))?;
 
-        let provider = PaddleProvider {
-            child: Mutex::new(child),
-            io: Mutex::new(WorkerIo {
-                stdin: BufWriter::new(stdin),
-                stdout: BufReader::new(stdout),
-            }),
-            ready: AtomicBool::new(false),
-            last_error: Mutex::new(None),
-        };
-
-        // 启动探测：ping 成功说明 worker 已加载 PaddleOCR（含模型）
-        if let Err(e) = provider.ping() {
-            provider.set_error(&e.to_string());
-        } else {
-            provider.ready.store(true, Ordering::SeqCst);
-        }
-        Ok(provider)
-    }
-
-    fn set_error(&self, msg: &str) {
-        if let Ok(mut slot) = self.last_error.lock() {
-            *slot = Some(msg.to_string());
-        }
-    }
-
-    fn ping(&self) -> Result<(), OcrError> {
-        let mut io = self
-            .io
-            .lock()
-            .map_err(|_| OcrError::Worker("worker io 锁被污染".into()))?;
-        io.stdin.write_all(b"{\"id\":0,\"cmd\":\"ping\"}\n")?;
-        io.stdin.flush()?;
-
-        let mut line = String::new();
-        let n = io.stdout.read_line(&mut line)?;
-        if n == 0 {
-            return Err(OcrError::Worker("worker 已退出（ping 无响应）".into()));
-        }
-
-        let v: serde_json::Value = serde_json::from_str(&line)
-            .map_err(|e| OcrError::Worker(format!("ping 响应解析失败: {}", e)))?;
-        if v.get("ok").and_then(|o| o.as_bool()) != Some(true) {
-            let err = v
-                .get("error")
-                .and_then(|e| e.as_str())
-                .unwrap_or("ping 返回失败");
-            return Err(OcrError::Worker(err.to_string()));
-        }
-        Ok(())
+        // 构造只到「子进程起来了」为止：就绪握手（要等 Python 加载 paddleocr +
+        // 模型，实测 6.4 s）交给后台线程，别把 setup/主线程卡住
+        let inner = Self::new_inner(child, stdin, stdout);
+        let warm = Arc::clone(&inner);
+        std::thread::spawn(move || warm.ensure_probed());
+        Ok(PaddleProvider { inner })
     }
 }
 
@@ -211,22 +261,35 @@ impl OcrProvider for PaddleProvider {
     }
 
     fn is_ready(&self) -> bool {
-        self.ready.load(Ordering::SeqCst)
+        self.inner.ready.load(Ordering::SeqCst)
     }
 
     fn describe(&self) -> String {
-        self.last_error
+        let err = self
+            .inner
+            .last_error
             .lock()
             .map(|e| e.clone().unwrap_or_default())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if !err.is_empty() {
+            return err;
+        }
+        if !self.inner.probed.load(Ordering::Acquire) {
+            return "正在启动 PaddleOCR worker（首次启动要加载模型，通常几秒到几十秒）".into();
+        }
+        String::new()
     }
 
     /// 批量识别一批图像（`images` 元素为 base64 编码的 JPEG 字节）
     fn recognize_batch(&self, images: &[String]) -> Result<Vec<OcrResult>, OcrError> {
+        // 后台预热可能还没跑完（或尚未被调度）：这里等它，等不到就以 NotReady 报错，
+        // 而不是把半条请求写进管道
+        self.inner.ensure_probed();
         if !self.is_ready() {
             return Err(OcrError::NotReady);
         }
         let mut io = self
+            .inner
             .io
             .lock()
             .map_err(|_| OcrError::Worker("worker io 锁被污染".into()))?;
@@ -239,15 +302,15 @@ impl OcrProvider for PaddleProvider {
         let mut line = String::new();
         let n = io.stdout.read_line(&mut line)?;
         if n == 0 {
-            self.ready.store(false, Ordering::SeqCst);
-            self.set_error("worker 进程已退出");
+            self.inner.ready.store(false, Ordering::SeqCst);
+            self.inner.set_error("worker 进程已退出");
             return Err(OcrError::Worker("worker 进程已退出".into()));
         }
 
         match parse_response(&line) {
             Ok(results) => Ok(results),
             Err(e) => {
-                self.set_error(&e.to_string());
+                self.inner.set_error(&e.to_string());
                 Err(e)
             }
         }

@@ -236,7 +236,7 @@ function setAsrDeviceNote(note: string, bad: boolean) {
 }
 
 /// 这些状态需要用户动作（更新 / 文件缺失 / 后端已下线）；ok / unknown / not_installed 只陈述
-const INSTALL_ACTION_STATES = ["update_available", "file_missing", "flavor_not_in_manifest"];
+const INSTALL_ACTION_STATES = ["update_available", "file_missing", "flavor_not_in_manifest", "model_missing"];
 
 /// 把「已装运行时 vs 清单」的结论并进 ASR 卡
 function setAsrInstall(install: MossInstallStatus) {
@@ -248,16 +248,28 @@ function setAsrInstall(install: MossInstallStatus) {
   };
 }
 
-async function probeOcr() {
+/// 后台预热期间的文案（provider 构造不再同步握手，见契约 §8.6.1）
+const WARMING_HINTS = ["正在启动", "正在探测"];
+
+function isWarming(message: string): boolean {
+  return WARMING_HINTS.some((h) => message.includes(h));
+}
+
+async function probeOcr(retries = 8) {
   try {
     const status = await invoke<{ ready: boolean; message: string }>("check_ocr_runtime");
     setProbe("ocr", status.ready, status.message);
+    // 模型加载在后台线程跑（约 2–7 s）：打到「正在启动」就隔一会儿再看一眼，
+    // 别让用户停在「未就绪」上
+    if (!status.ready && retries > 0 && isWarming(status.message)) {
+      window.setTimeout(() => void probeOcr(retries - 1), 1200);
+    }
   } catch (e) {
     setProbe("ocr", null, String(e));
   }
 }
 
-async function probeAsr() {
+async function probeAsr(retries = 8) {
   try {
     const engines = await projectStore.getAsrEngines();
     const moss = engines.find((e) => e.engine === "moss");
@@ -289,28 +301,38 @@ async function probeAsr() {
   if (install) {
     setAsrInstall(install);
   }
+
+  // MOSS 后端探测在后台线程跑：打到「正在探测」就隔一会儿再看一眼
+  const p = probes.value.asr;
+  if (p.state === "notready" && retries > 0 && isWarming(p.message)) {
+    window.setTimeout(() => void probeAsr(retries - 1), 1500);
+  }
 }
 
-/// 一键安装/更新的入口条件：未就绪，或运行时与清单不一致（仅 MOSS 有安装器覆盖）。
-/// 运行时已与清单一致（installState === "ok"）时不再给按钮——那说明缺的是清单之外的
-/// 东西（模型文件），重复点只会「跳过」一次，白让用户等。
+/// 一键安装/更新的入口条件：运行时与清单不一致，或引擎未就绪。
+/// 清单里现在也含模型（models-moss）与 OCR/向量运行时，所以「装全部」是缺省口径。
 const canInstall = computed(() => {
   const p = probes.value.asr;
   if (projectStore.installRunning) return false;
   if (p.installWarn) return true;
-  return p.state === "notready" && p.installState !== "ok";
+  return p.state === "notready";
 });
 
-const installLabel = computed(() =>
-  probes.value.asr.state === "notready" ? "安装运行时" : "更新运行时"
-);
-
-/// 运行时已就绪、引擎却仍未就绪：清单目前只覆盖可执行文件，缺的是清单之外的模型
-/// （models-moss 条目还没进 manifest）。此时不引导重复安装，直接说清缺什么。
-const asrRuntimeOnly = computed(() => {
+/// 运行时与清单一致（installState === "ok"）却仍未就绪：多半是文件被挪动/损坏，
+/// 按钮改成「重装运行时」（带 -Force 覆盖已装标记）
+const forceReinstall = computed(() => {
   const p = probes.value.asr;
-  return p.state === "notready" && p.installState === "ok";
+  return p.state === "notready" && p.installState === "ok" && !p.installWarn;
 });
+
+const installLabel = computed(() => {
+  if (forceReinstall.value) return "重装运行时";
+  return probes.value.asr.state === "notready" ? "安装运行时" : "更新运行时";
+});
+
+/// 运行时与清单一致、引擎却仍未就绪：真的原因在别处（后端不可用/文件损坏），
+/// 这里只负责把「可以重装」这条路指出来
+const asrRuntimeOnly = computed(() => forceReinstall.value);
 
 const PHASE_TEXT: Record<string, string> = {
   download: "下载",
@@ -344,7 +366,7 @@ async function startInstall() {
     return;
   }
   probes.value.asr = { ...probes.value.asr, state: "installing" };
-  const summary = await projectStore.startRuntimeInstall("auto", false).catch((e) => {
+  const summary = await projectStore.startRuntimeInstall("auto", forceReinstall.value).catch((e) => {
     message.error(`安装失败：${e}`);
     return null;
   });
@@ -572,12 +594,12 @@ onMounted(() => {
             <span v-if="card.key === 'asr' && probes.asr.installNote" class="ex" :class="{ warn: probes.asr.installWarn }">
               {{ probes.asr.installNote }}
             </span>
-            <!-- 运行时已装好但仍缺料：当前清单只含可执行文件，模型要另行获取 -->
+            <!-- 运行时与清单一致、引擎却仍未就绪：缺的是清单之外的料（多半是模型路径被挪动） -->
             <span v-if="card.key === 'asr' && asrRuntimeOnly" class="ex warn">
-              运行时已装好，但还缺模型文件：当前安装清单只含 MOSS 可执行文件（models-moss 条目未上线），
-              需把 moss-transcribe-q5_k.gguf 放到 runtime\models\moss\ 下
+              运行时与安装清单一致，但 MOSS 仍未就绪：多半是模型文件不在位，
+              点「更新运行时」可补回 runtime\models\moss\moss-transcribe-q5_k.gguf
             </span>
-            <!-- 一键安装/更新：安装器只覆盖清单里的条目（当前 MOSS），装完自动重探 -->
+            <!-- 一键安装/更新：装清单里的全部条目（运行时 + 模型 + OCR/向量运行时），装完自动重探 -->
             <span v-if="card.key === 'asr' && canInstall" class="ex act">
               <button class="btn pri sm" @click="startInstall">{{ installLabel }}</button>
               <span class="hint">按本机能力选后端</span>

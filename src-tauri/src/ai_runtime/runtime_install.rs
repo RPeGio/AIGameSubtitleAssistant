@@ -126,6 +126,106 @@ pub struct DiskPrecheck {
     pub message: String,
 }
 
+/// 多条目磁盘预检：逐个 id 估需求再求和（单条目时直接走 `precheck_disk_with`）。
+///
+/// 为什么要分开：「装全部」时 moss（621 MB）、models-moss（597 MB）、deps-ocr（295 MB
+/// 或 GPU 479 MB）、deps-embed（150 MB）要一起落盘，按单条估算会严重低估。
+pub fn precheck_disk_multi(
+    manifest_text: Option<&str>,
+    free_bytes: Option<u64>,
+    ids: &[String],
+    flavor: &str,
+) -> DiskPrecheck {
+    if ids.len() <= 1 {
+        let id = ids.first().map(String::as_str).unwrap_or("moss");
+        return precheck_disk_with(manifest_text, free_bytes, id, flavor);
+    }
+
+    let mut required = 0u64;
+    let mut entries = 0usize;
+    let mut missing: Vec<&str> = Vec::new();
+    for id in ids {
+        let one = precheck_disk_with(manifest_text, free_bytes, id, flavor);
+        if one.manifest_entries == 0 {
+            missing.push(id.as_str());
+            continue;
+        }
+        entries += one.manifest_entries;
+        // 单条结果里含一份 SAFETY_MARGIN，这里先扣掉，最后统一加一次
+        required = required.saturating_add(one.required_bytes.saturating_sub(SAFETY_MARGIN));
+    }
+    if entries == 0 {
+        // 一个都对不上（清单缺失或 id 全错）：沿用单条口径的提示
+        return precheck_disk_with(manifest_text, free_bytes, ids[0].as_str(), flavor);
+    }
+    required = required.saturating_add(SAFETY_MARGIN);
+
+    let ok = free_bytes.map(|f| f >= required).unwrap_or(true);
+    let n = ids.len();
+    let gb = |v: u64| v as f64 / 1024.0 / 1024.0 / 1024.0;
+    let note = if missing.is_empty() {
+        String::new()
+    } else {
+        format!("（清单里没有 {}，已跳过）", missing.join("、"))
+    };
+    let message = match free_bytes {
+        Some(free) if !ok => format!(
+            "磁盘空间不足：{n} 个运行时条目共需约 {:.2} GB，可用 {:.2} GB{note}",
+            gb(required),
+            gb(free)
+        ),
+        Some(free) => format!(
+            "磁盘空间充足：{n} 个运行时条目共需约 {:.2} GB，可用 {:.2} GB{note}",
+            gb(required),
+            gb(free)
+        ),
+        None => format!(
+            "无法读取可用空间，跳过判定（{n} 个运行时条目共需约 {:.2} GB{note}）",
+            gb(required)
+        ),
+    };
+
+    DiskPrecheck {
+        ok,
+        manifest_entries: entries,
+        required_bytes: required,
+        free_bytes,
+        message,
+    }
+}
+
+/// 逗号分隔的条目 id → 去空去重保序（`-Items` 的入参格式）
+pub fn split_item_ids(raw: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for part in raw.split(',') {
+        let id = part.trim();
+        if id.is_empty() || out.iter().any(|e| e == id) {
+            continue;
+        }
+        out.push(id.to_string());
+    }
+    out
+}
+
+/// 清单里出现的全部条目 id（保序去重）——「装全部」的权威口径，与脚本缺省一致。
+/// 清单读不到时退回 `moss`（唯一的旧默认值）。
+pub fn manifest_item_ids(manifest_text: Option<&str>) -> Vec<String> {
+    let Some(text) = manifest_text else {
+        return vec!["moss".into()];
+    };
+    let mut ids: Vec<String> = Vec::new();
+    for e in super::installed_state::parse_manifest_items(text) {
+        if !ids.contains(&e.id) {
+            ids.push(e.id);
+        }
+    }
+    if ids.is_empty() {
+        vec!["moss".into()]
+    } else {
+        ids
+    }
+}
+
 /// 按清单条目估算磁盘需求并判断是否够用（纯函数，便于单测）。
 ///
 /// - `flavor`：`auto` 时取该 id 所有 flavor 的**最大** size（保守估计）；
@@ -169,26 +269,29 @@ pub fn precheck_disk_with(
             _ => e.size.saturating_mul(EXPANSION_FACTOR),
         }
     };
-    let required = if want_auto {
-        // auto：保守取该 id 所有 flavor 里最贵的那个
-        entries.iter().map(pick).max().unwrap_or(0)
+    // 候选条目：auto = 所有 flavor 取最贵；显式 flavor = 精确匹配；
+    // 匹配不到时退回「无 flavor 的整包条目」（models-moss / deps-embed 这类不看 flavor，
+    // 若这里不给它们兜底，其磁盘需求会被算成 0）
+    let candidates: Vec<&super::installed_state::ManifestEntry> = if want_auto {
+        entries.iter().collect()
     } else {
-        entries
+        let exact: Vec<&super::installed_state::ManifestEntry> = entries
             .iter()
-            .find(|e| e.flavor.eq_ignore_ascii_case(flavor))
-            .map(pick)
-            .unwrap_or(0)
-    }
-    .saturating_add(SAFETY_MARGIN);
-    let size = if want_auto {
-        entries.iter().map(|e| e.size).max().unwrap_or(0)
-    } else {
-        entries
-            .iter()
-            .find(|e| e.flavor.eq_ignore_ascii_case(flavor))
-            .map(|e| e.size)
-            .unwrap_or(0)
+            .filter(|e| e.flavor.eq_ignore_ascii_case(flavor))
+            .collect();
+        if exact.is_empty() {
+            entries.iter().filter(|e| e.flavor.trim().is_empty()).collect()
+        } else {
+            exact
+        }
     };
+    let required = candidates
+        .iter()
+        .map(|e| pick(e))
+        .max()
+        .unwrap_or(0)
+        .saturating_add(SAFETY_MARGIN);
+    let size = candidates.iter().map(|e| e.size).max().unwrap_or(0);
 
     let ok = match free_bytes {
         Some(free) => free >= required,
@@ -348,7 +451,7 @@ pub async fn precheck_runtime_disk(app: tauri::AppHandle) -> Result<DiskPrecheck
 
 /// Tauri 命令：跑一次安装。
 ///
-/// - `items`：逗号分隔条目 id（默认 `moss`）
+/// - `items`：逗号分隔条目 id（**缺省 = 清单里的全部条目**，含模型与 OCR/向量运行时）
 /// - `flavor`：`auto` / `cpu` / `cuda` / `vulkan`（默认 `auto`）
 /// - `force`：忽略已装标记
 ///
@@ -401,7 +504,8 @@ fn precheck_impl(app: &tauri::AppHandle) -> Result<DiskPrecheck, String> {
         .as_deref()
         .and_then(|p| std::fs::read_to_string(p).ok());
     let free = query_free_bytes(&runtime_dir);
-    Ok(precheck_disk_with(text.as_deref(), free, "moss", "auto"))
+    let ids = manifest_item_ids(text.as_deref());
+    Ok(precheck_disk_multi(text.as_deref(), free, &ids, "auto"))
 }
 
 /// 子进程输出里保留的最后一段（给失败时拼错误文案）
@@ -479,13 +583,19 @@ fn run_install(
         .as_deref()
         .and_then(|p| std::fs::read_to_string(p).ok());
     let want_flavor = flavor.clone().unwrap_or_else(|| "auto".into());
-    let pre = precheck_disk_with(text.as_deref(), query_free_bytes(&runtime_dir), "moss", &want_flavor);
+    // 条目缺省 = 清单里的全部条目（= 脚本 `-Items` 的缺省）；显式传了就按传的
+    let ids = items
+        .as_deref()
+        .map(split_item_ids)
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| manifest_item_ids(text.as_deref()));
+    let pre = precheck_disk_multi(text.as_deref(), query_free_bytes(&runtime_dir), &ids, &want_flavor);
     if !pre.ok {
         emit_event(
             app,
             InstallEvent {
                 event: "error".into(),
-                item: Some("moss".into()),
+                item: None,
                 detail: Some(pre.message.clone()),
                 ..Default::default()
             },
@@ -519,7 +629,7 @@ fn run_install(
     cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
         .arg(&script)
         .arg("-Items")
-        .arg(items.unwrap_or_else(|| "moss".into()))
+        .arg(ids.join(","))
         .arg("-Flavor")
         .arg(&want_flavor)
         .arg("-RuntimeDir")
@@ -886,6 +996,64 @@ mod tests {
         let pre = precheck_disk_with(Some("{not json"), Some(0), "moss", "cpu");
         assert!(pre.ok);
         assert_eq!(pre.manifest_entries, 0);
+    }
+
+    #[test]
+    fn split_item_ids_trims_and_dedups() {
+        assert_eq!(
+            split_item_ids(" moss , models-moss,,moss,deps-ocr "),
+            vec!["moss", "models-moss", "deps-ocr"]
+        );
+        assert!(split_item_ids("  ").is_empty());
+    }
+
+    #[test]
+    fn multi_precheck_sums_every_entry() {
+        // 多条目要「求和」而不是「取最大」：否则装全部时会严重低估磁盘
+        let ids = split_item_ids("moss,models-moss");
+        let single = precheck_disk_with(Some(MANIFEST_FULL), Some(1 << 40), "moss", "cuda");
+        let multi = precheck_disk_multi(Some(MANIFEST_FULL), Some(1 << 40), &ids, "cuda");
+        assert_eq!(multi.manifest_entries, 4, "moss 三条 + 模型一条");
+        assert!(
+            multi.required_bytes > single.required_bytes,
+            "多条目需求应大于单条：multi={} single={}",
+            multi.required_bytes,
+            single.required_bytes
+        );
+        // 余量只加一次：差额应恰是模型条目的成本（size × 3），不含第二份 SAFETY_MARGIN
+        let extra = multi.required_bytes - single.required_bytes;
+        let model_cost = 597_400_000u64 * 3;
+        assert_eq!(extra, model_cost);
+    }
+
+    #[test]
+    fn multi_precheck_single_id_matches_single_path() {
+        let ids = split_item_ids("moss");
+        let one = precheck_disk_with(Some(MANIFEST), Some(1 << 40), "moss", "cuda");
+        let multi = precheck_disk_multi(Some(MANIFEST), Some(1 << 40), &ids, "cuda");
+        assert_eq!(one.required_bytes, multi.required_bytes);
+        assert_eq!(one.message, multi.message);
+    }
+
+    /// 真实清单的形态：moss 有 flavor，模型条目没有 flavor
+    const MANIFEST_FULL: &str = r#"{
+        "version": "1",
+        "items": [
+            {"id":"moss","flavor":"cpu","url":"u1","sha256":"a","size":1121692,"dest":"bin"},
+            {"id":"moss","flavor":"vulkan","url":"u2","sha256":"b","size":16139894,"dest":"bin"},
+            {"id":"moss","flavor":"cuda","url":"u3","sha256":"c","size":651834262,"dest":"bin"},
+            {"id":"models-moss","url":"m","sha256":"d","size":597400000,"dest":"models/moss"}
+        ]
+    }"#;
+
+    #[test]
+    fn manifest_item_ids_reads_all_ids_in_order() {
+        assert_eq!(
+            manifest_item_ids(Some(MANIFEST_FULL)),
+            vec!["moss", "models-moss"]
+        );
+        // 清单缺失时退回旧默认值
+        assert_eq!(manifest_item_ids(None), vec!["moss"]);
     }
 
     #[test]
