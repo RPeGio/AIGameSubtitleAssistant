@@ -221,9 +221,18 @@ function dotClass(key: EnvKey) {
   return state === "probing" || state === "installing" ? "warn" : "off";
 }
 
-function setProbe(key: EnvKey, ready: boolean | null, msg: string, device = "", backend: string | null = null) {
+function setProbe(
+  key: EnvKey,
+  ready: boolean | null,
+  msg: string,
+  device = "",
+  backend: string | null = null,
+  warming = false,
+) {
   probes.value[key] = {
-    state: ready === null ? "unknown" : ready ? "ready" : "notready",
+    // 后台预热（provider 还在握手）≠ 未就绪：给「探测中…」。否则首帧显示"未就绪"、
+    // 几秒后自己变"就绪"，看起来像故障（真机反馈 2026-10-31 就是这条）
+    state: warming ? "probing" : ready === null ? "unknown" : ready ? "ready" : "notready",
     message: msg,
     device,
     backend,
@@ -258,10 +267,11 @@ function isWarming(message: string): boolean {
 async function probeOcr(retries = 8) {
   try {
     const status = await invoke<{ ready: boolean; message: string }>("check_ocr_runtime");
-    setProbe("ocr", status.ready, status.message);
+    const warming = !status.ready && isWarming(status.message);
+    setProbe("ocr", status.ready, status.message, "", null, warming);
     // 模型加载在后台线程跑（约 2–7 s）：打到「正在启动」就隔一会儿再看一眼，
     // 别让用户停在「未就绪」上
-    if (!status.ready && retries > 0 && isWarming(status.message)) {
+    if (warming && retries > 0) {
       window.setTimeout(() => void probeOcr(retries - 1), 1200);
     }
   } catch (e) {
@@ -276,7 +286,14 @@ async function probeAsr(retries = 8) {
     if (!moss) {
       setProbe("asr", null, "探针未返回 MOSS 引擎信息");
     } else {
-      setProbe("asr", moss.ready, moss.message, moss.device, moss.effective_backend ?? null);
+      setProbe(
+        "asr",
+        moss.ready,
+        moss.message,
+        moss.device,
+        moss.effective_backend ?? null,
+        !moss.ready && isWarming(moss.message),
+      );
     }
   } catch (e) {
     setProbe("asr", null, String(e));
@@ -304,7 +321,7 @@ async function probeAsr(retries = 8) {
 
   // MOSS 后端探测在后台线程跑：打到「正在探测」就隔一会儿再看一眼
   const p = probes.value.asr;
-  if (p.state === "notready" && retries > 0 && isWarming(p.message)) {
+  if ((p.state === "notready" || p.state === "probing") && retries > 0 && isWarming(p.message)) {
     window.setTimeout(() => void probeAsr(retries - 1), 1500);
   }
 }
@@ -330,9 +347,6 @@ const installLabel = computed(() => {
   return probes.value.asr.state === "notready" ? "安装运行时" : "更新运行时";
 });
 
-/// 运行时与清单一致、引擎却仍未就绪：真的原因在别处（后端不可用/文件损坏），
-/// 这里只负责把「可以重装」这条路指出来
-const asrRuntimeOnly = computed(() => forceReinstall.value);
 
 const PHASE_TEXT: Record<string, string> = {
   download: "下载",
@@ -594,11 +608,8 @@ onMounted(() => {
             <span v-if="card.key === 'asr' && probes.asr.installNote" class="ex" :class="{ warn: probes.asr.installWarn }">
               {{ probes.asr.installNote }}
             </span>
-            <!-- 运行时与清单一致、引擎却仍未就绪：缺的是清单之外的料（多半是模型路径被挪动） -->
-            <span v-if="card.key === 'asr' && asrRuntimeOnly" class="ex warn">
-              运行时与安装清单一致，但 MOSS 仍未就绪：多半是模型文件不在位，
-              点「更新运行时」可补回 runtime\models\moss\moss-transcribe-q5_k.gguf
-            </span>
+            <!-- 运行时与清单一致、引擎却仍未就绪：真实原因在 installNote/卡面原因里说，
+                 这里不再猜「多半是模型没下」（那是 loader 口径未回退时的假结论） -->
             <!-- 一键安装/更新：装清单里的全部条目（运行时 + 模型 + OCR/向量运行时），装完自动重探 -->
             <span v-if="card.key === 'asr' && canInstall" class="ex act">
               <button class="btn pri sm" @click="startInstall">{{ installLabel }}</button>

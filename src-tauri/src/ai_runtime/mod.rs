@@ -773,11 +773,13 @@ fn build_funasr(config: &RuntimeConfig, runtime_dir: &PathBuf) -> Box<dyn AsrPro
     create_asr_provider(AsrProviderKind::FunAsr, config, runtime_dir)
 }
 
-/// 按配置构造 moss provider：binary / model 任一为空即视为未配置
+/// 按配置构造 moss provider。
+///
+/// **空字段不等于"未配置"**：一键安装（欢迎页自检卡）只解包文件、不写 `config.json`，
+/// 所以"装完了、配置还没生成"是正常状态。路径统一由 `moss_paths()` 解析（空字段回退
+/// 安装器约定的标准布局，见 `:52` 的注释）；真的没装时 `MossProvider::spawn` 会带着
+/// 具体路径报错，前端因此能显示"哪个文件不在"而不是一句空白的"未就绪"。
 fn build_moss(config: &RuntimeConfig, runtime_dir: &PathBuf) -> Box<dyn AsrProvider> {
-    if config.moss_binary.is_empty() || config.moss_model.is_empty() {
-        return Box::new(AsrNoneProvider);
-    }
     create_asr_provider(AsrProviderKind::Moss, config, runtime_dir)
 }
 
@@ -1415,54 +1417,34 @@ pub struct EmbedRuntimeStatus {
 }
 
 impl EmbedManager {
-    /// 就绪判定**只做静态检查**（配置齐 + worker 脚本存在），不 spawn python——
+    /// 就绪判定**只做静态检查**（关键路径都真实存在），不 spawn python——
     /// 模型可加载性由真正融合时验证并给出具体错误（与 FunAsr/Llm 就绪探测同哲学）。
+    ///
+    /// 路径一律走 `embed_paths()`：一键安装只解包、不写 `config.json`，空字段必须回退到
+    /// 安装器约定的标准布局（与 `moss_paths` / `ocr_paths` 同一口径）。这里曾经判"配置
+    /// 字符串为空 = 未配置"，于是真机上 worker、模型、依赖三样都在盘上，卡片仍报
+    /// "缺 embed_worker / embed_model / embed_tokenizer / embed_deps_dir"。
     pub fn status(&self) -> EmbedRuntimeStatus {
-        let missing: Vec<&str> = [
-            ("embed_worker", &self.config.embed_worker),
-            ("embed_model", &self.config.embed_model),
-            ("embed_tokenizer", &self.config.embed_tokenizer),
-            ("embed_deps_dir", &self.config.embed_deps_dir),
-        ]
-        .iter()
-        .filter(|(_, v)| v.is_empty())
-        .map(|(name, _)| *name)
-        .collect();
-        if !missing.is_empty() {
-            return EmbedRuntimeStatus {
-                ready: false,
-                message: format!(
-                    "向量融合未配置（缺 {}，请先跑 scripts/bootstrap_embed.ps1）",
-                    missing.join(" / ")
-                ),
-            };
-        }
-        let worker = resolve_path(&self.config.embed_worker, &self.runtime_dir);
-        let deps = resolve_path(&self.config.embed_deps_dir, &self.runtime_dir);
-        let python = resolve_path(&self.config.python_path, &self.runtime_dir);
-        if !python.is_file() {
-            return EmbedRuntimeStatus {
-                ready: false,
-                message: format!("Python 解释器不存在: {}", python.display()),
-            };
-        }
-        if !worker.is_file() {
-            return EmbedRuntimeStatus {
-                ready: false,
-                message: format!(
-                    "fuse worker 脚本不存在: {}（请先跑 scripts/bootstrap_embed.ps1）",
-                    worker.display()
-                ),
-            };
-        }
-        if !deps.is_dir() {
-            return EmbedRuntimeStatus {
-                ready: false,
-                message: format!(
-                    "向量依赖目录不存在: {}（请先跑 scripts/bootstrap_embed.ps1）",
-                    deps.display()
-                ),
-            };
+        let (python, worker, deps, model, tokenizer) =
+            embed_paths(&self.config, &self.runtime_dir);
+        // 逐项检查而不是只看配置字符串：报错要能指出"到底哪个文件不在"
+        for (label, path, want_dir) in [
+            ("Python 解释器", &python, false),
+            ("fuse worker 脚本", &worker, false),
+            ("向量依赖目录", &deps, true),
+            ("嵌入模型", &model, false),
+            ("tokenizer", &tokenizer, false),
+        ] {
+            let exists = if want_dir { path.is_dir() } else { path.is_file() };
+            if !exists {
+                return EmbedRuntimeStatus {
+                    ready: false,
+                    message: format!(
+                        "{label}不存在: {}（点「安装运行时」可补齐，或先跑 scripts/bootstrap_embed.ps1）",
+                        path.display()
+                    ),
+                };
+            }
         }
         EmbedRuntimeStatus {
             ready: true,

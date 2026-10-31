@@ -498,14 +498,88 @@ fn runtime_paths(app: &tauri::AppHandle) -> (PathBuf, Option<PathBuf>) {
     (runtime_dir, manifest)
 }
 
+/// 已经装好、且 `.installed.json` 里的 sha256 与清单某个条目一致的 id。
+///
+/// 脚本对这些条目只会打 `item_skip`（不下载、不解压），所以它们不该再计入磁盘需求。
+/// 为什么必须扣：一键安装的缺省条目是"清单全部"，重装/补装时若仍按全量估算，用户会被
+/// 一句"磁盘空间不足"挡在门外——2026-10-31 真机反馈正是如此（C 盘剩 4 GB，全量估算要
+/// 约 9.46 GB，而实际上一个字节都不用下）。
+pub fn installed_up_to_date(
+    manifest_text: Option<&str>,
+    installed_text: Option<&str>,
+) -> Vec<String> {
+    let (Some(manifest_text), Some(installed_text)) = (manifest_text, installed_text) else {
+        return Vec::new();
+    };
+    let installed = super::installed_state::parse_installed(installed_text);
+    let mut out: Vec<String> = Vec::new();
+    for (id, item) in &installed {
+        let sha = item.sha256.trim().to_lowercase();
+        if sha.is_empty() {
+            continue;
+        }
+        let hit = super::installed_state::parse_manifest_items(manifest_text)
+            .into_iter()
+            .any(|e| e.id == *id && e.sha256.trim().to_lowercase() == sha);
+        if hit && !out.contains(id) {
+            out.push(id.clone());
+        }
+    }
+    out
+}
+
+/// 读 `<runtime>/.installed.json`（读不到就当作没装过）
+pub fn read_installed_text(runtime_dir: &Path) -> Option<String> {
+    std::fs::read_to_string(runtime_dir.join(super::installed_state::INSTALLED_FILE)).ok()
+}
+
+/// 本次真正需要下载/解压的条目：已是最新的扣掉，`force` 时全部保留。
+fn pending_ids(text: Option<&str>, runtime_dir: &Path, ids: &[String], force: bool) -> Vec<String> {
+    if force {
+        return ids.to_vec();
+    }
+    let installed_text = read_installed_text(runtime_dir);
+    let done = installed_up_to_date(text, installed_text.as_deref());
+    ids.iter()
+        .filter(|id| !done.iter().any(|d| d == *id))
+        .cloned()
+        .collect()
+}
+
+/// 预检入口：先扣掉已是最新的条目，再按剩余条目估算空间。
+///
+/// 全都不用下时直接给"无需额外磁盘"的结论——这正是"点了重装其实什么都没装"的场景。
+fn precheck_pending(
+    text: Option<&str>,
+    runtime_dir: &Path,
+    ids: &[String],
+    flavor: &str,
+    force: bool,
+) -> DiskPrecheck {
+    let pending = pending_ids(text, runtime_dir, ids, force);
+    if pending.is_empty() {
+        return DiskPrecheck {
+            ok: true,
+            manifest_entries: ids.len(),
+            required_bytes: 0,
+            free_bytes: query_free_bytes(runtime_dir),
+            message: format!(
+                "全部 {} 个运行时条目已是最新：无需下载与解压，本次不占用额外磁盘",
+                ids.len()
+            ),
+        };
+    }
+    precheck_disk_multi(text, query_free_bytes(runtime_dir), &pending, flavor)
+}
+
 fn precheck_impl(app: &tauri::AppHandle) -> Result<DiskPrecheck, String> {
     let (runtime_dir, manifest) = runtime_paths(app);
     let text = manifest
         .as_deref()
         .and_then(|p| std::fs::read_to_string(p).ok());
-    let free = query_free_bytes(&runtime_dir);
     let ids = manifest_item_ids(text.as_deref());
-    Ok(precheck_disk_multi(text.as_deref(), free, &ids, "auto"))
+    // 前端这个命令只问"现在点安装要多少空间"，一定是非强制安装
+    Ok(precheck_pending(text.as_deref(), &runtime_dir, &ids, "auto", false))
 }
 
 /// 子进程输出里保留的最后一段（给失败时拼错误文案）
@@ -589,7 +663,9 @@ fn run_install(
         .map(split_item_ids)
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| manifest_item_ids(text.as_deref()));
-    let pre = precheck_disk_multi(text.as_deref(), query_free_bytes(&runtime_dir), &ids, &want_flavor);
+    // 预检要扣掉已是最新的条目：缺省装"全部"时，已装好的那些只会 item_skip，
+    // 按全量估算会让"补装一个模型"被误判成空间不足（真机 2026-10-31 就撞上了）
+    let pre = precheck_pending(text.as_deref(), &runtime_dir, &ids, &want_flavor, force);
     if !pre.ok {
         emit_event(
             app,
@@ -1045,6 +1121,48 @@ mod tests {
             {"id":"models-moss","url":"m","sha256":"d","size":597400000,"dest":"models/moss"}
         ]
     }"#;
+
+    #[test]
+    fn installed_up_to_date_matches_only_same_sha() {
+        let installed = r#"{"version":1,"items":{
+            "moss":{"flavor":"cuda","sha256":"C","source_version":"1","installed_at":"x"},
+            "models-moss":{"flavor":"","sha256":"zzz","source_version":"1","installed_at":"x"}
+        }}"#;
+        // 大小写无关（脚本写的是小写，清单可能大写）
+        assert_eq!(
+            installed_up_to_date(Some(MANIFEST_FULL), Some(installed)),
+            vec!["moss"]
+        );
+        // 哈希不一致 ⇒ 仍需下载
+        let stale = r#"{"version":1,"items":{"moss":{"flavor":"cuda","sha256":"old"}}}"#;
+        assert!(installed_up_to_date(Some(MANIFEST_FULL), Some(stale)).is_empty());
+        // 没有状态文件
+        assert!(installed_up_to_date(Some(MANIFEST_FULL), None).is_empty());
+    }
+
+    #[test]
+    fn precheck_pending_skips_installed_items() {
+        // 全量估算要 3 倍展开 + 余量；已装项扣掉后需求必须明显变小
+        let dir = std::env::temp_dir().join(format!("gsa_pending_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let installed = r#"{"version":1,"items":{
+            "moss":{"flavor":"cuda","sha256":"c"},
+            "models-moss":{"flavor":"","sha256":"d"}
+        }}"#;
+        std::fs::write(dir.join(".installed.json"), installed).unwrap();
+
+        let ids = vec!["moss".to_string(), "models-moss".to_string()];
+        let full = precheck_disk_multi(Some(MANIFEST_FULL), Some(u64::MAX), &ids, "cuda");
+        let pending = precheck_pending(Some(MANIFEST_FULL), &dir, &ids, "cuda", false);
+        assert!(full.required_bytes > 0);
+        assert_eq!(pending.required_bytes, 0, "两项都已最新，不该再要空间");
+        assert!(pending.message.contains("已是最新"));
+        // -Force 覆盖已装标记：需求回到全量
+        let forced = precheck_pending(Some(MANIFEST_FULL), &dir, &ids, "cuda", true);
+        assert_eq!(forced.required_bytes, full.required_bytes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn manifest_item_ids_reads_all_ids_in_order() {

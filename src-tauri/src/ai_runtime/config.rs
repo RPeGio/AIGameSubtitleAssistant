@@ -244,20 +244,16 @@ impl RuntimeConfig {
     /// - moss_model / llm_model 不做存在性检查（模型缺失时由 provider 报告"未就绪"原因）
     /// - embed_* 四个字段**整组必配或整组为空**（半配状态视为配置错误，避免运行期才失败）
     pub fn validate(&self, runtime_dir: &Path) -> Result<(), String> {
+        // 可执行文件 / worker 脚本 / 依赖目录必须留在 runtime 内：它们与同目录的 DLL、
+        // 包进来的 python 绑定，挪出去只会"文件在但跑不起来"。
         for (name, value) in [
             ("worker_script", &self.worker_script),
             ("deps_dir", &self.deps_dir),
-            ("model_dir", &self.model_dir),
             ("moss_binary", &self.moss_binary),
-            ("moss_model", &self.moss_model),
             ("llm_binary", &self.llm_binary),
-            ("llm_model", &self.llm_model),
             ("funasr_worker", &self.funasr_worker),
             ("funasr_deps", &self.funasr_deps),
-            ("funasr_model_dir", &self.funasr_model_dir),
             ("embed_worker", &self.embed_worker),
-            ("embed_model", &self.embed_model),
-            ("embed_tokenizer", &self.embed_tokenizer),
             ("embed_deps_dir", &self.embed_deps_dir),
         ] {
             let pb = PathBuf::from(value);
@@ -267,6 +263,26 @@ impl RuntimeConfig {
                 runtime_dir.join(pb)
             };
             if !is_within(&joined, runtime_dir) {
+                return Err(format!("{} 不能越出 runtime 目录: {}", name, value));
+            }
+        }
+
+        // 纯只读数据（模型目录 / 模型文件）允许绝对路径指向 runtime 之外：C 盘紧张的机器
+        // 可以把几百 MB 的模型搬到别的盘，config.json 里写绝对路径即可。相对路径仍必须
+        // 落在 runtime 内（防路径穿越）。
+        for (name, value) in [
+            ("model_dir", &self.model_dir),
+            ("moss_model", &self.moss_model),
+            ("llm_model", &self.llm_model),
+            ("funasr_model_dir", &self.funasr_model_dir),
+            ("embed_model", &self.embed_model),
+            ("embed_tokenizer", &self.embed_tokenizer),
+        ] {
+            let pb = PathBuf::from(value);
+            if pb.is_absolute() {
+                continue;
+            }
+            if !is_within(&runtime_dir.join(pb), runtime_dir) {
                 return Err(format!("{} 不能越出 runtime 目录: {}", name, value));
             }
         }
@@ -774,6 +790,26 @@ mod tests {
         let mut cfg = RuntimeConfig::default();
         cfg.python_path = "python.exe".into();
         cfg.llm_binary = "bin/llama-cli.exe".into();
+        assert!(cfg.validate(&dir).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_validate_allows_absolute_model_outside_runtime() {
+        // 模型是纯只读数据：C 盘紧张的机器可以把 gguf 放到别的盘，写绝对路径即可
+        let dir = temp_dir("cfg_abs_model_outside");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("python.exe"), b"dummy").unwrap();
+        fs::create_dir_all(dir.join("bin")).unwrap();
+        fs::write(dir.join("bin/moss-transcribe.exe"), b"dummy").unwrap();
+        let mut cfg = RuntimeConfig::default();
+        cfg.python_path = "python.exe".into();
+        cfg.moss_binary = "bin/moss-transcribe.exe".into();
+        cfg.moss_model = "D:/models/moss/moss-transcribe-q5_k.gguf".into();
+        assert!(cfg.validate(&dir).is_ok(), "{:?}", cfg.validate(&dir));
+
+        // 但二进制不行：它要跟同目录的 ggml/cuda DLL 一起被加载
+        cfg.moss_binary = "D:/tools/moss-transcribe.exe".into();
         assert!(cfg.validate(&dir).is_err());
         let _ = fs::remove_dir_all(&dir);
     }
