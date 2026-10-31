@@ -58,6 +58,7 @@ fn file_name(stem: &str) -> String {
 ///   - `<exe>/resources/ffmpeg/…`        —— 打包布局（数组形式保留目录结构）
 ///   - `<exe>/../../resources/ffmpeg/…`  —— dev 布局（target/debug 向上两级 = src-tauri）
 ///   - `<exe>/../../../resources/…`      —— cargo test 的 exe 在 target/debug/deps
+///
 /// 再用 Tauri 给的 resource_dir 兜两种形态（部分平台它直接是安装根 / resources 被 map 到别处）。
 pub fn candidates_for(exe_dir: Option<&Path>, resource_dir: Option<&Path>, name: &str) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();

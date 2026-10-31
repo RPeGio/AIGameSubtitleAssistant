@@ -34,8 +34,10 @@ fn test_t3_end_to_end() {
     let ready = manager.with_provider(|p| p.is_ready());
     assert!(ready, "OCR 环境未就绪");
 
-    let meta =
-        get_video_metadata(video.to_string_lossy().into_owned()).expect("读取视频元数据失败");
+    let meta = tauri::async_runtime::block_on(get_video_metadata(
+        video.to_string_lossy().into_owned(),
+    ))
+    .expect("读取视频元数据失败");
     assert_eq!(meta.width, 1920);
 
     // 来自 t3 项目语料区 OCR 选区轨（用户调整后的选区，已去除其它画面噪声）

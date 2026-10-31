@@ -240,7 +240,7 @@ const PROBE_RETRY_AFTER: Duration = Duration::from_secs(15);
 const PROBE_RETRY_CAP: Duration = Duration::from_secs(120);
 
 fn retry_gap(failures: u32) -> Duration {
-    let factor = failures.clamp(1, 8) as u32;
+    let factor = failures.clamp(1, 8);
     (PROBE_RETRY_AFTER * factor).min(PROBE_RETRY_CAP)
 }
 
