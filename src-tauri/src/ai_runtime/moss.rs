@@ -212,6 +212,29 @@ fn parse_segments(json: &str) -> Result<Vec<AsrSegment>, AsrError> {
         .collect())
 }
 
+/// `info` 探测的状态。
+///
+/// 为什么不是简单的 bool：探测要 2–30 秒（加载几百 MB 的 CUDA DLL 与 GGUF 元数据），
+/// 用一个「跑过没有」的标志会把「正在跑」和「跑完了没成功」混为一谈 —— 真机
+/// 2026-10-31 就是因此显示成「未就绪 + 空原因」，而不是「探测中…」，前端也就
+/// 没有理由继续轮询。分四态后：Running → 前端显示「探测中」并重试；
+/// Failed 带时刻 → 过了冷冻期可以自动重试（装完运行时/驱动就绪后不必重启）。
+#[derive(Debug, Clone, Copy)]
+enum ProbeState {
+    /// 还没开始（首帧）
+    Idle,
+    /// 正在跑 `info`
+    Running,
+    /// 跑完且成功
+    Ready,
+    /// 跑完但失败（带失败时刻，用于失败冷冻期）
+    Failed(Instant),
+}
+
+/// 探测失败后多久允许自动重试：太短会在装运行时的过程中反复拉起进程，
+/// 太长又让用户「装完了还得重启」。15 秒是个折中。
+const PROBE_RETRY_AFTER: Duration = Duration::from_secs(15);
+
 /// MOSS 转写 provider —— 每次 transcribe 启动一次性子进程
 pub struct MossProvider {
     binary: PathBuf,
@@ -232,8 +255,8 @@ pub struct MossProvider {
     backend_decision: Mutex<Option<backend_probe::Decision>>,
     /// 当前活动的转写子进程（供取消/退出钩子终止）
     active_child: Mutex<Option<Child>>,
-    /// 是否已经跑过一次 `info` 探测（构造时不探测：见 spawn 的注释）
-    probed: AtomicBool,
+    /// `info` 探测的状态机（构造时不探测：见 spawn 的注释）
+    probe: Mutex<ProbeState>,
     /// 开发调试：打印运行时细节日志
     dev_debug: bool,
 }
@@ -267,7 +290,7 @@ impl MossProvider {
             last_error: Mutex::new(None),
             backend_decision: Mutex::new(None),
             active_child: Mutex::new(None),
-            probed: AtomicBool::new(false),
+            probe: Mutex::new(ProbeState::Idle),
             dev_debug: config.dev_debug,
         };
         // 注意：这里**故意不探测**。`info` 要加载几百 MB GGUF 元数据（数秒），
@@ -283,27 +306,48 @@ impl MossProvider {
     /// 由 `AsrManager` 在**后台线程**调用（启动时不再卡主线程）；转写前也会再调一次
     /// 兜底，所以即使后台还没跑完，语义也正确（大不了多等这一次探测）。
     pub fn ensure_probed(&self) {
-        // 先抢标志再干活：并发调用时后来者直接返回，避免同时起两个 info 进程
-        if self.probed.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        match self.probe() {
+        self.probe_now(false);
+    }
+
+    /// 探测一次；`force=true` 忽略失败冷冻期（用户点「重新探测」、转写入口）。
+    ///
+    /// 并发语义：`Running` 时后来者直接返回（不重复起进程）；`Ready` 时不再探；
+    /// `Failed` 且未过冷冻期也直接返回 —— 三条都由状态机本身表达，不需要额外原子标志。
+    pub fn probe_now(&self, force: bool) {
+        {
+            let mut guard = self.probe.lock().unwrap_or_else(|e| e.into_inner());
+            let allowed = match *guard {
+                ProbeState::Running | ProbeState::Ready => return,
+                ProbeState::Idle => true,
+                ProbeState::Failed(at) => force || at.elapsed() >= PROBE_RETRY_AFTER,
+            };
+            if !allowed {
+                return;
+            }
+            *guard = ProbeState::Running;
+        } // 不持锁跑 `info`：几秒钟的阻塞不该挡住 describe()
+
+        let next = match self.probe() {
             Ok(()) => {
                 if let Ok(mut slot) = self.last_error.lock() {
                     *slot = None;
                 }
                 self.ready.store(true, Ordering::SeqCst);
+                ProbeState::Ready
             }
             Err(e) => {
                 self.ready.store(false, Ordering::SeqCst);
                 self.set_error(&e.to_string());
+                ProbeState::Failed(Instant::now())
             }
-        }
+        };
+        *self.probe.lock().unwrap_or_else(|e| e.into_inner()) = next;
     }
 
-    /// 是否已经跑过探测（未跑时 describe() 会说"正在探测"）
+    /// 探测是否已跑完（成功或失败）。跑完才可能给出"未就绪"的最终结论。
     pub fn is_probed(&self) -> bool {
-        self.probed.load(Ordering::SeqCst)
+        let guard = self.probe.lock().unwrap_or_else(|e| e.into_inner());
+        matches!(*guard, ProbeState::Ready | ProbeState::Failed(_))
     }
 
     /// 探测：`info <model>` 成功说明 GGUF 元数据可加载；同时用 stderr 的
@@ -558,16 +602,32 @@ impl AsrProvider for MossProvider {
     }
 
     fn describe(&self) -> String {
-        // 还没跑过探测（启动后头几秒）如实说"正在探测"，别谎报"未就绪 + 空白原因"
-        if !self.is_probed() {
-            return "正在探测 MOSS 后端（首次启动需要几秒钟）".to_string();
+        // 三种"没就绪"要分开说，否则前端分不清该继续等、还是该看原因（真机 2026-10-31）：
+        //   还没跑 / 正在跑 → "正在探测…"（前端显示「探测中」并继续轮询）
+        //   跑完但失败      → 真实错误原文
+        let state = *self.probe.lock().unwrap_or_else(|e| e.into_inner());
+        match state {
+            ProbeState::Idle | ProbeState::Running => {
+                "正在探测 MOSS 后端（首次启动需要几秒钟）".to_string()
+            }
+            ProbeState::Failed(_) => self
+                .last_error
+                .lock()
+                .ok()
+                .and_then(|g| g.clone())
+                .unwrap_or_else(|| "MOSS 后端探测失败（原因未知）".to_string()),
+            ProbeState::Ready => String::new(),
         }
-        self.last_error.lock().ok().and_then(|g| g.clone()).unwrap_or_default()
     }
 
     /// 后台预热：跑一次 `info` 探测（启动时不再阻塞主线程）
     fn warm_up(&self) {
         self.ensure_probed();
+    }
+
+    /// 状态轮询触发的重试：遵守失败冷冻期，避免每次轮询都重起进程
+    fn retry_warm_up(&self) {
+        self.probe_now(false);
     }
 
     /// 实测生效后端（L2 实证，如 "CUDA0"/"Vulkan1"/"CPU"）；probe 未完成或失败时为空
@@ -584,8 +644,9 @@ impl AsrProvider for MossProvider {
         audio_path: &Path,
         _options: &AsrTranscribeOptions,
     ) -> Result<Vec<AsrSegment>, AsrError> {
-        // 后台预热可能还没跑完（启动后立刻点转写）：这里兜一次，幂等
-        self.ensure_probed();
+        // 后台预热可能还没跑完（启动后立刻点转写）：这里兜一次，幂等；
+        // force=true 是为了不因「上一次探测失败还在冷冻期」把用户挡在门外
+        self.probe_now(true);
         if !self.is_ready() {
             return Err(AsrError::NotReady);
         }
@@ -812,5 +873,47 @@ mod tests {
         let info2 = wav_info(&seg).unwrap();
         assert!((info2.seconds - 2.0).abs() < 0.01);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 造一个「文件在、但跑不起来」的探测环境：二进制是空文件，`info` 必失败。
+    /// 这样能在没有 MOSS 的机器上验证探测状态机（真机 2026-10-31 的「未就绪 + 空原因」）。
+    fn fake_provider(name: &str) -> MossProvider {
+        let dir = std::env::temp_dir().join(format!("gsa_moss_probe_{}_{}", name, std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let binary = dir.join("moss-transcribe.exe");
+        let model = dir.join("model.gguf");
+        std::fs::write(&binary, b"").unwrap();
+        std::fs::write(&model, b"fake").unwrap();
+        let config = RuntimeConfig {
+            moss_binary: binary.to_string_lossy().to_string(),
+            moss_model: model.to_string_lossy().to_string(),
+            ..RuntimeConfig::default()
+        };
+        MossProvider::spawn(&config, &dir).expect("空文件也应能构造 provider（失败落在探测阶段）")
+    }
+
+    #[test]
+    fn test_describe_says_probing_before_probe() {
+        let p = fake_provider("idle");
+        assert!(!p.is_probed());
+        assert!(!p.is_ready());
+        // 关键：没跑探测时必须说"正在探测"，而不是空串 —— 前端靠这句话显示「探测中」
+        assert!(p.describe().contains("正在探测"), "describe={}", p.describe());
+    }
+
+    #[test]
+    fn test_failed_probe_reports_reason_and_is_retryable() {
+        let p = fake_provider("failed");
+        p.probe_now(true);
+        // 空 exe 跑不起来 ⇒ 探测失败：已跑完、未就绪、并且给出非空原因
+        assert!(p.is_probed());
+        assert!(!p.is_ready());
+        assert!(!p.describe().is_empty(), "失败后必须有原因，否则界面上是空白未就绪");
+        // 冷冻期内重复调用不应再起进程（状态保持 Failed），这里只断言幂等不 panic
+        p.ensure_probed();
+        assert!(p.is_probed());
+        let _ = std::fs::remove_dir_all(
+            std::env::temp_dir().join(format!("gsa_moss_probe_failed_{}", std::process::id())),
+        );
     }
 }

@@ -22,6 +22,7 @@ import type {
   MossInstallStatus,
   FfmpegStatus,
   RuntimeDiskPrecheck,
+  RuntimeReloadSummary,
   RuntimeInstallSummary,
   LlmProgress,
   LlmRuntimeStatus,
@@ -1168,6 +1169,11 @@ export const useProjectStore = defineStore("project", () => {
     return invoke<boolean>("cancel_runtime_install");
   }
 
+  /// 装完运行时后重建进程内的 ASR / OCR provider（否则必须重启应用才生效）
+  async function reloadRuntimes(): Promise<RuntimeReloadSummary> {
+    return invoke<RuntimeReloadSummary>("reload_runtimes");
+  }
+
   /// 跑一次安装：进度写进 install* refs，返回汇总（取消 / 失败都带 message）
   async function startRuntimeInstall(flavor = "auto", force = false): Promise<RuntimeInstallSummary> {
     installRunning.value = true;
@@ -1702,6 +1708,7 @@ export const useProjectStore = defineStore("project", () => {
     precheckRuntimeDisk,
     installRuntime,
     cancelRuntimeInstall,
+    reloadRuntimes,
     startRuntimeInstall,
     installRunning,
     installPhase,

@@ -375,6 +375,38 @@ impl OcrManager {
             message,
         }
     }
+
+    /// 从磁盘重建 provider（一键安装/更新运行时之后调用，让新装的 worker 立刻生效）。
+    ///
+    /// 与 `new()` 用同一套判定（含「空配置回退标准布局」），所以「装完必须重启」
+    /// 这条边界不存在了 —— 真机 2026-10-31 的「脚本跑完 4 个都未就绪」就是它。
+    pub fn reload(&self) -> Result<String, String> {
+        let config =
+            RuntimeConfig::load(&self.runtime_dir).unwrap_or_else(|_| self.config.clone());
+        let worker = ocr_paths(&config, &self.runtime_dir).3;
+        let kind = if config.worker_script.is_empty() && !worker.is_file() {
+            OcrProviderKind::None
+        } else {
+            OcrProviderKind::Paddle
+        };
+        let provider = create_ocr_provider(kind, &config, &self.runtime_dir);
+        let (name, ready, detail) = (
+            provider.name().to_string(),
+            provider.is_ready(),
+            provider.describe(),
+        );
+        {
+            let mut guard = self.provider.lock().unwrap_or_else(|e| e.into_inner());
+            *guard = provider;
+        }
+        Ok(if ready {
+            format!("OCR 已重新加载（provider: {name}）")
+        } else if detail.is_empty() {
+            format!("OCR 已重新加载但未就绪（provider: {name}）")
+        } else {
+            format!("OCR 已重新加载但未就绪（provider: {name}）：{detail}")
+        })
+    }
 }
 
 // ─── 单元测试 ─────────────────────────────────────────────
@@ -398,6 +430,18 @@ mod tests {
         let status = manager.status();
         assert_eq!(status.provider, "none");
         assert!(!status.ready);
+    }
+
+    #[test]
+    fn test_ocr_reload_reports_not_ready_without_worker() {
+        // 一键装完运行时后要能"热加载"：目录里没有 worker 时如实说未就绪，而不是报错或 panic
+        let dir = std::env::temp_dir().join(format!("gsa_ocr_reload_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let manager = OcrManager::new(RuntimeConfig::default(), dir.clone());
+        let msg = manager.reload().expect("没有 config.json 也应能重建（回退默认配置）");
+        assert!(msg.contains("未就绪"), "reload 应如实说未就绪：{msg}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -518,6 +562,49 @@ pub fn check_ocr_runtime(state: tauri::State<'_, OcrManager>) -> OcrRuntimeStatu
     state.status()
 }
 
+/// 运行时整体重载的结果（一句话/条，直接可显示）
+#[derive(Clone, Serialize)]
+pub struct RuntimeReloadSummary {
+    pub asr: Vec<String>,
+    pub ocr: String,
+}
+
+/// Tauri 命令：安装/更新运行时后重建 ASR 与 OCR 的 provider。
+///
+/// 为什么需要它：provider 是 setup 阶段按当时的文件情况一次性构造的（缺文件时
+/// 会退化成 None/Broken 占位），一键安装只是往磁盘写文件，进程内的对象不会
+/// 自动换新 —— 于是"装完不重启就还是未就绪"。重建比重启应用便宜得多。
+#[tauri::command]
+pub async fn reload_runtimes(app: tauri::AppHandle) -> RuntimeReloadSummary {
+    // MOSS 重建要跑 `info`（数秒），放命令线程上会把窗口拖住
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut asr = Vec::new();
+        match app.try_state::<AsrManager>() {
+            Some(manager) => {
+                for key in ["moss", "funasr"] {
+                    asr.push(match manager.reload_engine(key) {
+                        Ok(m) => m,
+                        Err(e) => format!("{key}: {e}"),
+                    });
+                }
+            }
+            None => asr.push("ASR 管理器未初始化".into()),
+        }
+        let ocr = match app.try_state::<OcrManager>() {
+            Some(manager) => manager
+                .reload()
+                .unwrap_or_else(|e| format!("OCR 重新加载失败：{e}")),
+            None => "OCR 管理器未初始化".into(),
+        };
+        RuntimeReloadSummary { asr, ocr }
+    })
+    .await
+    .unwrap_or_else(|e| RuntimeReloadSummary {
+        asr: vec![format!("重新加载失败：{e}")],
+        ocr: format!("重新加载失败：{e}"),
+    })
+}
+
 // ─── ASR 数据与错误 ──────────────────────────────────────
 
 /// ASR 语音识别的一段结果（provider 原始输出，不含 id/character）
@@ -610,6 +697,13 @@ pub trait AsrProvider: Send + Sync {
     /// 默认空实现——探测成本高的引擎（MOSS 要跑 `info` 加载 GGUF 元数据）在这里做，
     /// **不要**放进构造函数，否则会把 setup 阶段的主线程卡住（真机反馈 2026-10-29）。
     fn warm_up(&self) {}
+    /// 后台重试预热（默认等同 `warm_up`）。
+    ///
+    /// 由状态轮询（`check_asr_engines`）在「未就绪」时触发：装了运行时/驱动就绪后
+    /// 不必重启应用即可自愈；实现方需自带失败冷冻期，避免每次轮询重起进程。
+    fn retry_warm_up(&self) {
+        self.warm_up();
+    }
     /// 实测生效的推理后端（如 "CUDA0"/"Vulkan1"/"CPU"），默认空。
     /// 仅 MOSS 有实证来源（spawn 时 info 的 [mt I] backend 行）；其余引擎
     /// 实测需拉起重依赖子进程，欢迎页探针不做。
@@ -896,6 +990,12 @@ impl AsrManager {
                     "moss" => config.moss_device.clone(),
                     _ => config.funasr_device.clone(),
                 };
+                // 未就绪就让引擎自己在后台再探一次（带失败冷冻期）：
+                // 装完运行时/驱动就绪后，前端每次刷新状态就能自愈，不必重启应用
+                if !ready {
+                    let provider = self.provider_of(key);
+                    std::thread::spawn(move || provider.retry_warm_up());
+                }
                 AsrEngineStatus {
                     engine: (*key).into(),
                     ready,

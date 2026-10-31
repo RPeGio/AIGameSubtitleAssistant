@@ -79,6 +79,7 @@ pub fn run() {
             ai_runtime::check_ocr_runtime,
             ai_runtime::check_asr_runtime,
             ai_runtime::check_asr_engines,
+            ai_runtime::reload_runtimes,
             ai_runtime::backend_probe::probe_moss_backend,
             ai_runtime::config::set_moss_device,
             ai_runtime::config::set_funasr_device,

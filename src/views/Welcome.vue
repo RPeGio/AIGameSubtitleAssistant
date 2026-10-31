@@ -279,7 +279,7 @@ async function probeOcr(retries = 8) {
   }
 }
 
-async function probeAsr(retries = 8) {
+async function probeAsr(retries = 20) {
   try {
     const engines = await projectStore.getAsrEngines();
     const moss = engines.find((e) => e.engine === "moss");
@@ -389,8 +389,19 @@ async function startInstall() {
     else if (summary.ok) message.success(summary.message);
     else message.error(summary.message);
   }
+  // 装好的二进制与模型只落在磁盘上：进程内的 provider 还是启动时按「空目录」
+  // 构造的占位对象，必须重建才能生效 —— 否则就是"装完不重启永远未就绪"
+  if (summary?.ok) {
+    try {
+      const reload = await projectStore.reloadRuntimes();
+      const bad = [...reload.asr, reload.ocr].filter((line) => line.includes("未就绪"));
+      if (bad.length) message.info(bad.join("；"));
+    } catch (e) {
+      message.warning(`运行时已装好，但热加载失败，重启应用后生效：${e}`);
+    }
+  }
   // 装完或取消都重探：运行时状态、设备判定、实测后端都可能变
-  await probeAsr();
+  await refreshAll();
 }
 
 async function cancelInstall() {
@@ -467,12 +478,15 @@ function originText(key: EnvKey): string {
   return "";
 }
 
+/// 四张卡一起重探（一键安装完成后 / 手动点「重新探测」）。
+/// 单张卡各自重试内部已有节流，这里只负责同时触发。
+async function refreshAll() {
+  await Promise.all([probeOcr(), probeAsr(), probeEmbed(), probeFfmpeg()]);
+}
+
 onMounted(() => {
   projectStore.refreshRecentProjects();
-  probeOcr();
-  probeAsr();
-  probeEmbed();
-  probeFfmpeg();
+  void refreshAll();
 });
 </script>
 
@@ -611,9 +625,10 @@ onMounted(() => {
             <!-- 运行时与清单一致、引擎却仍未就绪：真实原因在 installNote/卡面原因里说，
                  这里不再猜「多半是模型没下」（那是 loader 口径未回退时的假结论） -->
             <!-- 一键安装/更新：装清单里的全部条目（运行时 + 模型 + OCR/向量运行时），装完自动重探 -->
-            <span v-if="card.key === 'asr' && canInstall" class="ex act">
-              <button class="btn pri sm" @click="startInstall">{{ installLabel }}</button>
-              <span class="hint">按本机能力选后端</span>
+            <span v-if="card.key === 'asr' && !projectStore.installRunning" class="ex act">
+              <button v-if="canInstall" class="btn pri sm" @click="startInstall">{{ installLabel }}</button>
+              <span v-if="canInstall" class="hint">按本机能力选后端</span>
+              <button class="btn ghost sm" @click="refreshAll">重新探测</button>
             </span>
             <template v-if="card.key === 'asr' && projectStore.installRunning">
               <span class="pbar"><i :style="{ width: `${projectStore.installPercent}%` }" /></span>
@@ -625,7 +640,16 @@ onMounted(() => {
                 {{ projectStore.installDetail }}
               </span>
             </template>
-            <!-- 未就绪原因原文直接摊在卡面上（ASR 的原因已由上面两行覆盖，不重复） -->
+            <!-- ASR 未就绪的原因原文：别只藏在 tooltip 里。真机上"未就绪 + 没有原因"
+                 根本没法报障（2026-10-31 反馈），这里直接摊开 -->
+            <span
+              v-if="card.key === 'asr' && probes.asr.state === 'notready' && probes.asr.message"
+              class="ex"
+              :class="{ danger: !isWarming(probes.asr.message) }"
+            >
+              {{ probes.asr.message }}
+            </span>
+            <!-- 未就绪原因原文直接摊在卡面上（ASR 的已由上面一行/两行覆盖，不重复） -->
             <span
               v-if="card.key !== 'asr' && probes[card.key].state === 'notready' && probes[card.key].message"
               class="ex"

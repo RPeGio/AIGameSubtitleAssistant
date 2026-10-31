@@ -344,6 +344,12 @@ export interface RuntimeDiskPrecheck {
   message: string;
 }
 
+/// 运行时整体重载结论（Rust `reload_runtimes`）：装完运行时后重建进程内 provider
+export interface RuntimeReloadSummary {
+  asr: string[];
+  ocr: string;
+}
+
 /// ASR 进度事件名（Rust 侧 `ASR_PROGRESS_EVENT` 需保持一致）
 export const ASR_PROGRESS_EVENT = "asr-progress";
 
