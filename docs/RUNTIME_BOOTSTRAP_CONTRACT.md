@@ -546,7 +546,6 @@ invoke("cancel_runtime_install")                                             // 
 | 构造 manager 时不要做重活 | `AsrManager::new` / `OcrManager::new` 都在 `setup` 里跑，曾经在构造函数里同步做就绪握手，启动即卡 | `MossProvider` 惰性：`ensure_probed()` + 后台线程 `warm_up()`；`PaddleProvider` 同构：`spawn` 只到「子进程起来了」就返回（实测 6.43 s → 40 ms），`Inner` 用 `Arc` 共享 + `probe_lock` 串行化首次握手，首次 `recognize_batch` 等锁而不是往管道写半条请求；`describe()` 未探测完时给「正在启动」 |
 
 ### 8.6.2 路径解析与就绪判定：**空配置 ≠ 未安装**（2026-10-31 真机反馈后新增）
-
 一键安装（`bootstrap_runtime.ps1`）**只解包文件、不写 `runtime/config.json`**，所以"文件都装好了、
 配置字段还全空"是正常状态。任何就绪判定都必须按下面的口径来，否则会出现"文件明明在盘上、
 卡片却说没装"（真机 2026-10-31 的 MOSS 与 e5-small 就是这个症状）：
@@ -566,6 +565,30 @@ invoke("cancel_runtime_install")                                             // 
 <runtime>/worker/{ocr_worker.py, embed_worker.py, fuse_core.py}
 <runtime>/deps/  deps_gpu/  deps_embed/   python/
 ```
+
+### 8.6.3 「探测中」必须与「未就绪」区分，装完必须热加载（2026-11-01 真机反馈后新增）
+
+真机 2026-10-31 的三条症状都出自"进程内状态与世界不一致"，产品行为上必须固化：
+
+| 症状 | 机制 | 硬约束 |
+|---|---|---|
+| 启动瞬间卡片显示「未就绪」，几秒后自己变「就绪」 | 探测标志在**开始**就置真，`describe()` 于是返回空串（既不是"正在探测"也不是错误）⇒ 前端判 notready、且失去继续轮询的理由 | 探测状态机分四态 `Idle / Running / Ready / Failed(Instant)`；`Running` 与 `Idle` 一律返回「正在探测…」（前端据此显示「探测中」并每 1.5 s 重试，最多 20 次） |
+| 探测失败一次后就永久「未就绪」，只能重启应用 | 旧实现 `probed` 是单向闩，失败也置真，之后再无重试路径 | `Failed` 带失败时刻；**过了 15 s 冷冻期允许自动重试**，`check_asr_engines` 每次轮询到未就绪就在后台触发一次 `retry_warm_up()`；转写入口用 `force=true` 忽略冷冻期 |
+| 一键安装脚本跑完，四张卡全是「未就绪」，必须重启应用 | provider 是 `setup` 阶段按当时的目录一次性构造的（缺文件时退化成 `None`/`Broken` 占位），安装只往磁盘写文件 | 安装成功后前端必须调 `reload_runtimes`（见 §8.6.4）再重探全部卡片 |
+
+### 8.6.4 `reload_runtimes`（2026-11-01 新增）
+
+```ts
+invoke("reload_runtimes")   // 无参数
+// → { asr: string[], ocr: string }   每项是一句可直接显示的中文
+```
+
+- 语义：从磁盘重读 `runtime/config.json`（缺失则沿用当前配置）并**重建** ASR 双引擎与 OCR 的 provider；
+  MOSS 重建会重新跑 `info`，因此放在 `spawn_blocking` 里，不占命令线程。
+- 返回的是"结论句"而非状态码：`"moss 已重新加载"` / `"OCR 已重新加载但未就绪（provider: paddle）：…"`，
+  前端把含「未就绪」的行拼成一条 info 提示即可。
+- 边界：转写进行中时 ASR 侧会被拒绝（返回 `"moss: 转写进行中，完成后再切换"`），配置已落盘、重启后仍生效。
+- 调用时机：`install_runtime` 返回 `ok=true` **之后、重探卡片之前**；用户手动点「重新探测」只重探不重载。
 
 ### 8.7 `set_funasr_device`（落盘，2026-10-29 引入）
 

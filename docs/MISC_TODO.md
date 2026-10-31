@@ -724,6 +724,22 @@
 - **踩坑（PS 5.1）**：`edit`/`write` 工具会去掉文件开头的 BOM，而 `bootstrap_runtime.ps1` 含中文、必须带 BOM，否则 PowerShell 按 GBK 解析、满屏"缺少右 }"。改完脚本要复核 `bytes[0..2] == EF BB BF`，必要时用 `New-Object System.Text.UTF8Encoding($true)` 重写。
 - **未做**：真机复测（需重装安装包）；第 4 项"首启静默安装看不到进度"与第 5 项"准备页"另开分支 `feat/first-run-prep`。
 
+**2026-11-01 补记（真机时序类问题：探测状态机、装完热加载、原因可见）**
+
+用户在 2026-10-31 22:19 反馈："首启脚本跑完之后 4 个都还是未就绪，重启应用后才出现 3 就绪 1 未就绪，然后进一个工程再退出来又全部就绪了"。三个独立缺陷：
+
+| 症状 | 根因 | 修法 |
+|---|---|---|
+| 启动瞬间显示「未就绪 + 空原因」，而不是「探测中」 | `MossProvider` 只有一个**单向闩** `probed: AtomicBool`，在探测**开始**就 `swap(true)` ⇒ 探测进行中 `is_probed()` 已为真，`describe()` 于是返回空串（既不是"正在探测"也不是错误）⇒ 前端判 notready 并停止轮询；探测稍后成功也没人再刷新 | 改成四态状态机 `ProbeState::{Idle, Running, Ready, Failed(Instant)}`（`moss.rs`）：`Idle`/`Running` 一律返回「正在探测 MOSS 后端…」，`Failed` 返回真实错误原文，`Ready` 返回空 |
+| 探测失败一次后永久未就绪，只能重启 | 同一个单向闩：失败也置真，之后没有任何重试路径 | `Failed` 记失败时刻，**15 s 冷冻期后允许自动重试**；`AsrManager::engines()` 每次轮询到未就绪就后台 `retry_warm_up()`（trait 新增默认方法），转写入口 `probe_now(true)` 忽略冷冻期 |
+| 一键安装脚本跑完，四张卡仍全「未就绪」，必须重启应用 | provider 在 `setup` 阶段按"当时的空目录"构造（OCR 退化成 `NoneProvider`、MOSS 退化成 `BrokenProvider`），安装只往磁盘写文件，进程内对象不换新 | 新增命令 `reload_runtimes`（`ai_runtime/mod.rs`）：`OcrManager::reload()` + ASR 双引擎 `reload_engine()`，`spawn_blocking` 里跑；前端 `startInstall()` 成功后先 `reloadRuntimes()` 再 `refreshAll()`，失败时提示"重启后生效" |
+
+- 顺带把 ASR 卡的原因也摊在卡面上（模板原本用 `card.key !== 'asr'` 把 ASR 的 `message` 挡住了，真机报障时看不到任何原因），并加了一个「重新探测」按钮（只重探、不重载）。
+- 前端 `probeAsr` 的重试次数 8 → 20（≈30 s，覆盖首次 `moss info` 加载 576 MB CUDA DLL 的耗时）。
+- 验证：`cargo test --lib` **356 passed**（新增 `test_describe_says_probing_before_probe`（空 exe 也能构造 provider，未探测时文案含"正在探测"）、`test_failed_probe_reports_reason_and_is_retryable`、`test_ocr_reload_reports_not_ready_without_worker`）、`cargo check --lib` 0 warning、`pnpm build` EXIT=0。
+- 契约同步：新增 **§8.6.3（探测中 vs 未就绪、失败冷冻期、装完热加载三条硬约束）** 与 **§8.6.4（`reload_runtimes` 命令契约）**。
+- **未做**：真机复测（需重装安装包）；准备页仍在 `feat/first-run-prep`。
+
 **依赖/前置**：已全部满足（命令齐、契约齐、执行体已并入）。
 
 - bootstrap 脚本**已在 `scripts/`**（不在根目录）：`scripts/bootstrap_moss.ps1`（模型/二进制获取与就绪自检）、`scripts/build_moss.ps1`（自构建，含 vulkan 前置检查）。
