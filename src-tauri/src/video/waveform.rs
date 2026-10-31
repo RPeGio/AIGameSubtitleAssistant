@@ -7,7 +7,6 @@
 // 前端拿到的是均匀时间轴上的相对高度数组，下标 i 对应 [i/50, (i+1)/50) 秒。
 
 use std::io::{BufReader, Read};
-use std::process::Command;
 use tauri::command;
 
 // ─── 常量 ─────────────────────────────────────────────────
@@ -30,9 +29,9 @@ const BYTES_PER_WINDOW: usize = SAMPLES_PER_WINDOW * 2;
 /// 前端也可先用 VideoMetadata.audio_codec 预判跳过调用。
 #[command]
 pub async fn get_audio_peaks(video_path: String) -> Result<Vec<f32>, String> {
-    let ffmpeg = super::resolve_ffmpeg().ok_or_else(|| "FFMPEG_NOT_FOUND".to_string())?;
+    let ffmpeg = super::resolve_ffmpeg().ok_or_else(super::ffmpeg_missing)?;
 
-    let mut child = Command::new(&ffmpeg)
+    let mut child = crate::subprocess::hidden(&ffmpeg)
         .arg("-i")
         .arg(&video_path)
         .arg("-vn") // 只要音频

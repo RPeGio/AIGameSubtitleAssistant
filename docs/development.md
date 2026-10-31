@@ -10,7 +10,7 @@
 |---|---|
 | 桌面壳 | Tauri 2（`protocol-asset`、dialog / opener 插件） |
 | 前端 | Vue 3 + TypeScript + Pinia + Vue Router + Naive UI + Tailwind CSS 4 + Vite 6 |
-| 后端 | Rust 2021（tauri / serde / image / uuid / ffmpeg-sidecar） |
+| 后端 | Rust 2021（tauri / serde / image / uuid） |
 | AI | PaddleOCR（Python worker）、MOSS（ASR，唯一引擎）、multilingual-e5-small + 统一转移 DP（融合）。<br>FunASR 与 llama.cpp + Qwen2.5-3B 已退役、不参与分发（代码保留，见下文「已退役组件」） |
 
 约束：**完全离线**。Rust 侧无 HTTP 客户端，应用不做任何网络请求；所有 AI 能力通过本地子进程实现。
@@ -26,7 +26,7 @@
                │ invoke() 命令 / listen() 事件（ocr-progress 等）
 ┌──────────────▼──────────────────────────────────────────────┐
 │ Rust 后端 (src-tauri)                                       │
-│  video ── ffmpeg/ffprobe（外部依赖，PATH 查找）              │
+│  video ── ffmpeg/ffprobe（内嵌 resources/ffmpeg/，回退 PATH）  │
 │  ocr / asr / llm / fuse ── 各自的 pipeline + 进度事件        │
 │  ai_runtime ── provider trait + manager + runtime 配置      │
 │  project / export ── <项目名>.gsa 持久化 / 字幕导出          │
@@ -46,7 +46,7 @@
 
 | 模块 | 职责 |
 |---|---|
-| `src-tauri/src/video/mod.rs` | ffprobe 元数据（`get_video_metadata`）；帧提取 / 音频提取供 OCR / ASR 复用；FFmpeg 定位：系统 PATH → ffmpeg-sidecar 目录，找不到报 `FFMPEG_NOT_FOUND` |
+| `src-tauri/src/video/mod.rs` | ffprobe 元数据（`get_video_metadata`）；帧提取 / 音频提取供 OCR / ASR 复用；FFmpeg 定位在 `video/ffmpeg_locator.rs`：内嵌 `resources/ffmpeg/`（随安装包分发）→ 系统 PATH，找不到报 `FFMPEG_NOT_FOUND` |
 | `src-tauri/src/ocr/`（`mod.rs` 门面 + `params`/`pipeline`/`merge`/`refine`/`correct`/`commands` 子模块） | 完整 OCR 流水线 `run_ocr`（后台线程 + `ocr-progress` 事件）：抽帧 → 变化检测 → 窗口精化 → OCR → 合并；`run_ocr_images` 直接识别截图；`approve_corpus_diff` 采纳语料纠正（替换规则的单一实现，与基准共用） |
 | `src-tauri/src/ai_runtime/dhash.rs` | 帧裁切区域的 64-bit dHash + 汉明距离变化判定 |
 | `src-tauri/src/ai_runtime/mod.rs` | AI Runtime 骨架：OCR/ASR/LLM 的 provider trait + manager + NoneProvider 占位（环境未就绪时保证可编译、返回"未就绪"） |
@@ -156,6 +156,14 @@ runtime/
 3. 兜底：Tauri `app_data_dir/runtime`
 
 `validate()` 保证所有相对路径不越出 runtime 目录（防路径穿越）、python / moss / llm 二进制存在；`embed_*` 四项**整组必配或整组为空**（半配视为配置错误，避免运行期才失败），已配置时同样逐项做越界校验；模型文件不做存在性检查（由 provider 报"未就绪"）。
+
+**路径字段分两组**（2026-10-31）：可执行文件 / worker 脚本 / 依赖目录（`worker_script`、`deps_dir`、`moss_binary`、`llm_binary`、`funasr_worker`、`funasr_deps`、`embed_worker`、`embed_deps_dir`）必须落在 runtime 内——它们要跟同目录 DLL、包内 python 绑定；**模型类只读数据**（`model_dir`、`moss_model`、`llm_model`、`funasr_model_dir`、`embed_model`、`embed_tokenizer`）允许写**绝对路径指向别的盘**，相对路径仍查越界。
+
+**运行时/模型放哪个盘**：
+- 整目录搬：设环境变量 `GSA_RUNTIME_DIR=<新路径>`（该目录下要有 `config.json`），或直接在安装时把 app 装在非系统盘——兜底路径是 `app_data_dir/runtime`，跟着 `%APPDATA%` 走。
+- 只搬模型（省 C 盘空间）：在 `runtime/config.json` 里给 `moss_model` / `embed_model` / `embed_tokenizer` 写绝对路径即可，例如
+  `"moss_model": "D:/gsa-models/moss/moss-transcribe-q5_k.gguf"`。
+- 就绪判定**不读配置是否为空**，一律走 `moss_paths()` / `ocr_paths()` / `embed_paths()` 的标准布局回退（一键安装只解包、不写 config.json），见 `docs/RUNTIME_BOOTSTRAP_CONTRACT.md` §8.6.2。
 
 ## 数据模型（`project/mod.rs`）
 
@@ -272,8 +280,8 @@ T4 落地后仍作为融合阈值 / 判据的**标定与回归来源**：LLM 判
 
 ## 打包与分发现状
 
-- `tauri.conf.json` 的 `bundle.resources` **尚未配置**：安装包不会携带 `runtime/`。分发方案（把 `runtime/**` 打进 bundle 并让 `config.rs` 识别安装后的资源目录布局）见 `config.rs` 内 TODO。
-- FFmpeg 不打包：应用按 PATH → ffmpeg-sidecar 目录的顺序查找。
+- `tauri.conf.json` 的 `bundle.resources` 现在带两样：安装清单 `resources/runtime/manifest.json` 与内嵌 ffmpeg `resources/ffmpeg/*`。AI 运行时本体（python / deps / 模型，十几 GB）仍不进安装包，由 `scripts/bootstrap_runtime.ps1` 在用户机器上按清单现装（欢迎页 MOSS 卡提供一键安装/更新入口，先做磁盘预检）。
+- FFmpeg 已随包分发（LGPL 共享构建，理由见 `THIRD_PARTY.md`）：`src-tauri/src/video/ffmpeg_locator.rs` 先找内嵌目录 `resources/ffmpeg/`，再回退系统 PATH；源码检出需先跑一次 `scripts/fetch_ffmpeg.ps1`（161 MB，二进制不入库）。
 - 模型下载只存在于 bootstrap 脚本；应用侧只有就绪检查（`check_*` 命令）。
 
 ## 协作约定

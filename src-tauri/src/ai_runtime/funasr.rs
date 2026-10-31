@@ -19,7 +19,7 @@ use crate::ai_runtime::{
 use serde::Deserialize;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -171,7 +171,7 @@ impl FunAsrProvider {
     /// Get-CimInstance（同一过滤语义）。
     #[cfg(windows)]
     fn cleanup_stale_funasr_processes(&self) {
-        let wmic_out = Command::new("wmic")
+        let wmic_out = crate::subprocess::hidden("wmic")
             .args([
                 "process",
                 "where",
@@ -190,7 +190,7 @@ impl FunAsrProvider {
             _ => {
                 // PowerShell 按命令行过滤（不含引号嵌套，Rust 侧 argv 直传无 shell 展开）
                 let script = "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -like '*funasr_worker.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }";
-                if let Err(e) = Command::new("powershell")
+                if let Err(e) = crate::subprocess::hidden("powershell")
                     .args(["-NoProfile", "-Command", script])
                     .output()
                 {
@@ -207,7 +207,7 @@ impl FunAsrProvider {
     /// taskkill 单个进程（幂等：进程已不存在时忽略错误）
     #[cfg(windows)]
     fn kill_pid(pid: u32) {
-        let _ = Command::new("taskkill")
+        let _ = crate::subprocess::hidden("taskkill")
             .args(["/PID", &pid.to_string(), "/F"])
             .output();
     }
@@ -231,7 +231,7 @@ impl FunAsrProvider {
         let language = language
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| self.language.clone());
-        let mut cmd = Command::new(&self.python);
+        let mut cmd = crate::subprocess::hidden(&self.python);
         cmd.arg(&self.worker)
             .arg(audio_path)
             // PYTHONPATH 指向独立 deps 目录；MODELSCOPE_CACHE 指向模型缓存

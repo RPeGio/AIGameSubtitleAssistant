@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -126,6 +126,106 @@ pub struct DiskPrecheck {
     pub message: String,
 }
 
+/// 多条目磁盘预检：逐个 id 估需求再求和（单条目时直接走 `precheck_disk_with`）。
+///
+/// 为什么要分开：「装全部」时 moss（621 MB）、models-moss（597 MB）、deps-ocr（295 MB
+/// 或 GPU 479 MB）、deps-embed（150 MB）要一起落盘，按单条估算会严重低估。
+pub fn precheck_disk_multi(
+    manifest_text: Option<&str>,
+    free_bytes: Option<u64>,
+    ids: &[String],
+    flavor: &str,
+) -> DiskPrecheck {
+    if ids.len() <= 1 {
+        let id = ids.first().map(String::as_str).unwrap_or("moss");
+        return precheck_disk_with(manifest_text, free_bytes, id, flavor);
+    }
+
+    let mut required = 0u64;
+    let mut entries = 0usize;
+    let mut missing: Vec<&str> = Vec::new();
+    for id in ids {
+        let one = precheck_disk_with(manifest_text, free_bytes, id, flavor);
+        if one.manifest_entries == 0 {
+            missing.push(id.as_str());
+            continue;
+        }
+        entries += one.manifest_entries;
+        // 单条结果里含一份 SAFETY_MARGIN，这里先扣掉，最后统一加一次
+        required = required.saturating_add(one.required_bytes.saturating_sub(SAFETY_MARGIN));
+    }
+    if entries == 0 {
+        // 一个都对不上（清单缺失或 id 全错）：沿用单条口径的提示
+        return precheck_disk_with(manifest_text, free_bytes, ids[0].as_str(), flavor);
+    }
+    required = required.saturating_add(SAFETY_MARGIN);
+
+    let ok = free_bytes.map(|f| f >= required).unwrap_or(true);
+    let n = ids.len();
+    let gb = |v: u64| v as f64 / 1024.0 / 1024.0 / 1024.0;
+    let note = if missing.is_empty() {
+        String::new()
+    } else {
+        format!("（清单里没有 {}，已跳过）", missing.join("、"))
+    };
+    let message = match free_bytes {
+        Some(free) if !ok => format!(
+            "磁盘空间不足：{n} 个运行时条目共需约 {:.2} GB，可用 {:.2} GB{note}",
+            gb(required),
+            gb(free)
+        ),
+        Some(free) => format!(
+            "磁盘空间充足：{n} 个运行时条目共需约 {:.2} GB，可用 {:.2} GB{note}",
+            gb(required),
+            gb(free)
+        ),
+        None => format!(
+            "无法读取可用空间，跳过判定（{n} 个运行时条目共需约 {:.2} GB{note}）",
+            gb(required)
+        ),
+    };
+
+    DiskPrecheck {
+        ok,
+        manifest_entries: entries,
+        required_bytes: required,
+        free_bytes,
+        message,
+    }
+}
+
+/// 逗号分隔的条目 id → 去空去重保序（`-Items` 的入参格式）
+pub fn split_item_ids(raw: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for part in raw.split(',') {
+        let id = part.trim();
+        if id.is_empty() || out.iter().any(|e| e == id) {
+            continue;
+        }
+        out.push(id.to_string());
+    }
+    out
+}
+
+/// 清单里出现的全部条目 id（保序去重）——「装全部」的权威口径，与脚本缺省一致。
+/// 清单读不到时退回 `moss`（唯一的旧默认值）。
+pub fn manifest_item_ids(manifest_text: Option<&str>) -> Vec<String> {
+    let Some(text) = manifest_text else {
+        return vec!["moss".into()];
+    };
+    let mut ids: Vec<String> = Vec::new();
+    for e in super::installed_state::parse_manifest_items(text) {
+        if !ids.contains(&e.id) {
+            ids.push(e.id);
+        }
+    }
+    if ids.is_empty() {
+        vec!["moss".into()]
+    } else {
+        ids
+    }
+}
+
 /// 按清单条目估算磁盘需求并判断是否够用（纯函数，便于单测）。
 ///
 /// - `flavor`：`auto` 时取该 id 所有 flavor 的**最大** size（保守估计）；
@@ -169,26 +269,29 @@ pub fn precheck_disk_with(
             _ => e.size.saturating_mul(EXPANSION_FACTOR),
         }
     };
-    let required = if want_auto {
-        // auto：保守取该 id 所有 flavor 里最贵的那个
-        entries.iter().map(pick).max().unwrap_or(0)
+    // 候选条目：auto = 所有 flavor 取最贵；显式 flavor = 精确匹配；
+    // 匹配不到时退回「无 flavor 的整包条目」（models-moss / deps-embed 这类不看 flavor，
+    // 若这里不给它们兜底，其磁盘需求会被算成 0）
+    let candidates: Vec<&super::installed_state::ManifestEntry> = if want_auto {
+        entries.iter().collect()
     } else {
-        entries
+        let exact: Vec<&super::installed_state::ManifestEntry> = entries
             .iter()
-            .find(|e| e.flavor.eq_ignore_ascii_case(flavor))
-            .map(pick)
-            .unwrap_or(0)
-    }
-    .saturating_add(SAFETY_MARGIN);
-    let size = if want_auto {
-        entries.iter().map(|e| e.size).max().unwrap_or(0)
-    } else {
-        entries
-            .iter()
-            .find(|e| e.flavor.eq_ignore_ascii_case(flavor))
-            .map(|e| e.size)
-            .unwrap_or(0)
+            .filter(|e| e.flavor.eq_ignore_ascii_case(flavor))
+            .collect();
+        if exact.is_empty() {
+            entries.iter().filter(|e| e.flavor.trim().is_empty()).collect()
+        } else {
+            exact
+        }
     };
+    let required = candidates
+        .iter()
+        .map(|e| pick(e))
+        .max()
+        .unwrap_or(0)
+        .saturating_add(SAFETY_MARGIN);
+    let size = candidates.iter().map(|e| e.size).max().unwrap_or(0);
 
     let ok = match free_bytes {
         Some(free) => free >= required,
@@ -236,7 +339,7 @@ fn query_free_bytes(path: &Path) -> Option<u64> {
         "$d = Get-PSDrive -Name {} -ErrorAction SilentlyContinue; if ($d) {{ $d.Free }}",
         letter
     );
-    let out = Command::new("powershell")
+    let out = crate::subprocess::hidden("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .output()
         .ok()?;
@@ -274,7 +377,7 @@ impl RuntimeInstaller {
                 // 只杀根可能留下悬挂的 IO；/T 覆盖整棵树
                 #[cfg(windows)]
                 {
-                    let _ = Command::new("taskkill")
+                    let _ = crate::subprocess::hidden("taskkill")
                         .args(["/PID", &child.id().to_string(), "/T", "/F"])
                         .output();
                 }
@@ -299,9 +402,11 @@ impl Drop for RunningGuard<'_> {
 
 /// 找 `scripts/bootstrap_runtime.ps1` 的候选路径（第一个存在的胜出）。
 ///
-/// 注意：脚本**没有**随 app 打包（`bundle.resources` 只放了 manifest），
-/// 所以打包形态下默认找不到——这是刻意的现状：安装器目前是"仓库内/开发期"能力，
-/// 要进正式分发得把脚本一起塞进 resources（见契约 §6.2 的后续项）。
+/// 脚本**随安装包发布**：`pnpm build` 先跑 `scripts/sync_bundle_resources.mjs`
+/// 把它拷进 `src-tauri/resources/scripts/`，再由 `bundle.resources` 带进安装包，
+/// 最终落在 `<exe目录>/resources/scripts/bootstrap_runtime.ps1`（见候选列表里的
+/// `dir/resources/...`）。Windows 上 `resource_dir()` 就是 exe 所在目录。
+/// 开发期则直接命中仓库里的 `scripts/`。
 pub fn bootstrap_candidates(runtime_dir: &Path) -> Vec<PathBuf> {
     let mut v = Vec::new();
     if let Ok(p) = std::env::var("GSA_BOOTSTRAP_SCRIPT") {
@@ -346,7 +451,7 @@ pub async fn precheck_runtime_disk(app: tauri::AppHandle) -> Result<DiskPrecheck
 
 /// Tauri 命令：跑一次安装。
 ///
-/// - `items`：逗号分隔条目 id（默认 `moss`）
+/// - `items`：逗号分隔条目 id（**缺省 = 清单里的全部条目**，含模型与 OCR/向量运行时）
 /// - `flavor`：`auto` / `cpu` / `cuda` / `vulkan`（默认 `auto`）
 /// - `force`：忽略已装标记
 ///
@@ -393,13 +498,88 @@ fn runtime_paths(app: &tauri::AppHandle) -> (PathBuf, Option<PathBuf>) {
     (runtime_dir, manifest)
 }
 
+/// 已经装好、且 `.installed.json` 里的 sha256 与清单某个条目一致的 id。
+///
+/// 脚本对这些条目只会打 `item_skip`（不下载、不解压），所以它们不该再计入磁盘需求。
+/// 为什么必须扣：一键安装的缺省条目是"清单全部"，重装/补装时若仍按全量估算，用户会被
+/// 一句"磁盘空间不足"挡在门外——2026-10-31 真机反馈正是如此（C 盘剩 4 GB，全量估算要
+/// 约 9.46 GB，而实际上一个字节都不用下）。
+pub fn installed_up_to_date(
+    manifest_text: Option<&str>,
+    installed_text: Option<&str>,
+) -> Vec<String> {
+    let (Some(manifest_text), Some(installed_text)) = (manifest_text, installed_text) else {
+        return Vec::new();
+    };
+    let installed = super::installed_state::parse_installed(installed_text);
+    let mut out: Vec<String> = Vec::new();
+    for (id, item) in &installed {
+        let sha = item.sha256.trim().to_lowercase();
+        if sha.is_empty() {
+            continue;
+        }
+        let hit = super::installed_state::parse_manifest_items(manifest_text)
+            .into_iter()
+            .any(|e| e.id == *id && e.sha256.trim().to_lowercase() == sha);
+        if hit && !out.contains(id) {
+            out.push(id.clone());
+        }
+    }
+    out
+}
+
+/// 读 `<runtime>/.installed.json`（读不到就当作没装过）
+pub fn read_installed_text(runtime_dir: &Path) -> Option<String> {
+    std::fs::read_to_string(runtime_dir.join(super::installed_state::INSTALLED_FILE)).ok()
+}
+
+/// 本次真正需要下载/解压的条目：已是最新的扣掉，`force` 时全部保留。
+fn pending_ids(text: Option<&str>, runtime_dir: &Path, ids: &[String], force: bool) -> Vec<String> {
+    if force {
+        return ids.to_vec();
+    }
+    let installed_text = read_installed_text(runtime_dir);
+    let done = installed_up_to_date(text, installed_text.as_deref());
+    ids.iter()
+        .filter(|id| !done.iter().any(|d| d == *id))
+        .cloned()
+        .collect()
+}
+
+/// 预检入口：先扣掉已是最新的条目，再按剩余条目估算空间。
+///
+/// 全都不用下时直接给"无需额外磁盘"的结论——这正是"点了重装其实什么都没装"的场景。
+fn precheck_pending(
+    text: Option<&str>,
+    runtime_dir: &Path,
+    ids: &[String],
+    flavor: &str,
+    force: bool,
+) -> DiskPrecheck {
+    let pending = pending_ids(text, runtime_dir, ids, force);
+    if pending.is_empty() {
+        return DiskPrecheck {
+            ok: true,
+            manifest_entries: ids.len(),
+            required_bytes: 0,
+            free_bytes: query_free_bytes(runtime_dir),
+            message: format!(
+                "全部 {} 个运行时条目已是最新：无需下载与解压，本次不占用额外磁盘",
+                ids.len()
+            ),
+        };
+    }
+    precheck_disk_multi(text, query_free_bytes(runtime_dir), &pending, flavor)
+}
+
 fn precheck_impl(app: &tauri::AppHandle) -> Result<DiskPrecheck, String> {
     let (runtime_dir, manifest) = runtime_paths(app);
     let text = manifest
         .as_deref()
         .and_then(|p| std::fs::read_to_string(p).ok());
-    let free = query_free_bytes(&runtime_dir);
-    Ok(precheck_disk_with(text.as_deref(), free, "moss", "auto"))
+    let ids = manifest_item_ids(text.as_deref());
+    // 前端这个命令只问"现在点安装要多少空间"，一定是非强制安装
+    Ok(precheck_pending(text.as_deref(), &runtime_dir, &ids, "auto", false))
 }
 
 /// 子进程输出里保留的最后一段（给失败时拼错误文案）
@@ -420,6 +600,37 @@ fn push_tail(buf: &mut String, text: &str) {
             .unwrap_or(buf.len());
         *buf = buf[safe..].to_string();
     }
+}
+
+/// 把这次安装的诊断落到 `runtime/logs/install.log`（每次安装覆盖上一次）。
+///
+/// 为什么要文件：打包形态下 powershell 子进程**没有可见控制台**（我们刻意加了
+/// CREATE_NO_WINDOW），安装失败时用户只看到一句 toast，没处看原因——真机反馈
+/// 2026-10-29 正是卡在"命令行一闪而过、看不到报错"上。失败文案会带上这个路径。
+fn write_install_log(
+    runtime_dir: &Path,
+    script: &Path,
+    flavor: &str,
+    outcome: &StreamOutcome,
+) -> Option<PathBuf> {
+    let dir = runtime_dir.join("logs");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join("install.log");
+    let status = outcome
+        .status
+        .as_ref()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "已取消（没有退出码）".into());
+    let stderr = outcome.stderr_tail.trim();
+    let body = format!(
+        "脚本: {}\nflavor: {}\n退出码: {}\n\n── stderr（尾部 {STDERR_TAIL_LIMIT} 字符）──\n{}\n",
+        script.display(),
+        flavor,
+        status,
+        if stderr.is_empty() { "（空）" } else { stderr }
+    );
+    std::fs::write(&path, body).ok()?;
+    Some(path)
 }
 
 fn run_install(
@@ -446,13 +657,21 @@ fn run_install(
         .as_deref()
         .and_then(|p| std::fs::read_to_string(p).ok());
     let want_flavor = flavor.clone().unwrap_or_else(|| "auto".into());
-    let pre = precheck_disk_with(text.as_deref(), query_free_bytes(&runtime_dir), "moss", &want_flavor);
+    // 条目缺省 = 清单里的全部条目（= 脚本 `-Items` 的缺省）；显式传了就按传的
+    let ids = items
+        .as_deref()
+        .map(split_item_ids)
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| manifest_item_ids(text.as_deref()));
+    // 预检要扣掉已是最新的条目：缺省装"全部"时，已装好的那些只会 item_skip，
+    // 按全量估算会让"补装一个模型"被误判成空间不足（真机 2026-10-31 就撞上了）
+    let pre = precheck_pending(text.as_deref(), &runtime_dir, &ids, &want_flavor, force);
     if !pre.ok {
         emit_event(
             app,
             InstallEvent {
                 event: "error".into(),
-                item: Some("moss".into()),
+                item: None,
                 detail: Some(pre.message.clone()),
                 ..Default::default()
             },
@@ -482,11 +701,11 @@ fn run_install(
         .ok_or_else(|| format!("找不到安装脚本 {BOOTSTRAP_SCRIPT_REL}（打包形态下脚本未随 app 发布）"))?;
 
     // 3) 起子进程：stdout 是 JSONL 协议流，stderr 是人类诊断
-    let mut cmd = Command::new("powershell");
+    let mut cmd = crate::subprocess::hidden("powershell");
     cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
         .arg(&script)
         .arg("-Items")
-        .arg(items.unwrap_or_else(|| "moss".into()))
+        .arg(ids.join(","))
         .arg("-Flavor")
         .arg(&want_flavor)
         .arg("-RuntimeDir")
@@ -516,7 +735,15 @@ fn run_install(
         move |evt| emit_event(&app_for_events, evt),
         &|| installer.cancel(),
     )?;
-    Ok(summarize(outcome))
+    // 落一份诊断日志：失败时把它写进文案，用户不用再猜"刚才那个黑窗口报了什么"
+    let log_path = write_install_log(&runtime_dir, &script, &want_flavor, &outcome);
+    let mut summary = summarize(outcome);
+    if !summary.ok {
+        if let Some(p) = log_path {
+            summary.message = format!("{}（日志：{}）", summary.message, p.display());
+        }
+    }
+    Ok(summary)
 }
 
 /// 一次运行的原始产物（未套退出码语义）
@@ -848,6 +1075,106 @@ mod tests {
     }
 
     #[test]
+    fn split_item_ids_trims_and_dedups() {
+        assert_eq!(
+            split_item_ids(" moss , models-moss,,moss,deps-ocr "),
+            vec!["moss", "models-moss", "deps-ocr"]
+        );
+        assert!(split_item_ids("  ").is_empty());
+    }
+
+    #[test]
+    fn multi_precheck_sums_every_entry() {
+        // 多条目要「求和」而不是「取最大」：否则装全部时会严重低估磁盘
+        let ids = split_item_ids("moss,models-moss");
+        let single = precheck_disk_with(Some(MANIFEST_FULL), Some(1 << 40), "moss", "cuda");
+        let multi = precheck_disk_multi(Some(MANIFEST_FULL), Some(1 << 40), &ids, "cuda");
+        assert_eq!(multi.manifest_entries, 4, "moss 三条 + 模型一条");
+        assert!(
+            multi.required_bytes > single.required_bytes,
+            "多条目需求应大于单条：multi={} single={}",
+            multi.required_bytes,
+            single.required_bytes
+        );
+        // 余量只加一次：差额应恰是模型条目的成本（size × 3），不含第二份 SAFETY_MARGIN
+        let extra = multi.required_bytes - single.required_bytes;
+        let model_cost = 597_400_000u64 * 3;
+        assert_eq!(extra, model_cost);
+    }
+
+    #[test]
+    fn multi_precheck_single_id_matches_single_path() {
+        let ids = split_item_ids("moss");
+        let one = precheck_disk_with(Some(MANIFEST), Some(1 << 40), "moss", "cuda");
+        let multi = precheck_disk_multi(Some(MANIFEST), Some(1 << 40), &ids, "cuda");
+        assert_eq!(one.required_bytes, multi.required_bytes);
+        assert_eq!(one.message, multi.message);
+    }
+
+    /// 真实清单的形态：moss 有 flavor，模型条目没有 flavor
+    const MANIFEST_FULL: &str = r#"{
+        "version": "1",
+        "items": [
+            {"id":"moss","flavor":"cpu","url":"u1","sha256":"a","size":1121692,"dest":"bin"},
+            {"id":"moss","flavor":"vulkan","url":"u2","sha256":"b","size":16139894,"dest":"bin"},
+            {"id":"moss","flavor":"cuda","url":"u3","sha256":"c","size":651834262,"dest":"bin"},
+            {"id":"models-moss","url":"m","sha256":"d","size":597400000,"dest":"models/moss"}
+        ]
+    }"#;
+
+    #[test]
+    fn installed_up_to_date_matches_only_same_sha() {
+        let installed = r#"{"version":1,"items":{
+            "moss":{"flavor":"cuda","sha256":"C","source_version":"1","installed_at":"x"},
+            "models-moss":{"flavor":"","sha256":"zzz","source_version":"1","installed_at":"x"}
+        }}"#;
+        // 大小写无关（脚本写的是小写，清单可能大写）
+        assert_eq!(
+            installed_up_to_date(Some(MANIFEST_FULL), Some(installed)),
+            vec!["moss"]
+        );
+        // 哈希不一致 ⇒ 仍需下载
+        let stale = r#"{"version":1,"items":{"moss":{"flavor":"cuda","sha256":"old"}}}"#;
+        assert!(installed_up_to_date(Some(MANIFEST_FULL), Some(stale)).is_empty());
+        // 没有状态文件
+        assert!(installed_up_to_date(Some(MANIFEST_FULL), None).is_empty());
+    }
+
+    #[test]
+    fn precheck_pending_skips_installed_items() {
+        // 全量估算要 3 倍展开 + 余量；已装项扣掉后需求必须明显变小
+        let dir = std::env::temp_dir().join(format!("gsa_pending_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let installed = r#"{"version":1,"items":{
+            "moss":{"flavor":"cuda","sha256":"c"},
+            "models-moss":{"flavor":"","sha256":"d"}
+        }}"#;
+        std::fs::write(dir.join(".installed.json"), installed).unwrap();
+
+        let ids = vec!["moss".to_string(), "models-moss".to_string()];
+        let full = precheck_disk_multi(Some(MANIFEST_FULL), Some(u64::MAX), &ids, "cuda");
+        let pending = precheck_pending(Some(MANIFEST_FULL), &dir, &ids, "cuda", false);
+        assert!(full.required_bytes > 0);
+        assert_eq!(pending.required_bytes, 0, "两项都已最新，不该再要空间");
+        assert!(pending.message.contains("已是最新"));
+        // -Force 覆盖已装标记：需求回到全量
+        let forced = precheck_pending(Some(MANIFEST_FULL), &dir, &ids, "cuda", true);
+        assert_eq!(forced.required_bytes, full.required_bytes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_item_ids_reads_all_ids_in_order() {
+        assert_eq!(
+            manifest_item_ids(Some(MANIFEST_FULL)),
+            vec!["moss", "models-moss"]
+        );
+        // 清单缺失时退回旧默认值
+        assert_eq!(manifest_item_ids(None), vec!["moss"]);
+    }
+
+    #[test]
     fn bootstrap_candidates_contain_repo_layouts() {
         let cands = bootstrap_candidates(Path::new("F:\\repo\\runtime"));
         assert!(
@@ -905,14 +1232,14 @@ mod tests {
         // 这里借 cmd 的 /c exit 快速拿到真实 ExitStatus
         #[cfg(windows)]
         {
-            Command::new("cmd")
+            crate::subprocess::hidden("cmd")
                 .args(["/c", "exit", &code.to_string()])
                 .status()
                 .expect("cmd 应可用")
         }
         #[cfg(not(windows))]
         {
-            Command::new("sh")
+            crate::subprocess::hidden("sh")
                 .args(["-c", &format!("exit {code}")])
                 .status()
                 .expect("sh 应可用")
@@ -1029,7 +1356,7 @@ mod tests {
         let manifest = dir.join("manifest.json");
         std::fs::write(&manifest, MANIFEST).unwrap();
 
-        let child = Command::new("powershell")
+        let child = crate::subprocess::hidden("powershell")
             .args([
                 "-NoProfile",
                 "-NonInteractive",
@@ -1094,7 +1421,7 @@ mod tests {
             return;
         };
         // 用一个睡 5 秒的子进程模拟"安装中"，验证 cancel 后 stream_child 立即返回
-        let child = Command::new("powershell")
+        let child = crate::subprocess::hidden("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 5"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

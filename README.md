@@ -55,7 +55,7 @@ GameSubtitleAssistant 面向游戏剧情实况翻译（烤肉）、切片和字�
 | Windows 10/11 x64 | 目前唯一支持平台（内嵌 Python 为 win_amd64，脚本为 PowerShell） |
 | [Node.js](https://nodejs.org/) 18+（建议 20 LTS）+ [pnpm](https://pnpm.io/) | 前端构建 |
 | Rust stable（MSVC 工具链） | 桌面端编译，见 [Tauri 前置要求](https://tauri.app/zh-cn/start/prerequisites/) |
-| FFmpeg + ffprobe | 需自行安装并加入 `PATH`，应用不会自动下载 |
+| FFmpeg + ffprobe | **已内嵌**（LGPL 共享构建，随安装包分发，见 [THIRD_PARTY.md](THIRD_PARTY.md)）——源码检出后需先跑 `scripts/fetch_ffmpeg.ps1`；缺失时回退系统 `PATH` |
 | NVIDIA GPU（可选） | MOSS 支持 cpu / cuda / vulkan 三种后端（首次启动自检自动选最优，无 GPU 用 cpu，转写时间延长数倍） |
 
 各 AI 模块合计占用 13.9 GB 左右磁盘空间（模型 + Python 依赖）；向量融合的 E5-small qint8 模型另约 113 MB。
@@ -142,7 +142,7 @@ pnpm tauri build   # 产出安装包（注：运行时资源打包尚未配置�
 
 - 仅支持 Windows；macOS / Linux 需要移植引导脚本与运行时。
 - 无安装包，AI 环境依赖脚本搭建；模型在安装阶段下载，应用内不自动下载（仅有就绪检测）。
-- FFmpeg 需自备（加入 `PATH`）。
+- FFmpeg/ffprobe 已内嵌（LGPL 共享构建，随安装包分发）；源码检出后若未跑 `scripts/fetch_ffmpeg.ps1`，会回退到 `PATH` 上的 ffmpeg。
 - 融合产出仍需逐条人工校对：`score` 在任何阈值下的精确率都接近错误基准率（4.2%），**不能作为正确性判据**，审计表只提供结构化分层提示（依据见 [benchmark/FUSE_THRESHOLD_CALIBRATION.md](benchmark/FUSE_THRESHOLD_CALIBRATION.md) §7.9⑥）；「同台词跨说话人」场景（[F14](benchmark/FUSE_PIPELINE_DEFECTS.md)）错绑行的文本逐字相同、字幕内容不受影响，但审计表的说话人归属展示可能不准，该场景经实验否决算法侧修复、走人工裁决。
 - 本地 LLM（llama.cpp + Qwen2.5-3B-Instruct）**已退役、不参与分发**：历史实现仅保留在代码里作融合能力测试台，Qwen 采用 **Qwen Research 许可**（商用需另行授权），详见 [THIRD_PARTY.md](THIRD_PARTY.md)。
 

@@ -178,9 +178,7 @@ async function onDeviceChange(e: Event) {
 // 展开 ASR 卡时探测一次引擎状态
 watch(openCard, (v) => {
   if (v === "audio") void openAsrPanel();
-});
-
-async function startAsr() {
+});async function startAsr() {
   try {
     await projectStore.runAsr(asrParams.value);
     message.success("ASR 完成，时间轴已生成");
@@ -444,7 +442,7 @@ async function startEmbedOcr() {
           </div>
         </div>
 
-        <!-- MOSS 推理设备（第 12 项）：写入 runtime/config.json，重启生效 -->
+        <!-- MOSS 推理设备（第 12 项）：写入 runtime/config.json，切设备立即生效 -->
         <div class="sblk">
           <span class="bt">推理设备</span>
           <div class="prow">
@@ -475,7 +473,7 @@ async function startEmbedOcr() {
           <span v-if="manifestMissing" class="enote warn">
             未读取到安装清单，暂显示全部设备选项
           </span>
-          <span class="enote">保存后重启应用生效；显式指定但本机不具备时会直接报错，不会静默降级</span>
+          <span class="enote">选中即保存并立即生效；显式指定但本机不具备时会直接报错，不会静默降级</span>
         </div>
 
         <!-- 说话人标记：每条 ASR 轨标记为主播语音 / 游戏内容（"选择即生效"）。

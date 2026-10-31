@@ -23,10 +23,10 @@
 | 17 | ✅ 去除轨道内 clip 的所有句末标点 | 功能·文本清理 | 8（句界操作会留下句尾逗号） | 已实现（`79ae0af`）：轨道总览「美化」下拉的「去除文本末标点」 |
 | 18 | ✅ 语料「全文替换」同步作用于产物轨 | 功能·文本清理 | 6（替换本身）·17（同属语料→产物文本口径） | 已实现（2026-10-25）：仅 fused 轨，一次性精确子串替换，一次撤销回退 |
 | 10 | ✅ 快捷键体系（注册表 + 单一监听；帮助面板并入第 19 项） | 功能·跨页 | 8、9 | 已实现（`02416b8`）：`composables/shortcuts.ts` 分发器 + 活动时间轴判定 |
-| 11 | 欢迎页自检升级（探针 + 静默 bootstrap + 后端指引） | 功能·独立 | 7（info 基建）·「并行分支接口」的命令缺口 | 独立大件，放中后段不打断时间轴主线 |
-| 12 | ✅ CUDA GPU 加速参数化（设备迁移到 UI） | 功能·Rust+UI | 7（要带 info 说明）+ 11（需 `probe_moss_backend` 命令） | 已实现（阶段 A+B `a8e8010`、阶段 C `2a766c8`）：`probe_moss_backend` + `set_moss_device` 两命令、打轴页设备下拉、欢迎页硬报错、manifest 随包落库 |
+| 11 | ✅ 欢迎页自检升级（探针摊开 + 手动补齐命令 + 一键安装/更新） | 功能·独立 | 7（info 基建）·12（`probe_moss_backend`/`probe_moss_install` 已就绪） | 11a/11b/11c 已实现（2026-10-28）；2026-10-30 真机回归修复：脚本随包 + 子进程静默 + 探测改异步 |
+| 12 | ✅ CUDA GPU 加速参数化（设备迁移到 UI） | 功能·Rust+UI | 7（要带 info 说明）+ 11（需 `probe_moss_backend` 命令） | 已实现（阶段 A+B `a8e8010`、阶段 C `2a766c8`；2026-10-30 探测命令改 async）：`probe_moss_backend` + `set_moss_device` 两命令、打轴页设备下拉、欢迎页硬报错、manifest 随包落库 |
 | 13 | ✅ 杂项清理与验证（死代码/参数开关/图标；真机波形待验） | 清理·零碎 | 无 | 已实现（`8b71ee2`）：死代码已删、易混字母开关已暴露、轨道图标常显 |
-| 14 | 内嵌 ffmpeg/ffprobe + 欢迎页 ffmpeg 自检卡 | 功能·打包 | 11（自检卡复用其探针机制） | 外部依赖一致性；涉及打包策略，宜与 11 一起看 |
+| 14 | ✅ 内嵌 ffmpeg/ffprobe + 欢迎页 ffmpeg 自检卡 | 功能·打包 | 11（自检卡复用其探针机制） | 已实现（`40e645f`/`5acb56f`/`bfd1168`/`f3d19d8`/`cd1b753`）：LGPL 共享构建内嵌、内嵌优先回退 PATH、环境自检第 4 张卡；2026-10-30 `check_ffmpeg` 改 async + 静默启动 |
 | 19 | 设置面板（默认 ASR 模型 + 快捷键查看/修改） | 功能·跨页 | 10（注册表） | 改动大、用户明确单独一个 PR；快捷键帮助面板并入此项 |
 | 20 | ✅ 校对区选中 clip 时，轨道总览滚动到该行 | 修复·小 | 无 | 已实现（`b2e70ab`）：`data-clip-id` + 矩形比对最小滚动 |
 | 21 | ✅ 时间轴框选多选（含 `Ctrl+A` 全选、多选整体位移） | 功能·核心 | 10（活动时间轴判定） | 已实现（`34e2837`）：多选模型 + 框选 + 修饰键 + 批量删除 + 刚性整组位移 |
@@ -606,7 +606,7 @@
 - `pnpm build` 通过；倒放实测时间在减少、`K` 后恢复正放；逐帧步进 = `1/fps`。
 
 
-### 11. 欢迎页模型自检升级（探针 + 未就绪静默 bootstrap）
+### 11. ✅ 欢迎页模型自检升级（探针 + 手动补齐命令 + 一键安装/更新）
 
 **现状依据**
 - 现在只做探针：`src/views/Welcome.vue` 的 `probeOcr()`（`invoke("check_ocr_runtime")`）、`probeAsr()`（`projectStore.getAsrEngines()` 取 `moss`）、`probeEmbed()`（`invoke("check_embed_runtime")`），三者不 await、未就绪只显示状态、不阻塞。
@@ -636,7 +636,111 @@
 - **11b 命令指引层（可立即做）**：未就绪时给一条**可复制**的命令（`scripts/bootstrap_moss.ps1 -Backend vulkan` 这一代）；若要判断脚本是否存在，加一个只读命令 `probe_bootstrap_scripts`（返回脚本存在与路径），不让前端猜路径。
 - **11c 静默 bootstrap（阻塞已解除，2026-10-28）**：执行体 `scripts/bootstrap_runtime.ps1` 与 Rust 侧基础设施（spawn / JSONL 进度事件 / 取消 / 磁盘预检）已由分发侧随 `7d3f8d5` 交付。本分支剩下的是**接线**：首次启动或用户点「安装」时先调 `precheck_runtime_disk`，再调 `install_runtime`（`items` / `flavor` / `force`），监听 `runtime-install-progress` 渲染进度，取消按钮调 `cancel_runtime_install`。**遗留一条**：打包形态下脚本尚未随 app 发布（`bundle.resources` 只有 manifest，`bootstrap_candidates` 已留 `resources/scripts/bootstrap_runtime.ps1` 位置），需分发侧补 `tauri.conf.json` 的资源映射。（2026-10-30 核对：`feat/misc-fixes` 的 `bd8ee43` + `scripts/sync_bundle_resources.mjs` 已在那边补齐 `resources/scripts/*` 与构建期同步，本分支尚未合入 ⇒ 合并后此条关闭。）
 
-**依赖/前置**：11a/11b 已全部满足（命令齐、契约齐）；11c 的执行体与子进程基础设施已就位（`7d3f8d5`），只剩前端接线与打包形态的脚本发布，见上表。
+**11a / 11b 已实现（2026-10-28；11c 接线随后并入 installer 侧交付）**
+
+| 子项 | 处理 | 位置 |
+|---|---|---|
+| ASR 卡三行 | ①设备（配置值 + 实测后端）②为什么 / 该装哪个：显式指定不可用 → 红字硬报错；**装的是 CPU 版但本机能上 GPU → 黄字「建议改用 cuda 版运行时：<理由>」**（比对的是 `probe_moss_install.installed.flavor`，不是 `requested`，避免 auto 下天天误报）③运行时状态：`probe_moss_install.message`，需要动作的状态（`update_available` / `file_missing` / `flavor_not_in_manifest`）标黄 | `src/views/Welcome.vue`（`probeAsr` / `setAsrInstall` / `INSTALL_ACTION_STATES`） |
+| OCR / Embed 卡 | 未就绪时把 `check_*_runtime` 的失败原文直接摊到卡面（原先只藏在 `title` 悬浮里）；`pnpm build` 前 ASR 卡的原因已由上面两行覆盖 ⇒ 不再重复显示引擎 message | 同上 |
+| 手动补齐命令（仅 OCR / e5-small） | 未就绪时给一行等宽命令，**点击复制**（`navigator.clipboard`，失败降级提示手动选中）：`scripts/bootstrap_ocr.ps1` / `scripts/bootstrap_embed.ps1`。MOSS 在 11c 之后改用安装按钮，卡面不再并列给 `scripts/bootstrap_moss.ps1`（两个 CTA 打架，见 11c 决策） | 同上（`cmdOf` / `showCmd` / `copyCmd`、样式 `.ecard .cmd`） |
+| store / 类型 | 新增 `probeMossInstall()` 与 `MossInstallStatus` / `MossInstalledItem` | `src/stores/project.ts`、`src/types/index.ts` |
+
+| 顺手修正 | OCR / e5-small 卡此前也会显示「设备 · auto（ggml 自动选优）」——`ggml` 是 MOSS 专属，`deviceText()` 对任何 `device===""` 的卡都返回该文案（`setProbe` 的 device 默认空）。改成只给 ASR 卡渲染设备行 | `Welcome.vue` 设备行加 `card.key === 'asr'` 守卫 |
+
+**验证**：`pnpm build`（含 `vue-tsc --noEmit`）EXIT=0；**已用 headless Chrome + Tauri mock 实测**（`temp/css-preview/checks/item11.js`，1680×1000）：
+- 正常态（MOSS 就绪 + 运行时 `update_available`）：MOSS 卡多出黄字「运行时是旧版…」+ 命令 `scripts/bootstrap_moss.ps1 -Backend vulkan`（`update_available` 正确地取**已装** flavor）；e5-small 未就绪卡多出失败原文 + `scripts/bootstrap_embed.ps1`；`pageOverflow=false`、`.env` 高 167px。
+- 最拥挤态（MOSS 未就绪 + 显式 cuda 不可用）：红字硬报错、`MOSS 运行时未安装`、命令、`推理设备可在打轴页…设置` 五行并存，三张卡等高不溢出。
+- 命令点击 → 弹「复制失败，请手动选中命令」（headless 无剪贴板权限，即降级分支按设计工作；成功分支未在无头环境验证）。
+- 亮色主题同步核对。
+- 截图：`temp/css-preview/item11-env-cards.png`（暗/正常）、`item11-env-notready.png`（暗/最拥挤）、`item11-env-light.png`（亮/正常）。
+
+**11c 已实现（2026-10-28，一键安装/更新）：前置由 `7d3f8d5` 交付**（`scripts/bootstrap_runtime.ps1` 406 行 + `src-tauri/src/ai_runtime/runtime_install.rs` 1100 行：`precheck_runtime_disk` / `install_runtime` / `cancel_runtime_install` 三命令 + `runtime-install-progress` 事件）。
+
+| 子项 | 处理 | 位置 |
+|---|---|---|
+| 入口 | MOSS 卡在「未就绪」或「运行时需更新」时给按钮（`canInstall` / `installLabel`：未就绪 →「安装运行时」，否则「更新运行时」），旁注「按本机能力选后端」 | `src/views/Welcome.vue` |
+| 磁盘预检 | 点按钮先 `precheck_runtime_disk`（Rust 侧按 cuda 包 622 MB × 展开系数 3 估 ≈1.97 GB）；不通过只 toast、不启动安装 | 同上 `startInstall` |
+| 进度 | 安装态放 store（切页面不丢）：`installRunning` / `installPhase` / `installPercent` / `installDetail`；`listen(RUNTIME_INSTALL_EVENT)` 在 store 顶层注册、`onScopeDispose` 退订；卡面渲染 3px 进度条 +「下载 42%」+「取消」，`detail`（脚本原文短诊断）单行省略、全文进 `title` | `src/stores/project.ts`、`Welcome.vue` |
+| 取消 | 「取消」→ `cancel_runtime_install()`；返回 `false` 时提示「没有正在运行的安装任务」 | 同上 `cancelInstall` |
+| 完成后 | 无论成功/取消都重跑 `probeAsr()`（引擎状态、设备判定、实测后端、安装状态全部重取） | 同上 `startInstall` |
+| 类型 | `RUNTIME_INSTALL_EVENT` / `RuntimeInstallEvent` / `RuntimeInstallSummary` / `RuntimeDiskPrecheck`（snake_case 对齐 Rust） | `src/types/index.ts` |
+
+**11c 决策（含对该项原标题「静默 bootstrap」的有意偏离）**：
+- **不做首启静默下载**：cuda 包 622 MB，静默在后台拉对大流量/家用带宽不可接受，失败时用户什么也看不到；改成「显式按钮 + 先报磁盘」。11a 的自检卡已经把「缺什么、该装哪个后端」说清，静默的那点便利不值这个代价。形态可逆。
+- **按钮取代 MOSS 的手动命令**：两个并列 CTA（按钮 + 命令）互相打架，且命令在安装版里根本不存在（没有 `scripts/`）；OCR / e5-small 没有清单条目，仍只给命令。
+- **`flavor` 传 `auto`**：脚本 `Resolve-AutoFlavor`（cuda 算力 ≥7.5 → cuda → vulkan → cpu）与 Rust `recommend_from_assets` 口径一致，与卡面「建议改用 cuda 版运行时」不矛盾。
+- **进度状态放 store**：安装几分钟，用户切走页面不能丢进度，与既有 OCR/ASR/LLM 进度监听同一写法。
+
+**11c 验证**：`pnpm build`（含 `vue-tsc --noEmit`）EXIT=0（2901 modules）；headless Chrome + Tauri mock 实测（`temp/css-preview/checks/item11c.js`，1680×1000；mock 新增 `plugin:event|listen` 捕获与 `window.__emitEvent(name, payload)`，并新增 `precheck_runtime_disk` / `install_runtime` / `cancel_runtime_install` 三个 case，`?asrmock=notready` 切到未安装态）：
+- 未就绪态卡面顺序：设备 → 红字硬报错 → 运行时未安装 → 「安装运行时」按钮 + 旁注 → 「推理设备可在打轴页…设置」，`pageOverflow=false`；
+- 点击后 500 ms：`.pbar` 出现（30%）、行文案「下载 30%」+「取消」、安装按钮消失、`.ell` 显示 `moss-vulkan.zip`，状态点变琥珀 + 「安装中…」；
+- 1.8 s 后：toast「安装完成：新增 1 项，跳过 0 项」，按钮回到「安装运行时」（mock 仍返回未安装态）；
+- 就绪 + `update_available`：按钮文案为「更新运行时」，黄字仍显示运行时提示；
+- 截图：`temp/css-preview/item11c-install.png`（未就绪）、`item11c-progress.png`（安装中）、`item11c-update.png`（可更新）。
+- **未验证**：真实 installer 子进程（本机无外网，cuda 包 622 MB）、取消对真实进程树的 `taskkill /T /F` 效果——需联网后在有网环境下走一次真装。
+
+**真机回归修复（2026-10-30，MSI 装机反馈；提交 `bd8ee43`）**：上一版安装包在真机上暴露三个问题——「探测阻塞整个应用（连拖窗口都卡）」「命令行窗口疯狂闪」「一键安装必然失败」，根因与修法：
+
+| 缺陷 | 根因 | 修法 |
+|---|---|---|
+| 探测冻结 UI | `probe_moss_backend` / `check_ffmpeg` / `get_video_metadata` 是**同步** `#[tauri::command]`，跑在主线程上；探测要起 `moss info`（加载几百 MB 模型）+ `nvidia-smi` ×2 + `vulkaninfo` ×2 | 三个命令改 `async` + `tauri::async_runtime::spawn_blocking`；`MossProvider` 构造时**不再同步 probe**（`probed: AtomicBool` + `ensure_probed()`，`describe()` 未探测时返回「正在探测 MOSS 后端」），`AsrManager::new` 起后台线程逐个 `warm_up()` |
+| 控制台窗口乱闪 | 28 处 `Command::new(...)`（powershell / nvidia-smi / vulkaninfo / moss / python / ffmpeg）都没设 `CREATE_NO_WINDOW`，GUI 进程起控制台子进程必弹窗 | 新增 `src-tauri/src/subprocess.rs`（`hidden()` / `quiet()` 统一加 `CREATE_NO_WINDOW`），全仓库替换；新增两条单测钉住「静默但仍能取到 stdout」 |
+| 打包后一键安装必失败 | `bootstrap_runtime.ps1` 从未进 `bundle.resources` ⇒ `bootstrap_candidates()` 全落空 | 新增 `scripts/sync_bundle_resources.mjs`（构建前置步骤，拷脚本到 `src-tauri/resources/scripts/`），`package.json` 的 `build` 串进去，`bundle.resources` 加 `resources/scripts/*`；已验证 NSIS/MSI 内确实含 `resources\scripts\bootstrap_runtime.ps1` |
+| 失败了看不到原因 | 安装子进程无可见控制台后成了黑盒 | 每次安装写 `runtime/logs/install.log`（脚本路径 / flavor / 退出码 / stderr 尾部 4000 字符），失败时 `InstallSummary.message` 追加「（日志：<路径>）」 |
+
+- `bundle.resources` 现在是三条：`resources/runtime/manifest.json`、`resources/ffmpeg/*`、`resources/scripts/*`。**不能把 `src-tauri/resources/scripts/` 整个 gitignore**：目录空掉时 Tauri 会报 `glob pattern resources/scripts/* path not found or didn't match any files.`，故 `.gitignore` 只忽略 `*.ps1`，另提交一份 `src-tauri/resources/scripts/README.md` 常驻。
+- 验证：`cargo test --lib` 334 passed、`cargo check --lib` 0 warning、`pnpm tauri build` EXIT=0、`7z l` 确认三处资源都在包里。**真机复测（重装 MSI）由用户执行**。
+
+**2026-10-31 补记（分发侧合入后的接线缺口 + provider 构造不再做就绪握手）**
+
+分发侧 `feat/runtime-distribution` 并入（`b8c3a76`）后，清单从 3 条扩到 7 条（`moss` × 3 flavor + `models-moss` + `deps-ocr` / `deps-ocr-gpu` + `deps-embed`），脚本 `-Items` 缺省也改成全部条目。核对时发现本分支有两处没跟上：
+
+| 缺口 | 症状 | 修法 |
+|---|---|---|
+| `install_runtime` 只装 `moss` | `runtime_install.rs` 里 `precheck_disk_with(…, "moss", …)` 与 `-Items moss` 写死 ⇒ 点「安装运行时」永远不会装 `models-moss` / `deps-ocr` / `deps-embed`，装完仍 `model_missing` | 新增 `precheck_disk_multi()`（逐条目估需求再**求和**，`SAFETY_MARGIN` 只加一次）、`split_item_ids()`、`manifest_item_ids()`；`items` **缺省 = 清单里的全部条目**（显式传了才按传的），`precheck_runtime_disk` 同步改用全部条目 |
+| 无 flavor 条目的磁盘需求被算成 0 | 显式 flavor（如 `cuda`）下 `models-moss`（不带 flavor）匹配不到任何条目 ⇒ 需求 0，预检形同放行 | `precheck_disk_with()` 在精确匹配不到时回退到「无 flavor 的整包条目」兜底；补单测 `multi_precheck_sums_every_entry`（差额恰为模型条目成本）/ `manifest_item_ids_reads_all_ids_in_order` / `split_item_ids_trims_and_dedups` / `multi_precheck_single_id_matches_single_path` |
+
+**PaddleOCR worker 构造阻塞（用户 2026-10-31 指派复现并修复）**：`PaddleProvider::spawn` 里同步跑 `ping()` 等 Python 加载 paddleocr + 模型，而它在 `lib.rs` 的 `setup` → `OcrManager::new` 链路上 ⇒ **启动卡 6.43 s**（临时集成测试实测）。修法与 MOSS 同构：状态收进 `Inner`（`Arc` 共享），`spawn` 只到「子进程起来了」就返回，握手交给后台线程 `ensure_probed()`；首次 `recognize_batch` 会等这把锁而不是往管道写半条请求；`describe()` 未探测完时返回「正在启动 PaddleOCR worker（首次启动要加载模型，通常几秒到几十秒）」。修复后 `spawn` **40 ms**、后台 2.2 s 预热完成。
+
+**前端跟随**：OCR / ASR 卡在文案含「正在启动 / 正在探测」时自动重试探测（OCR 8×1.2 s、ASR 8×1.5 s），否则用户首开只会看到停在「未就绪」；`INSTALL_ACTION_STATES` 加 `model_missing`；`installState === "ok"` 但引擎仍未就绪时按钮改「重装运行时」（带 `-Force`），替换原先「清单只含可执行文件、需手动放模型」的过期文案。
+
+**验证**：`cargo test --lib` **350 passed**、`cargo check --lib` 0 warning、`pnpm build` EXIT=0。**未做真机复测**（需重装安装包后看「一键安装」是否把模型与 OCR/向量运行时一起装到位）。
+
+**未做**：`probe_bootstrap_scripts`（并入安装器后不需要前端判断脚本存在——`install_runtime` 找不到脚本会直接 Err）；首启静默安装（见 11c 决策，不做）。
+
+**2026-10-31 补记（真机反馈第 1–3 项：空配置误判、探测中态丢失、预检不扣已装）**
+
+用户在 0.3.0 安装包上实测后报告五个问题，本轮修前三个（第 4、5 项见"未做"）。
+
+| 问题 | 根因 | 修法 |
+|---|---|---|
+| OCR 就绪、MOSS 与 e5-small 却「未就绪」，还报"缺四个字段" | 三处判定各写各的：OCR 的 `create_ocr_provider` 用 `ocr_paths()`（空字段回退标准布局）所以没事；`build_moss()` 先判 `moss_binary/moss_model` 是否为空、空就返回 `AsrNoneProvider`（连 `describe()` 都没有，所以原因一片空白）；`EmbedManager::status()` 只看 `embed_*` 四个字符串是否为空。而**一键安装只解包、不写 `config.json`** ⇒ 字段全空 ⇒ 文件明明都在盘上也被判"没装" | `build_moss()` 去掉空字段短路，直接 `create_asr_provider(...)`，路径交给 `moss_paths()`；`EmbedManager::status()` 改用 `embed_paths()` 解析后逐项 `is_file()/is_dir()` 检查，缺失时报**具体路径**（「嵌入模型不存在: …」）而不是"缺哪个字段"。判据统一成"文件在不在"，与 OCR 一致 |
+| 启动瞬间显示「未就绪」，几秒后自己变「就绪」 | `setProbe()` 只映射 ready/unknown/notready，**从不写回 probing**；后台预热期间（PaddleOCR 2.2 s、MOSS 探测）引擎报的是"正在启动/正在探测"，被映射成"未就绪" | `setProbe` 加第 6 个参数 `warming`，为真时 state 置 `probing`（文案「探测中…」）；`probeOcr`/`probeAsr` 在 `!ready && isWarming(message)` 时传 true，重试条件放宽到 `notready \| probing` |
+| 重装报"磁盘空间不足"，其实一个字节都不用下 | 预检按**全量**估算：Rust `precheck_disk_multi()` 不扣已装项；脚本 `bootstrap_runtime.ps1` 的读 `.installed.json` 也在预检之后。真机 C 盘剩 4.24 GB、全量要 9.46 GB ⇒ 必拒 | Rust 新增 `installed_up_to_date()` / `read_installed_text()` / `pending_ids()` / `precheck_pending()`：逐条目比对清单 sha256，已最新且非 `-Force` 的不计入；脚本把状态读取上移到预检前，新增 `Test-Pending()`（`-Force` / 无记录 / sha 不同 / dest 为空 ⇒ 待装），只对 `$pending` 求和，CUDA 运行库已拉过也不再计入；全都不用下时报「无需额外磁盘空间」而不是留 100 MB 余量 |
+| 模型必须装 C 盘？ | `validate()` 用 `is_within()` 把 14 个路径字段全锁在 runtime 内 | 拆两组：可执行文件 / worker 脚本 / 依赖目录仍必须留在 runtime 内（要跟同目录 DLL、包内 python 绑定）；**模型类只读数据**（`model_dir`/`moss_model`/`llm_model`/`funasr_model_dir`/`embed_model`/`embed_tokenizer`）允许绝对路径指向别的盘，相对路径仍查越界 |
+
+- 删掉 ASR 卡上那段误导文案「运行时与安装清单一致，但 MOSS 仍未就绪：多半是模型文件不在位」——真机证明模型就在位，是判定口径的问题；真实原因现在由引擎 `describe()` 给。
+- 验证：`cargo test --lib` **353 passed**（新增 `test_validate_allows_absolute_model_outside_runtime` / `installed_up_to_date_matches_only_same_sha` / `precheck_pending_skips_installed_items`）、`cargo check --lib` 0 warning、`pnpm build` EXIT=0；脚本用假 `.installed.json` 实跑跳过路径，输出「磁盘预检通过：无需额外磁盘空间（1 项已就绪，不计入）」+ `item_skip` + `done ok:true`。
+- **踩坑（PS 5.1）**：`edit`/`write` 工具会去掉文件开头的 BOM，而 `bootstrap_runtime.ps1` 含中文、必须带 BOM，否则 PowerShell 按 GBK 解析、满屏"缺少右 }"。改完脚本要复核 `bytes[0..2] == EF BB BF`，必要时用 `New-Object System.Text.UTF8Encoding($true)` 重写。
+- **未做**：真机复测（需重装安装包）；第 4 项"首启静默安装看不到进度"与第 5 项"准备页"另开分支 `feat/first-run-prep`。
+
+**2026-11-01 补记（真机时序类问题：探测状态机、装完热加载、原因可见）**
+
+用户在 2026-10-31 22:19 反馈："首启脚本跑完之后 4 个都还是未就绪，重启应用后才出现 3 就绪 1 未就绪，然后进一个工程再退出来又全部就绪了"。三个独立缺陷：
+
+| 症状 | 根因 | 修法 |
+|---|---|---|
+| 启动瞬间显示「未就绪 + 空原因」，而不是「探测中」 | `MossProvider` 只有一个**单向闩** `probed: AtomicBool`，在探测**开始**就 `swap(true)` ⇒ 探测进行中 `is_probed()` 已为真，`describe()` 于是返回空串（既不是"正在探测"也不是错误）⇒ 前端判 notready 并停止轮询；探测稍后成功也没人再刷新 | 改成四态状态机 `ProbeState::{Idle, Running, Ready, Failed(Instant)}`（`moss.rs`）：`Idle`/`Running` 一律返回「正在探测 MOSS 后端…」，`Failed` 返回真实错误原文，`Ready` 返回空 |
+| 探测失败一次后永久未就绪，只能重启 | 同一个单向闩：失败也置真，之后没有任何重试路径 | `Failed` 记失败时刻，**15 s 起线性退避（封顶 120 s）后允许自动重试**；`AsrManager::engines()` 每次轮询到未就绪就后台 `retry_warm_up()`（trait 新增默认方法），转写入口 `probe_now(true)` 忽略冷冻期 |
+| 一键安装脚本跑完，四张卡仍全「未就绪」，必须重启应用 | provider 在 `setup` 阶段按"当时的空目录"构造（OCR 退化成 `NoneProvider`、MOSS 退化成 `BrokenProvider`），安装只往磁盘写文件，进程内对象不换新 | 新增命令 `reload_runtimes`（`ai_runtime/mod.rs`）：`OcrManager::reload()` + ASR 双引擎 `reload_engine()`，`spawn_blocking` 里跑；前端 `startInstall()` 成功后先 `reloadRuntimes()` 再 `refreshAll()`，失败时提示"重启后生效" |
+
+- 顺带把 ASR 卡的原因也摊在卡面上（模板原本用 `card.key !== 'asr'` 把 ASR 的 `message` 挡住了，真机报障时看不到任何原因），并加了一个「重新探测」按钮（只重探、不重载）。
+- 前端 `probeAsr` 的重试次数 8 → 20（≈30 s，覆盖首次 `moss info` 加载 576 MB CUDA DLL 的耗时）。
+- 验证：`cargo test --lib` **356 passed**（新增 `test_describe_says_probing_before_probe`（空 exe 也能构造 provider，未探测时文案含"正在探测"）、`test_failed_probe_reports_reason_and_is_retryable`、`test_ocr_reload_reports_not_ready_without_worker`）、`cargo check --lib` 0 warning、`pnpm build` EXIT=0。
+- 契约同步：新增 **§8.6.3（探测中 vs 未就绪、失败冷冻期、装完热加载三条硬约束）** 与 **§8.6.4（`reload_runtimes` 命令契约）**。
+- **未做**：真机复测（需重装安装包）；准备页仍在 `feat/first-run-prep`。
+
+**依赖/前置**：已全部满足（命令齐、契约齐、执行体已并入）。
 
 - bootstrap 脚本**已在 `scripts/`**（不在根目录）：`scripts/bootstrap_moss.ps1`（模型/二进制获取与就绪自检）、`scripts/build_moss.ps1`（自构建，含 vulkan 前置检查）。
 
@@ -649,7 +753,7 @@
 
 **顺序说明**：与 C 组无依赖，可与 8–10 并行；放中后段是为了不打断时间轴主线。
 
-### 12. ✅ CUDA GPU 加速参数化（2026-10-22 阶段 A+B → 2026-10-24 阶段 C 接通；提交 `a8e8010`）
+### 12. ✅ CUDA GPU 加速参数化（2026-10-22 阶段 A+B → 2026-10-24 阶段 C 接通 → 2026-10-29 FunASR 设备 + 即时生效；提交 `a8e8010` / `2a766c8` / `1fa8a77`）
 
 **已实现**
 
@@ -665,6 +769,7 @@
 | 欢迎页自检卡 | MOSS 卡在 `notready` 时把硬报错原因摊到卡面上（红字），并提示「推理设备可在打轴页「转写参数 → 推理设备」中设置」 | `src/views/Welcome.vue`（`probeAsr()` 追加 `probeMossBackend()`） |
 
 **决策（用户 m00142 全选 A）**：D1-A 下拉落 ASR 页转写参数区；D2-A 允许保存 + 警示 + 运行期硬拦；D3-A **下次启动生效**（不做 `mod.rs` 的即时重置补丁）；D4-A manifest 由 Rust 命令读并回传 flavor 集合（前端不加 fs 插件权限）；D5-A 本期只做 `moss`，`funasr_device` 不动。
+（D3-A 与 D5-A 已于 2026-10-29 按用户 m01567 要求反转：即时生效已实现、FunASR 设备已补，见下方补记。）
 
 **2026-10-24 补记（manifest 落库，阶段 C 接通）**
 
@@ -680,9 +785,31 @@
 > 所以正常情况下列表**仍是四项**、与退化分支看起来一样（差别只在有没有那行黄字）。
 > 要验证过滤真起作用：临时删掉清单里某个 flavor 条目 → 对应项必须消失。
 
-**验证**：`cargo test` 全绿（lib 282 + 集成 15/15；含 4 个 manifest 读取单测 + 2 个布局单测 + 1 个随包清单单测 + 1 个归一化单测）；`pnpm build`（含 `vue-tsc --noEmit`）通过。**未经真机 UI 手测**（需要装着 MOSS 的机器切三种后端各跑一次）。
+**2026-10-29 补记（FunASR 设备 + 即时生效 + 真实安装验证；提交 `1fa8a77`）**
 
-**未做（明确留口）**：`funasr_device`（D5-A）；即时生效（D3-A）；`runtime/.installed.json` 启动比对属 `mod.rs`，等 installer 侧落地后出补丁；真机 UI 手测（三种后端 + 过滤验证）。
+用户 m01567 要求「把 12 项遗留填上」，即把 D5-A / D3-A 两条暂缓项做掉、并补一次真实联网验证。
+
+| 子项 | 处理 | 位置 |
+|---|---|---|
+| FunASR 设备下拉 | 与 MOSS 同一套交互但**只给 CUDA / CPU**（FunASR 走 torch，无 Vulkan 后端）；`set_funasr_device` 归一规则 `""/"auto"/"cuda" → cuda`、`"cpu" → cpu`；切引擎时两块互斥出现，值从 `check_asr_engines` 的 `device` 回填 | `src-tauri/src/ai_runtime/config.rs`（`normalize_funasr_device`、`set_funasr_device`）；`src/views/AsrView.vue`（`FUNASR_DEVICE_OPTIONS`、`onFunasrDeviceChange`） |
+| FunASR 不做硬报错 | torch 侧本来就是软回退（`scripts/funasr_worker.py:46 pick_device` 在 CUDA 不可用/缺库时自动落 CPU），硬报错会拦住一个能跑的组合 ⇒ 只在尾注写明「CUDA 不可用时 worker 自动回退 CPU」 | `AsrView.vue`（`FUNASR_DEVICE_DOC`） |
+| 配置校验加固 | `RuntimeConfig::validate()` 增加 `funasr_device ∈ {"", cpu, cuda}`，手改 config.json 写进 `vulkan` 会被启动时打回 | `config.rs`（`test_validate_rejects_bad_funasr_device` 钉住） |
+| 即时生效（原 D3-A） | `AsrManager` 的 `config` 改为 `RwLock<RuntimeConfig>`、两个 provider 改为 `RwLock<Arc<dyn AsrProvider>>`；新增 `read_config()` / `provider_of()` / `reload_engine(key)`，转写进行中拒绝切换（`"转写进行中，完成后再切换"`），否则重读盘上配置 → `validate` → 只重建该引擎的 provider → 换配置 | `src-tauri/src/ai_runtime/mod.rs`（`build_funasr` / `build_moss` 抽出复用） |
+| 命令侧接线 | `set_moss_device` / `set_funasr_device` 均为 `async`，保存后用 `spawn_blocking` 调 `reload_engine`（MOSS 重建要跑 `info` 探测，不能卡命令线程）；reason 返回「已重新加载」或「但不可用：…（重启后生效）」 | `config.rs`（`reload_asr_engine`）；`lib.rs` 注册 `set_funasr_device` |
+| 返回类型统一 | `MossDeviceSaveResult` → `DeviceSaveResult`（两个命令共用） | `config.rs`、`src/types/index.ts` |
+
+> 即时生效的边界：改设备**不需要重启**，但只重载被改的那个引擎；正在跑的转写不会被中断（拒绝切换）。
+> 旧结论 D3-A「下次启动生效」invalidate，契约 §7 的 P3 补丁项随之落地（见契约 §7、§8.7）。
+
+**验证**（2026-10-29）
+- `cargo test --lib` → **325 passed, 0 failed**（较上次 +43：新增归一化/校验单测与即时生效相关单测）；`cargo check --lib` 0 warning。
+- `pnpm build`（`vue-tsc --noEmit && vite build`）→ EXIT=0。
+- headless 实测 FunASR 块：切引擎后 MOSS 设备块消失、FunASR 设备块出现，下拉值取配置（`cpu`），选项仅 `cuda`/`cpu`，无横向溢出（`temp/css-preview/item12-funasr.png`）。
+- **真实联网安装验证**（用户 m01567 要求，直连 GitHub 可用，无需代理）：`scripts/bootstrap_runtime.ps1` 在 RTX 4060 Laptop（算力 8.9）上 `-Flavor auto` **自动选 cuda**、磁盘预检「需要约 1.92 GB」、下载 621.6 MB → 校验 → 解压 14 个文件、`.backend=cuda`、末行 `done ok:true`；`-Flavor vulkan` 全流程同样通过（11 个文件、15.4 MB）。
+- `evaluate()` 对真实装好的 vulkan 目录判定 `state=ok`；`precheck_disk_with` 按「最大 flavor」估算（1.92 GB > 单包 622 MB）；脚本走 skip 路径时 stdout 是合法 UTF-8 且每行可 JSON 解析（中文 detail 不丢）。
+- 仍**未经真机 UI 手测**（真机上点下拉切后端跑一次转写）。
+
+**未做（明确留口）**：真机 UI 手测（三种后端各跑一次转写 + manifest 过滤验证）；`funasr_device` 的 Vulkan（FunASR 不支持，非缺口）。
 
 **原始背景（保留）**
 - MOSS 自动判断（欢迎页卡文案「ggml，有 CUDA/Vulkan 即 GPU」），界面无可配项；配置文件字段已存在：`src-tauri/src/ai_runtime/config.rs` 的 `moss_device`（白名单 `空/cpu/cuda/vulkan`）与 `funasr_device`（默认 `cpu`）——**只缺 UI，不缺存储**。
@@ -709,7 +836,39 @@
 - 波形行 `.wf-row`（48px）**从没在有真实波形数据时目视验证过**（mock 无音频）→ 用带音频素材看一眼。
 - 轨道操作图标目前 hover 才显示（样稿是常显淡色）→ 按观感定夺，属风格取舍。
 
-### 14. 内嵌 ffmpeg/ffprobe + 欢迎页 ffmpeg 自检卡
+### 14. ✅ 内嵌 ffmpeg/ffprobe + 欢迎页 ffmpeg 自检卡
+
+**已实现（2026-10-29，提交 `40e645f` / `5acb56f` / `bfd1168` / `f3d19d8`）**
+
+| 任务 | 改动 | 内容 |
+|---|---|---|
+| T1 定位层 | 新增 `src-tauri/src/video/ffmpeg_locator.rs` | 内嵌候选（从 exe 目录 `ancestors().take(4)` 逐级拼 `resources/ffmpeg/<name>`）→ 系统 PATH；`runs()` 真跑 `-version`，避免「文件在但跑不动」被骗过 |
+| T1 | `video/mod.rs`、`waveform.rs` | `resolve_ffmpeg()`/`resolve_ffprobe()` 变薄包装；`ffmpeg_missing()` 统一 `FFMPEG_NOT_FOUND: …` 文案（前端 `err.includes("FFMPEG_NOT_FOUND")` 依赖此前缀，不可改名） |
+| T1 | `src-tauri/Cargo.toml`、`THIRD_PARTY.md` | 删 `ffmpeg-sidecar`（唯一用途 `sidecar_dir()` 恒空；`auto_download()` 从未调用），连带去掉 ureq/tar/xz2/zip |
+| T2 取二进制 | 新增 `scripts/fetch_ffmpeg.ps1` | pin `autobuild-2026-10-28-19-47` 的 `win64-lgpl-shared` 包（不可用滚动的 `latest` tag）；缓存 → SHA256 校验 → 只解 `bin/*` 与 `LICENSE.txt` → 落 `src-tauri/resources/ffmpeg/` → 写 `SOURCE.txt` → 跑 `-version` 自检 |
+| T2 | `.gitignore`、`tauri.conf.json` | 忽略 `src-tauri/resources/ffmpeg/`（161 MB 不入库）；`bundle.resources` 加 `"resources/ffmpeg/*"` |
+| T3 许可与文档 | `THIRD_PARTY.md`、`README(_EN).md`、`docs/development(_EN).md` | 「用户自备」改为「随包内嵌 LGPL 共享构建」，写明为何不用默认 GPL 静态构建、共享构建的 LGPL 义务如何满足 |
+| T4 自检卡 | `video/ffmpeg_locator.rs` + `lib.rs` | 新命令 `check_ffmpeg() -> FfmpegStatus { ready, source: "bundled"/"path"/"missing", ffmpeg, ffprobe, version, message }` |
+| T4 | `src/views/Welcome.vue`、`src/stores/project.ts`、`src/types/index.ts` | 环境自检加第 4 张卡：就绪时显示「版本 · n8.1.3…（内嵌）」/（系统 PATH），未就绪时摊原因并给 `scripts/fetch_ffmpeg.ps1` 复制命令；`.env` 栅格改 `repeat(auto-fit, minmax(230px, 1fr))` |
+
+**决策（用户 2026-10-29 拍板）**
+- **LGPL 共享构建**（`win64-lgpl-shared`），不用默认的 GPL 静态构建——后者会把整个 app 拖进 GPL；共享构建 DLL 可替换，LGPL §4 义务最轻，且我们只当子进程调用、不链接。
+- **sidecar 可删**：`ffmpeg-sidecar` 的下载目录永远为空，删依赖换来「内嵌 + PATH 两级查找」。
+- **必须真跑一次 `pnpm tauri build`** 验证打包形态（Windows 上 `resource_dir()` = exe 目录 ⇒ 二进制落 `$RESOURCES/resources/ffmpeg/`，与 dev 布局不同）。
+
+**验证**
+- `cargo test --lib` → **332 passed, 0 failed**；`cargo check --lib` 0 warning。
+- `ffmpeg_locator` 单测含「内嵌优先真的生效」（`bundled_binary_takes_priority`：二进制存在时必须返回绝对路径）与「版本号解析」（`version_parses_from_bundled_binary`）；二进制缺失时这两条自动跳过。
+- `pnpm build` → EXIT=0（2901 modules）。
+- headless（`temp/css-preview/checks/item14-ffmpeg.js` + `evalq.mjs`，1680×1000）：4 张卡一行排开（`cols = 394px ×4`，`rowCount=1`，`pageOverflow=false`）；bundled 场景 FFmpeg 卡「就绪 / 版本 · n8.1.3-25-g611cec792a-20261028（内嵌）」；`?ffmpeg=missing` 场景「未就绪 / 安装包应自带 resources/ffmpeg/；源码检出请先跑 scripts/fetch_ffmpeg.ps1」并显示该命令；截图 `temp/css-preview/item14-ffmpeg.png`。
+- **打包形态验证**（`pnpm tauri build`，EXIT=0）：`src-tauri/target/release/resources/ffmpeg/` 落 11 个文件共 169,051,668 B（含 `ffmpeg.exe` / `ffprobe.exe` / 8 个 av* DLL / `LICENSE.txt` / `SOURCE.txt`），与 `ffmpeg_locator` 的首个候选 `<exe目录>/resources/ffmpeg/` 完全一致；`7z l` 列出 NSIS 安装包内容确认 `resources\ffmpeg\*` 与 `resources\runtime\manifest.json` 都进包（安装包 `GameSubtitleAssistant_0.3.0_x64-setup.exe` 57.3 MB、MSI 75.5 MB）。注意 `target/release/bundle/` 里还留着 `0.1.0` 的旧包，属构建缓存，不是本次产物。
+
+**未做 / 遗留**
+- 真机手测（无 ffmpeg 的干净机器上跑元数据/抽帧/波形）留给用户；
+- 只覆盖 Windows x64（macOS/Linux 的分发形态未定，`file_name()` 已按平台拼后缀）；
+- 二进制不入库 ⇒ 源码检出必须先跑 `scripts/fetch_ffmpeg.ps1`，否则自检卡显示未就绪并回退 PATH。
+
+**原始背景（保留）**
 
 **现状依据**
 - 应用**不内嵌** ffmpeg/ffprobe：`src-tauri/src/video/mod.rs:71` `resolve_ffprobe()` 与 `:201` `resolve_ffmpeg()` 都是两级查找——先 `Command::new("ffprobe"/"ffmpeg")`（系统 PATH），再 `ffmpeg_sidecar::paths::sidecar_dir()`（`src-tauri/Cargo.toml` 的 `ffmpeg-sidecar = "2"` 的 auto_download 目录）；找不到即返回 `FFMPEG_NOT_FOUND`（`mod.rs:194/:320/:495/:573`、`src-tauri/src/video/waveform.rs:33`）。

@@ -15,7 +15,7 @@ use crate::ai_runtime::{moss_paths, AsrError, AsrProvider, AsrSegment, AsrTransc
 use serde::Deserialize;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -212,6 +212,38 @@ fn parse_segments(json: &str) -> Result<Vec<AsrSegment>, AsrError> {
         .collect())
 }
 
+/// `info` 探测的状态。
+///
+/// 为什么不是简单的 bool：探测要 2–30 秒（加载几百 MB 的 CUDA DLL 与 GGUF 元数据），
+/// 用一个「跑过没有」的标志会把「正在跑」和「跑完了没成功」混为一谈 —— 真机
+/// 2026-10-31 就是因此显示成「未就绪 + 空原因」，而不是「探测中…」，前端也就
+/// 没有理由继续轮询。分四态后：Running → 前端显示「探测中」并重试；
+/// Failed 带时刻 → 过了冷冻期可以自动重试（装完运行时/驱动就绪后不必重启）。
+#[derive(Debug, Clone, Copy)]
+enum ProbeState {
+    /// 还没开始（首帧）
+    Idle,
+    /// 正在跑 `info`
+    Running,
+    /// 跑完且成功
+    Ready,
+    /// 跑完但失败：失败时刻 + 连续失败次数（退避用）
+    Failed(Instant, u32),
+}
+
+/// 探测失败后的重试间隔：从 15 秒起按连续失败次数线性退避，上限 2 分钟。
+///
+/// 下限要够短（装完运行时/驱动就绪后，用户看一眼页面就能自愈）；
+/// 上限要够长（设备确实不支持这种"永久失败"时，别每 15 秒就拉一次
+/// 576 MB 的 CUDA DLL —— 那会把欢迎页拖成风扇狂转）。
+const PROBE_RETRY_AFTER: Duration = Duration::from_secs(15);
+const PROBE_RETRY_CAP: Duration = Duration::from_secs(120);
+
+fn retry_gap(failures: u32) -> Duration {
+    let factor = failures.clamp(1, 8);
+    (PROBE_RETRY_AFTER * factor).min(PROBE_RETRY_CAP)
+}
+
 /// MOSS 转写 provider —— 每次 transcribe 启动一次性子进程
 pub struct MossProvider {
     binary: PathBuf,
@@ -232,6 +264,8 @@ pub struct MossProvider {
     backend_decision: Mutex<Option<backend_probe::Decision>>,
     /// 当前活动的转写子进程（供取消/退出钩子终止）
     active_child: Mutex<Option<Child>>,
+    /// `info` 探测的状态机（构造时不探测：见 spawn 的注释）
+    probe: Mutex<ProbeState>,
     /// 开发调试：打印运行时细节日志
     dev_debug: bool,
 }
@@ -265,14 +299,66 @@ impl MossProvider {
             last_error: Mutex::new(None),
             backend_decision: Mutex::new(None),
             active_child: Mutex::new(None),
+            probe: Mutex::new(ProbeState::Idle),
             dev_debug: config.dev_debug,
         };
-        if let Err(e) = provider.probe() {
-            provider.set_error(&e.to_string());
-        } else {
-            provider.ready.store(true, Ordering::SeqCst);
-        }
+        // 注意：这里**故意不探测**。`info` 要加载几百 MB GGUF 元数据（数秒），
+        // 之前放在构造里 ⇒ setup 阶段卡住主线程，窗口打开后一片死寂、连拖动都卡
+        //（真机反馈 2026-10-29）。改由 AsrManager 在后台线程 warm_up()，
+        // 转写前 ensure_probed() 再兜一次，语义不变（就绪与否照旧如实上报）。
+
         Ok(provider)
+    }
+
+    /// 幂等预热：跑一次 `info` 探测并把结论记下来。
+    ///
+    /// 由 `AsrManager` 在**后台线程**调用（启动时不再卡主线程）；转写前也会再调一次
+    /// 兜底，所以即使后台还没跑完，语义也正确（大不了多等这一次探测）。
+    pub fn ensure_probed(&self) {
+        self.probe_now(false);
+    }
+
+    /// 探测一次；`force=true` 忽略失败冷冻期（用户点「重新探测」、转写入口）。
+    ///
+    /// 并发语义：`Running` 时后来者直接返回（不重复起进程）；`Ready` 时不再探；
+    /// `Failed` 且未过冷冻期也直接返回 —— 三条都由状态机本身表达，不需要额外原子标志。
+    pub fn probe_now(&self, force: bool) {
+        let prev_failures;
+        {
+            let mut guard = self.probe.lock().unwrap_or_else(|e| e.into_inner());
+            let (allowed, failures) = match *guard {
+                ProbeState::Running | ProbeState::Ready => return,
+                ProbeState::Idle => (true, 0),
+                ProbeState::Failed(at, n) => (force || at.elapsed() >= retry_gap(n), n),
+            };
+            if !allowed {
+                return;
+            }
+            prev_failures = failures;
+            *guard = ProbeState::Running;
+        } // 不持锁跑 `info`：几秒钟的阻塞不该挡住 describe()
+
+        let next = match self.probe() {
+            Ok(()) => {
+                if let Ok(mut slot) = self.last_error.lock() {
+                    *slot = None;
+                }
+                self.ready.store(true, Ordering::SeqCst);
+                ProbeState::Ready
+            }
+            Err(e) => {
+                self.ready.store(false, Ordering::SeqCst);
+                self.set_error(&e.to_string());
+                ProbeState::Failed(Instant::now(), prev_failures.saturating_add(1))
+            }
+        };
+        *self.probe.lock().unwrap_or_else(|e| e.into_inner()) = next;
+    }
+
+    /// 探测是否已跑完（成功或失败）。跑完才可能给出"未就绪"的最终结论。
+    pub fn is_probed(&self) -> bool {
+        let guard = self.probe.lock().unwrap_or_else(|e| e.into_inner());
+        matches!(*guard, ProbeState::Ready | ProbeState::Failed(..))
     }
 
     /// 探测：`info <model>` 成功说明 GGUF 元数据可加载；同时用 stderr 的
@@ -281,7 +367,7 @@ impl MossProvider {
     ///（不自动降级，ggml 的静默降级 exit code 为 0，必须在这里拦下）。
     fn probe(&self) -> Result<(), AsrError> {
         let req = backend_probe::normalize_device_request(&self.device);
-        let mut cmd = Command::new(&self.binary);
+        let mut cmd = crate::subprocess::hidden(&self.binary);
         cmd.arg("info").arg(&self.model);
         // 与 run_transcribe 同参：显式设备才设 MTD_DEVICE——这样 L2 实测的
         // backend 与转写时真实生效的后端一致（auto 时不设，两者都由 ggml 自选）
@@ -354,7 +440,7 @@ impl MossProvider {
     /// 残留进程会与下次转写叠加抢占 CPU，故每次转写前清理。
     #[cfg(windows)]
     fn cleanup_stale_moss_processes(&self) {
-        let output = match Command::new("tasklist")
+        let output = match crate::subprocess::hidden("tasklist")
             .args(["/FO", "CSV", "/NH", "/FI", "IMAGENAME eq moss-transcribe.exe"])
             .output()
         {
@@ -370,7 +456,7 @@ impl MossProvider {
             if self.dev_debug {
                 eprintln!("[moss] 清理残留转写进程 PID {}", pid);
             }
-            let _ = Command::new("taskkill")
+            let _ = crate::subprocess::hidden("taskkill")
                 .args(["/PID", &pid.to_string(), "/F"])
                 .output();
         }
@@ -390,7 +476,7 @@ impl MossProvider {
     ) -> Result<Vec<AsrSegment>, AsrError> {
         // 防残留叠加：清理历史孤儿进程（本次子进程尚未 spawn，不误杀自己）
         self.cleanup_stale_moss_processes();
-        let mut cmd = Command::new(&self.binary);
+        let mut cmd = crate::subprocess::hidden(&self.binary);
         cmd.arg("transcribe")
             .arg(&self.model)
             .arg(audio_path)
@@ -527,7 +613,32 @@ impl AsrProvider for MossProvider {
     }
 
     fn describe(&self) -> String {
-        self.last_error.lock().ok().and_then(|g| g.clone()).unwrap_or_default()
+        // 三种"没就绪"要分开说，否则前端分不清该继续等、还是该看原因（真机 2026-10-31）：
+        //   还没跑 / 正在跑 → "正在探测…"（前端显示「探测中」并继续轮询）
+        //   跑完但失败      → 真实错误原文
+        let state = *self.probe.lock().unwrap_or_else(|e| e.into_inner());
+        match state {
+            ProbeState::Idle | ProbeState::Running => {
+                "正在探测 MOSS 后端（首次启动需要几秒钟）".to_string()
+            }
+            ProbeState::Failed(..) => self
+                .last_error
+                .lock()
+                .ok()
+                .and_then(|g| g.clone())
+                .unwrap_or_else(|| "MOSS 后端探测失败（原因未知）".to_string()),
+            ProbeState::Ready => String::new(),
+        }
+    }
+
+    /// 后台预热：跑一次 `info` 探测（启动时不再阻塞主线程）
+    fn warm_up(&self) {
+        self.ensure_probed();
+    }
+
+    /// 状态轮询触发的重试：遵守失败冷冻期，避免每次轮询都重起进程
+    fn retry_warm_up(&self) {
+        self.probe_now(false);
     }
 
     /// 实测生效后端（L2 实证，如 "CUDA0"/"Vulkan1"/"CPU"）；probe 未完成或失败时为空
@@ -544,6 +655,9 @@ impl AsrProvider for MossProvider {
         audio_path: &Path,
         _options: &AsrTranscribeOptions,
     ) -> Result<Vec<AsrSegment>, AsrError> {
+        // 后台预热可能还没跑完（启动后立刻点转写）：这里兜一次，幂等；
+        // force=true 是为了不因「上一次探测失败还在冷冻期」把用户挡在门外
+        self.probe_now(true);
         if !self.is_ready() {
             return Err(AsrError::NotReady);
         }
@@ -770,5 +884,54 @@ mod tests {
         let info2 = wav_info(&seg).unwrap();
         assert!((info2.seconds - 2.0).abs() < 0.01);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 造一个「文件在、但跑不起来」的探测环境：二进制是空文件，`info` 必失败。
+    /// 这样能在没有 MOSS 的机器上验证探测状态机（真机 2026-10-31 的「未就绪 + 空原因」）。
+    fn fake_provider(name: &str) -> MossProvider {
+        let dir = std::env::temp_dir().join(format!("gsa_moss_probe_{}_{}", name, std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let binary = dir.join("moss-transcribe.exe");
+        let model = dir.join("model.gguf");
+        std::fs::write(&binary, b"").unwrap();
+        std::fs::write(&model, b"fake").unwrap();
+        let config = RuntimeConfig {
+            moss_binary: binary.to_string_lossy().to_string(),
+            moss_model: model.to_string_lossy().to_string(),
+            ..RuntimeConfig::default()
+        };
+        MossProvider::spawn(&config, &dir).expect("空文件也应能构造 provider（失败落在探测阶段）")
+    }
+
+    #[test]
+    fn test_retry_gap_backs_off_to_cap() {
+        // 永久失败（设备不支持）时不能让欢迎页每 15 秒拉一次 576 MB DLL
+        assert_eq!(retry_gap(1), Duration::from_secs(15));
+        assert_eq!(retry_gap(4), Duration::from_secs(60));
+        assert_eq!(retry_gap(99), PROBE_RETRY_CAP);
+    }
+
+    #[test]
+    fn test_describe_says_probing_before_probe() {        let p = fake_provider("idle");
+        assert!(!p.is_probed());
+        assert!(!p.is_ready());
+        // 关键：没跑探测时必须说"正在探测"，而不是空串 —— 前端靠这句话显示「探测中」
+        assert!(p.describe().contains("正在探测"), "describe={}", p.describe());
+    }
+
+    #[test]
+    fn test_failed_probe_reports_reason_and_is_retryable() {
+        let p = fake_provider("failed");
+        p.probe_now(true);
+        // 空 exe 跑不起来 ⇒ 探测失败：已跑完、未就绪、并且给出非空原因
+        assert!(p.is_probed());
+        assert!(!p.is_ready());
+        assert!(!p.describe().is_empty(), "失败后必须有原因，否则界面上是空白未就绪");
+        // 冷冻期内重复调用不应再起进程（状态保持 Failed），这里只断言幂等不 panic
+        p.ensure_probed();
+        assert!(p.is_probed());
+        let _ = std::fs::remove_dir_all(
+            std::env::temp_dir().join(format!("gsa_moss_probe_failed_{}", std::process::id())),
+        );
     }
 }

@@ -262,6 +262,37 @@ if ($selected.Count -eq 0 -and -not $willFetchGpuLibs) {
   exit 3
 }
 
+# ─── 已安装状态（必须读在预检之前）──────────────────────────────────────
+# 为什么提前：预检要扣掉"已就绪、本次只会 item_skip"的条目，否则补装/重装会被一句
+# "磁盘空间不足"挡住。真机 2026-10-31 正是如此：C 盘剩 4 GB、全量估算 9.46 GB 报错，
+# 而实际上一个字节都不用下。
+$stateFile = Join-Path $runtime ".installed.json"
+$stateItems = @{}
+if (Test-Path $stateFile) {
+  try {
+    $stateRaw = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($stateRaw.items) {
+      foreach ($p in $stateRaw.items.PSObject.Properties) { $stateItems[$p.Name] = $p.Value }
+    }
+  } catch {
+    Log "警告：.installed.json 解析失败，按未安装处理（$($_.Exception.Message)）"
+  }
+}
+
+# 本次真正要下载/解压的条目（哈希一致且 dest 里有文件 = 只会 skip）
+function Test-Pending($it) {
+  if ($Force) { return $true }
+  $prev = $stateItems[[string]$it.id]
+  if (-not $prev) { return $true }
+  if (([string]$prev.sha256).ToLower() -ne ([string]$it.sha256).ToLower()) { return $true }
+  $destRel = if ($it.dest) { [string]$it.dest } else { "bin" }
+  $destDir = Join-Path $runtime $destRel
+  if (-not (Test-Path $destDir)) { return $true }
+  return (@(Get-ChildItem $destDir -File -ErrorAction SilentlyContinue).Count -eq 0)
+}
+
+$pending = @($selected | Where-Object { Test-Pending $_ })
+
 # ─── 磁盘预检（在任何下载之前）──────────────────────────────────────────
 function Get-FreeBytes([string]$path) {
   $probe = $path
@@ -282,7 +313,7 @@ function Get-FreeBytes([string]$path) {
 $downloadBytes = [int64]0
 $unpackedBytes = [int64]0
 $maxUnpacked = [int64]0
-foreach ($it in $selected) {
+foreach ($it in $pending) {
   if ($it.size) { $downloadBytes += [int64]$it.size }
   if ($it.unpacked_size) {
     $unpackedBytes += [int64]$it.unpacked_size
@@ -301,29 +332,27 @@ else {
   $requiredBytes = [int64]($downloadBytes * 3) + 100MB
 }
 # CUDA 运行库走 pip，不在清单里，但同样吃盘：8 个轮子 1.73 GiB + 解包后 2.51 GiB。
-if ($willFetchGpuLibs) {
+# 已经拉过（deps_gpu/nvidia 下已有包目录）就不再计入——Install-GpuLibs 会走 skip。
+$gpuLibsReady = (-not $Force) -and $stateItems[$GpuLibsId] -and
+  (@(Get-ChildItem (Join-Path $runtime "deps_gpu\nvidia") -Directory -ErrorAction SilentlyContinue).Count -ge 4)
+$gpuLibsNeeded = $willFetchGpuLibs -and -not $gpuLibsReady
+if ($gpuLibsNeeded) {
   $requiredBytes += $GpuLibsDownloadBytes + $GpuLibsUnpackedBytes
 }
+# 一个字节都不用下时别报那 100 MB 余量，免得用户以为还得腾空间
+$nothingToDo = ($pending.Count -eq 0 -and -not $gpuLibsNeeded)
+if ($nothingToDo) { $requiredBytes = [int64]0 }
 $freeBytes = Get-FreeBytes $runtime
+$skipNote = if ($pending.Count -lt $selected.Count) { "（$($selected.Count - $pending.Count) 项已就绪，不计入）" } else { "" }
 if ($null -ne $freeBytes -and $freeBytes -lt $requiredBytes) {
   $gb = { param($b) [math]::Round($b / 1GB, 2) }
-  $extra = if ($willFetchGpuLibs) { "（含 CUDA 运行库 $( & $gb ($GpuLibsDownloadBytes + $GpuLibsUnpackedBytes) ) GB）" } else { "" }
-  Stop-Fatal "磁盘空间不足：需要约 $(& $gb $requiredBytes) GB$extra（下载 $( & $gb $downloadBytes ) GB + 解压余量），可用 $(& $gb $freeBytes) GB" 1
+  $extra = if ($gpuLibsNeeded) { "（含 CUDA 运行库 $( & $gb ($GpuLibsDownloadBytes + $GpuLibsUnpackedBytes) ) GB）" } else { "" }
+  Stop-Fatal "磁盘空间不足：需要约 $(& $gb $requiredBytes) GB$extra$skipNote（下载 $( & $gb $downloadBytes ) GB + 解压余量），可用 $(& $gb $freeBytes) GB" 1
 }
-Log "磁盘预检通过：需要约 $([math]::Round($requiredBytes / 1GB, 2)) GB$(if ($willFetchGpuLibs) { '（含 CUDA 运行库）' })，可用 $([math]::Round($freeBytes / 1GB, 2)) GB"
-
-# ─── 已安装状态 ─────────────────────────────────────────────────────────
-$stateFile = Join-Path $runtime ".installed.json"
-$stateItems = @{}
-if (Test-Path $stateFile) {
-  try {
-    $stateRaw = Get-Content $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($stateRaw.items) {
-      foreach ($p in $stateRaw.items.PSObject.Properties) { $stateItems[$p.Name] = $p.Value }
-    }
-  } catch {
-    Log "警告：.installed.json 解析失败，按未安装处理（$($_.Exception.Message)）"
-  }
+if ($nothingToDo) {
+  Log "磁盘预检通过：无需额外磁盘空间$skipNote，可用 $([math]::Round($freeBytes / 1GB, 2)) GB"
+} else {
+  Log "磁盘预检通过：需要约 $([math]::Round($requiredBytes / 1GB, 2)) GB$(if ($gpuLibsNeeded) { '（含 CUDA 运行库）' })$skipNote，可用 $([math]::Round($freeBytes / 1GB, 2)) GB"
 }
 
 function Save-State {

@@ -704,7 +704,7 @@ pub fn run_ocr_with_params(
     params: &OcrRunParams,
 ) -> (Vec<OcrSegment>, f64) {
     let video_str = video.to_string_lossy().into_owned();
-    let meta = get_video_metadata(video_str.clone())
+    let meta = tauri::async_runtime::block_on(get_video_metadata(video_str.clone()))
         .unwrap_or_else(|e| panic!("读取视频元数据失败（{video_str}）: {e}"));
     let t0 = Instant::now();
     let (mut segments, diffs) = run_ocr_pipeline(

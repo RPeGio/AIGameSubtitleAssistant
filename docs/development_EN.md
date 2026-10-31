@@ -10,7 +10,7 @@ This document is for collaborators who want to understand the codebase or contri
 |---|---|
 | Desktop shell | Tauri 2 (`protocol-asset`, dialog / opener plugins) |
 | Frontend | Vue 3 + TypeScript + Pinia + Vue Router + Naive UI + Tailwind CSS 4 + Vite 6 |
-| Backend | Rust 2021 (tauri / serde / image / uuid / ffmpeg-sidecar) |
+| Backend | Rust 2021 (tauri / serde / image / uuid) |
 | AI | PaddleOCR (Python worker), MOSS (ASR, the only engine), multilingual-e5-small + unified transition DP (fusion).<br>FunASR and llama.cpp + Qwen2.5-3B are retired and not distributed (code kept, see the Retired components section below) |
 
 Constraint: **fully offline**. The Rust side has no HTTP client and makes no network requests; every AI capability runs as a local subprocess.
@@ -26,7 +26,7 @@ Constraint: **fully offline**. The Rust side has no HTTP client and makes no net
                │ invoke() commands / listen() events (ocr-progress…)
 ┌──────────────▼──────────────────────────────────────────────┐
 │ Rust backend (src-tauri)                                    │
-│  video ── ffmpeg/ffprobe (external, PATH lookup)            │
+│  video ── ffmpeg/ffprobe (bundled, PATH fallback)           │
 │  ocr / asr / llm / fuse ── pipelines + progress events      │
 │  ai_runtime ── provider traits + managers + runtime config  │
 │  project / export ── <project-name>.gsa persistence / subs  │
@@ -46,7 +46,7 @@ Constraint: **fully offline**. The Rust side has no HTTP client and makes no net
 
 | Module | Responsibility |
 |---|---|
-| `src-tauri/src/video/mod.rs` | ffprobe metadata (`get_video_metadata`); frame / audio extraction reused by OCR / ASR; FFmpeg located via system PATH → ffmpeg-sidecar dir, error `FFMPEG_NOT_FOUND` |
+| `src-tauri/src/video/mod.rs` | ffprobe metadata (`get_video_metadata`); frame / audio extraction reused by OCR / ASR; FFmpeg lookup lives in `video/ffmpeg_locator.rs`: bundled `resources/ffmpeg/` (shipped in the installer) → system PATH, error `FFMPEG_NOT_FOUND` |
 | `src-tauri/src/ocr/` (`mod.rs` facade + `commands`/`correct`/`merge`/`params`/`pipeline`/`refine` submodules) | Full OCR pipeline `run_ocr` (background thread + `ocr-progress` events): extract → change detection → window refinement → OCR → merge; `run_ocr_images` for direct screenshots; `approve_corpus_diff` to approve a corpus correction (single implementation of the replace rule, shared with the benchmark) |
 | `src-tauri/src/ai_runtime/dhash.rs` | 64-bit dHash of cropped frames + Hamming-distance change decision |
 | `src-tauri/src/ai_runtime/mod.rs` | AI runtime skeleton: provider traits + managers for OCR/ASR/LLM + `NoneProvider` placeholder (keeps the build compiling when the environment is absent; providers report "not ready") |
@@ -276,8 +276,8 @@ See [src-tauri/tests/fuse_lab/README.md](../src-tauri/tests/fuse_lab/README.md);
 
 ## Packaging & distribution status
 
-- `tauri.conf.json` does **not** yet configure `bundle.resources`: installers will not carry `runtime/`. The distribution plan (bundle `runtime/**` and teach `config.rs` the installed resource layout) is noted as a TODO in `config.rs`.
-- FFmpeg is not bundled: the app searches PATH → the ffmpeg-sidecar directory.
+- `tauri.conf.json` now carries two `bundle.resources` entries: the install manifest `resources/runtime/manifest.json` and the bundled ffmpeg `resources/ffmpeg/*`. The AI runtime itself (python / deps / models, well over 10 GB) is still not shipped — it is installed on the user's machine by `scripts/bootstrap_runtime.ps1` from that manifest (the MOSS card on the welcome page offers a one-click install/update after a disk precheck).
+- FFmpeg **is** bundled (LGPL shared build, rationale in `THIRD_PARTY.md`): `src-tauri/src/video/ffmpeg_locator.rs` looks in the bundled `resources/ffmpeg/` first, then falls back to system PATH. A source checkout needs one `scripts/fetch_ffmpeg.ps1` run (161 MB, binaries are not tracked).
 - Model downloads exist only in the bootstrap scripts; the app side only performs readiness checks (the `check_*` commands).
 
 ## Collaboration conventions

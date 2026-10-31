@@ -252,12 +252,102 @@ export interface MossBackendProbe {
   error?: string | null;
 }
 
-/// MOSS 推理设备保存结果（Rust `set_moss_device`）
-export interface MossDeviceSaveResult {
-  /// 实际写入的 moss_device 值（"" = auto）
+/// 推理设备保存结果（Rust `set_moss_device` / `set_funasr_device` 共用）
+export interface DeviceSaveResult {
+  /// 实际写入的值（moss 的 "" = auto；funasr 恒为 cpu/cuda）
   device: string;
-  /// 面向用户的结果说明
+  /// 面向用户的结果说明（含是否已立即生效）
   message: string;
+}
+
+/// installer 写下的安装记录（`runtime/.installed.json` 的单项）
+export interface MossInstalledItem {
+  /// 装的是哪个后端版本：cpu / cuda / vulkan
+  flavor: string;
+  /// 所装压缩包的 SHA256（与清单比对是唯一判据）
+  sha256: string;
+  /// 清单版本号（装的时候那份）
+  source_version: string;
+  /// 安装时间（ISO8601）
+  installed_at: string;
+}
+
+/// 已装运行时 vs 清单的比对结果（Rust `probe_moss_install`）
+export interface MossInstallStatus {
+  /// ok / update_available / not_installed / file_missing / flavor_not_in_manifest / manifest_missing / unknown
+  state: string;
+  /// 无安装记录时 null（`.installed.json` 尚未由 installer 写入）
+  installed: MossInstalledItem | null;
+  /// 清单里该 flavor 声明的字节数；清单缺失或该 flavor 不在清单时 null
+  declared_size: number | null;
+  /// 可直接上屏的中文结论
+  message: string;
+}
+
+/// 运行时安装进度事件（Rust `runtime_install::INSTALL_PROGRESS_EVENT`）
+export const RUNTIME_INSTALL_EVENT = "runtime-install-progress";
+
+/// ffmpeg 自检结论（Rust `video::ffmpeg_locator::check_ffmpeg`）
+export interface FfmpegStatus {
+  /// ffmpeg 与 ffprobe 都可用
+  ready: boolean;
+  /// "bundled"（随包内嵌）/ "path"（系统 PATH）/ "missing"
+  source: string;
+  /// 内嵌时是绝对路径，走 PATH 时是命令名
+  ffmpeg: string;
+  ffprobe: string;
+  /// 形如 "n8.1.3-25-g611cec792a"；取不到为空串
+  version: string;
+  /// 可直接上屏的结论（未就绪时说明该怎么办）
+  message: string;
+}
+
+/// installer 脚本 stdout 的一行事件（契约 §3 冻结的 schema）
+export interface RuntimeInstallEvent {
+  /// start / progress / item_done / item_skip / item_fail / error / done
+  event: string;
+  item?: string;
+  flavor?: string;
+  /// download / verify / extract / configure（仅 progress）
+  phase?: string;
+  /// 0–100（仅 progress）
+  percent?: number;
+  detail?: string;
+  /// 以下只出现在 done
+  ok?: boolean;
+  installed?: string[];
+  skipped?: string[];
+  failed?: string[];
+}
+
+/// 一次安装的结果（Rust `install_runtime` 返回值）
+export interface RuntimeInstallSummary {
+  ok: boolean;
+  /// 契约 §5 退出码：0 成功 / 1 预检失败 / 2 校验失败 / 3 部分条目失败 / 4 未知
+  exit_code: number;
+  installed: string[];
+  skipped: string[];
+  failed: string[];
+  cancelled: boolean;
+  message: string;
+}
+
+/// 磁盘预检结论（Rust `precheck_runtime_disk`）
+export interface RuntimeDiskPrecheck {
+  ok: boolean;
+  /// 清单里找到的条目数（0 = 清单未找到）
+  manifest_entries: number;
+  /// 估算需要字节数（下载量 ×3 + 100MB 余量）
+  required_bytes: number;
+  /// runtime 所在盘可用字节；查不到为 null（此时不拦）
+  free_bytes: number | null;
+  message: string;
+}
+
+/// 运行时整体重载结论（Rust `reload_runtimes`）：装完运行时后重建进程内 provider
+export interface RuntimeReloadSummary {
+  asr: string[];
+  ocr: string;
 }
 
 /// ASR 进度事件名（Rust 侧 `ASR_PROGRESS_EVENT` 需保持一致）

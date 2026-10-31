@@ -5,7 +5,7 @@ import { useProjectStore } from "../stores/project";
 import { useUiStore } from "../stores/ui";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import type { RecentProject } from "../types";
+import type { RecentProject, MossInstallStatus } from "../types";
 import AppIcon from "../components/AppIcon.vue";
 import { NCard, NCheckbox, NInput, NModal, NPopconfirm, useMessage } from "naive-ui";
 
@@ -160,7 +160,7 @@ const deleteWithFile = ref(false);
 // ── 环境自检：只做探针 ──
 // 未就绪/探测失败都只显示状态，不阻塞任何操作（真正运行该引擎时才会提示），
 // 这里也不做自动 bootstrap。三个探针互不等待：谁先回来谁先显示。
-type ProbeState = "probing" | "ready" | "notready" | "unknown";
+type ProbeState = "probing" | "installing" | "ready" | "notready" | "unknown";
 
 interface Probe {
   state: ProbeState;
@@ -174,12 +174,23 @@ interface Probe {
   deviceNote?: string;
   /// 设备判定为硬错误（显式指定了本机不具备的后端）
   deviceBad?: boolean;
+  /// 已装运行时 vs 清单的结论（仅 ASR 卡，来自 probe_moss_install）
+  installNote?: string;
+  /// 该结论需要用户动作（更新 / 文件缺失 / 后端已下线）
+  installWarn?: boolean;
+  /// 原始状态串（`probe_moss_install.state`）：用于区分「运行时已就绪但引擎仍缺料」
+  installState?: string;
+  /// 版本号（仅 ffmpeg 卡）：形如 "n8.1.3-25-g611cec792a"
+  version?: string;
+  /// 二进制来源（仅 ffmpeg 卡）："bundled" / "path" / "missing"
+  origin?: string;
 }
 
 const ENV_CARDS = [
   { key: "ocr", name: "PaddleOCR", desc: "OCR 引擎 · PP-OCR 本地 Python worker" },
   { key: "asr", name: "MOSS", desc: "转写 + 说话人分离（S01/S02）· ggml，有 CUDA/Vulkan 即 GPU" },
   { key: "embed", name: "e5-small", desc: "融合向量召回 · multilingual-e5-small ONNX qint8" },
+  { key: "ffmpeg", name: "FFmpeg", desc: "视频解码 / 抽帧 / 抽音 / 波形 · 随安装包内嵌" },
 ] as const;
 
 type EnvKey = (typeof ENV_CARDS)[number]["key"];
@@ -188,10 +199,12 @@ const probes = ref<Record<EnvKey, Probe>>({
   ocr: { state: "probing", message: "" },
   asr: { state: "probing", message: "" },
   embed: { state: "probing", message: "" },
+  ffmpeg: { state: "probing", message: "" },
 });
 
 const STATE_TEXT: Record<ProbeState, string> = {
   probing: "探测中…",
+  installing: "安装中…",
   ready: "就绪",
   notready: "未就绪",
   unknown: "—",
@@ -201,16 +214,27 @@ function stateText(key: EnvKey) {
   return STATE_TEXT[probes.value[key].state];
 }
 
-/// 探测失败与未就绪都用灰点，探测中给琥珀点
+/// 探测失败与未就绪都用灰点，探测中 / 安装中给琥珀点
 function dotClass(key: EnvKey) {
   const state = probes.value[key].state;
   if (state === "ready") return "";
-  return state === "probing" ? "warn" : "off";
+  return state === "probing" || state === "installing" ? "warn" : "off";
 }
 
-function setProbe(key: EnvKey, ready: boolean | null, msg: string, device = "", backend: string | null = null) {
+function setProbe(
+  key: EnvKey,
+  ready: boolean | null,
+  msg: string,
+  device = "",
+  backend: string | null = null,
+  warming = false,
+) {
   probes.value[key] = {
-    state: ready === null ? "unknown" : ready ? "ready" : "notready",
+    // 保留已有附加信息（设备判定 / 安装结论），只覆盖探测本身的结果
+    ...probes.value[key],
+    // 后台预热（provider 还在握手）≠ 未就绪：给「探测中…」。否则首帧显示"未就绪"、
+    // 几秒后自己变"就绪"，看起来像故障（真机反馈 2026-10-31 就是这条）
+    state: warming ? "probing" : ready === null ? "unknown" : ready ? "ready" : "notready",
     message: msg,
     device,
     backend,
@@ -222,16 +246,45 @@ function setAsrDeviceNote(note: string, bad: boolean) {
   probes.value.asr = { ...probes.value.asr, deviceNote: note, deviceBad: bad };
 }
 
-async function probeOcr() {
+/// 这些状态需要用户动作（更新 / 文件缺失 / 后端已下线）；ok / unknown / not_installed 只陈述
+const INSTALL_ACTION_STATES = ["update_available", "file_missing", "flavor_not_in_manifest", "model_missing"];
+
+/// 把「已装运行时 vs 清单」的结论并进 ASR 卡
+function setAsrInstall(install: MossInstallStatus) {
+  probes.value.asr = {
+    ...probes.value.asr,
+    installNote: install.message,
+    installWarn: INSTALL_ACTION_STATES.includes(install.state),
+    installState: install.state,
+  };
+}
+
+/// 后台预热期间的文案（provider 构造不再同步握手，见契约 §8.6.1）
+const WARMING_HINTS = ["正在启动", "正在探测"];
+
+function isWarming(message: string): boolean {
+  return WARMING_HINTS.some((h) => message.includes(h));
+}
+
+async function probeOcr(retries = 8) {
   try {
     const status = await invoke<{ ready: boolean; message: string }>("check_ocr_runtime");
-    setProbe("ocr", status.ready, status.message);
+    const warming = !status.ready && isWarming(status.message);
+    setProbe("ocr", status.ready, status.message, "", null, warming);
+    // 模型加载在后台线程跑（约 2–7 s）：打到「正在启动」就隔一会儿再看一眼，
+    // 别让用户停在「未就绪」上
+    if (warming && retries > 0) {
+      window.setTimeout(() => void probeOcr(retries - 1), 1200);
+    }
   } catch (e) {
     setProbe("ocr", null, String(e));
   }
 }
 
-async function probeAsr() {
+/// 只跑轻量的引擎状态探测，并自己排重试。
+/// 拆出来是因为重试期间不该每 1.5 s 就起一次 `nvidia-smi` / `vulkaninfo`
+/// （那是 probeMossBackend 的活，只在首轮与装完之后跑）。
+async function probeAsrEngine(retries = 20) {
   try {
     const engines = await projectStore.getAsrEngines();
     const moss = engines.find((e) => e.engine === "moss");
@@ -239,18 +292,155 @@ async function probeAsr() {
       setProbe("asr", null, "探针未返回 MOSS 引擎信息");
       return;
     }
-    setProbe("asr", moss.ready, moss.message, moss.device, moss.effective_backend ?? null);
+    setProbe(
+      "asr",
+      moss.ready,
+      moss.message,
+      moss.device,
+      moss.effective_backend ?? null,
+      !moss.ready && isWarming(moss.message),
+    );
   } catch (e) {
     setProbe("asr", null, String(e));
+    return;
   }
-  // 设备判定：显式指定了本机不具备的后端 = 硬错误，卡片上直接摊开说清楚
-  try {
-    const report = await projectStore.probeMossBackend();
+
+  // 探测失败后后端有 15 s 起的退避重试（契约 §8.6.3）：界面这边必须继续看，
+  // 否则「失败一次就永远停在未就绪」，用户只能重启应用才等到它自愈。
+  const p = probes.value.asr;
+  if ((p.state === "notready" || p.state === "probing") && retries > 0) {
+    window.setTimeout(() => void probeAsrEngine(retries - 1), 1500);
+  }
+}
+
+async function probeAsr() {
+  await probeAsrEngine();
+
+  // 设备判定与运行时比对互不等待、互不拖累：任一失败只丢那一行信息
+  const [report, install] = await Promise.all([
+    projectStore.probeMossBackend().catch(() => null),
+    projectStore.probeMossInstall().catch(() => null),
+  ]);
+
+  if (report) {
     if (!report.available) {
+      // 显式指定了本机不具备的后端 = 硬错误，卡片上直接摊开说清楚
       setAsrDeviceNote(report.error || report.reason || "当前推理设备不可用", report.requested !== "auto");
+    } else if (install?.installed && report.recommendation && report.recommendation !== install.installed.flavor) {
+      // 装的是 CPU 版但本机能上 GPU：把「为什么没吃到 GPU / 该装哪个版本」说清楚
+      setAsrDeviceNote(`建议改用 ${report.recommendation} 版运行时：${report.recommendation_reason}`, false);
     }
+  }
+
+  if (install) {
+    setAsrInstall(install);
+  }
+}
+
+/// 一键安装/更新的入口条件：运行时与清单不一致，或引擎未就绪。
+/// 清单里现在也含模型（models-moss）与 OCR/向量运行时，所以「装全部」是缺省口径。
+const canInstall = computed(() => {
+  const p = probes.value.asr;
+  if (projectStore.installRunning) return false;
+  if (p.installWarn) return true;
+  return p.state === "notready";
+});
+
+/// 运行时与清单一致（installState === "ok"）却仍未就绪：多半是文件被挪动/损坏，
+/// 按钮改成「重装运行时」（带 -Force 覆盖已装标记）
+const forceReinstall = computed(() => {
+  const p = probes.value.asr;
+  return p.state === "notready" && p.installState === "ok" && !p.installWarn;
+});
+
+const installLabel = computed(() => {
+  if (forceReinstall.value) return "重装运行时";
+  return probes.value.asr.state === "notready" ? "安装运行时" : "更新运行时";
+});
+
+
+const PHASE_TEXT: Record<string, string> = {
+  download: "下载",
+  verify: "校验",
+  extract: "解压",
+  configure: "配置",
+};
+
+/// 进度行文案：「下载 42%」；脚本还没报阶段时退回「准备中…」
+const installLine = computed(() => {
+  if (!projectStore.installRunning) return "";
+  const phase = PHASE_TEXT[projectStore.installPhase] || "";
+  const pct = Math.round(projectStore.installPercent);
+  if (phase) return `${phase} ${pct}%`;
+  return pct > 0 ? `${pct}%` : "准备中…";
+});
+
+/// 装 MOSS 运行时：先磁盘预检（cuda 包 622 MB，别下到一半才发现没空间），
+/// 再交给 installer（flavor=auto = 按本机能力选 cuda / vulkan / cpu）
+async function startInstall() {
+  if (projectStore.installRunning) return;
+  let pre;
+  try {
+    pre = await projectStore.precheckRuntimeDisk();
+  } catch (e) {
+    message.error(`磁盘预检失败：${e}`);
+    return;
+  }
+  if (!pre.ok) {
+    message.error(pre.message);
+    return;
+  }
+  probes.value.asr = { ...probes.value.asr, state: "installing" };
+  const summary = await projectStore.startRuntimeInstall("auto", forceReinstall.value).catch((e) => {
+    message.error(`安装失败：${e}`);
+    return null;
+  });
+  if (summary) {
+    if (summary.cancelled) message.warning(summary.message);
+    else if (summary.ok) message.success(summary.message);
+    else message.error(summary.message);
+  }
+  // 装好的二进制与模型只落在磁盘上：进程内的 provider 还是启动时按「空目录」
+  // 构造的占位对象，必须重建才能生效 —— 否则就是"装完不重启永远未就绪"
+  if (summary?.ok) {
+    try {
+      const reload = await projectStore.reloadRuntimes();
+      const bad = [...reload.asr, reload.ocr].filter((line) => line.includes("未就绪"));
+      if (bad.length) message.info(bad.join("；"));
+    } catch (e) {
+      message.warning(`运行时已装好，但热加载失败，重启应用后生效：${e}`);
+    }
+  }
+  // 装完或取消都重探：运行时状态、设备判定、实测后端都可能变
+  await refreshAll();
+}
+
+async function cancelInstall() {
+  try {
+    if (!(await projectStore.cancelRuntimeInstall())) message.info("没有正在运行的安装任务");
+  } catch (e) {
+    message.error(`取消失败：${e}`);
+  }
+}
+
+/// 手动补齐命令（只给安装器覆盖不到的条目：OCR / e5-small / 内嵌 ffmpeg）；
+/// MOSS 由上面的安装按钮负责，不再重复给命令
+function cmdOf(key: EnvKey): string {
+  if (key === "ocr") return "scripts/bootstrap_ocr.ps1";
+  if (key === "ffmpeg") return "scripts/fetch_ffmpeg.ps1";
+  return "scripts/bootstrap_embed.ps1";
+}
+
+function showCmd(key: EnvKey): boolean {
+  return key !== "asr" && probes.value[key].state === "notready";
+}
+
+async function copyCmd(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    message.success("已复制命令");
   } catch {
-    // 探测失败不影响卡片其它信息
+    message.warning("复制失败，请手动选中命令");
   }
 }
 
@@ -276,11 +466,38 @@ async function probeEmbed() {
   }
 }
 
+/// ffmpeg 自检：内嵌优先、回退 PATH，只读探测
+async function probeFfmpeg() {
+  try {
+    const status = await projectStore.checkFfmpeg();
+    probes.value.ffmpeg = {
+      state: status.ready ? "ready" : "notready",
+      message: status.message,
+      version: status.version,
+      origin: status.source,
+    };
+  } catch (e) {
+    setProbe("ffmpeg", null, String(e));
+  }
+}
+
+/// 二进制来源文案：内嵌 / 系统 PATH（都没找到时不显示这行）
+function originText(key: EnvKey): string {
+  const o = probes.value[key].origin;
+  if (o === "bundled") return "内嵌";
+  if (o === "path") return "系统 PATH";
+  return "";
+}
+
+/// 四张卡一起重探（一键安装完成后 / 手动点「重新探测」）。
+/// 单张卡各自重试内部已有节流，这里只负责同时触发。
+async function refreshAll() {
+  await Promise.all([probeOcr(), probeAsr(), probeEmbed(), probeFfmpeg()]);
+}
+
 onMounted(() => {
   projectStore.refreshRecentProjects();
-  probeOcr();
-  probeAsr();
-  probeEmbed();
+  void refreshAll();
 });
 </script>
 
@@ -400,12 +617,60 @@ onMounted(() => {
               <i class="dot" :class="dotClass(card.key)" />{{ stateText(card.key) }}
             </span>
             <span class="ex">{{ card.desc }}</span>
-            <span v-if="deviceText(card.key)" class="ex">
+            <span v-if="card.key === 'ffmpeg' && probes.ffmpeg.state === 'ready'" class="ex">
+              版本 · {{ probes.ffmpeg.version || "未知" }}（{{ originText("ffmpeg") }}）
+            </span>
+            <span v-if="card.key === 'asr' && deviceText(card.key)" class="ex">
               设备 · {{ deviceText(card.key) }}{{ backendText(card.key) ? `（${backendText(card.key)}）` : "" }}
             </span>
-            <span v-if="card.key === 'asr' && probes.asr.deviceNote" class="ex" :class="{ danger: probes.asr.deviceBad }">
+            <span
+              v-if="card.key === 'asr' && probes.asr.deviceNote"
+              class="ex"
+              :class="{ danger: probes.asr.deviceBad, warn: !probes.asr.deviceBad }"
+            >
               {{ probes.asr.deviceNote }}
             </span>
+            <span v-if="card.key === 'asr' && probes.asr.installNote" class="ex" :class="{ warn: probes.asr.installWarn }">
+              {{ probes.asr.installNote }}
+            </span>
+            <!-- 运行时与清单一致、引擎却仍未就绪：真实原因在 installNote/卡面原因里说，
+                 这里不再猜「多半是模型没下」（那是 loader 口径未回退时的假结论） -->
+            <!-- 一键安装/更新：装清单里的全部条目（运行时 + 模型 + OCR/向量运行时），装完自动重探 -->
+            <span v-if="card.key === 'asr' && !projectStore.installRunning" class="ex act">
+              <button v-if="canInstall" class="btn pri sm" @click="startInstall">{{ installLabel }}</button>
+              <span v-if="canInstall" class="hint">按本机能力选后端</span>
+              <button class="btn ghost sm" @click="refreshAll">重新探测</button>
+            </span>
+            <template v-if="card.key === 'asr' && projectStore.installRunning">
+              <span class="pbar"><i :style="{ width: `${projectStore.installPercent}%` }" /></span>
+              <span class="ex act">
+                <span class="inst">{{ installLine }}</span>
+                <button class="btn ghost sm" @click="cancelInstall">取消</button>
+              </span>
+              <span v-if="projectStore.installDetail" class="ex ell" :title="projectStore.installDetail">
+                {{ projectStore.installDetail }}
+              </span>
+            </template>
+            <!-- ASR 未就绪的原因原文：别只藏在 tooltip 里。真机上"未就绪 + 没有原因"
+                 根本没法报障（2026-10-31 反馈），这里直接摊开 -->
+            <span
+              v-if="card.key === 'asr' && probes.asr.state === 'notready' && probes.asr.message"
+              class="ex"
+              :class="{ danger: !isWarming(probes.asr.message) }"
+            >
+              {{ probes.asr.message }}
+            </span>
+            <!-- 未就绪原因原文直接摊在卡面上（ASR 的已由上面一行/两行覆盖，不重复） -->
+            <span
+              v-if="card.key !== 'asr' && probes[card.key].state === 'notready' && probes[card.key].message"
+              class="ex"
+            >
+              {{ probes[card.key].message }}
+            </span>
+            <!-- 手动补齐命令（点击复制）：只给安装器覆盖不到的条目 -->
+            <code v-if="showCmd(card.key)" class="cmd" title="点击复制" @click="copyCmd(cmdOf(card.key))">
+              {{ cmdOf(card.key) }}
+            </code>
             <span v-if="card.key === 'asr' && probes.asr.state === 'notready'" class="ex">
               推理设备可在打轴页「转写参数 → 推理设备」中设置
             </span>
@@ -728,7 +993,8 @@ onMounted(() => {
 .env {
   flex: none;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  /* 4 张卡在宽屏一行放下，窄屏自动折行（固定 3 列会让第 4 张独占一行） */
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
   gap: 12px;
 }
 
@@ -763,6 +1029,67 @@ onMounted(() => {
 
 .ecard .ex.danger {
   color: var(--danger);
+}
+
+.ecard .ex.warn {
+  color: var(--warn);
+}
+
+/* 安装按钮行与进度行：与文案行同样式底，只多一层横排 */
+.ecard .ex.act {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ecard .act .hint {
+  font-size: 10.5px;
+  color: var(--faint);
+}
+
+.ecard .inst {
+  font-size: 11px;
+  color: var(--warn);
+  font-variant-numeric: tabular-nums;
+}
+
+.ecard .pbar {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--hover);
+  overflow: hidden;
+}
+
+.ecard .pbar i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s;
+}
+
+/* detail 是脚本原文的短诊断，长了就省略，全文走 title */
+.ecard .ex.ell {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ecard .cmd {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text);
+  background: var(--hover);
+  border: 1px solid var(--hair);
+  border-radius: 4px;
+  padding: 4px 7px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.ecard .cmd:hover {
+  border-color: var(--dim);
 }
 
 .wfoot {

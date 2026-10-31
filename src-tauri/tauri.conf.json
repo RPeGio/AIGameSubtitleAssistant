@@ -37,6 +37,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["resources/runtime/manifest.json"]
+    "resources": ["resources/runtime/manifest.json", "resources/ffmpeg/*", "resources/scripts/*"]
   }
 }

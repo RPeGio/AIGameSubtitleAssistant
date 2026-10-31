@@ -50,7 +50,7 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
 | `-PipMirror <url>` | 默认华为云 | CUDA 运行库 pip 索引（§4.3）；`-SkipGpuLibs` 可整段跳过 |
 | `-PipUseProxy` | 开关 | **默认清空 `HTTP(S)_PROXY`** 跑 pip（代理常拉慢 pip），加了才走代理 |
 
-- **无参运行** = `-Items moss -Flavor auto`，即「首启默认动作」。
+- **无参运行** = `-Items <§2 表里的全部条目> -Flavor auto`，即「首启默认动作」（装齐运行时 + 模型 + OCR/向量运行时）。
 
 ---
 
@@ -342,10 +342,12 @@ installer 侧实测（2026-10-24）确认过、且容易踩的三点：
 |---|---|---|---|
 | P1 | `src-tauri/src/lib.rs` | `invoke_handler` 注册 `ai_runtime::backend_probe::probe_moss_backend,` | **已由本分支直接改**（用户 2026-10-22 授权） |
 | P2 | `src-tauri/src/lib.rs` | `invoke_handler` 注册 `ai_runtime::config::set_moss_device,` | **已由本分支直接改**（同上） |
-| P3 | `src-tauri/src/ai_runtime/mod.rs` | *（可选）* `AsrManager` 增加「重置 moss provider」的方法，用于改设备后**即时**生效 | 不做（决策 D3-A：下次启动生效），仅在将来要即时生效时补 |
+| P3 | `src-tauri/src/ai_runtime/mod.rs` | *（可选）* `AsrManager` 增加「重置 moss provider」的方法，用于改设备后**即时**生效 | **已实现**（2026-10-29 提交 `1fa8a77`，本分支直接改：`reload_engine(key)` + provider 换 `RwLock<Arc<dyn AsrProvider>>`，见 §8.2 / §8.7；旧决策 D3-A「下次启动生效」已反转） |
 | P4 | `src-tauri/tauri.conf.json` | `bundle.resources` 加 `"resources": ["resources/runtime/manifest.json"]` | **已由本分支直接改**（2026-10-24 用户指示落清单时一并加好）；installer 侧勿重复添加 |
 | P5 | `src-tauri/src/ai_runtime/backend_probe.rs` | 老卡（算力 < 7.5）不再走 CUDA：`MIN_CUDA_COMPUTE_CAP`、`MachineCaps.cuda_cc` / `cuda_runnable()`、`parse_compute_cap()`、`decide()` 老卡改指「换 vulkan」、`recommend()` 抽成纯函数、报告加 `cuda_compute_cap` / `cuda_runnable`（详见 §8.1） | **已套用**（`351cd5a`，= installer 侧补丁 0001；2026-10-28 `git am --3way` 无冲突） |
 | P6 | `src-tauri/src/ai_runtime/installed_state.rs`（新增）<br>+ `ai_runtime/mod.rs`（`pub mod installed_state;`）<br>+ `src-tauri/src/lib.rs`（注册命令） | 已装运行时 vs 清单比对：`evaluate()` 七态 + `#[tauri::command] probe_moss_install`（详见 §8.4） | **已套用**（`80eda1d`，= installer 侧补丁 0002；同上） |
+| P7 | `scripts/bootstrap_runtime.ps1`（新增 406 行）<br>+ `ai_runtime/runtime_install.rs`（新增 1100 行）<br>+ `ai_runtime/mod.rs`（`pub mod runtime_install;`）<br>+ `lib.rs`（manage + 注册三命令） | 安装器执行体与 Rust 侧子进程基础设施（详见 §8.5） | **已并入**（`7d3f8d5`，走分支合并而非补丁；本分支在此之上做前端接线 §8.6） |
+| P8 | `tauri.conf.json` 的 `bundle.resources` + `scripts/sync_bundle_resources.mjs` + `package.json` 的 `build` | 让 `scripts/bootstrap_runtime.ps1` 随安装包发布（此前只声明了 manifest，真机上一键安装必然失败） | **已由本分支完成**（2026-10-30，见 §8.6）；分发侧不要再重复加 |
 
 P1/P2 的命令函数本体放在 `backend_probe.rs` / `config.rs`——这两个模块**已在
 `ai_runtime/mod.rs` 里声明**（`pub mod backend_probe;` / `pub mod config;`）。
@@ -419,10 +421,11 @@ invoke("set_moss_device", { device: "" | "cpu" | "cuda" | "vulkan" })
   空串或三种具体后端；非法值 → 报错，不落盘，`config.rs:356-366`）。
 - 落盘目标：`runtime/config.json` 的 `moss_device` 字段（原子写 `RuntimeConfig::save`）；
   读不到/坏文件直接报错，**不会用默认值覆盖**。
-- 返回：`{ device: "cuda", message: "已保存 moss_device=cuda（下次启动生效）" }`
-  （结构体 `MossDeviceSaveResult`，无 `ok` 字段——成功即返回，失败走 `Err`）。
-- **生效时机**：MOSS provider 在 app 启动时 spawn 并绑定设备 ⇒ 改完配置
-  **默认下次启动生效**；若 installer 侧套用补丁 P3，可做即时重置。
+- 返回：`{ device: "cuda", message: "已保存 moss_device=cuda（moss 已重新加载）" }`
+  （结构体 `DeviceSaveResult`，无 `ok` 字段——成功即返回，失败走 `Err`）。
+- **生效时机（2026-10-29 变更）**：保存后立即调 `reload_engine("moss")` 重建该 provider，
+  **不需要重启**；转写进行中时拒绝切换（返回 `"转写进行中，完成后再切换"`）。
+  重建失败不阻断落盘，message 变成 `"已保存 moss_device=…；但 {原因}（重启后生效）"`。
 
 ### 8.3 `check_asr_engines`（已有，不改）
 
@@ -473,6 +476,137 @@ ok、第一次转写才报 `MOSS 模型不存在`"）；`flavor` 与二进制同
 `moss_model` 为空时必须回退到 `bin/moss-transcribe.exe` 与
 `models/moss/moss-transcribe-q5_k.gguf`（`moss_paths()`）。否则 `resolve_path("")`
 会解析成 runtime 目录本身，把刚装好的运行时判成 `file_missing`——装完反而显示坏了。
+
+### 8.5 安装器命令（installer 侧 `runtime_install.rs` 交付，前端 11c 已接线）
+
+```ts
+invoke("precheck_runtime_disk")                                              // 无参，只读
+invoke("install_runtime", { items: null, flavor: "auto", force: false })      // 起子进程
+invoke("cancel_runtime_install")                                             // 杀进程树
+```
+
+- `precheck_runtime_disk` → `DiskPrecheck`：`{ ok, manifest_entries, required_bytes, free_bytes | null, message }`。
+  `free_bytes = null` 表示读不到磁盘信息 ⇒ **不拦**（宁放行不误拦）。
+  需求按**本次要装的全部条目求和**（`precheck_disk_multi`）：单条目取该 id 全部 flavor 里
+  **最大**的 size 乘展开系数 3（cuda 622 MB ⇒ ≈1.97 GB），多条目再把各自需求累加，
+  `SAFETY_MARGIN` 只加一次。「装全部」（清单 7 条）时总需求约 4 GB 级，别按单条目估。
+  **预检要扣掉已是最新的条目**（2026-10-31 修正）：逐条目比对 `.installed.json` 的
+  sha256 与清单，一致且非 `-Force` 的不计入需求（脚本侧对它们只会打 `item_skip`）。
+  全部都已最新时 `required_bytes = 0`、`message` 为「全部 N 个运行时条目已是最新：无需
+  下载与解压，本次不占用额外磁盘」。不扣的话会出现"重装报磁盘不足、其实一个字节都不用下"
+  （真机：C 盘剩 4.24 GB，全量估算 9.46 GB ⇒ 直接拒绝）。脚本侧同口径：`Test-Pending()`
+  （`-Force` / 无记录 / sha 不同 / `dest` 目录为空 ⇒ 待装），CUDA 运行库已拉过也不再计入。
+- `install_runtime` 的 `items` 是**逗号分隔字符串**（`null`/省略 = **清单里的全部条目**，
+  与 §2 的 `-Items` 缺省一致）；`flavor` 省略 = `"auto"`；`force = false` 时已装且哈希一致就跳过、不重下。
+  显式传 `items` 时只装这些 id，磁盘预检也按这些 id 算。
+- `cancel_runtime_install` → `bool`：没有在跑的任务时返回 `false`。
+- 进度事件 `runtime-install-progress`，payload = `InstallEvent`：
+  `{ event, item?, flavor?, phase?, percent?, detail?, ok?, installed?, skipped?, failed? }`。
+  `event ∈ start | progress | item_skip | item_done | item_fail | error | done`（与 §3 同一套），
+  只有 `done` 才带 `ok / installed / skipped / failed`；`percent` 为 0–100 浮点。
+- 失败语义要分清：**预检不过不抛 Err**，而是发 `error` + `done` 事件并返回
+  `InstallSummary{ ok: false, exit_code: 1, message }`；**找不到脚本 / 已有任务并发**才抛 `Err(String)`。
+  两者前端都是一条提示，但前者不能当异常处理（否则会掩盖「磁盘不够」这种可操作原因）。
+- 事件是**全局**的（不分窗口），前端在 store 顶层监听一次即可；同一时刻只允许一个安装任务。
+
+### 8.6 前端接线口径（第 11 项 11c，已实现）
+
+- 按钮出现条件：MOSS 未就绪 **或** `probe_moss_install.state ∈ {update_available, file_missing, flavor_not_in_manifest, model_missing}`；
+  文案「安装运行时」/「更新运行时」；`state === "ok"` 却仍未就绪时改「重装运行时」（带 `-Force`）。
+- 点击顺序：`precheck_runtime_disk`（不 ok 只提示、不启动）→ `install_runtime({ flavor: "auto" })`
+  → 事件驱动进度条 → 结束（成功/取消/失败）后重跑 `check_asr_engines` + `probe_moss_backend` + `probe_moss_install`。
+- **自检卡要会等后台预热**：provider 构造不再做就绪握手（见 §8.6.1），首开时 OCR / MOSS 的
+  message 会是「正在启动 / 正在探测」。前端要隔一会儿重探（当前：OCR 8 × 1.2 s、ASR 8 × 1.5 s），
+  否则用户永远停在「未就绪」。
+- **预热期必须显示「探测中…」而不是「未就绪」**（2026-10-31 修正）：`setProbe(key, ready, msg,
+  device, backend, warming)` 的第 6 个参数为真时 state 置 `probing`；`probeOcr` / `probeAsr` 在
+  `!ready && isWarming(message)` 时传 `true`，重试条件也放宽到 `notready | probing`。
+  否则首帧是"未就绪"、几秒后自己变"就绪"，看起来像故障。
+- `flavor` 传 `"auto"`：脚本 `Resolve-AutoFlavor`（cuda 算力 ≥7.5 → vulkan → cpu）与 Rust
+  `recommend_from_assets` 口径一致，与卡面「建议改用 cuda 版运行时」不矛盾。
+- **不做首启静默下载**（有意偏离该待办原标题）：cuda 包 622 MB，静默后台拉不可接受，失败时用户
+  什么也看不到；由自检卡负责说清「缺什么、该装哪个后端」。形态可逆。
+- **脚本随包（2026-10-30 补齐）**：`scripts/sync_bundle_resources.mjs` 在 `pnpm build` 前置把
+  `scripts/bootstrap_runtime.ps1` 拷进 `src-tauri/resources/scripts/`，`bundle.resources` 声明
+  `resources/scripts/*` ⇒ 打包后落在 `<exe 目录>/resources/scripts/bootstrap_runtime.ps1`，正是
+  `bootstrap_candidates()` 的候选之一（`resources/scripts/` 那条）。已验证 NSIS/MSI 内确实带该文件。
+  该目录是**构建产物**：`.gitignore` 只忽略 `*.ps1`，`README.md` 常驻（目录空掉会让 Tauri 的
+  `resources/scripts/*` 通配失配，构建直接失败）。
+- 安装失败时看 `runtime/logs/install.log`（脚本路径 / flavor / 退出码 / stderr 尾部 4000 字符），
+  `InstallSummary.message` 会自动追加「（日志：<路径>）」。
+
+### 8.6.1 子进程与命令的硬约束（2026-10-30 真机回归后新增）
+
+真机装机实测暴露过两个体验级故障，均已定位并修复；后续任何新增命令/子进程**必须**遵守：
+
+| 约束 | 为什么 | 做法 |
+|---|---|---|
+| 会起子进程或读大文件的 `#[tauri::command]` 一律 `async` + `tauri::async_runtime::spawn_blocking` | 同步命令跑在 Tauri **主线程**上，`probe_moss_backend`（`moss info` 加载几百 MB 模型 + `nvidia-smi` + `vulkaninfo`）、`check_ffmpeg`、`get_video_metadata` 曾把整个窗口冻住，连拖窗口都卡 | `probe_moss_backend` / `check_ffmpeg` / `get_video_metadata` 已改；`precheck_runtime_disk` / `install_runtime` 本来就是 async |
+| 任何 `Command` 都必须经 `crate::subprocess::hidden()` / `quiet()` | GUI 进程起控制台子进程会弹窗，真机上表现为「命令行窗口疯狂闪」 | `CREATE_NO_WINDOW`（`0x0800_0000`），全仓库 28 处已统一；单测钉住「静默但仍能取到 stdout」 |
+| 构造 manager 时不要做重活 | `AsrManager::new` / `OcrManager::new` 都在 `setup` 里跑，曾经在构造函数里同步做就绪握手，启动即卡 | `MossProvider` 惰性：`ensure_probed()` + 后台线程 `warm_up()`；`PaddleProvider` 同构：`spawn` 只到「子进程起来了」就返回（实测 6.43 s → 40 ms），`Inner` 用 `Arc` 共享 + `probe_lock` 串行化首次握手，首次 `recognize_batch` 等锁而不是往管道写半条请求；`describe()` 未探测完时给「正在启动」 |
+
+### 8.6.2 路径解析与就绪判定：**空配置 ≠ 未安装**（2026-10-31 真机反馈后新增）
+一键安装（`bootstrap_runtime.ps1`）**只解包文件、不写 `runtime/config.json`**，所以"文件都装好了、
+配置字段还全空"是正常状态。任何就绪判定都必须按下面的口径来，否则会出现"文件明明在盘上、
+卡片却说没装"（真机 2026-10-31 的 MOSS 与 e5-small 就是这个症状）：
+
+| 约束 | 为什么 | 做法 |
+|---|---|---|
+| 判定就绪必须走 `*_paths()`（`moss_paths` / `ocr_paths` / `embed_paths` / `funasr_paths`）的**标准布局回退**，不能只判 `config.xxx` 字符串是否为空 | 空字段是"没配过"，不是"没装"。安装器只解包、不生成 config | `EmbedManager::status()` 改为 `embed_paths()` 解析后逐项 `is_file()/is_dir()`；`build_moss()` 不再因空字段短路返回 `AsrNoneProvider` |
+| 未就绪原因必须**指出具体路径** | 只说"缺 embed_worker / embed_model / …"等于让用户猜 | 「嵌入模型不存在: `<绝对路径>`（点「安装运行时」可补齐）」 |
+| provider 不能用"空配置就返回 None provider"代替真实实现 | None provider 往往没有 `describe()`，界面只能显示一句空白的"未就绪"，把真正原因藏起来 | `MossProvider::spawn` 解析完路径后若文件缺失，报「MOSS 未就绪：可执行文件 `<路径>` 不存在」 |
+| `validate()`：**模型类只读数据允许绝对路径指向 runtime 之外** | C 盘紧张的机器要把几百 MB 的 gguf 放到别的盘 | 严格组（必须在内）：`worker_script` / `deps_dir` / `moss_binary` / `llm_binary` / `funasr_worker` / `funasr_deps` / `embed_worker` / `embed_deps_dir`；宽松组（允许绝对路径，相对路径仍查越界）：`model_dir` / `moss_model` / `llm_model` / `funasr_model_dir` / `embed_model` / `embed_tokenizer` |
+
+标准布局（安装器落地位置，回退逻辑即按此拼）：
+
+```
+<runtime>/bin/<moss 二进制 + ggml/cuda DLL + .backend>
+<runtime>/models/moss/<gguf>      models/embed/<model>/{model*.onnx, tokenizer.json}
+<runtime>/worker/{ocr_worker.py, embed_worker.py, fuse_core.py}
+<runtime>/deps/  deps_gpu/  deps_embed/   python/
+```
+
+### 8.6.3 「探测中」必须与「未就绪」区分，装完必须热加载（2026-11-01 真机反馈后新增）
+
+真机 2026-10-31 的三条症状都出自"进程内状态与世界不一致"，产品行为上必须固化：
+
+| 症状 | 机制 | 硬约束 |
+|---|---|---|
+| 启动瞬间卡片显示「未就绪」，几秒后自己变「就绪」 | 探测标志在**开始**就置真，`describe()` 于是返回空串（既不是"正在探测"也不是错误）⇒ 前端判 notready、且失去继续轮询的理由 | 探测状态机分四态 `Idle / Running / Ready / Failed(Instant)`；`Running` 与 `Idle` 一律返回「正在探测…」（前端据此显示「探测中」并每 1.5 s 重试，最多 20 次） |
+| 探测失败一次后就永久「未就绪」，只能重启应用 | 旧实现 `probed` 是单向闩，失败也置真，之后再无重试路径 | `Failed` 带失败时刻；**过了冷冻期允许自动重试**（15 s 起按连续失败次数线性退避，封顶 120 s），`check_asr_engines` 每次轮询到未就绪就在后台触发一次 `retry_warm_up()`；转写入口用 `force=true` 忽略冷冻期 |
+| 一键安装脚本跑完，四张卡全是「未就绪」，必须重启应用 | provider 是 `setup` 阶段按当时的目录一次性构造的（缺文件时退化成 `None`/`Broken` 占位），安装只往磁盘写文件 | 安装成功后前端必须调 `reload_runtimes`（见 §8.6.4）再重探全部卡片 |
+
+### 8.6.4 `reload_runtimes`（2026-11-01 新增）
+
+```ts
+invoke("reload_runtimes")   // 无参数
+// → { asr: string[], ocr: string }   每项是一句可直接显示的中文
+```
+
+- 语义：从磁盘重读 `runtime/config.json`（缺失则沿用当前配置）并**重建** ASR 双引擎与 OCR 的 provider；
+  MOSS 重建会重新跑 `info`，因此放在 `spawn_blocking` 里，不占命令线程。
+- 返回的是"结论句"而非状态码：`"moss 已重新加载"` / `"OCR 已重新加载但未就绪（provider: paddle）：…"`，
+  前端把含「未就绪」的行拼成一条 info 提示即可。
+- 边界：转写进行中时 ASR 侧会被拒绝（返回 `"moss: 转写进行中，完成后再切换"`），配置已落盘、重启后仍生效。
+- 调用时机：`install_runtime` 返回 `ok=true` **之后、重探卡片之前**；用户手动点「重新探测」只重探不重载。
+
+### 8.7 `set_funasr_device`（落盘，2026-10-29 引入）
+
+```ts
+invoke("set_funasr_device", { device: "cuda" | "cpu" })   // 也接受 "" / "auto"，均归一为 cuda
+```
+
+- 返回 `DeviceSaveResult`（与 §8.2 同一结构体），message 形如
+  `"已保存 funasr_device=cuda（funasr 已重新加载）"`。
+- 白名单只有 `{"", "cpu", "cuda"}`——**FunASR 走 torch，没有 Vulkan 后端**，写 `vulkan` 会被
+  `RuntimeConfig::validate()` 打回（手改 `config.json` 也一样，启动时报错而非静默忽略）。
+- **默认 `cuda`、但软回退**：`scripts/funasr_worker.py:46 pick_device` 在 CUDA 不可用（缺库/无卡）时
+  自动落 CPU 并跑通 ⇒ UI **不做硬报错**，只在尾注写明回退行为（与 §9 里 MOSS 的「绝不静默降级」相反，
+  因为两者后果不同：MOSS 静默降级会跑出一个假 GPU 结论，FunASR 只是慢）。
+- 生效时机同 §8.2：保存后立即 `reload_engine("funasr")` 重建 worker，转写中拒绝切换。
+- 旧决策 D5-A「本期只做 moss」已由用户 m01567 反转——FunASR 设备下拉已补
+  （`src/views/AsrView.vue` 的 `FUNASR_DEVICE_OPTIONS`），两块 UI 互斥出现（选 MOSS 显示 MOSS 设备、
+  选 FunASR 显示 FunASR 设备）。
 
 
 ---

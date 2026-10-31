@@ -10,6 +10,7 @@ pub mod asr;           // ASR 语音识别流水线（Phase 3）
 pub mod llm;           // LLM 推理流水线（Phase 5）
 pub mod fuse;          // AI 融合流水线（Phase 4）
 pub mod export;        // 导出（Phase 6 实现）
+pub mod subprocess;    // 子进程静默启动约定（CREATE_NO_WINDOW）
 
 use ai_runtime::{config::resolve_runtime_dir, AsrManager, EmbedManager, LlmManager, OcrManager, RuntimeConfig};
 use tauri::Manager; // app.path() 等
@@ -54,6 +55,8 @@ pub fn run() {
             app.manage(LlmManager::new(config, runtime_dir));
             // runtime 安装器状态（同一时刻只允许一个安装任务，且要能取消）
             app.manage(ai_runtime::runtime_install::RuntimeInstaller::default());
+            // ffmpeg/ffprobe 定位：注入资源目录（内嵌优先，PATH 兜底）
+            video::ffmpeg_locator::init(app.path().resource_dir().ok());
             Ok(())
         })
 
@@ -76,8 +79,10 @@ pub fn run() {
             ai_runtime::check_ocr_runtime,
             ai_runtime::check_asr_runtime,
             ai_runtime::check_asr_engines,
+            ai_runtime::reload_runtimes,
             ai_runtime::backend_probe::probe_moss_backend,
             ai_runtime::config::set_moss_device,
+            ai_runtime::config::set_funasr_device,
             ai_runtime::installed_state::probe_moss_install,
             ai_runtime::installed_state::probe_embed_install,
             ai_runtime::runtime_install::precheck_runtime_disk,
@@ -86,6 +91,8 @@ pub fn run() {
             ai_runtime::check_llm_runtime,
             ai_runtime::check_embed_runtime,
             ai_runtime::asr_cancel,
+            // video 模块
+            video::ffmpeg_locator::check_ffmpeg,
             // ocr 模块
             ocr::commands::run_ocr,
             ocr::commands::run_ocr_images,

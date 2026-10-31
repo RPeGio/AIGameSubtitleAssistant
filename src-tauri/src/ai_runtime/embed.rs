@@ -15,7 +15,7 @@ use crate::ai_runtime::RuntimeConfig;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// worker 输入段（转写侧一段；index = 输入顺序 1-based，worker 输出按此对应）
 #[derive(Debug, Clone, Serialize)]
@@ -167,7 +167,7 @@ pub fn run_embed_worker(
         .map_err(|e| EmbedError::Worker(format!("无法写输入文件: {}", e)))?;
 
     // 输入/输出走临时文件（temp_dir 由 RuntimeConfig::temp_dir 提供，不会污染工程目录）
-    let mut cmd = Command::new(&python);
+    let mut cmd = crate::subprocess::hidden(&python);
     cmd.arg(&worker)
         .arg(&in_path)
         .arg(&out_path)
