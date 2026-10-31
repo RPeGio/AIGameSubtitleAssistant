@@ -157,6 +157,14 @@ runtime/
 
 `validate()` 保证所有相对路径不越出 runtime 目录（防路径穿越）、python / moss / llm 二进制存在；`embed_*` 四项**整组必配或整组为空**（半配视为配置错误，避免运行期才失败），已配置时同样逐项做越界校验；模型文件不做存在性检查（由 provider 报"未就绪"）。
 
+**路径字段分两组**（2026-10-31）：可执行文件 / worker 脚本 / 依赖目录（`worker_script`、`deps_dir`、`moss_binary`、`llm_binary`、`funasr_worker`、`funasr_deps`、`embed_worker`、`embed_deps_dir`）必须落在 runtime 内——它们要跟同目录 DLL、包内 python 绑定；**模型类只读数据**（`model_dir`、`moss_model`、`llm_model`、`funasr_model_dir`、`embed_model`、`embed_tokenizer`）允许写**绝对路径指向别的盘**，相对路径仍查越界。
+
+**运行时/模型放哪个盘**：
+- 整目录搬：设环境变量 `GSA_RUNTIME_DIR=<新路径>`（该目录下要有 `config.json`），或直接在安装时把 app 装在非系统盘——兜底路径是 `app_data_dir/runtime`，跟着 `%APPDATA%` 走。
+- 只搬模型（省 C 盘空间）：在 `runtime/config.json` 里给 `moss_model` / `embed_model` / `embed_tokenizer` 写绝对路径即可，例如
+  `"moss_model": "D:/gsa-models/moss/moss-transcribe-q5_k.gguf"`。
+- 就绪判定**不读配置是否为空**，一律走 `moss_paths()` / `ocr_paths()` / `embed_paths()` 的标准布局回退（一键安装只解包、不写 config.json），见 `docs/RUNTIME_BOOTSTRAP_CONTRACT.md` §8.6.2。
+
 ## 数据模型（`project/mod.rs`）
 
 ```

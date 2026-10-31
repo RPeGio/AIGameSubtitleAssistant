@@ -708,6 +708,22 @@
 
 **未做**：`probe_bootstrap_scripts`（并入安装器后不需要前端判断脚本存在——`install_runtime` 找不到脚本会直接 Err）；首启静默安装（见 11c 决策，不做）。
 
+**2026-10-31 补记（真机反馈第 1–3 项：空配置误判、探测中态丢失、预检不扣已装）**
+
+用户在 0.3.0 安装包上实测后报告五个问题，本轮修前三个（第 4、5 项见"未做"）。
+
+| 问题 | 根因 | 修法 |
+|---|---|---|
+| OCR 就绪、MOSS 与 e5-small 却「未就绪」，还报"缺四个字段" | 三处判定各写各的：OCR 的 `create_ocr_provider` 用 `ocr_paths()`（空字段回退标准布局）所以没事；`build_moss()` 先判 `moss_binary/moss_model` 是否为空、空就返回 `AsrNoneProvider`（连 `describe()` 都没有，所以原因一片空白）；`EmbedManager::status()` 只看 `embed_*` 四个字符串是否为空。而**一键安装只解包、不写 `config.json`** ⇒ 字段全空 ⇒ 文件明明都在盘上也被判"没装" | `build_moss()` 去掉空字段短路，直接 `create_asr_provider(...)`，路径交给 `moss_paths()`；`EmbedManager::status()` 改用 `embed_paths()` 解析后逐项 `is_file()/is_dir()` 检查，缺失时报**具体路径**（「嵌入模型不存在: …」）而不是"缺哪个字段"。判据统一成"文件在不在"，与 OCR 一致 |
+| 启动瞬间显示「未就绪」，几秒后自己变「就绪」 | `setProbe()` 只映射 ready/unknown/notready，**从不写回 probing**；后台预热期间（PaddleOCR 2.2 s、MOSS 探测）引擎报的是"正在启动/正在探测"，被映射成"未就绪" | `setProbe` 加第 6 个参数 `warming`，为真时 state 置 `probing`（文案「探测中…」）；`probeOcr`/`probeAsr` 在 `!ready && isWarming(message)` 时传 true，重试条件放宽到 `notready \| probing` |
+| 重装报"磁盘空间不足"，其实一个字节都不用下 | 预检按**全量**估算：Rust `precheck_disk_multi()` 不扣已装项；脚本 `bootstrap_runtime.ps1` 的读 `.installed.json` 也在预检之后。真机 C 盘剩 4.24 GB、全量要 9.46 GB ⇒ 必拒 | Rust 新增 `installed_up_to_date()` / `read_installed_text()` / `pending_ids()` / `precheck_pending()`：逐条目比对清单 sha256，已最新且非 `-Force` 的不计入；脚本把状态读取上移到预检前，新增 `Test-Pending()`（`-Force` / 无记录 / sha 不同 / dest 为空 ⇒ 待装），只对 `$pending` 求和，CUDA 运行库已拉过也不再计入；全都不用下时报「无需额外磁盘空间」而不是留 100 MB 余量 |
+| 模型必须装 C 盘？ | `validate()` 用 `is_within()` 把 14 个路径字段全锁在 runtime 内 | 拆两组：可执行文件 / worker 脚本 / 依赖目录仍必须留在 runtime 内（要跟同目录 DLL、包内 python 绑定）；**模型类只读数据**（`model_dir`/`moss_model`/`llm_model`/`funasr_model_dir`/`embed_model`/`embed_tokenizer`）允许绝对路径指向别的盘，相对路径仍查越界 |
+
+- 删掉 ASR 卡上那段误导文案「运行时与安装清单一致，但 MOSS 仍未就绪：多半是模型文件不在位」——真机证明模型就在位，是判定口径的问题；真实原因现在由引擎 `describe()` 给。
+- 验证：`cargo test --lib` **353 passed**（新增 `test_validate_allows_absolute_model_outside_runtime` / `installed_up_to_date_matches_only_same_sha` / `precheck_pending_skips_installed_items`）、`cargo check --lib` 0 warning、`pnpm build` EXIT=0；脚本用假 `.installed.json` 实跑跳过路径，输出「磁盘预检通过：无需额外磁盘空间（1 项已就绪，不计入）」+ `item_skip` + `done ok:true`。
+- **踩坑（PS 5.1）**：`edit`/`write` 工具会去掉文件开头的 BOM，而 `bootstrap_runtime.ps1` 含中文、必须带 BOM，否则 PowerShell 按 GBK 解析、满屏"缺少右 }"。改完脚本要复核 `bytes[0..2] == EF BB BF`，必要时用 `New-Object System.Text.UTF8Encoding($true)` 重写。
+- **未做**：真机复测（需重装安装包）；第 4 项"首启静默安装看不到进度"与第 5 项"准备页"另开分支 `feat/first-run-prep`。
+
 **依赖/前置**：已全部满足（命令齐、契约齐、执行体已并入）。
 
 - bootstrap 脚本**已在 `scripts/`**（不在根目录）：`scripts/bootstrap_moss.ps1`（模型/二进制获取与就绪自检）、`scripts/build_moss.ps1`（自构建，含 vulkan 前置检查）。

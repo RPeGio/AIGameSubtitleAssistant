@@ -490,6 +490,12 @@ invoke("cancel_runtime_install")                                             // 
   需求按**本次要装的全部条目求和**（`precheck_disk_multi`）：单条目取该 id 全部 flavor 里
   **最大**的 size 乘展开系数 3（cuda 622 MB ⇒ ≈1.97 GB），多条目再把各自需求累加，
   `SAFETY_MARGIN` 只加一次。「装全部」（清单 7 条）时总需求约 4 GB 级，别按单条目估。
+  **预检要扣掉已是最新的条目**（2026-10-31 修正）：逐条目比对 `.installed.json` 的
+  sha256 与清单，一致且非 `-Force` 的不计入需求（脚本侧对它们只会打 `item_skip`）。
+  全部都已最新时 `required_bytes = 0`、`message` 为「全部 N 个运行时条目已是最新：无需
+  下载与解压，本次不占用额外磁盘」。不扣的话会出现"重装报磁盘不足、其实一个字节都不用下"
+  （真机：C 盘剩 4.24 GB，全量估算 9.46 GB ⇒ 直接拒绝）。脚本侧同口径：`Test-Pending()`
+  （`-Force` / 无记录 / sha 不同 / `dest` 目录为空 ⇒ 待装），CUDA 运行库已拉过也不再计入。
 - `install_runtime` 的 `items` 是**逗号分隔字符串**（`null`/省略 = **清单里的全部条目**，
   与 §2 的 `-Items` 缺省一致）；`flavor` 省略 = `"auto"`；`force = false` 时已装且哈希一致就跳过、不重下。
   显式传 `items` 时只装这些 id，磁盘预检也按这些 id 算。
@@ -512,6 +518,10 @@ invoke("cancel_runtime_install")                                             // 
 - **自检卡要会等后台预热**：provider 构造不再做就绪握手（见 §8.6.1），首开时 OCR / MOSS 的
   message 会是「正在启动 / 正在探测」。前端要隔一会儿重探（当前：OCR 8 × 1.2 s、ASR 8 × 1.5 s），
   否则用户永远停在「未就绪」。
+- **预热期必须显示「探测中…」而不是「未就绪」**（2026-10-31 修正）：`setProbe(key, ready, msg,
+  device, backend, warming)` 的第 6 个参数为真时 state 置 `probing`；`probeOcr` / `probeAsr` 在
+  `!ready && isWarming(message)` 时传 `true`，重试条件也放宽到 `notready | probing`。
+  否则首帧是"未就绪"、几秒后自己变"就绪"，看起来像故障。
 - `flavor` 传 `"auto"`：脚本 `Resolve-AutoFlavor`（cuda 算力 ≥7.5 → vulkan → cpu）与 Rust
   `recommend_from_assets` 口径一致，与卡面「建议改用 cuda 版运行时」不矛盾。
 - **不做首启静默下载**（有意偏离该待办原标题）：cuda 包 622 MB，静默后台拉不可接受，失败时用户
@@ -534,6 +544,28 @@ invoke("cancel_runtime_install")                                             // 
 | 会起子进程或读大文件的 `#[tauri::command]` 一律 `async` + `tauri::async_runtime::spawn_blocking` | 同步命令跑在 Tauri **主线程**上，`probe_moss_backend`（`moss info` 加载几百 MB 模型 + `nvidia-smi` + `vulkaninfo`）、`check_ffmpeg`、`get_video_metadata` 曾把整个窗口冻住，连拖窗口都卡 | `probe_moss_backend` / `check_ffmpeg` / `get_video_metadata` 已改；`precheck_runtime_disk` / `install_runtime` 本来就是 async |
 | 任何 `Command` 都必须经 `crate::subprocess::hidden()` / `quiet()` | GUI 进程起控制台子进程会弹窗，真机上表现为「命令行窗口疯狂闪」 | `CREATE_NO_WINDOW`（`0x0800_0000`），全仓库 28 处已统一；单测钉住「静默但仍能取到 stdout」 |
 | 构造 manager 时不要做重活 | `AsrManager::new` / `OcrManager::new` 都在 `setup` 里跑，曾经在构造函数里同步做就绪握手，启动即卡 | `MossProvider` 惰性：`ensure_probed()` + 后台线程 `warm_up()`；`PaddleProvider` 同构：`spawn` 只到「子进程起来了」就返回（实测 6.43 s → 40 ms），`Inner` 用 `Arc` 共享 + `probe_lock` 串行化首次握手，首次 `recognize_batch` 等锁而不是往管道写半条请求；`describe()` 未探测完时给「正在启动」 |
+
+### 8.6.2 路径解析与就绪判定：**空配置 ≠ 未安装**（2026-10-31 真机反馈后新增）
+
+一键安装（`bootstrap_runtime.ps1`）**只解包文件、不写 `runtime/config.json`**，所以"文件都装好了、
+配置字段还全空"是正常状态。任何就绪判定都必须按下面的口径来，否则会出现"文件明明在盘上、
+卡片却说没装"（真机 2026-10-31 的 MOSS 与 e5-small 就是这个症状）：
+
+| 约束 | 为什么 | 做法 |
+|---|---|---|
+| 判定就绪必须走 `*_paths()`（`moss_paths` / `ocr_paths` / `embed_paths` / `funasr_paths`）的**标准布局回退**，不能只判 `config.xxx` 字符串是否为空 | 空字段是"没配过"，不是"没装"。安装器只解包、不生成 config | `EmbedManager::status()` 改为 `embed_paths()` 解析后逐项 `is_file()/is_dir()`；`build_moss()` 不再因空字段短路返回 `AsrNoneProvider` |
+| 未就绪原因必须**指出具体路径** | 只说"缺 embed_worker / embed_model / …"等于让用户猜 | 「嵌入模型不存在: `<绝对路径>`（点「安装运行时」可补齐）」 |
+| provider 不能用"空配置就返回 None provider"代替真实实现 | None provider 往往没有 `describe()`，界面只能显示一句空白的"未就绪"，把真正原因藏起来 | `MossProvider::spawn` 解析完路径后若文件缺失，报「MOSS 未就绪：可执行文件 `<路径>` 不存在」 |
+| `validate()`：**模型类只读数据允许绝对路径指向 runtime 之外** | C 盘紧张的机器要把几百 MB 的 gguf 放到别的盘 | 严格组（必须在内）：`worker_script` / `deps_dir` / `moss_binary` / `llm_binary` / `funasr_worker` / `funasr_deps` / `embed_worker` / `embed_deps_dir`；宽松组（允许绝对路径，相对路径仍查越界）：`model_dir` / `moss_model` / `llm_model` / `funasr_model_dir` / `embed_model` / `embed_tokenizer` |
+
+标准布局（安装器落地位置，回退逻辑即按此拼）：
+
+```
+<runtime>/bin/<moss 二进制 + ggml/cuda DLL + .backend>
+<runtime>/models/moss/<gguf>      models/embed/<model>/{model*.onnx, tokenizer.json}
+<runtime>/worker/{ocr_worker.py, embed_worker.py, fuse_core.py}
+<runtime>/deps/  deps_gpu/  deps_embed/   python/
+```
 
 ### 8.7 `set_funasr_device`（落盘，2026-10-29 引入）
 
