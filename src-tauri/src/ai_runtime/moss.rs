@@ -227,13 +227,22 @@ enum ProbeState {
     Running,
     /// 跑完且成功
     Ready,
-    /// 跑完但失败（带失败时刻，用于失败冷冻期）
-    Failed(Instant),
+    /// 跑完但失败：失败时刻 + 连续失败次数（退避用）
+    Failed(Instant, u32),
 }
 
-/// 探测失败后多久允许自动重试：太短会在装运行时的过程中反复拉起进程，
-/// 太长又让用户「装完了还得重启」。15 秒是个折中。
+/// 探测失败后的重试间隔：从 15 秒起按连续失败次数线性退避，上限 2 分钟。
+///
+/// 下限要够短（装完运行时/驱动就绪后，用户看一眼页面就能自愈）；
+/// 上限要够长（设备确实不支持这种"永久失败"时，别每 15 秒就拉一次
+/// 576 MB 的 CUDA DLL —— 那会把欢迎页拖成风扇狂转）。
 const PROBE_RETRY_AFTER: Duration = Duration::from_secs(15);
+const PROBE_RETRY_CAP: Duration = Duration::from_secs(120);
+
+fn retry_gap(failures: u32) -> Duration {
+    let factor = failures.clamp(1, 8) as u32;
+    (PROBE_RETRY_AFTER * factor).min(PROBE_RETRY_CAP)
+}
 
 /// MOSS 转写 provider —— 每次 transcribe 启动一次性子进程
 pub struct MossProvider {
@@ -314,16 +323,18 @@ impl MossProvider {
     /// 并发语义：`Running` 时后来者直接返回（不重复起进程）；`Ready` 时不再探；
     /// `Failed` 且未过冷冻期也直接返回 —— 三条都由状态机本身表达，不需要额外原子标志。
     pub fn probe_now(&self, force: bool) {
+        let prev_failures;
         {
             let mut guard = self.probe.lock().unwrap_or_else(|e| e.into_inner());
-            let allowed = match *guard {
+            let (allowed, failures) = match *guard {
                 ProbeState::Running | ProbeState::Ready => return,
-                ProbeState::Idle => true,
-                ProbeState::Failed(at) => force || at.elapsed() >= PROBE_RETRY_AFTER,
+                ProbeState::Idle => (true, 0),
+                ProbeState::Failed(at, n) => (force || at.elapsed() >= retry_gap(n), n),
             };
             if !allowed {
                 return;
             }
+            prev_failures = failures;
             *guard = ProbeState::Running;
         } // 不持锁跑 `info`：几秒钟的阻塞不该挡住 describe()
 
@@ -338,7 +349,7 @@ impl MossProvider {
             Err(e) => {
                 self.ready.store(false, Ordering::SeqCst);
                 self.set_error(&e.to_string());
-                ProbeState::Failed(Instant::now())
+                ProbeState::Failed(Instant::now(), prev_failures.saturating_add(1))
             }
         };
         *self.probe.lock().unwrap_or_else(|e| e.into_inner()) = next;
@@ -347,7 +358,7 @@ impl MossProvider {
     /// 探测是否已跑完（成功或失败）。跑完才可能给出"未就绪"的最终结论。
     pub fn is_probed(&self) -> bool {
         let guard = self.probe.lock().unwrap_or_else(|e| e.into_inner());
-        matches!(*guard, ProbeState::Ready | ProbeState::Failed(_))
+        matches!(*guard, ProbeState::Ready | ProbeState::Failed(..))
     }
 
     /// 探测：`info <model>` 成功说明 GGUF 元数据可加载；同时用 stderr 的
@@ -610,7 +621,7 @@ impl AsrProvider for MossProvider {
             ProbeState::Idle | ProbeState::Running => {
                 "正在探测 MOSS 后端（首次启动需要几秒钟）".to_string()
             }
-            ProbeState::Failed(_) => self
+            ProbeState::Failed(..) => self
                 .last_error
                 .lock()
                 .ok()
@@ -893,8 +904,15 @@ mod tests {
     }
 
     #[test]
-    fn test_describe_says_probing_before_probe() {
-        let p = fake_provider("idle");
+    fn test_retry_gap_backs_off_to_cap() {
+        // 永久失败（设备不支持）时不能让欢迎页每 15 秒拉一次 576 MB DLL
+        assert_eq!(retry_gap(1), Duration::from_secs(15));
+        assert_eq!(retry_gap(4), Duration::from_secs(60));
+        assert_eq!(retry_gap(99), PROBE_RETRY_CAP);
+    }
+
+    #[test]
+    fn test_describe_says_probing_before_probe() {        let p = fake_provider("idle");
         assert!(!p.is_probed());
         assert!(!p.is_ready());
         // 关键：没跑探测时必须说"正在探测"，而不是空串 —— 前端靠这句话显示「探测中」
