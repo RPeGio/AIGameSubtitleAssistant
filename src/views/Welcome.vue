@@ -230,6 +230,8 @@ function setProbe(
   warming = false,
 ) {
   probes.value[key] = {
+    // 保留已有附加信息（设备判定 / 安装结论），只覆盖探测本身的结果
+    ...probes.value[key],
     // 后台预热（provider 还在握手）≠ 未就绪：给「探测中…」。否则首帧显示"未就绪"、
     // 几秒后自己变"就绪"，看起来像故障（真机反馈 2026-10-31 就是这条）
     state: warming ? "probing" : ready === null ? "unknown" : ready ? "ready" : "notready",
@@ -279,25 +281,40 @@ async function probeOcr(retries = 8) {
   }
 }
 
-async function probeAsr(retries = 20) {
+/// 只跑轻量的引擎状态探测，并自己排重试。
+/// 拆出来是因为重试期间不该每 1.5 s 就起一次 `nvidia-smi` / `vulkaninfo`
+/// （那是 probeMossBackend 的活，只在首轮与装完之后跑）。
+async function probeAsrEngine(retries = 20) {
   try {
     const engines = await projectStore.getAsrEngines();
     const moss = engines.find((e) => e.engine === "moss");
     if (!moss) {
       setProbe("asr", null, "探针未返回 MOSS 引擎信息");
-    } else {
-      setProbe(
-        "asr",
-        moss.ready,
-        moss.message,
-        moss.device,
-        moss.effective_backend ?? null,
-        !moss.ready && isWarming(moss.message),
-      );
+      return;
     }
+    setProbe(
+      "asr",
+      moss.ready,
+      moss.message,
+      moss.device,
+      moss.effective_backend ?? null,
+      !moss.ready && isWarming(moss.message),
+    );
   } catch (e) {
     setProbe("asr", null, String(e));
+    return;
   }
+
+  // 探测失败后后端有 15 s 起的退避重试（契约 §8.6.3）：界面这边必须继续看，
+  // 否则「失败一次就永远停在未就绪」，用户只能重启应用才等到它自愈。
+  const p = probes.value.asr;
+  if ((p.state === "notready" || p.state === "probing") && retries > 0) {
+    window.setTimeout(() => void probeAsrEngine(retries - 1), 1500);
+  }
+}
+
+async function probeAsr() {
+  await probeAsrEngine();
 
   // 设备判定与运行时比对互不等待、互不拖累：任一失败只丢那一行信息
   const [report, install] = await Promise.all([
@@ -317,12 +334,6 @@ async function probeAsr(retries = 20) {
 
   if (install) {
     setAsrInstall(install);
-  }
-
-  // MOSS 后端探测在后台线程跑：打到「正在探测」就隔一会儿再看一眼
-  const p = probes.value.asr;
-  if ((p.state === "notready" || p.state === "probing") && retries > 0 && isWarming(p.message)) {
-    window.setTimeout(() => void probeAsr(retries - 1), 1500);
   }
 }
 
