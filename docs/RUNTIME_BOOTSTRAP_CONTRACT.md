@@ -50,7 +50,7 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
 | `-PipMirror <url>` | 默认华为云 | CUDA 运行库 pip 索引（§4.3）；`-SkipGpuLibs` 可整段跳过 |
 | `-PipUseProxy` | 开关 | **默认清空 `HTTP(S)_PROXY`** 跑 pip（代理常拉慢 pip），加了才走代理 |
 
-- **无参运行** = `-Items moss -Flavor auto`，即「首启默认动作」。
+- **无参运行** = `-Items <§2 表里的全部条目> -Flavor auto`，即「首启默认动作」（装齐运行时 + 模型 + OCR/向量运行时）。
 
 ---
 
@@ -486,10 +486,13 @@ invoke("cancel_runtime_install")                                             // 
 ```
 
 - `precheck_runtime_disk` → `DiskPrecheck`：`{ ok, manifest_entries, required_bytes, free_bytes | null, message }`。
-  `free_bytes = null` 表示读不到磁盘信息 ⇒ **不拦**（宁放行不误拦）。`required_bytes` 取该 id
-  全部 flavor 里**最大**的 size 乘展开系数 3（cuda 622 MB ⇒ ≈1.97 GB），故意偏保守。
-- `install_runtime` 的 `items` 是**逗号分隔字符串**（`null`/省略 = `"moss"`）；`flavor` 省略 = `"auto"`；
-  `force = false` 时已装且哈希一致就跳过、不重下。
+  `free_bytes = null` 表示读不到磁盘信息 ⇒ **不拦**（宁放行不误拦）。
+  需求按**本次要装的全部条目求和**（`precheck_disk_multi`）：单条目取该 id 全部 flavor 里
+  **最大**的 size 乘展开系数 3（cuda 622 MB ⇒ ≈1.97 GB），多条目再把各自需求累加，
+  `SAFETY_MARGIN` 只加一次。「装全部」（清单 7 条）时总需求约 4 GB 级，别按单条目估。
+- `install_runtime` 的 `items` 是**逗号分隔字符串**（`null`/省略 = **清单里的全部条目**，
+  与 §2 的 `-Items` 缺省一致）；`flavor` 省略 = `"auto"`；`force = false` 时已装且哈希一致就跳过、不重下。
+  显式传 `items` 时只装这些 id，磁盘预检也按这些 id 算。
 - `cancel_runtime_install` → `bool`：没有在跑的任务时返回 `false`。
 - 进度事件 `runtime-install-progress`，payload = `InstallEvent`：
   `{ event, item?, flavor?, phase?, percent?, detail?, ok?, installed?, skipped?, failed? }`。
@@ -502,10 +505,13 @@ invoke("cancel_runtime_install")                                             // 
 
 ### 8.6 前端接线口径（第 11 项 11c，已实现）
 
-- 按钮出现条件：MOSS 未就绪 **或** `probe_moss_install.state ∈ {update_available, file_missing, flavor_not_in_manifest}`；
-  文案「安装运行时」/「更新运行时」。
+- 按钮出现条件：MOSS 未就绪 **或** `probe_moss_install.state ∈ {update_available, file_missing, flavor_not_in_manifest, model_missing}`；
+  文案「安装运行时」/「更新运行时」；`state === "ok"` 却仍未就绪时改「重装运行时」（带 `-Force`）。
 - 点击顺序：`precheck_runtime_disk`（不 ok 只提示、不启动）→ `install_runtime({ flavor: "auto" })`
   → 事件驱动进度条 → 结束（成功/取消/失败）后重跑 `check_asr_engines` + `probe_moss_backend` + `probe_moss_install`。
+- **自检卡要会等后台预热**：provider 构造不再做就绪握手（见 §8.6.1），首开时 OCR / MOSS 的
+  message 会是「正在启动 / 正在探测」。前端要隔一会儿重探（当前：OCR 8 × 1.2 s、ASR 8 × 1.5 s），
+  否则用户永远停在「未就绪」。
 - `flavor` 传 `"auto"`：脚本 `Resolve-AutoFlavor`（cuda 算力 ≥7.5 → vulkan → cpu）与 Rust
   `recommend_from_assets` 口径一致，与卡面「建议改用 cuda 版运行时」不矛盾。
 - **不做首启静默下载**（有意偏离该待办原标题）：cuda 包 622 MB，静默后台拉不可接受，失败时用户
@@ -527,7 +533,7 @@ invoke("cancel_runtime_install")                                             // 
 |---|---|---|
 | 会起子进程或读大文件的 `#[tauri::command]` 一律 `async` + `tauri::async_runtime::spawn_blocking` | 同步命令跑在 Tauri **主线程**上，`probe_moss_backend`（`moss info` 加载几百 MB 模型 + `nvidia-smi` + `vulkaninfo`）、`check_ffmpeg`、`get_video_metadata` 曾把整个窗口冻住，连拖窗口都卡 | `probe_moss_backend` / `check_ffmpeg` / `get_video_metadata` 已改；`precheck_runtime_disk` / `install_runtime` 本来就是 async |
 | 任何 `Command` 都必须经 `crate::subprocess::hidden()` / `quiet()` | GUI 进程起控制台子进程会弹窗，真机上表现为「命令行窗口疯狂闪」 | `CREATE_NO_WINDOW`（`0x0800_0000`），全仓库 28 处已统一；单测钉住「静默但仍能取到 stdout」 |
-| 构造 manager 时不要做重活 | `AsrManager::new` 在 `setup` 里跑，曾经在构造函数里同步 `provider.probe()`，启动即卡 | `MossProvider` 改为惰性：`ensure_probed()` + 后台线程 `warm_up()`；`describe()` 未探测时给「正在探测」 |
+| 构造 manager 时不要做重活 | `AsrManager::new` / `OcrManager::new` 都在 `setup` 里跑，曾经在构造函数里同步做就绪握手，启动即卡 | `MossProvider` 惰性：`ensure_probed()` + 后台线程 `warm_up()`；`PaddleProvider` 同构：`spawn` 只到「子进程起来了」就返回（实测 6.43 s → 40 ms），`Inner` 用 `Arc` 共享 + `probe_lock` 串行化首次握手，首次 `recognize_batch` 等锁而不是往管道写半条请求；`describe()` 未探测完时给「正在启动」 |
 
 ### 8.7 `set_funasr_device`（落盘，2026-10-29 引入）
 

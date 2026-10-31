@@ -691,6 +691,21 @@
 - `bundle.resources` 现在是三条：`resources/runtime/manifest.json`、`resources/ffmpeg/*`、`resources/scripts/*`。**不能把 `src-tauri/resources/scripts/` 整个 gitignore**：目录空掉时 Tauri 会报 `glob pattern resources/scripts/* path not found or didn't match any files.`，故 `.gitignore` 只忽略 `*.ps1`，另提交一份 `src-tauri/resources/scripts/README.md` 常驻。
 - 验证：`cargo test --lib` 334 passed、`cargo check --lib` 0 warning、`pnpm tauri build` EXIT=0、`7z l` 确认三处资源都在包里。**真机复测（重装 MSI）由用户执行**。
 
+**2026-10-31 补记（分发侧合入后的接线缺口 + provider 构造不再做就绪握手）**
+
+分发侧 `feat/runtime-distribution` 并入（`b8c3a76`）后，清单从 3 条扩到 7 条（`moss` × 3 flavor + `models-moss` + `deps-ocr` / `deps-ocr-gpu` + `deps-embed`），脚本 `-Items` 缺省也改成全部条目。核对时发现本分支有两处没跟上：
+
+| 缺口 | 症状 | 修法 |
+|---|---|---|
+| `install_runtime` 只装 `moss` | `runtime_install.rs` 里 `precheck_disk_with(…, "moss", …)` 与 `-Items moss` 写死 ⇒ 点「安装运行时」永远不会装 `models-moss` / `deps-ocr` / `deps-embed`，装完仍 `model_missing` | 新增 `precheck_disk_multi()`（逐条目估需求再**求和**，`SAFETY_MARGIN` 只加一次）、`split_item_ids()`、`manifest_item_ids()`；`items` **缺省 = 清单里的全部条目**（显式传了才按传的），`precheck_runtime_disk` 同步改用全部条目 |
+| 无 flavor 条目的磁盘需求被算成 0 | 显式 flavor（如 `cuda`）下 `models-moss`（不带 flavor）匹配不到任何条目 ⇒ 需求 0，预检形同放行 | `precheck_disk_with()` 在精确匹配不到时回退到「无 flavor 的整包条目」兜底；补单测 `multi_precheck_sums_every_entry`（差额恰为模型条目成本）/ `manifest_item_ids_reads_all_ids_in_order` / `split_item_ids_trims_and_dedups` / `multi_precheck_single_id_matches_single_path` |
+
+**PaddleOCR worker 构造阻塞（用户 2026-10-31 指派复现并修复）**：`PaddleProvider::spawn` 里同步跑 `ping()` 等 Python 加载 paddleocr + 模型，而它在 `lib.rs` 的 `setup` → `OcrManager::new` 链路上 ⇒ **启动卡 6.43 s**（临时集成测试实测）。修法与 MOSS 同构：状态收进 `Inner`（`Arc` 共享），`spawn` 只到「子进程起来了」就返回，握手交给后台线程 `ensure_probed()`；首次 `recognize_batch` 会等这把锁而不是往管道写半条请求；`describe()` 未探测完时返回「正在启动 PaddleOCR worker（首次启动要加载模型，通常几秒到几十秒）」。修复后 `spawn` **40 ms**、后台 2.2 s 预热完成。
+
+**前端跟随**：OCR / ASR 卡在文案含「正在启动 / 正在探测」时自动重试探测（OCR 8×1.2 s、ASR 8×1.5 s），否则用户首开只会看到停在「未就绪」；`INSTALL_ACTION_STATES` 加 `model_missing`；`installState === "ok"` 但引擎仍未就绪时按钮改「重装运行时」（带 `-Force`），替换原先「清单只含可执行文件、需手动放模型」的过期文案。
+
+**验证**：`cargo test --lib` **350 passed**、`cargo check --lib` 0 warning、`pnpm build` EXIT=0。**未做真机复测**（需重装安装包后看「一键安装」是否把模型与 OCR/向量运行时一起装到位）。
+
 **未做**：`probe_bootstrap_scripts`（并入安装器后不需要前端判断脚本存在——`install_runtime` 找不到脚本会直接 Err）；首启静默安装（见 11c 决策，不做）。
 
 **依赖/前置**：已全部满足（命令齐、契约齐、执行体已并入）。
