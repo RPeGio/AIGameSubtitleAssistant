@@ -731,7 +731,7 @@
 | 症状 | 根因 | 修法 |
 |---|---|---|
 | 启动瞬间显示「未就绪 + 空原因」，而不是「探测中」 | `MossProvider` 只有一个**单向闩** `probed: AtomicBool`，在探测**开始**就 `swap(true)` ⇒ 探测进行中 `is_probed()` 已为真，`describe()` 于是返回空串（既不是"正在探测"也不是错误）⇒ 前端判 notready 并停止轮询；探测稍后成功也没人再刷新 | 改成四态状态机 `ProbeState::{Idle, Running, Ready, Failed(Instant)}`（`moss.rs`）：`Idle`/`Running` 一律返回「正在探测 MOSS 后端…」，`Failed` 返回真实错误原文，`Ready` 返回空 |
-| 探测失败一次后永久未就绪，只能重启 | 同一个单向闩：失败也置真，之后没有任何重试路径 | `Failed` 记失败时刻，**15 s 冷冻期后允许自动重试**；`AsrManager::engines()` 每次轮询到未就绪就后台 `retry_warm_up()`（trait 新增默认方法），转写入口 `probe_now(true)` 忽略冷冻期 |
+| 探测失败一次后永久未就绪，只能重启 | 同一个单向闩：失败也置真，之后没有任何重试路径 | `Failed` 记失败时刻，**15 s 起线性退避（封顶 120 s）后允许自动重试**；`AsrManager::engines()` 每次轮询到未就绪就后台 `retry_warm_up()`（trait 新增默认方法），转写入口 `probe_now(true)` 忽略冷冻期 |
 | 一键安装脚本跑完，四张卡仍全「未就绪」，必须重启应用 | provider 在 `setup` 阶段按"当时的空目录"构造（OCR 退化成 `NoneProvider`、MOSS 退化成 `BrokenProvider`），安装只往磁盘写文件，进程内对象不换新 | 新增命令 `reload_runtimes`（`ai_runtime/mod.rs`）：`OcrManager::reload()` + ASR 双引擎 `reload_engine()`，`spawn_blocking` 里跑；前端 `startInstall()` 成功后先 `reloadRuntimes()` 再 `refreshAll()`，失败时提示"重启后生效" |
 
 - 顺带把 ASR 卡的原因也摊在卡面上（模板原本用 `card.key !== 'asr'` 把 ASR 的 `message` 挡住了，真机报障时看不到任何原因），并加了一个「重新探测」按钮（只重探、不重载）。
