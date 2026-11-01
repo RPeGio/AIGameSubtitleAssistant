@@ -894,6 +894,25 @@ where
 }
 
 /// 把原始产物套上契约 §5 的退出码语义（纯函数，便于单测）
+/// 从脚本 stderr 里挑出最能说明失败原因的一行。
+///
+/// 脚本约定：条目失败时打「安装 moss（cuda） 失败：DOWNLOAD_FAILED …」。取最后一条带
+/// 标记的行，太长就截断——准备页那一行要能读，不能把整段 curl 报错糊上去。
+fn failure_reason(stderr_tail: &str) -> Option<String> {
+    const MARKERS: [&str; 3] = ["失败：", "错误：", "ERROR"];
+    let line = stderr_tail
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .filter(|l| MARKERS.iter().any(|m| l.contains(m)))
+        .next_back()?;
+    let mut s: String = line.chars().take(160).collect();
+    if line.chars().count() > 160 {
+        s.push('…');
+    }
+    Some(s)
+}
+
 fn summarize(outcome: StreamOutcome) -> InstallSummary {
     let StreamOutcome {
         status,
@@ -936,7 +955,12 @@ fn summarize(outcome: StreamOutcome) -> InstallSummary {
                     .unwrap_or("未知错误")
                     .to_string()
             });
-        format!("安装失败（退出码 {code}）：{detail}")
+        // 只给条目 id 的话，用户在准备页上只能看到「moss 失败」，还得自己去翻日志。
+        // 脚本失败时会打「安装 moss（cuda） 失败：DOWNLOAD_FAILED …」，取最后一条附上。
+        match failure_reason(&stderr_tail) {
+            Some(reason) => format!("安装失败（退出码 {code}）：{detail} —— {reason}"),
+            None => format!("安装失败（退出码 {code}）：{detail}"),
+        }
     };
 
     InstallSummary {
@@ -1298,6 +1322,33 @@ mod tests {
         assert_eq!(s.exit_code, 3);
         assert!(s.message.contains("退出码 3"));
         assert!(s.message.contains("deps-ocr"), "明细要取 done.failed 而不是 stderr");
+    }
+
+    #[test]
+    fn summarize_appends_failure_reason_from_stderr() {
+        // 只报条目 id，用户在准备页上还得自己翻日志；要带上脚本那句「… 失败：<原因>」
+        let s = summarize(StreamOutcome {
+            status: Some(exit_status(3)),
+            done: InstallEvent {
+                event: "done".into(),
+                ok: Some(false),
+                failed: Some(vec!["moss".into()]),
+                ..Default::default()
+            },
+            stderr_tail: "磁盘预检通过\n安装 moss（cuda） 失败：DOWNLOAD_FAILED 第 2/10 段被 reset\n结束（退出码 3）"
+                .into(),
+        });
+        assert!(s.message.contains("moss"));
+        assert!(
+            s.message.contains("DOWNLOAD_FAILED"),
+            "要带上脚本给出的原因：{}",
+            s.message
+        );
+        assert!(
+            !s.message.contains("结束（退出码 3）"),
+            "别把无关的收尾行当成原因：{}",
+            s.message
+        );
     }
 
     #[test]

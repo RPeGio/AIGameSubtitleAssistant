@@ -38,6 +38,9 @@ const logHint = computed(() => {
   return dir ? `${dir}\\logs\\install.log` : "运行时目录下的 logs\\install.log";
 });
 
+/// 后端把日志路径拼进错误串了（「…（日志：…）」），别在下面再重复一遍
+const showLogHint = computed(() => !!setup.error && !setup.error.includes("日志："));
+
 function formatSize(bytes: number): string {
   if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
   return `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
@@ -119,9 +122,10 @@ onMounted(async () => {
 
       <template v-else-if="setup.stage === 'failed'">
         <div class="err">{{ setup.error }}</div>
-        <div class="hint">详细日志：{{ logHint }}</div>
+        <div v-if="showLogHint" class="hint">详细日志：{{ logHint }}</div>
         <div class="acts">
-          <button class="btn pri" @click="runInstall(true)">重试</button>
+          <!-- 重试只补缺的条目（不 force）：force 会把已装好的也重算，磁盘预检直接卡住 -->
+          <button class="btn pri" @click="runInstall(false)">重试</button>
           <button class="btn ghost" @click="setup.skip()">先跳过（受限模式）</button>
         </div>
       </template>

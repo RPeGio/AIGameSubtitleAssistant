@@ -1054,6 +1054,31 @@
 截了 missing（自动装完直接进欢迎页）/ installing（第 1/3 项 · 60%，进度条 20%）/ failed（错误 + 重试 + 跳过）/
 ready（不出现准备页）四态，`centeredX/centeredY` 均为 0、无横向溢出。
 
-**未做**：真机首启完整跑一遍（用户复测）；断网/中途关窗的恢复路径（目前靠脚本自身断点续传 + 「重试」按钮）。
+**未做**：断网/中途关窗的恢复路径（目前靠脚本自身断点续传 + 「重试」按钮）。
+
+#### 23.1 首次真机复测：装到一半失败（2026-11-01 补记）
+
+用户在 0.3.0 安装包上首启，准备页自动开跑后失败，点「重试」又直接报磁盘不足。日志
+（`%APPDATA%\com.gamesubtitleassistant.app\runtime\logs\install.log`）显示两条独立问题：
+
+| 症状 | 根因 | 修法 |
+|---|---|---|
+| `安装失败（退出码 3）：moss` | `moss-cuda.zip` 621.6 MB：gh-proxy 忽略 Range（跳过），直连支持 Range 但两段连续 `curl: (28)/(56)` 被 reset；`Invoke-SegmentedDownload` 段重试用尽**直接抛异常，没有单流兜底**（同批次 `models-moss` 597 MB 走镜像单流反而成功） | 抽出 `Invoke-SingleStream`（逐候选源单流），分段整体包 try/catch，失败后 `分段下载失败（…），改单流重试` |
+| 重试 → `磁盘空间不足：5 个运行时条目共需约 8.77 GB，可用 5.21 GB` | 准备页「重试」调的是 `runInstall(true)`（force）⇒ 预检把已装好的 5 项也重算；实际只差 moss 2.06 GB | 重试改 `runInstall(false)`；语义分工写进契约 §8.6 |
+| 红字里「（日志：…）」与下面「详细日志：…」重复 | 后端把路径拼进了 message，前端又单独渲染一行 | `showLogHint`：message 已含「日志：」就不再渲染 |
+
+复测还量到第二件事：镜像对 Range 的 206 是"整包重取再切片"——按段 0.18 MB/s，同一 URL 单流
+6.7 MB/s（35 倍）。所以下载策略改成 **配了镜像就一律单流走镜像**，只有 `-Mirror ''`（纯直连）才
+分段；纯直连分段用尽重试后再兜底单流。621.6 MB 的 `moss-cuda.zip` 走镜像单流约 90 s 装完。
+
+顺带：`InstallSummary.message` 现在会附上脚本 stderr 里**最后一条含「失败：」的行**（截断 160 字），
+不再只给条目 id；新增单测 `summarize_appends_failure_reason_from_stderr`。
+
+**验证**：`cargo test --lib` 362 passed、`pnpm build` EXIT=0；用 PS 5.1（app 的真实调用方式）在真机
+runtime 上跑 `-Items models-moss,deps-ocr,deps-ocr-gpu,deps-embed`，5 项全部 `item_skip`（「已安装且
+版本一致」）⇒ 预检扣已装项的路径在真机上确认可用；再跑 `-Items moss -Flavor auto`，镜像单流装完
+`moss`(cuda) 621.6 MB（`.installed.json` 现有 6 项），runtime 目录 4 个必需项齐全。脚本改完已核对
+BOM 为 `EF BB BF`、解析 0 错误。
+
 
 
