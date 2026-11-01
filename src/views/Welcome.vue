@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, nextTick } from "vue";
 import { useRouter } from "vue-router";
 import { useProjectStore } from "../stores/project";
+import { useSetupStore } from "../stores/setup";
 import { useUiStore } from "../stores/ui";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -11,6 +12,7 @@ import { NCard, NCheckbox, NInput, NModal, NPopconfirm, useMessage } from "naive
 
 const router = useRouter();
 const projectStore = useProjectStore();
+const setup = useSetupStore();
 const ui = useUiStore();
 const message = useMessage();
 
@@ -503,6 +505,10 @@ onMounted(() => {
 
 <template>
   <div class="welcome">
+    <div v-if="setup.skipped" class="wbanner">
+      <span>运行时未装齐，转写 / OCR / 向量融合可能不可用。</span>
+      <button class="btn ghost sm" @click="setup.reopen()">重新准备</button>
+    </div>
     <div class="wtop">
       <button
         class="tgl"
@@ -715,6 +721,19 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   background: var(--bg);
+}
+
+/* 跳过了首启准备时的提示条：给"重新下载"的入口，不挡住主流程 */
+.wbanner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 34px;
+  font-size: 12px;
+  color: var(--warn);
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--hair);
 }
 
 /* 欢迎页没有工程，因此只有一行顶栏位：右侧主题开关 */

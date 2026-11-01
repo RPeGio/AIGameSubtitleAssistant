@@ -88,6 +88,7 @@ pub fn run() {
             ai_runtime::runtime_install::precheck_runtime_disk,
             ai_runtime::runtime_install::install_runtime,
             ai_runtime::runtime_install::cancel_runtime_install,
+            ai_runtime::setup::runtime_status,
             ai_runtime::check_llm_runtime,
             ai_runtime::check_embed_runtime,
             ai_runtime::asr_cancel,

@@ -31,6 +31,7 @@
 | 20 | ✅ 校对区选中 clip 时，轨道总览滚动到该行 | 修复·小 | 无 | 已实现（`b2e70ab`）：`data-clip-id` + 矩形比对最小滚动 |
 | 21 | ✅ 时间轴框选多选（含 `Ctrl+A` 全选、多选整体位移） | 功能·核心 | 10（活动时间轴判定） | 已实现（`34e2837`）：多选模型 + 框选 + 修饰键 + 批量删除 + 刚性整组位移 |
 | 22 | ✅ `,`/`.` 上/下一个片段与「轨道总览 = 聚焦轨道」口径对齐 | 修复·小 | 20（总览滚动） | 已实现（`b28c87a`）：同轨内跳 + 无聚焦轨时兜底跨轨并切轨 + 边界提示 + 迷你时间轴不响应 |
+| 23 | ✅ 首启准备页（阻塞式运行时准备） | 功能·核心 | 11（一键安装）、12（设备判定） | 已实现（2026-11-01，`feat/first-run-prep`）：`runtime_status` 判定 + 自动开跑 + 总进度 + 失败可重试/跳过 + 装完热加载 |
 
 ---
 
@@ -1019,4 +1020,40 @@
 - 目标轨道无更多片段时给出可感知的边界行为（不静默乱跳）；
 - 无聚焦轨道时按 `.`：跳到最近片段并自动把该轨设为聚焦轨（总览随之出现内容）；
 - 语料页/转写页迷你时间轴按 `,/.` 无反应、不报错。
+
+### 23. ✅ 首启准备页（阻塞式运行时准备，`feat/first-run-prep` 分支）
+
+**已实现（2026-11-01）**
+
+真机反馈（2026-10-31 / 11-01）暴露的是同一件事的三个面：一键装完之后**必须重启**才生效、
+装的过程中**看不到总进度**、装失败后**没有回头的路**。这一项把「装运行时」从欢迎页上的一个按钮
+升级成启动时的一道门。
+
+| 决策（用户 2026-11-01 拍板） | 落地 |
+|---|---|
+| D1 进准备页即自动开跑 | `SetupGate.vue` 的 `onMounted`：`refresh()` 后若 `stage==="needs"` 直接 `install()` |
+| D2 失败可跳过，且要能回头重下 | 失败态给 [重试] + [先跳过（受限模式）]；跳过后欢迎页顶部挂 `wbanner`，按钮「重新准备」→ `setup.reopen()` |
+| D3 必需 / 可选项口径 | 必需 `moss`（CPU 或 Vulkan 任一 flavor）、`models-moss`、`deps-ocr`、`deps-embed`；可选 `deps-ocr-gpu`、`deps-ocr-cuda-libs`、moss 的 cuda flavor |
+| D4 补总进度 | Rust 在事件里补 `item_index`/`item_total`（按本次请求顺序），前端算 `(index-1+pct/100)/total` |
+| D5 已就绪的老用户不出现这层 | `ready || skip` 直接放行，`router-view` 不经过准备页 |
+| D6 开发期跳过开关 | `GSA_SKIP_SETUP=1` → `RuntimeStatus.skip=true` |
+| 版式 | 全屏遮罩 + 水平垂直居中；顶部 CSS spinner，下面依次是标题、说明、条目清单、总进度、按钮 |
+
+| 改动 | 内容 |
+|---|---|
+| `src-tauri/src/ai_runtime/setup.rs`（新） | `runtime_status` 命令：`REQUIRED_IDS` 口径、`pick_entry`（已装 flavor 优先 → cuda_runnable → vulkan → cpu）、`exists_on_disk` 按标准布局逐项查文件、`evaluate_status` 出 `ready/update/missing` 与 `pending_bytes`、`ready` 还要求安装脚本在位；4 个单测 |
+| `src-tauri/src/ai_runtime/runtime_install.rs` | `InstallEvent` 加 `item_index`/`item_total`，`run_install` 的转发闭包按 `order` 补齐序号（脚本协议不变）；`precheck_pending` 提为 `pub(crate)` 供 setup 复用 |
+| `src-tauri/src/lib.rs` | 注册 `ai_runtime::setup::runtime_status` |
+| `src/stores/setup.ts`（新） | `stage`（checking/needs/installing/failed/done/ready）、`refresh()`、`install()`（装完自动 `reloadRuntimes()` 再复核）、`skip()`、`reopen()` |
+| `src/components/SetupGate.vue`（新） | 四态 UI；`done` 停留 800ms 再放行；失败态给出 `runtime/logs/install.log` 路径 |
+| `src/App.vue` | `<SetupGate />` + `<router-view v-if="setup.passable" />` |
+| `src/views/Welcome.vue` | 跳过后的 `wbanner` 横幅 + 「重新准备」 |
+| `src/stores/project.ts` | 事件监听补 `installItemIndex` / `installItemTotal` |
+
+**验证**：`cargo test --lib` 361 passed；`pnpm build` EXIT=0；用 CDP（`temp/css-preview/run.mjs` + `mock.js`）
+截了 missing（自动装完直接进欢迎页）/ installing（第 1/3 项 · 60%，进度条 20%）/ failed（错误 + 重试 + 跳过）/
+ready（不出现准备页）四态，`centeredX/centeredY` 均为 0、无横向溢出。
+
+**未做**：真机首启完整跑一遍（用户复测）；断网/中途关窗的恢复路径（目前靠脚本自身断点续传 + 「重试」按钮）。
+
 

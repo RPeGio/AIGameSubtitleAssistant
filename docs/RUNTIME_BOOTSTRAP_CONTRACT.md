@@ -608,6 +608,51 @@ invoke("set_funasr_device", { device: "cuda" | "cpu" })   // 也接受 "" / "aut
   （`src/views/AsrView.vue` 的 `FUNASR_DEVICE_OPTIONS`），两块 UI 互斥出现（选 MOSS 显示 MOSS 设备、
   选 FunASR 显示 FunASR 设备）。
 
+### 8.8 `runtime_status`（首启门控判定，2026-11-01 新增）
+
+```ts
+invoke("runtime_status")   // 无参数
+// → RuntimeStatus（见下）
+```
+
+```jsonc
+{
+  "ready": false,               // 必需项齐 + 安装脚本在位，才为 true
+  "skip": false,                // 开发期跳过（GSA_SKIP_SETUP=1），为 true 时前端直接放行
+  "runtime_dir": "C:\\Users\\…\\runtime",
+  "script": "D:\\app\\resources\\scripts\\bootstrap_runtime.ps1",  // null = 打包漏了脚本，补不上
+  "items": [
+    { "id": "moss", "label": "MOSS 转写运行时", "flavor": "cuda", "size": 651834262,
+      "state": "ready", "required": true, "note": "" }
+  ],
+  "missing_required": [],       // 缺的必需项 id
+  "pending_bytes": 0,           // 还要下载的字节数（不含解压余量）
+  "disk": { "ok": true, "manifest_entries": 7, "required_bytes": 0, "free_bytes": 1234, "message": "…" },
+  "error": null                 // 非 null 时前端按"判定失败"处理（例如清单缺失）
+}
+```
+
+- **必需项口径**（用户 2026-11-01 拍板）：`REQUIRED_IDS = ["moss", "models-moss", "deps-ocr", "deps-embed"]`。
+  `moss` 只要 CPU 或 Vulkan 任一 flavor 就够（两者 `dest` 都是 `bin`，装不下两份），CUDA 版与
+  `deps-ocr-gpu`、`deps-ocr-cuda-libs` 属可选加速项，缺了只降速、不拦门。
+- `state` 三态：`ready`（文件在且 sha 与清单一致）/ `update`（文件在但 sha 不同）/ `missing`。
+  flavor 由 `pick_entry` 决定：**已装记录优先**，否则按 `cuda_runnable()` → cuda、`caps.vulkan` → vulkan、最后 cpu。
+- **`ready` 还要求 `script.is_some()`**：脚本没随包发布时点"安装"也只会报找不到脚本，不如直接拦住并提示重装应用。
+- 放行条件：`ready || skip`。`ready=false` 且 `skip=false` 时前端渲染准备页；**已就绪的老用户完全不出现这层**。
+- `disk` 复用 §8.5 的 `precheck_pending`，只统计**还没装/需要更新**的条目（已装条目不重复计），
+  所以"装完再点一次"不会因为空间不足被误拦。
+- 开发期跳过：设 `GSA_SKIP_SETUP=1`（或任意非 `"0"` 值）→ `skip=true`。
+
+### 8.9 首启准备页的进度口径（`item_index` / `item_total`）
+
+- `runtime-install-progress` 事件新增两个可选字段，**由 Rust 按本次请求的条目顺序补上**，
+  脚本 stdout 协议（§3）不变，installer 侧无需改动。
+- 语义：`item_index` 从 1 起，`item_total` = 本次请求的条目数（不是清单总数）。
+- 前端总进度：`(item_index - 1 + percent / 100) / item_total`；没有这两个字段时退化成"当前条目百分比"。
+- 为什么要它：一次装 5 个条目（含 622 MB 的 cuda 包与 597 MB 的模型）时，只报单条目百分比，
+  用户看到的是"进度条反复从 0 走到 100"，观感上等于没有总进度。
+
+
 
 ---
 

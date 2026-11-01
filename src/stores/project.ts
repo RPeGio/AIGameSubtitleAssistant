@@ -210,11 +210,16 @@ export const useProjectStore = defineStore("project", () => {
   const installPhase = ref("");
   const installPercent = ref(0);
   const installDetail = ref("");
+  /// 「第几项 / 共几项」：脚本只报 item id，序号由 Rust 按本次请求顺序补上
+  const installItemIndex = ref(0);
+  const installItemTotal = ref(0);
 
   // 监听进度事件；注册清理函数，store 被 dispose（HMR/重复实例）时退订，避免叠加泄漏
   const installUnlistenPromise = listen<RuntimeInstallEvent>(RUNTIME_INSTALL_EVENT, (event) => {
     const evt = event.payload;
     if (evt.detail) installDetail.value = evt.detail;
+    if (typeof evt.item_index === "number") installItemIndex.value = evt.item_index;
+    if (typeof evt.item_total === "number") installItemTotal.value = evt.item_total;
     if (evt.event === "start") {
       installRunning.value = true;
       installPercent.value = 0;
@@ -1714,6 +1719,8 @@ export const useProjectStore = defineStore("project", () => {
     installPhase,
     installPercent,
     installDetail,
+    installItemIndex,
+    installItemTotal,
     cancelAsr,
     llmRunning,
     llmProgress,

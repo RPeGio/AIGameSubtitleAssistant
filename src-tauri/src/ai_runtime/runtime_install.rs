@@ -56,6 +56,13 @@ pub struct InstallEvent {
     pub percent: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// 当前条目在本次安装里的序号（1 起）与总数——准备页要显示「第 2/5 项」。
+    /// 脚本的 JSONL 协议里没有这两个字段（它不该关心排序），由 Rust 按本次
+    /// 请求的条目顺序补上（见 `run_install` 里的转发闭包）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_index: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_total: Option<u32>,
     /// 以下三个只出现在 done 事件
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ok: Option<bool>,
@@ -549,7 +556,7 @@ fn pending_ids(text: Option<&str>, runtime_dir: &Path, ids: &[String], force: bo
 /// 预检入口：先扣掉已是最新的条目，再按剩余条目估算空间。
 ///
 /// 全都不用下时直接给"无需额外磁盘"的结论——这正是"点了重装其实什么都没装"的场景。
-fn precheck_pending(
+pub(crate) fn precheck_pending(
     text: Option<&str>,
     runtime_dir: &Path,
     ids: &[String],
@@ -572,8 +579,7 @@ fn precheck_pending(
     precheck_disk_multi(text, query_free_bytes(runtime_dir), &pending, flavor)
 }
 
-fn precheck_impl(app: &tauri::AppHandle) -> Result<DiskPrecheck, String> {
-    let (runtime_dir, manifest) = runtime_paths(app);
+fn precheck_impl(app: &tauri::AppHandle) -> Result<DiskPrecheck, String> {    let (runtime_dir, manifest) = runtime_paths(app);
     let text = manifest
         .as_deref()
         .and_then(|p| std::fs::read_to_string(p).ok());
@@ -728,11 +734,21 @@ fn run_install(
     // 4) 起进程后的一切（读管道 / 等结束 / 可取消）交给 stream_child，
     //    它不依赖 Tauri，便于用真实脚本做端到端单测
     let app_for_events = app.clone();
+    // 转发时补「第几项/共几项」：脚本只报 item id，排序是调用方的事
+    let order = ids.clone();
     let outcome = stream_child(
         child,
         &installer.child,
         &installer.cancelled,
-        move |evt| emit_event(&app_for_events, evt),
+        move |mut evt| {
+            if let Some(item) = evt.item.clone() {
+                if let Some(pos) = order.iter().position(|x| *x == item) {
+                    evt.item_index = Some(pos as u32 + 1);
+                    evt.item_total = Some(order.len() as u32);
+                }
+            }
+            emit_event(&app_for_events, evt)
+        },
         &|| installer.cancel(),
     )?;
     // 落一份诊断日志：失败时把它写进文案，用户不用再猜"刚才那个黑窗口报了什么"
