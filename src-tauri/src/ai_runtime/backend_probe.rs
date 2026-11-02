@@ -636,7 +636,8 @@ impl BackendProbeReport {
 
 /// manifest 里可安装的 MOSS 后端集合
 #[derive(Debug, Clone, PartialEq)]
-pub struct ManifestFlavors {    /// manifest 是否找到
+pub struct ManifestFlavors {
+    /// manifest 是否找到
     pub found: bool,
     /// id=="moss" 的条目声明的 flavor（去重、小写，保持出现顺序）
     pub flavors: Vec<String>,
@@ -645,7 +646,8 @@ pub struct ManifestFlavors {    /// manifest 是否找到
 /// 读取 manifest 中 id=="moss" 的 flavor 集合。
 /// manifest 未找到 → found=false（前端退化显示全部四项）；
 /// 找到但没有 moss 条目 → found=true + 空集合（前端不给选任何具体 flavor）。
-pub fn read_manifest_flavors(manifest_path: Option<&Path>) -> ManifestFlavors {    let Some(path) = manifest_path else {
+pub fn read_manifest_flavors(manifest_path: Option<&Path>) -> ManifestFlavors {
+    let Some(path) = manifest_path else {
         return ManifestFlavors { found: false, flavors: Vec::new() };
     };
     let Ok(text) = std::fs::read_to_string(path) else {

@@ -579,7 +579,8 @@ pub(crate) fn precheck_pending(
     precheck_disk_multi(text, query_free_bytes(runtime_dir), &pending, flavor)
 }
 
-fn precheck_impl(app: &tauri::AppHandle) -> Result<DiskPrecheck, String> {    let (runtime_dir, manifest) = runtime_paths(app);
+fn precheck_impl(app: &tauri::AppHandle) -> Result<DiskPrecheck, String> {
+    let (runtime_dir, manifest) = runtime_paths(app);
     let text = manifest
         .as_deref()
         .and_then(|p| std::fs::read_to_string(p).ok());
@@ -893,7 +894,6 @@ where
     })
 }
 
-/// 把原始产物套上契约 §5 的退出码语义（纯函数，便于单测）
 /// 从脚本 stderr 里挑出最能说明失败原因的一行。
 ///
 /// 脚本约定：条目失败时打「安装 moss（cuda） 失败：DOWNLOAD_FAILED …」。取最后一条带
@@ -904,8 +904,7 @@ fn failure_reason(stderr_tail: &str) -> Option<String> {
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
-        .filter(|l| MARKERS.iter().any(|m| l.contains(m)))
-        .next_back()?;
+        .rfind(|l| MARKERS.iter().any(|m| l.contains(m)))?;
     let mut s: String = line.chars().take(160).collect();
     if line.chars().count() > 160 {
         s.push('…');
@@ -913,6 +912,7 @@ fn failure_reason(stderr_tail: &str) -> Option<String> {
     Some(s)
 }
 
+/// 把原始产物套上契约 §5 的退出码语义（纯函数，便于单测）
 fn summarize(outcome: StreamOutcome) -> InstallSummary {
     let StreamOutcome {
         status,

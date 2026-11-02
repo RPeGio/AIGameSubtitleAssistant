@@ -66,6 +66,19 @@ async function runInstall(force = false): Promise<void> {
   await setup.install(force);
 }
 
+/// 升级路径（PR51 审查）：全部必需项都在盘上、只是 `.installed.json` 缺失或 sha
+/// 对不上（state 只有 ready/update）⇒ 不自动开跑。首启 D1 的"自动开跑"只针对
+/// 真正缺文件的场景——老用户下一版启动就被自动重下 621 MB 是另一回事，让他选。
+const updateOnly = computed(() => {
+  const items = setup.status?.items ?? [];
+  const required = items.filter((i) => i.required);
+  return (
+    required.length > 0 &&
+    (setup.status?.missing_required.length ?? 0) > 0 &&
+    required.every((i) => i.state === "ready" || i.state === "update")
+  );
+});
+
 async function onCancel(): Promise<void> {
   const cancelled = await project.cancelRuntimeInstall();
   if (!cancelled) message.info("没有正在运行的安装任务");
@@ -81,8 +94,8 @@ watch(
 
 onMounted(async () => {
   await setup.refresh();
-  // D1：首次进准备页直接开跑，不等点击
-  if (setup.stage === "needs") void runInstall();
+  // D1：首启（缺文件）直接开跑，不等点击；升级路径（全在盘上）由用户决定
+  if (setup.stage === "needs" && !updateOnly.value) void runInstall();
 });
 </script>
 
@@ -117,7 +130,18 @@ onMounted(async () => {
             开始准备
           </button>
           <button v-else class="btn ghost" @click="onCancel">取消</button>
+          <button
+            v-if="setup.stage === 'needs'"
+            class="btn ghost"
+            title="主界面照常可用，但转写 / OCR / 向量融合可能不可用；欢迎页顶部有回到这里的入口"
+            @click="setup.skip()"
+          >
+            先跳过（受限模式）
+          </button>
         </div>
+        <p v-if="setup.stage === 'needs' && updateOnly" class="hint">
+          检测到已有运行时安装，但安装记录或版本与清单不符——重新安装可保证完整；也可以先跳过。
+        </p>
       </template>
 
       <template v-else-if="setup.stage === 'failed'">
