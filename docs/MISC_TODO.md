@@ -31,6 +31,7 @@
 | 20 | ✅ 校对区选中 clip 时，轨道总览滚动到该行 | 修复·小 | 无 | 已实现（`b2e70ab`）：`data-clip-id` + 矩形比对最小滚动 |
 | 21 | ✅ 时间轴框选多选（含 `Ctrl+A` 全选、多选整体位移） | 功能·核心 | 10（活动时间轴判定） | 已实现（`34e2837`）：多选模型 + 框选 + 修饰键 + 批量删除 + 刚性整组位移 |
 | 22 | ✅ `,`/`.` 上/下一个片段与「轨道总览 = 聚焦轨道」口径对齐 | 修复·小 | 20（总览滚动） | 已实现（`b28c87a`）：同轨内跳 + 无聚焦轨时兜底跨轨并切轨 + 边界提示 + 迷你时间轴不响应 |
+| 23 | ✅ 首启准备页（阻塞式运行时准备） | 功能·核心 | 11（一键安装）、12（设备判定） | 已实现（2026-11-01，`feat/first-run-prep`）：`runtime_status` 判定 + 自动开跑 + 总进度 + 失败可重试/跳过 + 装完热加载 |
 
 ---
 
@@ -626,6 +627,7 @@
 | `deps-ocr` / `deps-ocr-gpu`（OCR 运行时两条目）+ CUDA 运行库（pip 现拉） | ✅ 已发布（2026-10-30）：`ocr-runtime-v1` Release 上两个资产——`ocr-runtime-cpu.zip` 309,803,561 B（解压 911,518,754，`flavor=cpu`）、`ocr-runtime-cuda-paddle.zip` 502,533,301 B（解压 996,251,695，`flavor=cuda` + `optional`）——**2026-10-30 重打重传**：旧包把冒烟日志 `smoke.stderr.log` 与构建机路径一起发了出去，现已在 `Invoke-Smoke`/`New-Package` 两处清掉并 `--clobber` 覆盖。**`deps-ocr-cuda-libs` 条目已删除**：CUDA/cuDNN 运行库改由安装器用 pip 从 PyPI 镜像现拉（8 个 `nvidia-*` 轮子，`--require-hashes`；缺省华为云镜像 10.3 MB/s），理由 ① CUDA EULA 1.2.2/1.1.2 禁止把 SDK 当独立产品公开分发 ② `nvidia/` 1.86 GB 贴死 GitHub 单资产 2 GiB 上限。实测落地 `deps_gpu/nvidia` 2,568.4 MB / 258 文件。两条目都带 `unpacked_size`，磁盘预检按 `Σ下载 + Σ解压 + 最大单包解压 + 100 MB`（+ CUDA 运行库 4.34 GB）算 |
 | `deps-embed`（向量融合运行时条目：清单 + Release 资产） | ✅ 已发布（2026-10-30）：`embed-runtime.zip` 157,386,205 B / 解压 345,868,793 / sha256 `1771e9e6…6a1884`，挂在 Release `embed-runtime-v1`；清单第 7 条 `dest="."`、**不带 flavor**（26 个包是纯 CPU 的 onnxruntime，没有 CUDA/DML 变体）。包内 `deps_embed/` + `models/embed/multilingual-e5-small/` + `worker/{embed_worker.py,fuse_core.py}`；**不内嵌 Python**，复用 `deps-ocr` 的 `python/python.exe`（省 47 MB）⇒ 安装前置 = `deps-ocr` 已装。Rust 侧新增 `embed_paths`（空配置回退标准布局）+ 命令 `probe_embed_install` |
 | Rust 侧「起子进程 + 读 JSONL + 进度事件 + 取消 + 磁盘预检」 | ✅ 已交付（`7d3f8d5`）：`src-tauri/src/ai_runtime/runtime_install.rs`，命令 `precheck_runtime_disk` / `install_runtime` / `cancel_runtime_install`，进度走 `runtime-install-progress` 事件，取消用 `taskkill /T /F` 杀进程树，同一时刻只允许一个安装任务 |
+| 国内加速：清单 `urls[]` 多源 + 阿里云 ESA 镜像 | ✅ 已落地（2026-11-02）：7 条资产每条加 `urls: [ESA, GitHub]`（`https://dl.rpegio.top/…`，纯透传 GitHub 源站，资产无需重传）。**同批修掉一个判据错误**：`-Mirror` 默认非空导致"配了镜像就一律单流"，把 CDN 主源也挡在分段之外（621.6 MB 单流 1.19 MB/s）；已改为按候选 `Kind` 决定（`cdn`/`direct` 探 Range 走分段，`mirror` 只作单流兜底）。全量首装实测 19.3 分钟装完 6 项（`done ok:true`），ESA 侧平均 4.8 MB/s，但对象间差异 1.24–10.6 MB/s，免费版无 SLA/有智能限频 ⇒ 保留 GitHub 与 gh-proxy 两级兜底。详见 design §8.13、契约 §4.5 |
 
 **规划（2026-10-28 拆三步，11a/11b 不阻塞）**
 
@@ -1019,4 +1021,72 @@
 - 目标轨道无更多片段时给出可感知的边界行为（不静默乱跳）；
 - 无聚焦轨道时按 `.`：跳到最近片段并自动把该轨设为聚焦轨（总览随之出现内容）；
 - 语料页/转写页迷你时间轴按 `,/.` 无反应、不报错。
+
+### 23. ✅ 首启准备页（阻塞式运行时准备，`feat/first-run-prep` 分支）
+
+**已实现（2026-11-01）**
+
+真机反馈（2026-10-31 / 11-01）暴露的是同一件事的三个面：一键装完之后**必须重启**才生效、
+装的过程中**看不到总进度**、装失败后**没有回头的路**。这一项把「装运行时」从欢迎页上的一个按钮
+升级成启动时的一道门。
+
+| 决策（用户 2026-11-01 拍板） | 落地 |
+|---|---|
+| D1 进准备页即自动开跑 | `SetupGate.vue` 的 `onMounted`：`refresh()` 后若 `stage==="needs"` 直接 `install()` |
+| D2 失败可跳过，且要能回头重下 | 失败态给 [重试] + [先跳过（受限模式）]；跳过后欢迎页顶部挂 `wbanner`，按钮「重新准备」→ `setup.reopen()` |
+| D3 必需 / 可选项口径 | 必需 `moss`（CPU 或 Vulkan 任一 flavor）、`models-moss`、`deps-ocr`、`deps-embed`；可选 `deps-ocr-gpu`、`deps-ocr-cuda-libs`、moss 的 cuda flavor |
+| D4 补总进度 | Rust 在事件里补 `item_index`/`item_total`（按本次请求顺序），前端算 `(index-1+pct/100)/total` |
+| D5 已就绪的老用户不出现这层 | `ready || skip` 直接放行，`router-view` 不经过准备页 |
+| D6 开发期跳过开关 | `GSA_SKIP_SETUP=1` → `RuntimeStatus.skip=true` |
+| 版式 | 全屏遮罩 + 水平垂直居中；顶部 CSS spinner，下面依次是标题、说明、条目清单、总进度、按钮 |
+
+| 改动 | 内容 |
+|---|---|
+| `src-tauri/src/ai_runtime/setup.rs`（新） | `runtime_status` 命令：`REQUIRED_IDS` 口径、`pick_entry`（已装 flavor 优先 → cuda_runnable → vulkan → cpu）、`exists_on_disk` 按标准布局逐项查文件、`evaluate_status` 出 `ready/update/missing` 与 `pending_bytes`、`ready` 还要求安装脚本在位；4 个单测 |
+| `src-tauri/src/ai_runtime/runtime_install.rs` | `InstallEvent` 加 `item_index`/`item_total`，`run_install` 的转发闭包按 `order` 补齐序号（脚本协议不变）；`precheck_pending` 提为 `pub(crate)` 供 setup 复用 |
+| `src-tauri/src/lib.rs` | 注册 `ai_runtime::setup::runtime_status` |
+| `src/stores/setup.ts`（新） | `stage`（checking/needs/installing/failed/done/ready）、`refresh()`、`install()`（装完自动 `reloadRuntimes()` 再复核）、`skip()`、`reopen()` |
+| `src/components/SetupGate.vue`（新） | 四态 UI；`done` 停留 800ms 再放行；失败态给出 `runtime/logs/install.log` 路径 |
+| `src/App.vue` | `<SetupGate />` + `<router-view v-if="setup.passable" />` |
+| `src/views/Welcome.vue` | 跳过后的 `wbanner` 横幅 + 「重新准备」 |
+| `src/stores/project.ts` | 事件监听补 `installItemIndex` / `installItemTotal` |
+
+**验证**：`cargo test --lib` 361 passed；`pnpm build` EXIT=0；用 CDP（`temp/css-preview/run.mjs` + `mock.js`）
+截了 missing（自动装完直接进欢迎页）/ installing（第 1/3 项 · 60%，进度条 20%）/ failed（错误 + 重试 + 跳过）/
+ready（不出现准备页）四态，`centeredX/centeredY` 均为 0、无横向溢出。
+
+**未做**：断网/中途关窗的恢复路径（目前靠脚本自身断点续传 + 「重试」按钮）。
+
+> **PR51 审查收尾（2026-11-02，提交号待补）**：升级路径 UX 补丁——运行时文件全在、但
+> `.installed.json` 缺失或 sha 与清单不符（state 只有 ready/update）的机器，准备页**不再
+> 自动开跑全量重下**（D1 的"自动开跑"仅限真正缺文件的首启场景），needs 阶段并排
+> 「先跳过（受限模式）」并给出解释文案；跳过年限语义不变（欢迎页横幅 + 「重新准备」）。
+> 同批：`failure_reason` 的 `.filter().next_back()` 改 `.rfind`（消新增 clippy）、
+> `summarize` 的文档注释从 `failure_reason` 头上归位。
+
+#### 23.1 首次真机复测：装到一半失败（2026-11-01 补记）
+
+用户在 0.3.0 安装包上首启，准备页自动开跑后失败，点「重试」又直接报磁盘不足。日志
+（`%APPDATA%\com.gamesubtitleassistant.app\runtime\logs\install.log`）显示两条独立问题：
+
+| 症状 | 根因 | 修法 |
+|---|---|---|
+| `安装失败（退出码 3）：moss` | `moss-cuda.zip` 621.6 MB：gh-proxy 忽略 Range（跳过），直连支持 Range 但两段连续 `curl: (28)/(56)` 被 reset；`Invoke-SegmentedDownload` 段重试用尽**直接抛异常，没有单流兜底**（同批次 `models-moss` 597 MB 走镜像单流反而成功） | 抽出 `Invoke-SingleStream`（逐候选源单流），分段整体包 try/catch，失败后 `分段下载失败（…），改单流重试` |
+| 重试 → `磁盘空间不足：5 个运行时条目共需约 8.77 GB，可用 5.21 GB` | 准备页「重试」调的是 `runInstall(true)`（force）⇒ 预检把已装好的 5 项也重算；实际只差 moss 2.06 GB | 重试改 `runInstall(false)`；语义分工写进契约 §8.6 |
+| 红字里「（日志：…）」与下面「详细日志：…」重复 | 后端把路径拼进了 message，前端又单独渲染一行 | `showLogHint`：message 已含「日志：」就不再渲染 |
+
+复测还量到第二件事：镜像对 Range 的 206 是"整包重取再切片"——按段 0.18 MB/s，同一 URL 单流
+6.7 MB/s（35 倍）。所以下载策略改成 **配了镜像就一律单流走镜像**，只有 `-Mirror ''`（纯直连）才
+分段；纯直连分段用尽重试后再兜底单流。621.6 MB 的 `moss-cuda.zip` 走镜像单流约 90 s 装完。
+
+顺带：`InstallSummary.message` 现在会附上脚本 stderr 里**最后一条含「失败：」的行**（截断 160 字），
+不再只给条目 id；新增单测 `summarize_appends_failure_reason_from_stderr`。
+
+**验证**：`cargo test --lib` 362 passed、`pnpm build` EXIT=0；用 PS 5.1（app 的真实调用方式）在真机
+runtime 上跑 `-Items models-moss,deps-ocr,deps-ocr-gpu,deps-embed`，5 项全部 `item_skip`（「已安装且
+版本一致」）⇒ 预检扣已装项的路径在真机上确认可用；再跑 `-Items moss -Flavor auto`，镜像单流装完
+`moss`(cuda) 621.6 MB（`.installed.json` 现有 6 项），runtime 目录 4 个必需项齐全。脚本改完已核对
+BOM 为 `EF BB BF`、解析 0 错误。
+
+
 

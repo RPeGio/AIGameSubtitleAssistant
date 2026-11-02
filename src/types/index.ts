@@ -313,6 +313,9 @@ export interface RuntimeInstallEvent {
   /// 0–100（仅 progress）
   percent?: number;
   detail?: string;
+  /// 当前条目在本次安装里的序号（1 起）与总数（Rust 按请求顺序补的）
+  item_index?: number;
+  item_total?: number;
   /// 以下只出现在 done
   ok?: boolean;
   installed?: string[];
@@ -348,6 +351,39 @@ export interface RuntimeDiskPrecheck {
 export interface RuntimeReloadSummary {
   asr: string[];
   ocr: string;
+}
+
+/// 首启准备页清单里的一行（Rust `setup::SetupItem`）
+export interface SetupItem {
+  id: string;
+  /// 用户可读名称（"MOSS 转写运行时" 等）
+  label: string;
+  /// 选中要装的后端（无 flavor 条目为空串）
+  flavor: string;
+  /// 下载体积（字节）
+  size: number;
+  /// ready / update / missing
+  state: string;
+  /// 缺了就不放行
+  required: boolean;
+  /// 补充说明（可选条目的处置建议）
+  note: string;
+}
+
+/// 启动门控判定（Rust `runtime_status`）
+export interface RuntimeStatus {
+  ready: boolean;
+  /// 开发期跳过（GSA_SKIP_SETUP=1）
+  skip: boolean;
+  runtime_dir: string;
+  /// 安装脚本路径；null = 打包形态下脚本没随包发布
+  script: string | null;
+  items: SetupItem[];
+  missing_required: string[];
+  /// 还要下载的字节数（不含解压余量）
+  pending_bytes: number;
+  disk: RuntimeDiskPrecheck;
+  error: string | null;
 }
 
 /// ASR 进度事件名（Rust 侧 `ASR_PROGRESS_EVENT` 需保持一致）

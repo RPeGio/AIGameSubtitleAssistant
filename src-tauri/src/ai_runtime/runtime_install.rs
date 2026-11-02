@@ -56,6 +56,13 @@ pub struct InstallEvent {
     pub percent: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// 当前条目在本次安装里的序号（1 起）与总数——准备页要显示「第 2/5 项」。
+    /// 脚本的 JSONL 协议里没有这两个字段（它不该关心排序），由 Rust 按本次
+    /// 请求的条目顺序补上（见 `run_install` 里的转发闭包）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_index: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_total: Option<u32>,
     /// 以下三个只出现在 done 事件
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ok: Option<bool>,
@@ -549,7 +556,7 @@ fn pending_ids(text: Option<&str>, runtime_dir: &Path, ids: &[String], force: bo
 /// 预检入口：先扣掉已是最新的条目，再按剩余条目估算空间。
 ///
 /// 全都不用下时直接给"无需额外磁盘"的结论——这正是"点了重装其实什么都没装"的场景。
-fn precheck_pending(
+pub(crate) fn precheck_pending(
     text: Option<&str>,
     runtime_dir: &Path,
     ids: &[String],
@@ -728,11 +735,21 @@ fn run_install(
     // 4) 起进程后的一切（读管道 / 等结束 / 可取消）交给 stream_child，
     //    它不依赖 Tauri，便于用真实脚本做端到端单测
     let app_for_events = app.clone();
+    // 转发时补「第几项/共几项」：脚本只报 item id，排序是调用方的事
+    let order = ids.clone();
     let outcome = stream_child(
         child,
         &installer.child,
         &installer.cancelled,
-        move |evt| emit_event(&app_for_events, evt),
+        move |mut evt| {
+            if let Some(item) = evt.item.clone() {
+                if let Some(pos) = order.iter().position(|x| *x == item) {
+                    evt.item_index = Some(pos as u32 + 1);
+                    evt.item_total = Some(order.len() as u32);
+                }
+            }
+            emit_event(&app_for_events, evt)
+        },
         &|| installer.cancel(),
     )?;
     // 落一份诊断日志：失败时把它写进文案，用户不用再猜"刚才那个黑窗口报了什么"
@@ -877,6 +894,24 @@ where
     })
 }
 
+/// 从脚本 stderr 里挑出最能说明失败原因的一行。
+///
+/// 脚本约定：条目失败时打「安装 moss（cuda） 失败：DOWNLOAD_FAILED …」。取最后一条带
+/// 标记的行，太长就截断——准备页那一行要能读，不能把整段 curl 报错糊上去。
+fn failure_reason(stderr_tail: &str) -> Option<String> {
+    const MARKERS: [&str; 3] = ["失败：", "错误：", "ERROR"];
+    let line = stderr_tail
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .rfind(|l| MARKERS.iter().any(|m| l.contains(m)))?;
+    let mut s: String = line.chars().take(160).collect();
+    if line.chars().count() > 160 {
+        s.push('…');
+    }
+    Some(s)
+}
+
 /// 把原始产物套上契约 §5 的退出码语义（纯函数，便于单测）
 fn summarize(outcome: StreamOutcome) -> InstallSummary {
     let StreamOutcome {
@@ -920,7 +955,12 @@ fn summarize(outcome: StreamOutcome) -> InstallSummary {
                     .unwrap_or("未知错误")
                     .to_string()
             });
-        format!("安装失败（退出码 {code}）：{detail}")
+        // 只给条目 id 的话，用户在准备页上只能看到「moss 失败」，还得自己去翻日志。
+        // 脚本失败时会打「安装 moss（cuda） 失败：DOWNLOAD_FAILED …」，取最后一条附上。
+        match failure_reason(&stderr_tail) {
+            Some(reason) => format!("安装失败（退出码 {code}）：{detail} —— {reason}"),
+            None => format!("安装失败（退出码 {code}）：{detail}"),
+        }
     };
 
     InstallSummary {
@@ -1282,6 +1322,33 @@ mod tests {
         assert_eq!(s.exit_code, 3);
         assert!(s.message.contains("退出码 3"));
         assert!(s.message.contains("deps-ocr"), "明细要取 done.failed 而不是 stderr");
+    }
+
+    #[test]
+    fn summarize_appends_failure_reason_from_stderr() {
+        // 只报条目 id，用户在准备页上还得自己翻日志；要带上脚本那句「… 失败：<原因>」
+        let s = summarize(StreamOutcome {
+            status: Some(exit_status(3)),
+            done: InstallEvent {
+                event: "done".into(),
+                ok: Some(false),
+                failed: Some(vec!["moss".into()]),
+                ..Default::default()
+            },
+            stderr_tail: "磁盘预检通过\n安装 moss（cuda） 失败：DOWNLOAD_FAILED 第 2/10 段被 reset\n结束（退出码 3）"
+                .into(),
+        });
+        assert!(s.message.contains("moss"));
+        assert!(
+            s.message.contains("DOWNLOAD_FAILED"),
+            "要带上脚本给出的原因：{}",
+            s.message
+        );
+        assert!(
+            !s.message.contains("结束（退出码 3）"),
+            "别把无关的收尾行当成原因：{}",
+            s.message
+        );
     }
 
     #[test]

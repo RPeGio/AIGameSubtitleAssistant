@@ -16,6 +16,7 @@ pub mod llm;
 pub mod moss;
 pub mod paddle;
 pub mod runtime_install;
+pub mod setup;
 
 use serde::{Deserialize, Serialize};
 use std::error::Error;

@@ -268,6 +268,8 @@ installer 侧实测（2026-10-24）确认过、且容易踩的三点：
 | 分段 | `-SegmentMB`（默认 64）；按总长切段，逐段 `curl -r from-to` 落到 `<runtime>\.downloads\<id>-<sha8>\segNNN.bin` |
 | 段内续传 | 每段先写 `<segNNN>.bin.curlpart`；**下次运行先把它并进段文件**再算剩余区间 ⇒ 跨进程从断点继续 |
 | 失败重试 | 段级 `-MaxAttempts`（默认 3），间隔 2 s；单流路径逐个候选源回退，全败抛 `所有候选源都失败` |
+| **按源类型决定是否分段**（2026-11-02 修正） | 候选带 `Kind`：`cdn`（清单 `urls[]`）/`direct`（`url`）→ **探 Range、走分段**；`mirror`（`-Mirror` 前缀拼接）→ **跳过探测、只作单流兜底**。理由：镜像对 Range 是"整包重取再切片"（实测按段 0.18 MB/s，同 URL 单流 6.7 MB/s），而 CDN 是真 Range（ESA 实测 206 + 分片缓存）。2026-11-01 曾写成"只要配了镜像就一律单流"，导致在 `urls[]` 里配上 CDN 后**依然得不到分段**（621.6 MB 单流 521 s = 1.19 MB/s），已改正 |
+| 分段全败 → 单流兜底 | 纯直连分段用尽重试后**不再直接判失败**：清掉 `.downloads`，按候选顺序改单流重试（日志 `分段下载失败（…），改单流重试`） |
 | 关闭续传 | `-NoResume`（每次清空 `.downloads`）；`-SegmentMB 0` 直接走单流 |
 | 收尾 | 所有段拼成 `<zip>.joining` → 校验总长 → 改名后进 SHA256 校验；成功后删 `.downloads` |
 
@@ -277,6 +279,43 @@ installer 侧实测（2026-10-24）确认过、且容易踩的三点：
 - 中途 `Stop-Process` 杀掉 → 重跑从断点继续（`续传：缓存里已有 3.0 MB，只需补 17.0 MB`），
   预置段文件做确定性验证时最终 SHA256 与清单一致；
 - 真实网络：295.6 MB 的 `deps-ocr` 切 5 段经 gh-proxy 下载完成，`item_done`。
+
+**2026-11-01 真机事故（两条规则都是它换来的）**：`moss-cuda.zip` 621.6 MB —— gh-proxy 那次探测
+"不支持 Range"（被跳过），直连支持 Range 但分段两次都 `curl: (28) Could not connect to github.com:443` /
+`Recv failure: Connection was reset`。旧实现段重试用尽即抛异常，**没有单流兜底** ⇒ 整次安装
+`退出码 3`，7 个条目里只差这一个二进制。同一批次里 `models-moss.zip` 597 MB 因为两个源都不支持
+Range 走了单流镜像，反而成功。
+
+随后复测又量到第二件事：镜像其实**也**能回 206（探测时通过），但按段下载只有 0.18 MB/s，
+同一 URL 单流 6.7 MB/s —— 说明镜像的 Range 是"整包重取再切片"。同一份 621.6 MB 走镜像单流
+约 90 s 装完（`item_done`、`done ok:true`）。
+
+⇒ 两条结论：① **分段与单流是同一条下载路径的两级**，不能"分段失败即失败"；
+② **镜像前缀不该分段**（它只是兜底），但**CDN 应该分段**——见下一段的修正。
+
+**2026-11-02 修正与 CDN 实测**（`urls[]` 配上阿里云 ESA 后重跑全量首装）：
+
+- 上一版把"配了镜像就别分段"写成了"只要 `-Mirror` 非空就一律单流"，而 `-Mirror` 默认就是
+  `https://gh-proxy.com/` ⇒ **CDN 主源也被强制走单流**：621.6 MB 单流 521 s（1.19 MB/s）。
+  真因是判据错了（看"有没有配镜像"，而不是"这个候选是不是镜像"），已改为按候选 `Kind` 决定。
+- 改为按源拆分后同一批资产的实测（ESA 命中缓存、64 MB 段、本机同一时段）：
+
+  | 条目 | 大小 | 下载耗时 | 折算速率 |
+  |---|---|---|---|
+  | `moss`（cuda） | 621.6 MB | 61 s | **10.2 MB/s** |
+  | `models-moss` | 597.4 MB | 365 s | 1.64 MB/s |
+  | `deps-ocr`（cpu） | 295.5 MB | 28 s | **10.6 MB/s** |
+  | `deps-ocr-gpu`（cuda） | 479.3 MB | 387 s | 1.24 MB/s |
+  | `deps-embed` | 150.1 MB | 15 s | **10.0 MB/s** |
+  | CUDA 运行库（pip，华为云） | 1771 MB | 132 s | 13.4 MB/s |
+
+  全量 6 项 19.3 分钟装完（`done ok:true`），ESA 侧平均 4.8 MB/s。
+- **注意速率不是常数**：同样命中缓存，`moss`/`deps-ocr`/`deps-embed` 稳定 10 MB/s，而
+  `models-moss`/`deps-ocr-gpu` 只有 1.2–1.6 MB/s（推测与免费版"智能限频"、单连接节流有关）。
+  即"ESA 快"只在**多数时候、每对象随机**成立，不能当 SLA 依赖 —— 这正是保留 `urls[]` 多源
+  与镜像兜底的理由。
+- 冷启动（对象未被边缘缓存）TTFB 约 2.5 s、6 MB/s，回源走 GitHub；免费版无预热、无 L2 缓存，
+  每个边缘节点首访都要整份回源。
 
 ---
 
@@ -533,7 +572,12 @@ invoke("cancel_runtime_install")                                             // 
   该目录是**构建产物**：`.gitignore` 只忽略 `*.ps1`，`README.md` 常驻（目录空掉会让 Tauri 的
   `resources/scripts/*` 通配失配，构建直接失败）。
 - 安装失败时看 `runtime/logs/install.log`（脚本路径 / flavor / 退出码 / stderr 尾部 4000 字符），
-  `InstallSummary.message` 会自动追加「（日志：<路径>）」。
+  `InstallSummary.message` 会自动追加「（日志：<路径>）」；`message` 里还会带上脚本 stderr 中
+  **最后一条含「失败：」的行**（截断 160 字），否则用户只看到「moss 失败」还得自己翻日志。
+- **准备页的「重试」不带 `-Force`**（2026-11-01 真机修正）：`-Force` 会把已装好的条目也重算进
+  磁盘预检，一次部分失败之后重试必然卡在「磁盘空间不足」——真机上就是 5 项已装、只剩 moss
+  621 MB 没装，却因为 force 把 5 项重算成 8.77 GB > 可用 5.21 GB 而彻底走不动。语义分工：
+  「重试」= 补缺（`force=false`），「重装运行时」（自检卡、`state==="ok"` 却不就绪时）= 强制重来。
 
 ### 8.6.1 子进程与命令的硬约束（2026-10-30 真机回归后新增）
 
@@ -607,6 +651,51 @@ invoke("set_funasr_device", { device: "cuda" | "cpu" })   // 也接受 "" / "aut
 - 旧决策 D5-A「本期只做 moss」已由用户 m01567 反转——FunASR 设备下拉已补
   （`src/views/AsrView.vue` 的 `FUNASR_DEVICE_OPTIONS`），两块 UI 互斥出现（选 MOSS 显示 MOSS 设备、
   选 FunASR 显示 FunASR 设备）。
+
+### 8.8 `runtime_status`（首启门控判定，2026-11-01 新增）
+
+```ts
+invoke("runtime_status")   // 无参数
+// → RuntimeStatus（见下）
+```
+
+```jsonc
+{
+  "ready": false,               // 必需项齐 + 安装脚本在位，才为 true
+  "skip": false,                // 开发期跳过（GSA_SKIP_SETUP=1），为 true 时前端直接放行
+  "runtime_dir": "C:\\Users\\…\\runtime",
+  "script": "D:\\app\\resources\\scripts\\bootstrap_runtime.ps1",  // null = 打包漏了脚本，补不上
+  "items": [
+    { "id": "moss", "label": "MOSS 转写运行时", "flavor": "cuda", "size": 651834262,
+      "state": "ready", "required": true, "note": "" }
+  ],
+  "missing_required": [],       // 缺的必需项 id
+  "pending_bytes": 0,           // 还要下载的字节数（不含解压余量）
+  "disk": { "ok": true, "manifest_entries": 7, "required_bytes": 0, "free_bytes": 1234, "message": "…" },
+  "error": null                 // 非 null 时前端按"判定失败"处理（例如清单缺失）
+}
+```
+
+- **必需项口径**（用户 2026-11-01 拍板）：`REQUIRED_IDS = ["moss", "models-moss", "deps-ocr", "deps-embed"]`。
+  `moss` 只要 CPU 或 Vulkan 任一 flavor 就够（两者 `dest` 都是 `bin`，装不下两份），CUDA 版与
+  `deps-ocr-gpu`、`deps-ocr-cuda-libs` 属可选加速项，缺了只降速、不拦门。
+- `state` 三态：`ready`（文件在且 sha 与清单一致）/ `update`（文件在但 sha 不同）/ `missing`。
+  flavor 由 `pick_entry` 决定：**已装记录优先**，否则按 `cuda_runnable()` → cuda、`caps.vulkan` → vulkan、最后 cpu。
+- **`ready` 还要求 `script.is_some()`**：脚本没随包发布时点"安装"也只会报找不到脚本，不如直接拦住并提示重装应用。
+- 放行条件：`ready || skip`。`ready=false` 且 `skip=false` 时前端渲染准备页；**已就绪的老用户完全不出现这层**。
+- `disk` 复用 §8.5 的 `precheck_pending`，只统计**还没装/需要更新**的条目（已装条目不重复计），
+  所以"装完再点一次"不会因为空间不足被误拦。
+- 开发期跳过：设 `GSA_SKIP_SETUP=1`（或任意非 `"0"` 值）→ `skip=true`。
+
+### 8.9 首启准备页的进度口径（`item_index` / `item_total`）
+
+- `runtime-install-progress` 事件新增两个可选字段，**由 Rust 按本次请求的条目顺序补上**，
+  脚本 stdout 协议（§3）不变，installer 侧无需改动。
+- 语义：`item_index` 从 1 起，`item_total` = 本次请求的条目数（不是清单总数）。
+- 前端总进度：`(item_index - 1 + percent / 100) / item_total`；没有这两个字段时退化成"当前条目百分比"。
+- 为什么要它：一次装 5 个条目（含 622 MB 的 cuda 包与 597 MB 的模型）时，只报单条目百分比，
+  用户看到的是"进度条反复从 0 走到 100"，观感上等于没有总进度。
+
 
 
 ---

@@ -385,17 +385,24 @@ function Resolve-Url([string]$url) {
   return "$($Mirror.TrimEnd('/'))/$($url.TrimStart('/'))"
 }
 
-# 候选源：清单的 urls[]（顺序即优先级）→ 镜像前缀 → 直连；去重保序
+# 候选源：清单的 urls[]（顺序即优先级）→ 镜像前缀 → 直连；去重保序。
+# 每条带 Kind，因为"能不能分段"取决于源的性质：
+#   cdn/direct = 直链，值得探 Range（ESA/R2 这类 CDN 支持 206，分段才快）
+#   mirror     = 代理前缀，实测会把 Range 变成"整包重取再切片"（0.18 MB/s），只走单流
 function Get-UrlCandidates($it) {
   $list = New-Object System.Collections.ArrayList
-  foreach ($u in @($it.urls)) { if ($u) { [void]$list.Add([string]$u) } }
+  foreach ($u in @($it.urls)) {
+    if ($u) { [void]$list.Add([pscustomobject]@{ Url = [string]$u; Kind = "cdn" }) }
+  }
   if ($it.url) {
-    if ($Mirror) { [void]$list.Add((Resolve-Url ([string]$it.url))) }
-    [void]$list.Add([string]$it.url)
+    if ($Mirror) { [void]$list.Add([pscustomobject]@{ Url = (Resolve-Url ([string]$it.url)); Kind = "mirror" }) }
+    [void]$list.Add([pscustomobject]@{ Url = [string]$it.url; Kind = "direct" })
   }
   $seen = @{}
   $out = @()
-  foreach ($u in $list) { if (-not $seen.ContainsKey($u)) { $seen[$u] = $true; $out += $u } }
+  foreach ($c in $list) {
+    if (-not $seen.ContainsKey($c.Url)) { $seen[$c.Url] = $true; $out += $c }
+  }
   return $out
 }
 
@@ -555,6 +562,25 @@ function Join-Segments([string[]]$files, [string]$dest, [int64]$expectedSize) {
   Move-Item -LiteralPath $tmp -Destination $dest -Force
 }
 
+# 逐个候选源试单流；成功即返回，全失败才抛出最后一个错误。
+# 候选顺序 = 清单 urls[] → 镜像前缀 → 直连（见 Get-UrlCandidates），所以镜像会先被试到。
+function Invoke-SingleStream($candidates, [string]$dest, $id, $flavor, [int64]$expectedSize) {
+  $lastErr = $null
+  foreach ($c in $candidates) {
+    $u = $c.Url
+    try {
+      Log "单流下载：$u"
+      Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
+      Invoke-Download $u $dest $id $flavor $expectedSize
+      return
+    } catch {
+      $lastErr = $_.Exception.Message
+      Log "单流源失败（$u）：$lastErr"
+    }
+  }
+  throw "所有候选源都失败：$lastErr"
+}
+
 # 入口：选源 → 分段下载（可续传）→ 拼接；源不支持 Range 时退回单流
 function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $flavor) {
   # 分段依赖系统自带 curl（Windows 10 1803+ 都有）；老系统上别硬失败，退回单流
@@ -569,90 +595,96 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
   if ($candidates.Count -eq 0) { throw "清单条目 $id 没有任何 url" }
 
   $rangeUrl = $null
-  $plainUrl = $null
-  foreach ($u in $candidates) {
-    if ($SegmentMB -le 0) { $plainUrl = $u; break }
-    $probe = Test-RangeSupport $u
-    if ($probe.ok) {
-      if ($probe.length -gt 0) { $expectedSize = $probe.length }
-      $rangeUrl = $u
-      Log "分段下载源：$u（支持 Range，总长 $(Format-MB $expectedSize)）"
-      break
+  # 逐候选探测 Range：CDN/直链值得探（ESA 命中缓存 9 MB/s、4 并发 14 MB/s），
+  # 镜像前缀不探（2026-11-01 真机：镜像对 Range 的响应是"整包重取再切片"，
+  # 按段下只有 0.18 MB/s，同一 URL 单流却有 6.7 MB/s）。
+  if ($SegmentMB -le 0) {
+    Log "已关闭分段（-SegmentMB 0），单流下载"
+  } else {
+    foreach ($c in $candidates) {
+      if ($c.Kind -eq "mirror") {
+        Log "跳过 $($c.Url)（镜像前缀：Range 会被整包重取，只作单流兜底）"
+        continue
+      }
+      $probe = Test-RangeSupport $c.Url
+      if ($probe.ok) {
+        if ($probe.length -gt 0) { $expectedSize = $probe.length }
+        $rangeUrl = $c.Url
+        Log "分段下载源：$($c.Url)（支持 Range，总长 $(Format-MB $expectedSize)）"
+        break
+      }
+      Log "跳过 $($c.Url)（不支持 Range，或探测失败）"
     }
-    if (-not $plainUrl) { $plainUrl = $u }
-    Log "跳过 $u（不支持 Range，或探测失败）"
   }
 
   # 不支持 Range / 未知长度 / 关掉分段 ⇒ 单流，且逐个候选源回退
   # （镜像前缀会把 localhost 之类也拼成死的，必须靠回退兜住）
   if (-not $rangeUrl -or $expectedSize -le 0) {
-    $lastErr = $null
-    foreach ($u in $candidates) {
-      try {
-        Log "单流下载：$u"
-        Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
-        Invoke-Download $u $dest $id $flavor $expectedSize
-        return
-      } catch {
-        $lastErr = $_.Exception.Message
-        Log "单流源失败（$u）：$lastErr"
+    Invoke-SingleStream $candidates $dest $id $flavor $expectedSize
+    return
+  }
+
+  try {
+    $segBytes = [int64]$SegmentMB * 1MB
+    $count = [int]([math]::Ceiling([double]$expectedSize / [double]$segBytes))
+    if ($count -lt 1) { $count = 1 }
+    if (-not (Test-Path -LiteralPath $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null }
+
+    $resumeBytes = 0
+    for ($k = 0; $k -lt $count; $k++) {
+      $off = [int64]$k * $segBytes
+      $len = [math]::Min($segBytes, $expectedSize - $off)
+      $resumeBytes += [int64][math]::Min((Get-FileLength (Join-Path $cacheDir ("seg{0:d3}.bin" -f $k))), $len)
+    }
+    if ($resumeBytes -gt 0) { Log "续传：缓存里已有 $(Format-MB $resumeBytes)，只需补 $(Format-MB ($expectedSize - $resumeBytes))" }
+    else { Log "分段下载：$count 段 × $(Format-MB $segBytes)，缓存 $cacheDir" }
+
+    $files = @()
+    $doneBytes = [int64]0
+    for ($i = 0; $i -lt $count; $i++) {
+      $off = [int64]$i * $segBytes
+      $len = [math]::Min($segBytes, $expectedSize - $off)
+      $seg = Join-Path $cacheDir ("seg{0:d3}.bin" -f $i)
+      $files += $seg
+      if ($NoResume) { Remove-Item -LiteralPath $seg -Force -ErrorAction SilentlyContinue }
+
+      $baseBytes = $doneBytes
+      $idx = $i
+      $emit = {
+        param($sofar)
+        $total = $baseBytes + $sofar
+        $pct = [math]::Round(([double]$total / [double]$expectedSize) * 100, 1)
+        $evt = @{ event = "progress"; item = $id; phase = "download"; percent = $pct; detail = "下载中 $(Format-MB $total)/$(Format-MB $expectedSize)（第 $($idx + 1)/$count 段）" }
+        if ($flavor) { $evt.flavor = $flavor }
+        Emit $evt
       }
-    }
-    throw "所有候选源都失败：$lastErr"
-  }
 
-  $segBytes = [int64]$SegmentMB * 1MB
-  $count = [int]([math]::Ceiling([double]$expectedSize / [double]$segBytes))
-  if ($count -lt 1) { $count = 1 }
-  if (-not (Test-Path -LiteralPath $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null }
-
-  $resumeBytes = 0
-  for ($k = 0; $k -lt $count; $k++) {
-    $off = [int64]$k * $segBytes
-    $len = [math]::Min($segBytes, $expectedSize - $off)
-    $resumeBytes += [int64][math]::Min((Get-FileLength (Join-Path $cacheDir ("seg{0:d3}.bin" -f $k))), $len)
-  }
-  if ($resumeBytes -gt 0) { Log "续传：缓存里已有 $(Format-MB $resumeBytes)，只需补 $(Format-MB ($expectedSize - $resumeBytes))" }
-  else { Log "分段下载：$count 段 × $(Format-MB $segBytes)，缓存 $cacheDir" }
-
-  $files = @()
-  $doneBytes = [int64]0
-  for ($i = 0; $i -lt $count; $i++) {
-    $off = [int64]$i * $segBytes
-    $len = [math]::Min($segBytes, $expectedSize - $off)
-    $seg = Join-Path $cacheDir ("seg{0:d3}.bin" -f $i)
-    $files += $seg
-    if ($NoResume) { Remove-Item -LiteralPath $seg -Force -ErrorAction SilentlyContinue }
-
-    $baseBytes = $doneBytes
-    $idx = $i
-    $emit = {
-      param($sofar)
-      $total = $baseBytes + $sofar
-      $pct = [math]::Round(([double]$total / [double]$expectedSize) * 100, 1)
-      $evt = @{ event = "progress"; item = $id; phase = "download"; percent = $pct; detail = "下载中 $(Format-MB $total)/$(Format-MB $expectedSize)（第 $($idx + 1)/$count 段）" }
-      if ($flavor) { $evt.flavor = $flavor }
-      Emit $evt
-    }
-
-    if ((Get-FileLength $seg) -eq $len -and $len -gt 0) { $doneBytes += $len; continue }
-    $attempt = 0
-    while ($true) {
-      $attempt++
-      try {
-        Invoke-CurlSegment $rangeUrl $seg $off $len $emit
-        break
-      } catch {
-        if ($attempt -ge $MaxAttempts) { throw }
-        Log "第 $($i + 1)/$count 段失败（$($_.Exception.Message)），第 $attempt/$MaxAttempts 次，2 秒后重试"
-        Start-Sleep -Seconds 2
+      if ((Get-FileLength $seg) -eq $len -and $len -gt 0) { $doneBytes += $len; continue }
+      $attempt = 0
+      while ($true) {
+        $attempt++
+        try {
+          Invoke-CurlSegment $rangeUrl $seg $off $len $emit
+          break
+        } catch {
+          if ($attempt -ge $MaxAttempts) { throw }
+          Log "第 $($i + 1)/$count 段失败（$($_.Exception.Message)），第 $attempt/$MaxAttempts 次，2 秒后重试"
+          Start-Sleep -Seconds 2
+        }
       }
+      $doneBytes += $len
     }
-    $doneBytes += $len
-  }
 
-  Join-Segments $files $dest $expectedSize
-  Remove-Item -LiteralPath $cacheDir -Recurse -Force -ErrorAction SilentlyContinue
+    Join-Segments $files $dest $expectedSize
+    Remove-Item -LiteralPath $cacheDir -Recurse -Force -ErrorAction SilentlyContinue
+  } catch {
+    # 分段全失败（直连被 reset 时 curl 报 28/56）⇒ 退到单流，让镜像前缀有机会兜住。
+    # 2026-11-01 真机：moss-cuda 621.6 MB 走直连分段两次都被 reset，而同一条目走镜像单流是通的。
+    $segErr = $_.Exception.Message
+    Log "分段下载失败（$segErr），改单流重试"
+    Remove-Item -LiteralPath $cacheDir -Recurse -Force -ErrorAction SilentlyContinue
+    Invoke-SingleStream $candidates $dest $id $flavor $expectedSize
+  }
 }
 
 function Get-Sha256([string]$path) {

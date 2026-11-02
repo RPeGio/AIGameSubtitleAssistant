@@ -98,6 +98,9 @@ runtime/
 > 并可 `-SegmentMB` / `-NoResume` / `-MaxAttempts` 调整；多源用清单里的 `urls[]`（见契约 §4.5）。
 > 发版物的打包方式见 `scripts/package_ocr_runtime.ps1`（§8.11）与
 > `scripts/package_embed_runtime.ps1`（§8.12）。
+> **国内加速**：清单每条资产的 `urls[]` 第一项指向阿里云 ESA 镜像（`https://dl.rpegio.top/…`），
+> 第二项是 GitHub Releases 兜底；ESA 未命中缓存时会回源 GitHub，命中后实测 10 MB/s 量级
+> （但对象之间差异可达 8 倍，免费版有智能限频，无 SLA）。详见 §8.13。
 
 ### config.json 关键字段
 
