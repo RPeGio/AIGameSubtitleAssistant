@@ -1,6 +1,6 @@
 {
     "version":  "1",
-    "generated_at":  "2026-10-30T14:40:00Z",
+    "generated_at":  "2026-11-02T01:37:25Z",
     "items":  [
                   {
                       "id":  "moss",
@@ -9,7 +9,11 @@
                       "sha256":  "545e2b1a18f35c6cd462c26b768d177458bf4d6918a619f24d4767492c4d791d",
                       "size":  1121692,
                       "dest":  "bin",
-                      "backend_marker":  "cpu"
+                      "backend_marker":  "cpu",
+                      "urls":  [
+                                   "https://dl.rpegio.top/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-cpu.zip",
+                                   "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-cpu.zip"
+                               ]
                   },
                   {
                       "id":  "moss",
@@ -18,7 +22,11 @@
                       "sha256":  "e848847289982b8322262341aa133e40b8f152ee563b8af63e3412e4eb6a89b5",
                       "size":  16139894,
                       "dest":  "bin",
-                      "backend_marker":  "vulkan"
+                      "backend_marker":  "vulkan",
+                      "urls":  [
+                                   "https://dl.rpegio.top/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-vulkan.zip",
+                                   "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-vulkan.zip"
+                               ]
                   },
                   {
                       "id":  "moss",
@@ -27,14 +35,22 @@
                       "sha256":  "5faa48b8b85e7f5763b835ad8b18ba467daef8243f0b1c7172fb3a1c87ed894d",
                       "size":  651834262,
                       "dest":  "bin",
-                      "backend_marker":  "cuda"
+                      "backend_marker":  "cuda",
+                      "urls":  [
+                                   "https://dl.rpegio.top/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-cuda.zip",
+                                   "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-cuda.zip"
+                               ]
                   },
                   {
                       "id":  "models-moss",
                       "url":  "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/models-moss.zip",
                       "sha256":  "809f8999ac51ef0836b9324b2c1ad6a40e520b42f69dfc60c260dd01ab9a8cb1",
                       "size":  626397892,
-                      "dest":  "models/moss"
+                      "dest":  "models/moss",
+                      "urls":  [
+                                   "https://dl.rpegio.top/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/models-moss.zip",
+                                   "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/models-moss.zip"
+                               ]
                   },
                   {
                       "id":  "deps-ocr",
@@ -43,7 +59,11 @@
                       "sha256":  "33dc6e0e0cdcd9f7c21d72581252a35398558e03f8794dbeee145253cd6208cc",
                       "size":  309803561,
                       "unpacked_size":  911518754,
-                      "dest":  "."
+                      "dest":  ".",
+                      "urls":  [
+                                   "https://dl.rpegio.top/RPeGio/AIGameSubtitleAssistant/releases/download/ocr-runtime-v1/ocr-runtime-cpu.zip",
+                                   "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/ocr-runtime-v1/ocr-runtime-cpu.zip"
+                               ]
                   },
                   {
                       "id":  "deps-ocr-gpu",
@@ -53,7 +73,11 @@
                       "sha256":  "f5745d592baf83e4f23730d26deeb6cb2e662b61c151f04f8154e4edd74c66fc",
                       "size":  502533301,
                       "unpacked_size":  996251695,
-                      "dest":  "."
+                      "dest":  ".",
+                      "urls":  [
+                                   "https://dl.rpegio.top/RPeGio/AIGameSubtitleAssistant/releases/download/ocr-runtime-v1/ocr-runtime-cuda-paddle.zip",
+                                   "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/ocr-runtime-v1/ocr-runtime-cuda-paddle.zip"
+                               ]
                   },
                   {
                       "id":  "deps-embed",
@@ -61,6 +85,11 @@
                       "sha256":  "1771e9e67f751ab96470e2955d93653756acd4ad3c868c891cc22a1296ba1884",
                       "size":  157386205,
                       "unpacked_size":  345868793,
-                      "dest":  "."
-                  }              ]
+                      "dest":  ".",
+                      "urls":  [
+                                   "https://dl.rpegio.top/RPeGio/AIGameSubtitleAssistant/releases/download/embed-runtime-v1/embed-runtime.zip",
+                                   "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/embed-runtime-v1/embed-runtime.zip"
+                               ]
+                  }
+              ]
 }

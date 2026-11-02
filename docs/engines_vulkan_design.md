@@ -439,3 +439,31 @@ gh release upload  moss-runtime-v1 moss-cuda.zip
   空配置回退标准布局），`embed.rs` 改用它并在起子进程前逐项判文件存在（给出"请重装
   deps-embed"这类可读结论，而不是让 Python 抛 `os error 3`）；新增命令
   `probe_embed_install`。`cargo test --lib` **335 passed**。
+
+### 8.13 CDN 镜像：清单多源 + 阿里云 ESA（2026-11-02）
+
+**问题**：GitHub Releases 在大陆实测 0.07–0.43 MB/s 且会断流，7 个资产合计约 2.1 GB（另加
+CUDA 运行库 1.77 GB 走 pip），首装体验不可接受。
+
+**做法（不改代码，只改数据）**：清单每条资产加 `urls: [ESA, GitHub]`，下载器按优先级探测
+（§4.5 已实现多源）；ESA 侧只做**纯透传镜像**，源站仍是 GitHub Releases，因此不需要重新
+上传任何资产、也不需要改 `gh release` 流程。
+
+**ESA 侧配置要点**（免费版 Entrance，未备案域名，加速区域只能选「全球（不含中国内地）」）：
+
+1. CNAME 接入，记录保持**灰云**（只做 DNS）；开橙云会变成 CF→ESA→GitHub 三跳；
+2. 必须申请并部署**免费证书**（否则握手直接 `TLSV1_ALERT_INTERNAL_ERROR`，80 端口还会 301 到 https）；
+3. 缓存规则按**文件扩展名 `zip`**（不要用"URI 等于/前缀"：ESA 的 URI 是纯路径，版本号在第 5 段，
+   `^/` 开头的锚定永远不匹配），并**忽略源站缓存头**、TTL 30 天；
+4. 实测 `X-Site-Cache-Status` 从 `BYPASS` 变 `HIT`、`Age` 持续增长即表示规则生效。
+
+**实测（本机、同一时段、命中缓存 + 64 MB 分段）**：`moss` 10.2 MB/s、`deps-ocr` 10.6 MB/s、
+`deps-embed` 10.0 MB/s，但 `models-moss` 1.64 MB/s、`deps-ocr-gpu` 1.24 MB/s —— **同一配置下
+对象之间的速率差可达 8 倍**。全量 6 项 19.3 分钟装完（对比直连时代 2.1 GB 需数小时）。
+
+**结论与保留**：ESA 免费版把"首装能否完成"从"看运气"变成"基本能完成"，但
+① 无 SLA、官方标"仅用于测试验证"，且免费版有智能限频（高频压测时出现过硬失败）；
+② 冷启动仍需整份回源 GitHub（TTFB ≈2.5 s、6 MB/s），免费版无预热、无 L2 缓存；
+③ 未备案 ⇒ 只能走海外节点，延迟与大陆节点不可比。
+⇒ 所以 `urls[]` 顺序是 **ESA → GitHub**，`-Mirror`（gh-proxy）仍是单流兜底，
+三者任一可用即可装完；真要稳定还需备案 + 大陆节点（或对象存储）。

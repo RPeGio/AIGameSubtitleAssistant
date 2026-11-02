@@ -385,17 +385,24 @@ function Resolve-Url([string]$url) {
   return "$($Mirror.TrimEnd('/'))/$($url.TrimStart('/'))"
 }
 
-# 候选源：清单的 urls[]（顺序即优先级）→ 镜像前缀 → 直连；去重保序
+# 候选源：清单的 urls[]（顺序即优先级）→ 镜像前缀 → 直连；去重保序。
+# 每条带 Kind，因为"能不能分段"取决于源的性质：
+#   cdn/direct = 直链，值得探 Range（ESA/R2 这类 CDN 支持 206，分段才快）
+#   mirror     = 代理前缀，实测会把 Range 变成"整包重取再切片"（0.18 MB/s），只走单流
 function Get-UrlCandidates($it) {
   $list = New-Object System.Collections.ArrayList
-  foreach ($u in @($it.urls)) { if ($u) { [void]$list.Add([string]$u) } }
+  foreach ($u in @($it.urls)) {
+    if ($u) { [void]$list.Add([pscustomobject]@{ Url = [string]$u; Kind = "cdn" }) }
+  }
   if ($it.url) {
-    if ($Mirror) { [void]$list.Add((Resolve-Url ([string]$it.url))) }
-    [void]$list.Add([string]$it.url)
+    if ($Mirror) { [void]$list.Add([pscustomobject]@{ Url = (Resolve-Url ([string]$it.url)); Kind = "mirror" }) }
+    [void]$list.Add([pscustomobject]@{ Url = [string]$it.url; Kind = "direct" })
   }
   $seen = @{}
   $out = @()
-  foreach ($u in $list) { if (-not $seen.ContainsKey($u)) { $seen[$u] = $true; $out += $u } }
+  foreach ($c in $list) {
+    if (-not $seen.ContainsKey($c.Url)) { $seen[$c.Url] = $true; $out += $c }
+  }
   return $out
 }
 
@@ -559,7 +566,8 @@ function Join-Segments([string[]]$files, [string]$dest, [int64]$expectedSize) {
 # 候选顺序 = 清单 urls[] → 镜像前缀 → 直连（见 Get-UrlCandidates），所以镜像会先被试到。
 function Invoke-SingleStream($candidates, [string]$dest, $id, $flavor, [int64]$expectedSize) {
   $lastErr = $null
-  foreach ($u in $candidates) {
+  foreach ($c in $candidates) {
+    $u = $c.Url
     try {
       Log "单流下载：$u"
       Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
@@ -587,23 +595,25 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
   if ($candidates.Count -eq 0) { throw "清单条目 $id 没有任何 url" }
 
   $rangeUrl = $null
-  $plainUrl = $null
-  # 镜像单流优先（2026-11-01 真机）：镜像对 Range 的响应是"整包重取再切片"，按段下只有 0.18 MB/s，
-  # 同一 URL 单流却有 6.7 MB/s。所以只要配了镜像就一律单流；`-Mirror ''`（纯直连）才分段，靠 Range + 续传抗断流。
-  if ($SegmentMB -le 0 -or $Mirror) {
-    $plainUrl = $candidates[0]
-    if ($Mirror) { Log "镜像优先：单流下载 $plainUrl（不分段）" }
+  # 逐候选探测 Range：CDN/直链值得探（ESA 命中缓存 9 MB/s、4 并发 14 MB/s），
+  # 镜像前缀不探（2026-11-01 真机：镜像对 Range 的响应是"整包重取再切片"，
+  # 按段下只有 0.18 MB/s，同一 URL 单流却有 6.7 MB/s）。
+  if ($SegmentMB -le 0) {
+    Log "已关闭分段（-SegmentMB 0），单流下载"
   } else {
-    foreach ($u in $candidates) {
-      $probe = Test-RangeSupport $u
+    foreach ($c in $candidates) {
+      if ($c.Kind -eq "mirror") {
+        Log "跳过 $($c.Url)（镜像前缀：Range 会被整包重取，只作单流兜底）"
+        continue
+      }
+      $probe = Test-RangeSupport $c.Url
       if ($probe.ok) {
         if ($probe.length -gt 0) { $expectedSize = $probe.length }
-        $rangeUrl = $u
-        Log "分段下载源：$u（支持 Range，总长 $(Format-MB $expectedSize)）"
+        $rangeUrl = $c.Url
+        Log "分段下载源：$($c.Url)（支持 Range，总长 $(Format-MB $expectedSize)）"
         break
       }
-      if (-not $plainUrl) { $plainUrl = $u }
-      Log "跳过 $u（不支持 Range，或探测失败）"
+      Log "跳过 $($c.Url)（不支持 Range，或探测失败）"
     }
   }
 
