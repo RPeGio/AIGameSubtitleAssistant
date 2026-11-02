@@ -8,6 +8,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import type { RecentProject, MossInstallStatus } from "../types";
 import AppIcon from "../components/AppIcon.vue";
+import SettingsModal from "../components/SettingsModal.vue";
 import { NCard, NCheckbox, NInput, NModal, NPopconfirm, useMessage } from "naive-ui";
 
 const router = useRouter();
@@ -17,6 +18,8 @@ const ui = useUiStore();
 const message = useMessage();
 
 const showCreateModal = ref(false);
+/// 设置弹层（欢迎页也要能进：运行时目录搬家、下载源这些在开项目前就该能改）
+const showSettings = ref(false);
 const newProjectName = ref("");
 const newProjectPath = ref("");
 
@@ -510,6 +513,10 @@ onMounted(() => {
       <button class="btn ghost sm" @click="setup.reopen()">重新准备</button>
     </div>
     <div class="wtop">
+      <button class="tgl" title="设置" @click="showSettings = true">
+        <AppIcon name="gear" :size="12" />
+        设置
+      </button>
       <button
         class="tgl"
         :title="ui.isDark ? '切换到浅色主题' : '切换到深色主题'"
@@ -712,6 +719,8 @@ onMounted(() => {
         </div>
       </NCard>
     </NModal>
+
+    <SettingsModal v-model:show="showSettings" />
   </div>
 </template>
 

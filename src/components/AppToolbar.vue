@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { NButton, NPopselect, useMessage } from "naive-ui";
@@ -8,11 +8,15 @@ import { useTimelineStore } from "../stores/timeline";
 import { useUiStore } from "../stores/ui";
 import AppIcon from "./AppIcon.vue";
 import SaveStatusIndicator from "./SaveStatusIndicator.vue";
+import SettingsModal from "./SettingsModal.vue";
 
 const projectStore = useProjectStore();
 const timeline = useTimelineStore();
 const ui = useUiStore();
 const message = useMessage();
+
+/// 设置弹层（NModal，不新增路由页）
+const showSettings = ref(false);
 
 /// 最终字幕轨（fused）：导出以它为准
 const fusedTrack = computed(() =>
@@ -118,6 +122,11 @@ async function onExport(format: string) {
     </span>
 
     <div class="tbar-r">
+      <button class="tgl" title="设置" @click="showSettings = true">
+        <AppIcon name="gear" :size="12" />
+        设置
+      </button>
+
       <button
         class="tgl"
         :title="ui.isDark ? '切换到浅色主题' : '切换到深色主题'"
@@ -147,6 +156,8 @@ async function onExport(format: string) {
       </NPopselect>
     </div>
   </header>
+
+  <SettingsModal v-model:show="showSettings" />
 </template>
 
 <style scoped>

@@ -27,7 +27,7 @@
 | 12 | ✅ CUDA GPU 加速参数化（设备迁移到 UI） | 功能·Rust+UI | 7（要带 info 说明）+ 11（需 `probe_moss_backend` 命令） | 已实现（阶段 A+B `a8e8010`、阶段 C `2a766c8`；2026-10-30 探测命令改 async）：`probe_moss_backend` + `set_moss_device` 两命令、打轴页设备下拉、欢迎页硬报错、manifest 随包落库 |
 | 13 | ✅ 杂项清理与验证（死代码/参数开关/图标；真机波形待验） | 清理·零碎 | 无 | 已实现（`8b71ee2`）：死代码已删、易混字母开关已暴露、轨道图标常显 |
 | 14 | ✅ 内嵌 ffmpeg/ffprobe + 欢迎页 ffmpeg 自检卡 | 功能·打包 | 11（自检卡复用其探针机制） | 已实现（`40e645f`/`5acb56f`/`bfd1168`/`f3d19d8`/`cd1b753`）：LGPL 共享构建内嵌、内嵌优先回退 PATH、环境自检第 4 张卡；2026-10-30 `check_ffmpeg` 改 async + 静默启动 |
-| 19 | 设置面板（默认 ASR 模型 + 快捷键查看/修改） | 功能·跨页 | 10（注册表） | 改动大、用户明确单独一个 PR；快捷键帮助面板并入此项 |
+| 19 | ✅ 设置面板（运行时 / 引擎 / 时间轴 / 快捷键只读表） | 功能·跨页 | 10（注册表）、11（运行时） | 已实现（2026-11-02，`feat/first-run-prep`）：NModal 五组 + runtime 目录搬家指针 + 下载源三档 + 自动保存/缩放/吸附偏好 |
 | 20 | ✅ 校对区选中 clip 时，轨道总览滚动到该行 | 修复·小 | 无 | 已实现（`b2e70ab`）：`data-clip-id` + 矩形比对最小滚动 |
 | 21 | ✅ 时间轴框选多选（含 `Ctrl+A` 全选、多选整体位移） | 功能·核心 | 10（活动时间轴判定） | 已实现（`34e2837`）：多选模型 + 框选 + 修饰键 + 批量删除 + 刚性整组位移 |
 | 22 | ✅ `,`/`.` 上/下一个片段与「轨道总览 = 聚焦轨道」口径对齐 | 修复·小 | 20（总览滚动） | 已实现（`b28c87a`）：同轨内跳 + 无聚焦轨时兜底跨轨并切轨 + 边界提示 + 迷你时间轴不响应 |
@@ -889,7 +889,32 @@
 - 有 PATH ffmpeg 的机器行为不回退（查找顺序明确、可预期）；
 - 安装包内包含二进制，且许可档案已更新。
 
-### 19. 设置面板（默认 ASR 模型 + 快捷键查看/修改）
+### 19. ✅ 设置面板（运行时 / 引擎 / 时间轴 / 快捷键只读表）
+
+**已实现（2026-11-02，分支 `feat/first-run-prep`）**
+
+范围经用户逐组拍板（`m04501`/`m04549`）：**NModal 弹层**、runtime 默认仍存 `%APPDATA%` 但可在设置里**整体搬家**（重启生效）、下载源三档（自动 / 强制镜像 / 直连）。
+
+| 组 | 条目 | 落点 |
+|---|---|---|
+| A 外观 | 主题、侧栏默认折叠、界面缩放（90/100/110/125%） | `stores/ui.ts`（`zoom` + `applyZoom`，`<html style="zoom">`）+ `composables/appPrefs.ts` |
+| B 运行时 | runtime 目录 + 可用空间、移动到…、删除旧目录、下载源、分段大小、启动时自动准备、重新检查、打开日志目录、清单状态 | `ai_runtime/config.rs` 四个新命令（见契约 §8.10） |
+| C 引擎 | OCR 设备、MOSS 线程数、MOSS 超时、MOSS 设备只读（跳打轴页）、保留中间产物 | 同上，写 `runtime/config.json` |
+| E 时间轴与保存 | 默认吸附、分割策略、合并策略、自动保存开关 + 延迟（关闭时收起延迟项） | `stores/timeline.ts`、`stores/project.ts` 的 `scheduleSave` 读 `appPrefs` |
+| F 快捷键 | 只读对照表（5 组 21 行 27 键位），与 `composables/shortcuts.ts` 注册表同源 | `SettingsModal.vue` |
+
+**关键实现点**
+- `RuntimeConfig` 新增 `download_source`（`auto`/`mirror`/`direct`）、`segment_mb`（0 = 关分段）、`setup_auto`，由 `runtime_install` 显式以 `-Source` / `-SegmentMB` 传给脚本，不依赖脚本默认值。
+- **runtime 目录搬家**：app_data 下写 `runtime-location.json` 指针（`runtime_dir` / `previous` / `moved_at`）；`resolve_runtime_dir` 语义从"兜底 runtime 路径"改成"接收 app_data 目录"，顺序 = 指针 → `GSA_RUNTIME_DIR` → exe 向上 → `app_data/runtime`；搬家 = 复制（跳过 `.downloads` 缓存）→ 按相对路径逐条对账 → 写指针；旧目录保留，确认无误后一键删。
+- **`load_or_default`**：`config.json` 不存在时从默认值起步再保存。真机上（一键安装只解包、不写 config.json）原来 `set_moss_device` / `update_runtime_settings` 会直接报"读取失败"，是本次一并修掉的真 bug。
+- 弹层入口两处：项目内顶栏（`AppToolbar.vue`）与欢迎页（`Welcome.vue`）——运行时目录、下载源这些在开项目前就该能改。
+
+**未做（用户明确排除）**：校对区宽度、`ocr_model`、FunASR 语言/超时、OCR/校对参数（保持 OCR 页唯一配置）、撤销深度、快捷键改键（F 组只读）。
+另：**默认转写引擎**一项失去意义——前端 FunASR 入口已在分发侧提交 `c654cfc` 中移除（`ENGINE_ORDER = ["moss"]`），故未做。
+
+**验证**：`cargo test --lib` 全绿（新增 `test_normalize_download_source_and_segment`、`test_location_pointer_overrides_fallback`、`test_move_runtime_dir_copies_then_delete_old`、`test_move_rejects_non_empty_target`、`test_load_or_default_starts_from_default_when_missing`）；`pnpm build` EXIT=0；headless（`temp/css-preview/settings.mjs`）确认弹层 5 组 21 行、27 个键位、宽 720、无溢出、无 console 错误，并实测「关掉自动保存 → 延迟项消失」。**未经真机手测**（搬家、日志目录、重新检查运行时需在安装包里点一遍）。
+
+**原始需求（保留）**
 
 **来源**：用户 m06929（原话）「增加设置面板，详细功能待定，但确定包括的有默认ASR模型设置、快捷键设置（承载快捷键查看和修改两个功能），改动较大，值得单独一个PR」。
 

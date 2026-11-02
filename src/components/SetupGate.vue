@@ -94,8 +94,10 @@ watch(
 
 onMounted(async () => {
   await setup.refresh();
-  // D1：首启（缺文件）直接开跑，不等点击；升级路径（全在盘上）由用户决定
-  if (setup.stage === "needs" && !updateOnly.value) void runInstall();
+  // D1：首启（缺文件）直接开跑，不等点击；升级路径（全在盘上）由用户决定。
+  // 设置里的「启动时自动准备运行时」关掉后只做判定，等用户点按钮。
+  const auto = setup.status?.auto_start ?? true;
+  if (setup.stage === "needs" && !updateOnly.value && auto) void runInstall();
 });
 </script>
 

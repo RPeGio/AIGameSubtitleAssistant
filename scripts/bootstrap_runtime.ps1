@@ -54,6 +54,9 @@ param(
   [string]$Items = "moss,models-moss,deps-ocr,deps-ocr-gpu,deps-embed",
   [string]$Flavor = "auto",
   [string]$Mirror = "https://gh-proxy.com/",
+  # 下载源策略（设置面板可改）：auto = 清单顺序（CDN/ESA → 镜像 → 直链）|
+  # mirror = 镜像优先（ESA 被墙但 gh-proxy 能通的网络）| direct = 只用 GitHub 直链
+  [string]$Source = "auto",
   [string]$PipMirror = "https://repo.huaweicloud.com/repository/pypi/simple",
   [switch]$PipUseProxy,
   [switch]$SkipGpuLibs,
@@ -67,6 +70,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+
+# 下载源归一化：非法值退回 auto（设置面板传错不该让整轮安装挂掉）
+$Source = "$Source".Trim().ToLower()
+if ($Source -notin @("auto", "mirror", "direct")) { $Source = "auto" }
 
 # stdout 必须是纯 JSONL：先统一成 UTF-8，避免中文 detail 在重定向时被 GBK 编码
 try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
@@ -390,13 +397,23 @@ function Resolve-Url([string]$url) {
 #   cdn/direct = 直链，值得探 Range（ESA/R2 这类 CDN 支持 206，分段才快）
 #   mirror     = 代理前缀，实测会把 Range 变成"整包重取再切片"（0.18 MB/s），只走单流
 function Get-UrlCandidates($it) {
-  $list = New-Object System.Collections.ArrayList
+  $cdn = New-Object System.Collections.ArrayList
   foreach ($u in @($it.urls)) {
-    if ($u) { [void]$list.Add([pscustomobject]@{ Url = [string]$u; Kind = "cdn" }) }
+    if ($u) { [void]$cdn.Add([pscustomobject]@{ Url = [string]$u; Kind = "cdn" }) }
   }
-  if ($it.url) {
-    if ($Mirror) { [void]$list.Add([pscustomobject]@{ Url = (Resolve-Url ([string]$it.url)); Kind = "mirror" }) }
-    [void]$list.Add([pscustomobject]@{ Url = [string]$it.url; Kind = "direct" })
+  $mirror = New-Object System.Collections.ArrayList
+  if ($it.url -and $Mirror) { [void]$mirror.Add([pscustomobject]@{ Url = (Resolve-Url ([string]$it.url)); Kind = "mirror" }) }
+  $direct = New-Object System.Collections.ArrayList
+  if ($it.url) { [void]$direct.Add([pscustomobject]@{ Url = [string]$it.url; Kind = "direct" }) }
+
+  # 候选顺序按 -Source 决定（设置面板三档）：
+  #   auto   → 清单顺序（ESA/CDN 在前）→ 镜像前缀 → 直链
+  #   mirror → 镜像前缀优先（ESA 被墙、gh-proxy 能通的网络）
+  #   direct → 只要 GitHub 直链（cdn 里非 github 的 ESA 地址一并排除）
+  $list = switch ($Source) {
+    "mirror" { @($mirror) + @($cdn) + @($direct) }
+    "direct" { @(@($cdn) | Where-Object { $_.Url -match "://github\.com/" }) + @($direct) }
+    default { @($cdn) + @($mirror) + @($direct) }
   }
   $seen = @{}
   $out = @()

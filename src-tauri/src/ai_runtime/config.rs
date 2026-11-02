@@ -99,6 +99,29 @@ pub struct RuntimeConfig {
     /// 融合嵌入依赖目录（相对 runtime，如 deps_embed，pip --target 安装，作为 PYTHONPATH）
     #[serde(default)]
     pub embed_deps_dir: String,
+    /// 下载源策略："auto"（默认，清单顺序：ESA 镜像 → GitHub）| "mirror"（强制走镜像前缀）
+    /// | "direct"（只用清单里的直链）。只在安装/更新运行时时生效
+    #[serde(default = "default_download_source")]
+    pub download_source: String,
+    /// 分段下载的段大小（MB）：0 = 关闭分段（单流）。默认 64；镜像对 Range 的支持是
+    /// "整包重取再切片"，所以脚本对镜像前缀只做单流兜底，这个值只影响直链/CDN 源
+    #[serde(default = "default_segment_mb")]
+    pub segment_mb: u32,
+    /// 首启准备页是否自动开跑安装（默认 true）。关闭后准备页只列清单、等用户点「开始准备」
+    #[serde(default = "default_setup_auto")]
+    pub setup_auto: bool,
+}
+
+fn default_download_source() -> String {
+    "auto".into()
+}
+
+fn default_segment_mb() -> u32 {
+    64
+}
+
+fn default_setup_auto() -> bool {
+    true
 }
 
 fn default_ocr_model() -> String {
@@ -148,6 +171,9 @@ impl Default for RuntimeConfig {
             embed_model: String::new(),
             embed_tokenizer: String::new(),
             embed_deps_dir: String::new(),
+            download_source: default_download_source(),
+            segment_mb: default_segment_mb(),
+            setup_auto: default_setup_auto(),
         }
     }
 }
@@ -168,12 +194,72 @@ fn runtime_dir_from_exe() -> Option<PathBuf> {
     }
 }
 
-/// 解析 runtime 目录（环境变量 → 向上查找 → 兜底）
+/// 运行时目录指针文件名（位于 app_data_dir 下，不在 runtime 内部）
 ///
-/// TODO(分发): 打包后需把 runtime/**/* 加入 tauri.conf.json 的 bundle.resources，
-/// 并让此处识别 Windows 资源目录布局（installer 下 resources/runtime/config.json）。
-pub fn resolve_runtime_dir(fallback: Option<PathBuf>) -> PathBuf {
-    // 环境变量指定的目录必须真的含 config.json，否则视为误配置并告警
+/// 之所以要独立文件：设置里把 runtime 整体搬到别的盘之后，原路径就没东西可读了，
+/// 指针必须留在"永远存在"的应用数据目录里。文件内容见 [`RuntimeLocation`]。
+pub const LOCATION_FILE: &str = "runtime-location.json";
+
+/// runtime 目录位置记录
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RuntimeLocation {
+    /// 当前 runtime 目录（绝对路径）
+    pub runtime_dir: String,
+    /// 搬家前的旧目录（供"验证无误后一键删除"用；删完清空）
+    #[serde(default)]
+    pub previous: Option<String>,
+    /// 最近一次搬家的时间（Unix 秒，仅供展示）
+    #[serde(default)]
+    pub moved_at: Option<u64>,
+}
+
+/// 读指针文件；目录不存在时返回 None 并告警（外接盘掉线就属于这种）
+fn read_location(base: &Path) -> Option<RuntimeLocation> {
+    let path = base.join(LOCATION_FILE);
+    let text = fs::read_to_string(&path).ok()?;
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    match serde_json::from_str::<RuntimeLocation>(text) {
+        Ok(loc) if !loc.runtime_dir.trim().is_empty() => {
+            let dir = PathBuf::from(&loc.runtime_dir);
+            if dir.is_dir() {
+                Some(loc)
+            } else {
+                eprintln!(
+                    "[ai_runtime] runtime 指针指向的目录不存在（外接盘未挂载？）: {}",
+                    dir.display()
+                );
+                None
+            }
+        }
+        Ok(_) => None,
+        Err(e) => {
+            eprintln!("[ai_runtime] 解析 {} 失败: {e}", path.display());
+            None
+        }
+    }
+}
+
+/// 写指针文件（原子写）
+pub fn write_location(base: &Path, loc: &RuntimeLocation) -> Result<(), String> {
+    fs::create_dir_all(base).map_err(|e| format!("无法创建应用数据目录: {e}"))?;
+    let json = serde_json::to_string_pretty(loc).map_err(|e| format!("指针序列化失败: {e}"))?;
+    let tmp = base.join(format!("{LOCATION_FILE}.tmp"));
+    fs::write(&tmp, json).map_err(|e| format!("无法写入指针临时文件: {e}"))?;
+    fs::rename(&tmp, base.join(LOCATION_FILE)).map_err(|e| format!("无法落盘指针: {e}"))
+}
+
+/// 解析 runtime 目录（指针文件 → 环境变量 → 向上查找 → 兜底 app_data/runtime）
+///
+/// 参数是**应用数据目录**（不是 runtime 目录本身）：指针文件放在那里，
+/// 兜底时再拼 `runtime`。
+pub fn resolve_runtime_dir(app_data: Option<PathBuf>) -> PathBuf {
+    // 1. 设置里搬过家：指针优先（目录存在才采纳，见 read_location 的告警）
+    if let Some(base) = &app_data {
+        if let Some(loc) = read_location(base) {
+            return PathBuf::from(loc.runtime_dir);
+        }
+    }
+    // 2. 环境变量指定的目录必须真的含 config.json，否则视为误配置并告警
     if let Ok(env_dir) = std::env::var("GSA_RUNTIME_DIR") {
         let p = PathBuf::from(env_dir);
         if p.join("config.json").exists() {
@@ -187,7 +273,9 @@ pub fn resolve_runtime_dir(fallback: Option<PathBuf>) -> PathBuf {
     if let Some(d) = runtime_dir_from_exe() {
         return d;
     }
-    fallback.unwrap_or_else(|| PathBuf::from("runtime"))
+    app_data
+        .map(|d| d.join("runtime"))
+        .unwrap_or_else(|| PathBuf::from("runtime"))
 }
 
 /// 词法规范化路径：解析 "." 与 ".."，不访问文件系统
@@ -233,6 +321,17 @@ impl RuntimeConfig {
         fs::write(&tmp, &json).map_err(|e| format!("无法写入临时配置: {}", e))?;
         fs::rename(&tmp, runtime_dir.join("config.json"))
             .map_err(|e| format!("无法落盘配置: {}", e))
+    }
+
+    /// 读配置；**文件不存在时按默认值起步**。
+    /// 一键安装只解包、不写 config.json，此时"保存设置"必须能从默认值开始，
+    /// 而不是报"读取失败"（真机 2026-11-02 就是这样：面板里改任何一项都失败）。
+    /// 文件存在但解析失败仍然报错——那是坏配置，不能静默用默认值覆盖。
+    fn load_or_default(runtime_dir: &Path) -> Result<RuntimeConfig, String> {
+        if !runtime_dir.join("config.json").is_file() {
+            return Ok(RuntimeConfig::default());
+        }
+        RuntimeConfig::load(runtime_dir)
     }
 
     /// 校验各路径的合法性：
@@ -432,9 +531,9 @@ pub async fn set_moss_device(
     app: tauri::AppHandle,
     device: String,
 ) -> Result<DeviceSaveResult, String> {
-    let runtime_dir = resolve_runtime_dir(app.path().app_data_dir().ok().map(|d| d.join("runtime")));
+    let runtime_dir = resolve_runtime_dir(app.path().app_data_dir().ok());
     let normalized = normalize_moss_device(&device)?;
-    let mut cfg = RuntimeConfig::load(&runtime_dir)?;
+    let mut cfg = RuntimeConfig::load_or_default(&runtime_dir)?;
     cfg.moss_device = normalized.clone();
     cfg.save(&runtime_dir)?;
     let shown = if normalized.is_empty() {
@@ -460,9 +559,9 @@ pub async fn set_funasr_device(
     app: tauri::AppHandle,
     device: String,
 ) -> Result<DeviceSaveResult, String> {
-    let runtime_dir = resolve_runtime_dir(app.path().app_data_dir().ok().map(|d| d.join("runtime")));
+    let runtime_dir = resolve_runtime_dir(app.path().app_data_dir().ok());
     let normalized = normalize_funasr_device(&device)?;
-    let mut cfg = RuntimeConfig::load(&runtime_dir)?;
+    let mut cfg = RuntimeConfig::load_or_default(&runtime_dir)?;
     cfg.funasr_device = normalized.clone();
     cfg.save(&runtime_dir)?;
     let message = match reload_asr_engine(&app, "funasr").await {
@@ -473,6 +572,397 @@ pub async fn set_funasr_device(
         device: normalized,
         message,
     })
+}
+
+// ─── 设置面板（第 19 项）────────────────────────────────────
+//
+// 设计取舍：
+// - **配置落点不新增文件**：引擎/线程/超时/下载源都写 `runtime/config.json`（`RuntimeConfig`），
+//   它已经是 Rust 侧唯一配置源，且 `validate()` 已在把关；
+// - **只有"runtime 目录在哪"单独存指针**（`runtime-location.json` 在 app_data 下），
+//   因为目录搬走之后原位置就没东西可读了；
+// - 界面偏好（主题/缩放/默认策略/快捷键）属于前端 localStorage，不经过这里。
+
+/// 设置面板读到的完整快照（一次 IPC 拿全，避免前端串行问十个命令）
+#[derive(Clone, Debug, Serialize)]
+pub struct SettingsSnapshot {
+    /// 当前 runtime 目录（绝对路径，可能是搬过家的位置）
+    pub runtime_dir: String,
+    /// 应用数据目录（指针文件所在处）
+    pub app_data_dir: String,
+    /// 日志目录（`runtime/logs`）
+    pub log_dir: String,
+    /// runtime 所在盘可用字节（查不到为 null）
+    pub free_bytes: Option<u64>,
+    /// 搬家前留下的旧目录（供"验证无误后一键删除"；没有则为 null）
+    pub previous_runtime_dir: Option<String>,
+    /// 运行时清单是否找到
+    pub manifest_found: bool,
+    pub ocr_device: String,
+    pub moss_threads: u32,
+    pub moss_timeout_minutes: u32,
+    pub dev_debug: bool,
+    pub download_source: String,
+    pub segment_mb: u32,
+    pub setup_auto: bool,
+    /// 这两个只读展示（改它们要走 set_moss_device / set_funasr_device，会重建 provider）
+    pub moss_device: String,
+    pub funasr_device: String,
+}
+
+/// 局部更新：只改传了的字段
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct SettingsPatch {
+    #[serde(default)]
+    pub ocr_device: Option<String>,
+    #[serde(default)]
+    pub moss_threads: Option<u32>,
+    #[serde(default)]
+    pub moss_timeout_minutes: Option<u32>,
+    #[serde(default)]
+    pub dev_debug: Option<bool>,
+    #[serde(default)]
+    pub download_source: Option<String>,
+    #[serde(default)]
+    pub segment_mb: Option<u32>,
+    #[serde(default)]
+    pub setup_auto: Option<bool>,
+}
+
+/// 搬家结果
+#[derive(Clone, Debug, Serialize)]
+pub struct MoveResult {
+    pub ok: bool,
+    pub message: String,
+    pub old_dir: String,
+    pub new_dir: String,
+    /// 恒为 true：正在运行的进程锁着 bin/*.dll 与 python.exe，只能重启生效
+    pub needs_restart: bool,
+}
+
+/// 下载源归一化："auto"（默认）| "mirror" | "direct"
+pub fn normalize_download_source(raw: &str) -> Result<String, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | "auto" => Ok("auto".into()),
+        "mirror" => Ok("mirror".into()),
+        "direct" => Ok("direct".into()),
+        other => Err(format!(
+            "download_source 取值非法: {other}（可选 auto/mirror/direct）"
+        )),
+    }
+}
+
+/// 分段大小归一化：0（关闭分段）~ 1024 MB
+pub fn normalize_segment_mb(raw: u32) -> Result<u32, String> {
+    if raw > 1024 {
+        return Err(format!("segment_mb 取值非法: {raw}（0–1024，0 表示关闭分段）"));
+    }
+    Ok(raw)
+}
+
+/// OCR 设备归一化：空（CPU/自动）| "gpu:0" 这类
+fn normalize_ocr_device(raw: &str) -> String {
+    raw.trim().to_ascii_lowercase()
+}
+
+fn settings_snapshot(
+    app: &tauri::AppHandle,
+    runtime_dir: &Path,
+    app_data: &Path,
+    config: &RuntimeConfig,
+) -> SettingsSnapshot {
+    let loc = read_location(app_data);
+    let manifest_found =
+        super::backend_probe::find_manifest(&super::backend_probe::manifest_candidates(app, runtime_dir))
+            .is_some();
+    SettingsSnapshot {
+        runtime_dir: runtime_dir.display().to_string(),
+        app_data_dir: app_data.display().to_string(),
+        log_dir: runtime_dir.join("logs").display().to_string(),
+        free_bytes: super::runtime_install::query_free_bytes(runtime_dir),
+        previous_runtime_dir: loc.and_then(|l| l.previous),
+        manifest_found,
+        ocr_device: config.ocr_device.clone(),
+        moss_threads: config.moss_threads,
+        moss_timeout_minutes: config.moss_timeout_minutes,
+        dev_debug: config.dev_debug,
+        download_source: if config.download_source.trim().is_empty() {
+            "auto".into()
+        } else {
+            config.download_source.clone()
+        },
+        segment_mb: config.segment_mb,
+        setup_auto: config.setup_auto,
+        moss_device: config.moss_device.clone(),
+        funasr_device: config.funasr_device.clone(),
+    }
+}
+
+/// Tauri 命令：设置面板快照
+#[tauri::command]
+pub async fn runtime_settings(app: tauri::AppHandle) -> Result<SettingsSnapshot, String> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("取应用数据目录失败: {e}"))?;
+    let app_for_snapshot = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let runtime_dir = resolve_runtime_dir(Some(app_data.clone()));
+        let config = RuntimeConfig::load_or_default(&runtime_dir).unwrap_or_default();
+        settings_snapshot(&app_for_snapshot, &runtime_dir, &app_data, &config)
+    })
+    .await
+    .map_err(|e| format!("读取设置失败: {e}"))
+}
+
+/// Tauri 命令：局部更新设置（写 runtime/config.json）
+///
+/// 只改传了的字段；改完先 `validate()` 再落盘（非法路径不留半份坏配置）。
+/// `ocr_device` 变化会顺带重建 OCR provider（否则要重启才生效）。
+#[tauri::command]
+pub async fn update_runtime_settings(
+    app: tauri::AppHandle,
+    patch: SettingsPatch,
+) -> Result<SettingsSnapshot, String> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("取应用数据目录失败: {e}"))?;
+    let runtime_dir = resolve_runtime_dir(Some(app_data.clone()));
+    let mut config = RuntimeConfig::load_or_default(&runtime_dir)?;
+    let ocr_device_before = config.ocr_device.clone();
+
+    if let Some(v) = patch.ocr_device {
+        config.ocr_device = normalize_ocr_device(&v);
+    }
+    if let Some(v) = patch.moss_threads {
+        config.moss_threads = v.min(256);
+    }
+    if let Some(v) = patch.moss_timeout_minutes {
+        config.moss_timeout_minutes = v.min(24 * 60);
+    }
+    if let Some(v) = patch.dev_debug {
+        config.dev_debug = v;
+    }
+    if let Some(v) = patch.download_source {
+        config.download_source = normalize_download_source(&v)?;
+    }
+    if let Some(v) = patch.segment_mb {
+        config.segment_mb = normalize_segment_mb(v)?;
+    }
+    if let Some(v) = patch.setup_auto {
+        config.setup_auto = v;
+    }
+
+    config.validate(&runtime_dir)?;
+    config.save(&runtime_dir)?;
+
+    // OCR 设备换了就重建 worker（它把设备当环境变量传给 python，热改只能重启子进程）
+    if config.ocr_device != ocr_device_before {
+        let handle = app.clone();
+        let note = tauri::async_runtime::spawn_blocking(move || {
+            match handle.try_state::<super::OcrManager>() {
+                Some(mgr) => mgr.reload(),
+                None => Err("OCR 管理器未托管".to_string()),
+            }
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("重新加载失败: {e}")));
+        if let Err(e) = note {
+            eprintln!("[ai_runtime] OCR 重建失败（下次启动生效）: {e}");
+        }
+    }
+
+    Ok(settings_snapshot(&app, &runtime_dir, &app_data, &config))
+}
+
+/// 递归复制目录（跳过 `.downloads` 临时缓存：它随时可重建，复制它只是浪费时间）
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<u64, String> {
+    let mut total = 0u64;
+    let entries = fs::read_dir(src).map_err(|e| format!("读取 {} 失败: {e}", src.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("遍历 {} 失败: {e}", src.display()))?;
+        let name = entry.file_name();
+        if name == ".downloads" {
+            continue;
+        }
+        let from = entry.path();
+        let to = dst.join(&name);
+        let meta = entry
+            .metadata()
+            .map_err(|e| format!("读取 {} 属性失败: {e}", from.display()))?;
+        if meta.is_dir() {
+            fs::create_dir_all(&to).map_err(|e| format!("创建 {} 失败: {e}", to.display()))?;
+            total += copy_dir_all(&from, &to)?;
+        } else {
+            let n = fs::copy(&from, &to)
+                .map_err(|e| format!("复制 {} → {} 失败: {e}", from.display(), to.display()))?;
+            total += n;
+        }
+    }
+    Ok(total)
+}
+
+fn dir_entry_count(dir: &Path) -> usize {
+    fs::read_dir(dir)
+        .map(|it| it.filter_map(|e| e.ok()).count())
+        .unwrap_or(0)
+}
+
+/// 收集目录下的全部相对路径（跳过根上的 `.downloads` 临时缓存），用于搬家后对账
+fn rel_paths(root: &Path) -> std::collections::BTreeSet<String> {
+    fn walk(root: &Path, dir: &Path, out: &mut std::collections::BTreeSet<String>) {
+        let Ok(entries) = fs::read_dir(dir) else { return };
+        for e in entries.flatten() {
+            let name = e.file_name();
+            if dir == root && name == ".downloads" {
+                continue;
+            }
+            let p = e.path();
+            let rel = p
+                .strip_prefix(root)
+                .unwrap_or(&p)
+                .to_string_lossy()
+                .to_string();
+            out.insert(rel);
+            if p.is_dir() {
+                walk(root, &p, out);
+            }
+        }
+    }
+    let mut out = std::collections::BTreeSet::new();
+    walk(root, root, &mut out);
+    out
+}
+
+/// 搬家实现（拆出来便于单测，不依赖 AppHandle）
+pub(crate) fn move_runtime_dir_impl(app_data: &Path, target: &Path) -> Result<MoveResult, String> {
+    let current = resolve_runtime_dir(Some(app_data.to_path_buf()));
+    let cur_norm = normalize_lexical(&current);
+    let tgt_norm = normalize_lexical(target);
+
+    if !current.is_dir() {
+        return Err(format!("当前 runtime 目录不存在: {}", current.display()));
+    }
+    if tgt_norm == cur_norm {
+        return Err("目标目录与当前 runtime 目录相同".into());
+    }
+    if tgt_norm.starts_with(&cur_norm) {
+        return Err("目标目录不能位于当前 runtime 目录内部".into());
+    }
+    if cur_norm.starts_with(&tgt_norm) {
+        return Err("目标目录不能是当前 runtime 目录的上级".into());
+    }
+    if tgt_norm.parent().is_none() {
+        return Err("不能直接搬到盘符根目录".into());
+    }
+    if target.is_dir() && dir_entry_count(target) > 0 {
+        return Err(format!("目标目录非空: {}", target.display()));
+    }
+    fs::create_dir_all(target).map_err(|e| format!("创建目标目录失败: {e}"))?;
+
+    let bytes = copy_dir_all(&current, target)?;
+    // 复制完按相对路径逐条对账，再写指针 —— 少一半文件就搬过去比不搬更糟
+    let src_paths = rel_paths(&current);
+    let dst_paths = rel_paths(target);
+    if let Some(missing) = src_paths.iter().find(|p| !dst_paths.contains(*p)) {
+        return Err(format!(
+            "复制不完整：目标目录缺少 {missing}（未改动指针，可重试）"
+        ));
+    }
+
+    let loc = RuntimeLocation {
+        runtime_dir: target.display().to_string(),
+        previous: Some(current.display().to_string()),
+        moved_at: Some(now_epoch()),
+    };
+    write_location(app_data, &loc)?;
+
+    Ok(MoveResult {
+        ok: true,
+        message: format!(
+            "已复制 {:.2} GB 到 {}，重启应用后生效（旧目录保留，验证无误后可一键删除）",
+            bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+            target.display()
+        ),
+        old_dir: current.display().to_string(),
+        new_dir: target.display().to_string(),
+        needs_restart: true,
+    })
+}
+
+/// 删除旧目录实现
+pub(crate) fn delete_old_runtime_dir_impl(app_data: &Path) -> Result<String, String> {
+    let mut loc = read_location(app_data).ok_or_else(|| "没有搬家记录（指针文件缺失）".to_string())?;
+    let previous = loc
+        .previous
+        .clone()
+        .ok_or_else(|| "没有待删除的旧目录".to_string())?;
+    let old = PathBuf::from(&previous);
+    let current = resolve_runtime_dir(Some(app_data.to_path_buf()));
+    if normalize_lexical(&old) == normalize_lexical(&current) {
+        return Err("旧目录就是当前 runtime 目录，拒绝删除".into());
+    }
+    if !old.exists() {
+        loc.previous = None;
+        write_location(app_data, &loc)?;
+        return Ok(format!("旧目录已不存在：{previous}（已清理记录）"));
+    }
+    fs::remove_dir_all(&old).map_err(|e| {
+        format!("删除 {previous} 失败: {e}（可能有文件正被占用，先退出所有转写/OCR 任务再试）")
+    })?;
+    loc.previous = None;
+    write_location(app_data, &loc)?;
+    Ok(format!("已删除旧目录：{previous}"))
+}
+
+/// Tauri 命令：把 runtime 目录整体搬到别处（重启生效）
+#[tauri::command]
+pub async fn move_runtime_dir(app: tauri::AppHandle, target: String) -> Result<MoveResult, String> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("取应用数据目录失败: {e}"))?;
+    let target = PathBuf::from(target.trim());
+    if target.as_os_str().is_empty() {
+        return Err("目标目录不能为空".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || move_runtime_dir_impl(&app_data, &target))
+        .await
+        .map_err(|e| format!("搬家失败: {e}"))?
+}
+
+/// Tauri 命令：删除搬家前的旧目录（用户确认新目录验证无误后手动触发）
+#[tauri::command]
+pub async fn delete_old_runtime_dir(app: tauri::AppHandle) -> Result<String, String> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("取应用数据目录失败: {e}"))?;
+    tauri::async_runtime::spawn_blocking(move || delete_old_runtime_dir_impl(&app_data))
+        .await
+        .map_err(|e| format!("删除旧目录失败: {e}"))?
+}
+
+/// Tauri 命令：打开日志目录（装不上运行时，用户第一件事就是找 install.log）
+#[tauri::command]
+pub fn open_log_dir(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let runtime_dir = resolve_runtime_dir(app.path().app_data_dir().ok());
+    let log_dir = runtime_dir.join("logs");
+    fs::create_dir_all(&log_dir).map_err(|e| format!("创建日志目录失败: {e}"))?;
+    app.opener()
+        .open_path(log_dir.display().to_string(), None::<&str>)
+        .map_err(|e| format!("打开日志目录失败: {e}"))?;
+    Ok(log_dir.display().to_string())
+}
+
+fn now_epoch() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 // ─── 单元测试 ─────────────────────────────────────────────
@@ -516,6 +1006,9 @@ mod tests {
             embed_model: "models/embed/multilingual-e5-small/model_qint8_avx512_vnni.onnx".into(),
             embed_tokenizer: "models/embed/multilingual-e5-small/tokenizer.json".into(),
             embed_deps_dir: "deps_embed".into(),
+            download_source: "auto".into(),
+            segment_mb: 64,
+            setup_auto: true,
         };
         cfg.save(&dir).unwrap();
 
@@ -608,6 +1101,9 @@ mod tests {
             embed_model: String::new(),
             embed_tokenizer: String::new(),
             embed_deps_dir: String::new(),
+            download_source: "auto".into(),
+            segment_mb: 64,
+            setup_auto: true,
         };
         assert!(cfg.validate(&dir).is_ok());
         let _ = fs::remove_dir_all(&dir);
@@ -908,5 +1404,138 @@ mod tests {
             assert!(cfg.validate(&dir).is_ok(), "funasr_device={ok:?} 应通过校验");
         }
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ── 设置面板：下载源 / 分段 / runtime 目录搬家 ──────────
+
+    #[test]
+    fn test_load_or_default_starts_from_default_when_missing() {
+        let dir = temp_dir("cfg_missing");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // 没有 config.json ⇒ 默认值，不报错（一键安装后就是这个状态）
+        let cfg = RuntimeConfig::load_or_default(&dir).unwrap();
+        assert_eq!(cfg.download_source, "auto");
+        assert_eq!(cfg.segment_mb, 64);
+        assert!(cfg.setup_auto);
+        // 有文件但内容坏了 ⇒ 仍然报错，不能静默用默认值覆盖
+        fs::write(dir.join("config.json"), b"{ not json").unwrap();
+        assert!(RuntimeConfig::load_or_default(&dir).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_normalize_download_source_and_segment() {
+        for (raw, want) in [("", "auto"), ("auto", "auto"), ("MIRROR", "mirror"), ("direct", "direct")] {
+            assert_eq!(normalize_download_source(raw).unwrap(), want);
+        }
+        assert!(normalize_download_source("cdn").is_err());
+        assert_eq!(normalize_segment_mb(0).unwrap(), 0);
+        assert_eq!(normalize_segment_mb(64).unwrap(), 64);
+        assert!(normalize_segment_mb(2048).is_err());
+    }
+
+    #[test]
+    fn test_location_pointer_overrides_fallback() {
+        let base = temp_dir("loc_base");
+        let target = temp_dir("loc_target");
+        let _ = fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&target);
+        fs::create_dir_all(&target).unwrap();
+
+        // 没有指针时按兜底走（开发机 exe 向上能找到仓库 runtime/，所以只断言"不是目标目录"）
+        assert_ne!(resolve_runtime_dir(Some(base.clone())), target);
+
+        write_location(
+            &base,
+            &RuntimeLocation {
+                runtime_dir: target.display().to_string(),
+                previous: None,
+                moved_at: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(resolve_runtime_dir(Some(base.clone())), target);
+        assert_eq!(read_location(&base).unwrap().previous, None);
+
+        // 指针指向的目录没了（外接盘掉线）⇒ 退回兜底，而不是返回一个死路径
+        fs::remove_dir_all(&target).unwrap();
+        assert_ne!(resolve_runtime_dir(Some(base.clone())), target);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_move_runtime_dir_copies_then_delete_old() {
+        let base = temp_dir("move_base");
+        let cur = temp_dir("move_cur");
+        let dst = temp_dir("move_dst");
+        for d in [&base, &cur, &dst] {
+            let _ = fs::remove_dir_all(d);
+        }
+        fs::create_dir_all(cur.join("bin")).unwrap();
+        fs::write(cur.join("config.json"), b"{}").unwrap();
+        fs::write(cur.join("bin").join("moss.exe"), b"x").unwrap();
+        // .downloads 是临时缓存，不该被复制
+        fs::create_dir_all(cur.join(".downloads")).unwrap();
+        fs::write(cur.join(".downloads").join("part"), b"y").unwrap();
+
+        // 用指针把"当前目录"指到临时目录，避免动到仓库里的真 runtime
+        write_location(
+            &base,
+            &RuntimeLocation {
+                runtime_dir: cur.display().to_string(),
+                previous: None,
+                moved_at: None,
+            },
+        )
+        .unwrap();
+
+        let res = move_runtime_dir_impl(&base, &dst).unwrap();
+        assert!(res.ok && res.needs_restart);
+        assert!(dst.join("config.json").is_file());
+        assert!(dst.join("bin").join("moss.exe").is_file());
+        assert!(!dst.join(".downloads").exists(), "临时缓存不应被搬走");
+        assert!(cur.exists(), "旧目录必须保留（用户验证后再删）");
+
+        let loc = read_location(&base).unwrap();
+        assert_eq!(loc.previous.as_deref(), Some(cur.to_string_lossy().as_ref()));
+        assert_eq!(resolve_runtime_dir(Some(base.clone())), dst);
+
+        // 一键删旧目录
+        let msg = delete_old_runtime_dir_impl(&base).unwrap();
+        assert!(msg.contains("已删除"), "删除结果：{msg}");
+        assert!(!cur.exists());
+        assert!(read_location(&base).unwrap().previous.is_none());
+        let _ = fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&dst);
+    }
+
+    #[test]
+    fn test_move_rejects_non_empty_target() {
+        let base = temp_dir("move2_base");
+        let cur = temp_dir("move2_cur");
+        let dst = temp_dir("move2_dst");
+        for d in [&base, &cur, &dst] {
+            let _ = fs::remove_dir_all(d);
+        }
+        fs::create_dir_all(&cur).unwrap();
+        fs::write(cur.join("config.json"), b"{}").unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        fs::write(dst.join("occupied.txt"), b"z").unwrap();
+        write_location(
+            &base,
+            &RuntimeLocation {
+                runtime_dir: cur.display().to_string(),
+                previous: None,
+                moved_at: None,
+            },
+        )
+        .unwrap();
+
+        let err = move_runtime_dir_impl(&base, &dst).unwrap_err();
+        assert!(err.contains("非空"), "错误应点名目标非空：{err}");
+        let _ = fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&cur);
+        let _ = fs::remove_dir_all(&dst);
     }
 }

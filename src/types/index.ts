@@ -384,6 +384,52 @@ export interface RuntimeStatus {
   pending_bytes: number;
   disk: RuntimeDiskPrecheck;
   error: string | null;
+  /// 首启是否自动开跑（设置里的「自动准备运行时」开关）
+  auto_start: boolean;
+}
+
+/// 设置面板读到的运行时侧快照（Rust `config::SettingsSnapshot`）
+export interface RuntimeSettingsSnapshot {
+  runtime_dir: string;
+  app_data_dir: string;
+  log_dir: string;
+  /// runtime 所在盘可用字节；查不到为 null
+  free_bytes: number | null;
+  /// 搬家前的旧目录；null = 没有待删的旧目录
+  previous_runtime_dir: string | null;
+  manifest_found: boolean;
+  ocr_device: string;
+  moss_threads: number;
+  moss_timeout_minutes: number;
+  dev_debug: boolean;
+  /// auto / mirror / direct
+  download_source: string;
+  /// 0 = 关闭分段
+  segment_mb: number;
+  setup_auto: boolean;
+  moss_device: string;
+  funasr_device: string;
+}
+
+/// 设置面板写回的补丁（只带改了的字段）
+export interface RuntimeSettingsPatch {
+  ocr_device?: string;
+  moss_threads?: number;
+  moss_timeout_minutes?: number;
+  dev_debug?: boolean;
+  download_source?: string;
+  segment_mb?: number;
+  setup_auto?: boolean;
+}
+
+/// runtime 目录搬家结果（Rust `config::MoveResult`）
+export interface MoveRuntimeResult {
+  ok: boolean;
+  message: string;
+  old_dir: string;
+  new_dir: string;
+  /// 一律 true：路径变更只能下次启动生效
+  needs_restart: boolean;
 }
 
 /// ASR 进度事件名（Rust 侧 `ASR_PROGRESS_EVENT` 需保持一致）

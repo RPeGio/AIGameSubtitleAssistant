@@ -389,6 +389,9 @@ mod tests {
             embed_model: String::new(),
             embed_tokenizer: String::new(),
             embed_deps_dir: String::new(),
+            download_source: "auto".into(),
+            segment_mb: 64,
+            setup_auto: true,
         };
         assert_eq!(
             runtime.join(&cfg.worker_script),

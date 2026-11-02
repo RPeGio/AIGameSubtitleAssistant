@@ -40,6 +40,7 @@
     <symbol id="ic-info" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.9"/><path d="M8 7.4v3.2"/><path d="M8 5.1h.01"/></symbol>
     <symbol id="ic-sparkle" viewBox="0 0 16 16"><path d="M6.6 2.6l1.15 3.05L10.8 6.8 7.75 7.95 6.6 11 5.45 7.95 2.4 6.8l3.05-1.15z"/><path d="M12.1 9.9l.5 1.3 1.3.5-1.3.5-.5 1.3-.5-1.3-1.3-.5 1.3-.5z"/></symbol>
     <symbol id="ic-region" viewBox="0 0 16 16"><path d="M3 6V3.4h2.6M10.4 3.4H13V6M13 10v2.6h-2.6M5.6 12.6H3V10"/><path d="M6.2 6.2h3.6v3.6H6.2z" stroke-dasharray="1.7 1.5"/></symbol>
+    <symbol id="ic-gear" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.9v1.5M8 12.6v1.5M14.1 8h-1.5M3.4 8H1.9M12.3 3.7l-1.05 1.05M4.75 11.25 3.7 12.3M12.3 12.3l-1.05-1.05M4.75 4.75 3.7 3.7"/></symbol>
   </svg>
 </template>
 

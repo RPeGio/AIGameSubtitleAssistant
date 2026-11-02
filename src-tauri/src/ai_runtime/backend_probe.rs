@@ -804,9 +804,7 @@ pub async fn probe_moss_backend(
     app: tauri::AppHandle,
     device: Option<String>,
 ) -> BackendProbeReport {
-    let runtime_dir = super::config::resolve_runtime_dir(
-        app.path().app_data_dir().ok().map(|d| d.join("runtime")),
-    );
+    let runtime_dir = super::config::resolve_runtime_dir(app.path().app_data_dir().ok());
     let config = RuntimeConfig::load(&runtime_dir).unwrap_or_default();
     let candidates = manifest_candidates(&app, &runtime_dir);
     let result = tauri::async_runtime::spawn_blocking(move || {

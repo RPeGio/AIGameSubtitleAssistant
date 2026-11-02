@@ -3,6 +3,7 @@ import { ref, computed } from "vue";
 import type { InjectionKey } from "vue";
 import type { TimelineEvent } from "../types";
 import type { MergeStrategy, SplitStrategy } from "../composables/sentenceCuts";
+import { readSnapDefault } from "../composables/appPrefs";
 
 /// 轨道片段配色：bg 底 / fg 文字 / line 描边，三值都指向主题令牌
 export interface ClipTone {
@@ -60,8 +61,8 @@ export const useTimelineStore = defineStore("timeline", () => {
   /// 当前工具：select 选择 | split 分割 | merge 合并 | region 拖动画选区（迷你时间轴）
   const activeTool = ref<"select" | "split" | "merge" | "region">("select");
   const viewportWidth = ref(0);
-  /// 吸附开关（默认开启）
-  const snapEnabled = ref(true);
+  /// 吸附开关（默认值来自设置面板，缺省开启）
+  const snapEnabled = ref(readSnapDefault());
   /// 分段垂直互换模式（默认关闭）：开启后时间轴显示分段遮罩与
   /// 轨道边界互换按钮，用于手动修正跨段说话人归属
   const swapSegments = ref(false);

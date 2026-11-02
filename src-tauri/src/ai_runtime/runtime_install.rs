@@ -335,7 +335,7 @@ pub fn precheck_disk_with(
 ///
 /// 只用盘符查 `Get-PSDrive`，不拼接路径（避免引号/中文路径的转义问题）；
 /// 查不到返回 None（不阻塞安装，脚本里还有一次权威预检）。
-fn query_free_bytes(path: &Path) -> Option<u64> {
+pub(crate) fn query_free_bytes(path: &Path) -> Option<u64> {
     let raw = path.to_string_lossy();
     let mut chars = raw.chars();
     let letter = chars.next()?;
@@ -495,9 +495,7 @@ pub fn cancel_runtime_install(app: tauri::AppHandle) -> bool {
 
 /// runtime 目录 + 清单（与 `probe_moss_install` 同一套解析规则）
 fn runtime_paths(app: &tauri::AppHandle) -> (PathBuf, Option<PathBuf>) {
-    let runtime_dir = super::config::resolve_runtime_dir(
-        app.path().app_data_dir().ok().map(|d| d.join("runtime")),
-    );
+    let runtime_dir = super::config::resolve_runtime_dir(app.path().app_data_dir().ok());
     let manifest = super::backend_probe::find_manifest(&super::backend_probe::manifest_candidates(
         app,
         &runtime_dir,
@@ -721,6 +719,16 @@ fn run_install(
         // 用 Rust 侧解析到的同一份清单，避免脚本按 cwd 猜出另一份
         cmd.arg("-Manifest").arg(m);
     }
+    // 下载源与分段：设置面板里的两项（默认 auto / 64 MB）。
+    // 显式传参而不是靠脚本默认值 —— 否则用户在设置里改了却毫无效果。
+    let cfg = super::RuntimeConfig::load(&runtime_dir).unwrap_or_default();
+    let source = if cfg.download_source.trim().is_empty() {
+        "auto".to_string()
+    } else {
+        cfg.download_source.clone()
+    };
+    cmd.arg("-Source").arg(&source);
+    cmd.arg("-SegmentMB").arg(cfg.segment_mb.to_string());
     if force {
         cmd.arg("-Force");
     }

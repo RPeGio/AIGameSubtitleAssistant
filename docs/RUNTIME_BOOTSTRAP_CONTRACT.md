@@ -696,7 +696,44 @@ invoke("runtime_status")   // 无参数
 - 为什么要它：一次装 5 个条目（含 622 MB 的 cuda 包与 597 MB 的模型）时，只报单条目百分比，
   用户看到的是"进度条反复从 0 走到 100"，观感上等于没有总进度。
 
+### 8.10 设置命令与 runtime 目录搬家（2026-11-02 新增，第 19 项）
 
+五个命令都在 `src-tauri/src/ai_runtime/config.rs`，均已注册到 `lib.rs` 的 `invoke_handler`。
+
+| 命令 | 入参 | 返回 | 说明 |
+|---|---|---|---|
+| `runtime_settings` | 无 | `SettingsSnapshot` | 读设置 + 运行时现场（目录、可用空间、日志目录、清单是否找到、待删旧目录） |
+| `update_runtime_settings` | `{ patch }` | `SettingsSnapshot` | 只改 patch 里出现的字段；落盘前过 `validate()` |
+| `move_runtime_dir` | `{ target }` | `MoveResult` | 复制 + 对账 + 写指针；**重启生效** |
+| `delete_old_runtime_dir` | 无 | `string` | 删指针里的 `previous` 目录 |
+| `open_log_dir` | 无 | `string` | 建目录并用系统文件管理器打开 `runtime/logs` |
+
+`SettingsPatch` 允许的字段：`ocr_device` / `moss_threads`（≤256）/ `moss_timeout_minutes`（≤1440）/
+`dev_debug` / `download_source` / `segment_mb`（≤1024，0 = 关分段）/ `setup_auto`。
+`ocr_device` 变更后**当场重建 OCR provider**（失败不阻断，下次启动生效）。
+
+**runtime 目录指针**：`<app_data>/runtime-location.json`，形如
+`{ "runtime_dir": "D:\\GSA\\runtime", "previous": "C:\\Users\\...\\runtime", "moved_at": 1793600000 }`
+
+- `resolve_runtime_dir` 的入参语义是**应用数据目录**（不是 runtime 目录），解析顺序：
+  指针文件 → `GSA_RUNTIME_DIR`（须含 `config.json`）→ 从 exe 向上找 `runtime/config.json` → `<app_data>/runtime`。
+  指针指向的目录不存在时（外接盘掉线）退回后面的兜底，**不返回死路径**。
+- 搬家规则：目标不能是当前目录 / 其子目录 / 其上级，不能是盘符根，**必须是空目录**；复制时跳过根上的
+  `.downloads` 临时缓存；复制完按**相对路径逐条对账**，缺一条就报错且**不写指针**（半搬状态比不搬更糟）。
+- 旧目录**一律保留**，由用户在设置里点「删除旧目录」——搬完立刻删，出问题就没法回退。
+- 只搬 runtime：`recent_projects.json` 等仍在 app_data，不受影响。
+
+**下载源三档**（`RuntimeConfig.download_source` → 脚本 `-Source`）
+
+| 值 | 脚本行为 |
+|---|---|
+| `auto`（默认） | 清单 `urls[]` 顺序：ESA 镜像 → 镜像前缀（gh-proxy）→ GitHub 直链 |
+| `mirror` | 镜像前缀排在最前（强制走镜像） |
+| `direct` | 只用 GitHub 直链（`urls[]` 里过滤 `://github.com/`） |
+
+**分段**（`RuntimeConfig.segment_mb` → 脚本 `-SegmentMB`）：0 = 一律单流；>0 = 逐候选探 Range，
+支持才分段。注意 §4.5 的实测结论：镜像源的 Range 是"整包重取再切片"，所以镜像候选不参与分段探测，
+只作单流兜底。Rust 侧**显式传参**，不依赖脚本默认值。
 
 ---
 

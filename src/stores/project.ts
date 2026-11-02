@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { computed, onScopeDispose, ref, watch } from "vue";
 import { cutIndices, nearestCut, splitTextAtCut, stripTrailingPunctuation, textSegments } from "../composables/sentenceCuts";
+import { readAutosaveDelay, readAutosaveEnabled } from "../composables/appPrefs";
 import type { MergeStrategy, SplitStrategy } from "../composables/sentenceCuts";
 import type {
   Project,
@@ -271,9 +272,14 @@ export const useProjectStore = defineStore("project", () => {
   }
 
   function scheduleSave() {
+    // 自动保存可由设置面板关闭（关闭后只保留手动 Ctrl+S 与关窗兜底）
+    if (!readAutosaveEnabled()) {
+      saveState.value = "pending";
+      return;
+    }
     saveState.value = "pending";
     clearTimeout(saveTimer);
-    saveTimer = window.setTimeout(saveNow, 1000);
+    saveTimer = window.setTimeout(saveNow, readAutosaveDelay());
   }
 
   // 深监听整个项目对象：任何轨道/clip/坐标变更都会触发自动保存
