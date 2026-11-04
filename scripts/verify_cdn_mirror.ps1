@@ -52,11 +52,21 @@ try {
   Write-Warning ("DNS 解析失败: {0}" -f $_.Exception.Message)
 }
 
+# 原生程序的 stderr 在 PS 5.1 下会被包成 ErrorRecord，$ErrorActionPreference=Stop 时
+# 直接终止脚本；而 curl 用 --max-time 截断大文件时**必然**返回 28（正常现象）。
+# 所以调原生命令一律临时切回 Continue，并只用 -s（不要 -S，否则超时提示会刷屏）。
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+
 # ─── 2. 响应头（HEAD 拿不到就退回 GET 0 字节）──────────────
 Write-Host ""
 Write-Host "── 响应头 ──"
-$hdr = @(curl.exe -sS -L --max-time 30 -r 0-0 -D - -o NUL $Url 2>&1)
+$hdr = @(curl.exe -s -L --max-time 20 -r 0-0 -D - -o NUL $Url 2>&1)
 $status = ($hdr | Select-String -Pattern '^HTTP/' | Select-Object -Last 1).Line
+if (-not $status) {
+  Write-Warning "  拿不到响应头（源可能不可达或超时），下面的采样只作参考"
+  $status = ""
+}
 Write-Host ("状态行: {0}" -f ($status -replace "`r", ""))
 
 $interesting = 'Content-Length|Content-Range|Accept-Ranges|Age|Cache-Control|X-Cache|X-Swift|Server|Via|ETag|Last-Modified'
@@ -91,11 +101,11 @@ $ttfbs = @()
 $speeds = @()
 for ($i = 1; $i -le $Samples; $i++) {
   # 用 Range 只取一段，避免把整个文件拖下来；不支持 Range 时 curl 会自己按 --max-time 截断
-  $args = @("-sS", "-L", "--max-time", "$Seconds", "-o", "NUL",
+  $args = @("-s", "-L", "--max-time", "$Seconds", "-o", "NUL",
     "-w", "%{http_code} %{time_starttransfer} %{speed_download} %{size_download}")
   if ($rangeOk) { $args += @("-r", "0-$($RangeBytes * 8 - 1)") }
   $args += $Url
-  $out = (& curl.exe @args 2>&1) | Select-Object -Last 1
+  $out = (& curl.exe @args 2>$null) | Select-Object -Last 1
   $parts = ($out -split '\s+')
   if ($parts.Count -lt 4) { Write-Warning ("  第 {0} 次采样异常: {1}" -f $i, $out); continue }
   $code = $parts[0]
@@ -106,6 +116,7 @@ for ($i = 1; $i -le $Samples; $i++) {
   if ($speed -gt 0) { $speeds += $speed }
   Write-Host ("  #{0}: HTTP {1}  TTFB {2:N2}s  速率 {3:N2} MB/s  实收 {4}" -f $i, $code, $ttfb, $speed, (Fmt $got))
 }
+$ErrorActionPreference = $prevEap
 
 # ─── 5. 结论 ───────────────────────────────────────────────
 Write-Host ""

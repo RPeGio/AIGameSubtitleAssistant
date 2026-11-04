@@ -409,6 +409,8 @@ export interface RuntimeSettingsSnapshot {
   setup_auto: boolean;
   moss_device: string;
   funasr_device: string;
+  /// 指针指向的目录不存在时的告警（已回退到默认目录）；null = 正常
+  location_warning: string | null;
 }
 
 /// 设置面板写回的补丁（只带改了的字段）

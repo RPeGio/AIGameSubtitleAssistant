@@ -25,6 +25,18 @@ const show = ref(false);
 const open = () => (show.value = true);
 const close = () => (show.value = false);
 
+/// 只在「键盘聚焦」时展开。
+///
+/// 弹层（NModal 等）打开时会把焦点交给第一个可聚焦元素，若对程序化聚焦也响应，
+/// 设置面板一打开就会莫名弹出一个说明气泡 —— 用户看到的正是这个。
+/// `:focus-visible` 是浏览器对「这次聚焦要不要画焦点环」的判定，鼠标点击引起的
+/// 程序化聚焦不会命中，键盘 Tab 会命中，正好是我们要的区分。
+const onFocus = (e: FocusEvent) => {
+  const el = e.target as HTMLElement | null;
+  if (el && typeof el.matches === "function" && !el.matches(":focus-visible")) return;
+  show.value = true;
+};
+
 /// 文字按 \n 分段渲染：tooltip 内容不换行是 naive 的默认行为，必须显式覆盖
 const tooltipStyle = computed(() => ({
   maxWidth: `${props.maxWidth}px`,
@@ -50,7 +62,7 @@ const tooltipStyle = computed(() => ({
         :aria-label="title || '参数说明'"
         @mouseenter="open"
         @mouseleave="close"
-        @focus="open"
+        @focus="onFocus"
         @blur="close"
       >
         <AppIcon name="info" :size="12" />

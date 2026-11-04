@@ -723,6 +723,18 @@ invoke("runtime_status")   // 无参数
 - 旧目录**一律保留**，由用户在设置里点「删除旧目录」——搬完立刻删，出问题就没法回退。
 - 只搬 runtime：`recent_projects.json` 等仍在 app_data，不受影响。
 
+**2026-11-04 补记（真机搬家失败后的两条硬约束）**
+
+1. **调用方必须传 `app_data_dir()` 本身**。`lib.rs` 的 `setup` 原来写的是
+   `resolve_runtime_dir(app_data_dir().map(|d| d.join("runtime")))`——调用方先拼了 `runtime`，
+   `resolve_runtime_dir` 内部再拼一次，指针文件永远读不到；搬家"成功"但所有管理器仍盯着旧目录。
+   真机后果：三个运行时全部未就绪，而设置面板显示的是新目录，两边自相矛盾。
+   现在 `setup` 只有一行 `let runtime_dir = resolve_runtime_dir(app.path().app_data_dir().ok());`，
+   其余调用点（`backend_probe` / `installed_state` / `runtime_install` / `setup`）同样只传 `app_data_dir()`。
+2. **指针悬空必须可见**。`SettingsSnapshot.location_warning`（`Option<String>`）在指针目标目录不存在时
+   给出人话解释并说明已回退到哪个目录；前端在「runtime 目录」行下方以警示色整行显示。
+   指针里的路径是人手打/粘贴来的，拼错一个字母就会让应用"什么都没装"，这条信息不能再只留在日志里。
+
 **下载源三档**（`RuntimeConfig.download_source` → 脚本 `-Source`）
 
 | 值 | 脚本行为 |

@@ -136,6 +136,7 @@ function onZoom(next: number) {
     title="设置"
     style="width: 720px"
     :bordered="false"
+    :auto-focus="false"
     class="settings-modal"
   >
     <div class="set-body">
@@ -191,6 +192,9 @@ function onZoom(next: number) {
             <code class="path">{{ snap?.runtime_dir ?? "—" }}</code>
             <span class="hint">可用 {{ fmtBytes(snap?.free_bytes ?? null) }}</span>
           </span>
+        </div>
+        <div v-if="snap?.location_warning" class="set-row col">
+          <span class="sv warn-line">{{ snap.location_warning }}</span>
         </div>
         <div class="set-row">
           <span class="sl">
@@ -502,6 +506,13 @@ function onZoom(next: number) {
 }
 
 .hint.bad {
+  color: var(--warn);
+}
+
+/* 指针失效等需要用户处理的提示：整行红字，不要挤在小字里 */
+.warn-line {
+  font-size: 11.5px;
+  line-height: 1.6;
   color: var(--warn);
 }
 

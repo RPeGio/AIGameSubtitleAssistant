@@ -11,6 +11,7 @@ pub mod llm;           // LLM 推理流水线（Phase 5）
 pub mod fuse;          // AI 融合流水线（Phase 4）
 pub mod export;        // 导出（Phase 6 实现）
 pub mod subprocess;    // 子进程静默启动约定（CREATE_NO_WINDOW）
+pub mod ui;            // 界面级设置（WebView 缩放等）
 
 use ai_runtime::{config::resolve_runtime_dir, AsrManager, EmbedManager, LlmManager, OcrManager, RuntimeConfig};
 use tauri::Manager; // app.path() 等
@@ -31,12 +32,11 @@ pub fn run() {
         // 解析 runtime 目录（环境变量 → 向上查找 → app_data 兜底），
         // 加载运行配置（失败时告警并回退默认）并托管 OcrManager。
         .setup(|app| {
-            let fallback = app
-                .path()
-                .app_data_dir()
-                .ok()
-                .map(|d| d.join("runtime"));
-            let runtime_dir = resolve_runtime_dir(fallback);
+            // resolve_runtime_dir 的入参是「应用数据目录」，不是 runtime 目录本身：
+            // 它会先读 app_data/runtime-location.json 指针（设置里搬过家就用新目录），
+            // 再退回 GSA_RUNTIME_DIR / exe 向上查找 / app_data/runtime。
+            // 这里若自己先 join("runtime")，指针永远读不到，搬家后各管理器还盯着旧目录。
+            let runtime_dir = resolve_runtime_dir(app.path().app_data_dir().ok());
             let config = match RuntimeConfig::load(&runtime_dir) {
                 Ok(cfg) => {
                     if let Err(msg) = cfg.validate(&runtime_dir) {
@@ -94,6 +94,8 @@ pub fn run() {
             ai_runtime::config::move_runtime_dir,
             ai_runtime::config::delete_old_runtime_dir,
             ai_runtime::config::open_log_dir,
+            // ui 模块
+            ui::set_ui_zoom,
             ai_runtime::check_llm_runtime,
             ai_runtime::check_embed_runtime,
             ai_runtime::asr_cancel,

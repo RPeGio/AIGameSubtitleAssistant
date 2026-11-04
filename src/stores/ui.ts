@@ -61,7 +61,7 @@ export const useUiStore = defineStore("ui", () => {
 
   function setZoom(next: number) {
     zoom.value = next;
-    persistZoom(next);
+    void persistZoom(next);
   }
 
   /// 侧栏「默认折叠」是给下次启动用的，当前状态不动（避免用户点一下就跳）
@@ -70,7 +70,7 @@ export const useUiStore = defineStore("ui", () => {
   }
 
   document.documentElement.dataset.theme = theme.value;
-  applyZoom(zoom.value);
+  void applyZoom(zoom.value);
 
   return {
     theme,

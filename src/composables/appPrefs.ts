@@ -1,5 +1,7 @@
 /// 界面偏好（localStorage）：设置面板负责写，其它 store 只读。
 /// 单独成模块，避免 project / timeline / ui 三个 store 为了读一个开关互相 import。
+import { invoke } from "@tauri-apps/api/core";
+
 export const PREF_KEYS = {
   theme: "gsa.theme",
   sidebar: "gsa.sidebar",
@@ -34,15 +36,23 @@ export function readZoom(): number {
   return (ZOOM_VALUES as readonly number[]).includes(z) ? z : 1;
 }
 
-/// WebView2 是 Chromium，`zoom` 属性可用；它连 fixed 遮罩一起缩放，
-/// 比逐个改根字号省事（本项目样式全是 px，改字号没用）
-export function applyZoom(zoom: number) {
-  document.documentElement.style.zoom = zoom === 1 ? "" : String(zoom);
+/// 界面缩放走 WebView 自己的 zoom（Rust 命令 `set_ui_zoom`），不用 CSS `zoom`。
+///
+/// CSS zoom 只缩放内容，`100vh` 这类视口单位不跟着变：缩到 90% 时应用底部空出
+/// 一条、放大到 125% 时内容溢出把文字挤着换行。WebView 缩放改的是 CSS 像素换算比，
+/// 视口单位随之正确。
+export async function applyZoom(zoom: number) {
+  try {
+    await invoke("set_ui_zoom", { scale: zoom });
+  } catch (e) {
+    // 非 Tauri 环境（vite preview / 单测）没有这个命令，忽略即可
+    console.warn("设置界面缩放失败:", e);
+  }
 }
 
-export function setZoom(zoom: number) {
+export async function setZoom(zoom: number) {
   localStorage.setItem(PREF_KEYS.zoom, String(zoom));
-  applyZoom(zoom);
+  await applyZoom(zoom);
 }
 
 // ── 自动保存 ────────────────────────────────────────────

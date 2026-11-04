@@ -213,29 +213,33 @@ pub struct RuntimeLocation {
     pub moved_at: Option<u64>,
 }
 
-/// 读指针文件；目录不存在时返回 None 并告警（外接盘掉线就属于这种）
-fn read_location(base: &Path) -> Option<RuntimeLocation> {
+/// 读指针文件，**不校验目录是否存在**（设置页要用它提示"指针指向的目录没了"）
+fn read_location_raw(base: &Path) -> Option<RuntimeLocation> {
     let path = base.join(LOCATION_FILE);
     let text = fs::read_to_string(&path).ok()?;
     let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     match serde_json::from_str::<RuntimeLocation>(text) {
-        Ok(loc) if !loc.runtime_dir.trim().is_empty() => {
-            let dir = PathBuf::from(&loc.runtime_dir);
-            if dir.is_dir() {
-                Some(loc)
-            } else {
-                eprintln!(
-                    "[ai_runtime] runtime 指针指向的目录不存在（外接盘未挂载？）: {}",
-                    dir.display()
-                );
-                None
-            }
-        }
+        Ok(loc) if !loc.runtime_dir.trim().is_empty() => Some(loc),
         Ok(_) => None,
         Err(e) => {
             eprintln!("[ai_runtime] 解析 {} 失败: {e}", path.display());
             None
         }
+    }
+}
+
+/// 读指针文件；目录不存在时返回 None 并告警（外接盘掉线就属于这种）
+fn read_location(base: &Path) -> Option<RuntimeLocation> {
+    let loc = read_location_raw(base)?;
+    let dir = PathBuf::from(&loc.runtime_dir);
+    if dir.is_dir() {
+        Some(loc)
+    } else {
+        eprintln!(
+            "[ai_runtime] runtime 指针指向的目录不存在（外接盘未挂载？）: {}",
+            dir.display()
+        );
+        None
     }
 }
 
@@ -608,6 +612,8 @@ pub struct SettingsSnapshot {
     /// 这两个只读展示（改它们要走 set_moss_device / set_funasr_device，会重建 provider）
     pub moss_device: String,
     pub funasr_device: String,
+    /// 指针指向的目录不存在时的告警（已回退到默认目录；面板要把它显出来）
+    pub location_warning: Option<String>,
 }
 
 /// 局部更新：只改传了的字段
@@ -671,7 +677,17 @@ fn settings_snapshot(
     app_data: &Path,
     config: &RuntimeConfig,
 ) -> SettingsSnapshot {
-    let loc = read_location(app_data);
+    // 指针按"原样"读，才能区分「没搬过家」与「搬过家但目标目录没了」
+    let raw_loc = read_location_raw(app_data);
+    let location_warning = match &raw_loc {
+        Some(l) if !PathBuf::from(&l.runtime_dir).is_dir() => Some(format!(
+            "运行时目录指针指向的 {} 不存在，本次已回退到 {}。若是移动硬盘没插，插上后重启即可；\
+             若是手动删掉了那个目录，请用「移动到…」重新指定。",
+            l.runtime_dir,
+            runtime_dir.display()
+        )),
+        _ => None,
+    };
     let manifest_found =
         super::backend_probe::find_manifest(&super::backend_probe::manifest_candidates(app, runtime_dir))
             .is_some();
@@ -680,7 +696,7 @@ fn settings_snapshot(
         app_data_dir: app_data.display().to_string(),
         log_dir: runtime_dir.join("logs").display().to_string(),
         free_bytes: super::runtime_install::query_free_bytes(runtime_dir),
-        previous_runtime_dir: loc.and_then(|l| l.previous),
+        previous_runtime_dir: raw_loc.and_then(|l| l.previous),
         manifest_found,
         ocr_device: config.ocr_device.clone(),
         moss_threads: config.moss_threads,
@@ -695,6 +711,7 @@ fn settings_snapshot(
         setup_auto: config.setup_auto,
         moss_device: config.moss_device.clone(),
         funasr_device: config.funasr_device.clone(),
+        location_warning,
     }
 }
 

@@ -914,6 +914,20 @@
 
 **验证**：`cargo test --lib` 全绿（新增 `test_normalize_download_source_and_segment`、`test_location_pointer_overrides_fallback`、`test_move_runtime_dir_copies_then_delete_old`、`test_move_rejects_non_empty_target`、`test_load_or_default_starts_from_default_when_missing`）；`pnpm build` EXIT=0；headless（`temp/css-preview/settings.mjs`）确认弹层 5 组 21 行、27 个键位、宽 720、无溢出、无 console 错误，并实测「关掉自动保存 → 延迟项消失」。**未经真机手测**（搬家、日志目录、重新检查运行时需在安装包里点一遍）。
 
+**2026-11-04 补记（真机首测：搬家失效 + 三处界面问题）**
+
+| 症状 | 根因 | 修法 |
+|---|---|---|
+| 搬家并重启后三个运行时全未就绪，设置面板却显示新目录 | `lib.rs` 的 `setup` 调 `resolve_runtime_dir(app_data_dir().map(\|d\| d.join("runtime")))`，调用方先拼了 `runtime`，函数内部再拼一次 ⇒ 指针文件永远读不到 | 只传 `app_data_dir()`；`backend_probe`/`installed_state`/`runtime_install`/`setup` 同步统一 |
+| 指针指向的目录被人删/改名后，界面只说"未配置" | 指针悬空只 `eprintln` 到 stderr | `SettingsSnapshot.location_warning` + 设置面板警示行，写明已回退到哪个目录、该用「移动到…」重新指定 |
+| 打开设置面板时「侧栏默认折叠」的说明气泡自己弹出来 | `NModal` 打开时自动聚焦第一个可聚焦元素（`InfoDot` 的 button），触发了 tooltip | `NModal` 加 `:auto-focus="false"`；`InfoDot` 只在 `:focus-visible` 时展开（键盘可达、鼠标/程序化聚焦不弹） |
+| 界面缩放 90% 时窗口下方空出一条，125% 时文字被挤压换行 | 用 CSS `zoom` 缩放，而 `100vh` 等视口单位不跟着缩放 | 新增 `src-tauri/src/ui.rs` 的 `set_ui_zoom` 命令，走 `WebviewWindow::set_zoom`（WebView2 原生缩放，视口单位一起缩放） |
+| 设置按钮的图标与"切换深浅色"的月亮撞脸（都是圆 + 辐条） | `ic-gear` 画成了"太阳" | 重画成 8 齿齿轮轮廓 + 中心孔（root r=5.35、tip r=7.25） |
+
+**验证**：`cargo test --lib` **367 passed**；`pnpm build` EXIT=0；headless 复测 `tooltips: 0`、`zoomTest.calls = [set_ui_zoom 1, set_ui_zoom 1.1]`、`cssZoom: ""`（已无 CSS zoom）、`overflow: false`、无 console 错误；截图 `temp/css-preview/settings-open.png`、`gear-zoom.png`（5× 放大）。
+
+**真机现场（记录）**：用户搬家时把目标名打成 `D:\_GSA_RUNTIME`（实际数据在 `D:\__GSA_RUMTIME`），指针随后指向不存在的 `F:\...\rumtime`，旧目录已被删 ⇒ 全部运行时报"未找到"。已备份原指针为 `runtime-location.json.bak` 并改回真实目录。**教训：搬家目标路径由用户手输/选择，指针悬空必须有可见提示，不能只写日志。**
+
 **原始需求（保留）**
 
 **来源**：用户 m06929（原话）「增加设置面板，详细功能待定，但确定包括的有默认ASR模型设置、快捷键设置（承载快捷键查看和修改两个功能），改动较大，值得单独一个PR」。
