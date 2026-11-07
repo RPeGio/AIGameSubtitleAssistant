@@ -1126,6 +1126,9 @@ onUnmounted(() => {
   position: relative; /* 框选覆盖层的定位上下文 */
   flex: 1;
   min-width: 0;
+  /* 关键：flex 项默认 min-height:auto，会被内容撑高 ⇒ .tl-tracks 永远不溢出，
+     轨道一多就被 .timeline-root 的 overflow:hidden 裁掉，滚轮完全没反应 */
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }

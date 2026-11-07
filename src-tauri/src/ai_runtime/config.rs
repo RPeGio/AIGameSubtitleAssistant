@@ -144,7 +144,9 @@ fn default_funasr_language() -> String {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
-            python_path: "python".into(),
+            // 标准布局里的解释器路径。历史默认值 "python" 指向的是目录，
+            // 校验与运行期都要多一层回退，容易踩坑（真机已踩过）。
+            python_path: super::OCR_PYTHON_REL.into(),
             worker_script: String::new(),
             deps_dir: String::new(),
             model_dir: String::new(),

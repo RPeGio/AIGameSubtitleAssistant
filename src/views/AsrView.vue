@@ -397,15 +397,17 @@ async function startEmbedOcr() {
             <button class="btn pri" :disabled="projectStore.ocrRunning" @click="startEmbedOcr">
               {{ projectStore.ocrRunning ? "OCR 运行中…" : "开始识别" }}
             </button>
-            <template v-if="projectStore.ocrRunning">
+          </div>
+          <!-- 运行中：进度条与说明各占一行，避免和按钮挤在一起被压扁 -->
+          <template v-if="projectStore.ocrRunning">
+            <div class="arow arow-prog">
               <span class="hbar"><i :style="{ width: pct(projectStore.ocrProgress) }"></i></span>
               <span class="enote">{{ pct(projectStore.ocrProgress) }}</span>
-            </template>
-          </div>
-          <!-- 进度说明单独一行：和按钮/进度条挤在一行时，长句会被压成竖排 -->
-          <div v-if="projectStore.ocrRunning && projectStore.ocrMessage" class="arow arow-msg">
-            <span class="enote">{{ projectStore.ocrMessage }}</span>
-          </div>
+            </div>
+            <div v-if="projectStore.ocrMessage" class="arow arow-msg">
+              <span class="enote">{{ projectStore.ocrMessage }}</span>
+            </div>
+          </template>
         </template>
       </div>
     </div>
@@ -511,17 +513,25 @@ async function startEmbedOcr() {
           >
             {{ projectStore.asrRunning ? "ASR 运行中…" : "开始 ASR" }}
           </button>
-          <template v-if="projectStore.asrRunning">
+        </div>
+        <!-- 运行中：进度条单独一行，按钮再单独一行——三样挤一行时长句会把行撑爆 -->
+        <template v-if="projectStore.asrRunning">
+          <div class="arow arow-prog">
             <span class="hbar"><i :style="{ width: pct(projectStore.asrProgress) }"></i></span>
             <span class="enote">{{ pct(projectStore.asrProgress) }}</span>
+          </div>
+          <div v-if="projectStore.asrMessage" class="arow arow-msg">
+            <span class="enote">{{ projectStore.asrMessage }}</span>
+          </div>
+          <div class="arow arow-acts">
             <button class="btn ghost sm" @click="cancelAsr">取消</button>
-          </template>
+            <span class="sp"></span>
+            <button class="btn ghost sm" @click="openAsrPanel">重新探测引擎状态</button>
+          </div>
+        </template>
+        <div v-else class="arow arow-acts">
           <span class="sp"></span>
           <button class="btn ghost sm" @click="openAsrPanel">重新探测引擎状态</button>
-        </div>
-        <!-- 进度说明单独一行：和按钮/进度条挤在一行时，长句会被压成竖排 -->
-        <div v-if="projectStore.asrRunning && projectStore.asrMessage" class="arow arow-msg">
-          <span class="enote">{{ projectStore.asrMessage }}</span>
         </div>
       </div>
     </div>
@@ -610,6 +620,11 @@ async function startEmbedOcr() {
 .arow .hbar {
   width: 170px;
   flex: 0 0 auto;
+}
+
+/* 进度行：只放进度条和百分比，不需要按钮行那么高 */
+.arow-prog {
+  min-height: 18px;
 }
 
 /* 进度说明行：不参与"压到卡底"，长句正常折行而不是被挤成竖排 */
