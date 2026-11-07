@@ -393,21 +393,23 @@ async function startEmbedOcr() {
             合并相似度越大越易合并同句；单段最少实质字符数 0 关闭过滤。OCR 按播放头所在时间段对应的选区识别
           </span>
 
-          <div class="arow arow-bottom">
-            <button class="btn pri" :disabled="projectStore.ocrRunning" @click="startEmbedOcr">
-              {{ projectStore.ocrRunning ? "OCR 运行中…" : "开始识别" }}
-            </button>
+          <div class="astack">
+            <div class="arow">
+              <button class="btn pri" :disabled="projectStore.ocrRunning" @click="startEmbedOcr">
+                {{ projectStore.ocrRunning ? "OCR 运行中…" : "开始识别" }}
+              </button>
+            </div>
+            <!-- 运行中：进度条与说明各占一行，避免和按钮挤在一起被压扁 -->
+            <template v-if="projectStore.ocrRunning">
+              <div class="arow arow-prog">
+                <span class="hbar"><i :style="{ width: pct(projectStore.ocrProgress) }"></i></span>
+                <span class="enote">{{ pct(projectStore.ocrProgress) }}</span>
+              </div>
+              <div v-if="projectStore.ocrMessage" class="arow arow-msg">
+                <span class="enote">{{ projectStore.ocrMessage }}</span>
+              </div>
+            </template>
           </div>
-          <!-- 运行中：进度条与说明各占一行，避免和按钮挤在一起被压扁 -->
-          <template v-if="projectStore.ocrRunning">
-            <div class="arow arow-prog">
-              <span class="hbar"><i :style="{ width: pct(projectStore.ocrProgress) }"></i></span>
-              <span class="enote">{{ pct(projectStore.ocrProgress) }}</span>
-            </div>
-            <div v-if="projectStore.ocrMessage" class="arow arow-msg">
-              <span class="enote">{{ projectStore.ocrMessage }}</span>
-            </div>
-          </template>
         </template>
       </div>
     </div>
@@ -505,33 +507,36 @@ async function startEmbedOcr() {
           </div>
         </div>
 
-        <div class="arow arow-bottom">
-          <button
-            class="btn pri"
-            :disabled="projectStore.asrRunning || !engineReady(asrParams.engine)"
-            @click="startAsr"
-          >
-            {{ projectStore.asrRunning ? "ASR 运行中…" : "开始 ASR" }}
-          </button>
-        </div>
-        <!-- 运行中：进度条单独一行，按钮再单独一行——三样挤一行时长句会把行撑爆 -->
-        <template v-if="projectStore.asrRunning">
-          <div class="arow arow-prog">
-            <span class="hbar"><i :style="{ width: pct(projectStore.asrProgress) }"></i></span>
-            <span class="enote">{{ pct(projectStore.asrProgress) }}</span>
+        <!-- 尾部动作区整体贴底：卡体撑满时不留空白，运行中多出的行向上生长 -->
+        <div class="astack">
+          <div class="arow">
+            <button
+              class="btn pri"
+              :disabled="projectStore.asrRunning || !engineReady(asrParams.engine)"
+              @click="startAsr"
+            >
+              {{ projectStore.asrRunning ? "ASR 运行中…" : "开始 ASR" }}
+            </button>
           </div>
-          <div v-if="projectStore.asrMessage" class="arow arow-msg">
-            <span class="enote">{{ projectStore.asrMessage }}</span>
-          </div>
-          <div class="arow arow-acts">
-            <button class="btn ghost sm" @click="cancelAsr">取消</button>
+          <!-- 运行中：进度条、说明、按钮各占一行——三样挤一行时长句会把行撑爆 -->
+          <template v-if="projectStore.asrRunning">
+            <div class="arow arow-prog">
+              <span class="hbar"><i :style="{ width: pct(projectStore.asrProgress) }"></i></span>
+              <span class="enote">{{ pct(projectStore.asrProgress) }}</span>
+            </div>
+            <div v-if="projectStore.asrMessage" class="arow arow-msg">
+              <span class="enote">{{ projectStore.asrMessage }}</span>
+            </div>
+            <div class="arow arow-acts">
+              <button class="btn ghost sm" @click="cancelAsr">取消</button>
+              <span class="sp"></span>
+              <button class="btn ghost sm" @click="openAsrPanel">重新探测引擎状态</button>
+            </div>
+          </template>
+          <div v-else class="arow arow-acts">
             <span class="sp"></span>
             <button class="btn ghost sm" @click="openAsrPanel">重新探测引擎状态</button>
           </div>
-        </template>
-        <div v-else class="arow arow-acts">
-          <span class="sp"></span>
-          <button class="btn ghost sm" @click="openAsrPanel">重新探测引擎状态</button>
         </div>
       </div>
     </div>
@@ -639,9 +644,13 @@ async function startEmbedOcr() {
   word-break: break-word;
 }
 
-/* 卡体撑满时把主操作压到卡底，避免动作行悬在中间留一片空白 */
-.arow-bottom {
+/* 卡体撑满时把整组动作压到卡底，避免动作行悬在中间留一片空白；
+   运行中多出来的进度/说明行在组内向上生长，不会把主按钮顶到半空 */
+.astack {
   margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .wfoot {
