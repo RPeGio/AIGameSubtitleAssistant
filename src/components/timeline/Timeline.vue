@@ -569,15 +569,25 @@ function onMergeConfirm() {
 
 // ── 滚轮：普通滚轮水平平移时间轴；Shift+滚轮垂直滚动轨道区 ──
 //
-// 例外（轨道区）：轨道多到垂直溢出时，纵向滚轮改为上下翻轨道——看得见下面的行
-// 比横向平移更急，且此时原生滚动容器就在脚下。此时横向平移改用 Shift+滚轮
-// （Chrome 按住 Shift 会交换 deltaX/deltaY，两轴都计入）。轨道没溢出时一切照旧。
+// 例外只有一处——**标签列**（轨道名/操作图标那列，宽度固定、不横向溢出）：
+// 在那里滚轮只做纵向滚动，把下面的轨道翻上来；clip 区仍是水平平移，行为不变。
 
 function onWheelRoot(e: WheelEvent) {
   const t = e.target as HTMLElement;
-  // 滑条自己处理缩放；工具条/标签列不响应
+  // 滑条自己处理缩放
   if (t.closest(".scrollbar-track")) return;
-  if (t.closest(".tool-strip") || t.closest(".tl-label-col")) return;
+  if (t.closest(".tool-strip")) return;
+  // 标签列（轨道名/操作图标那一列）：滚轮只做纵向滚动轨道区。
+  // 这里没有横向平移的语义，且列宽固定不会横向溢出，所以不会和 clip 区冲突。
+  if (t.closest(".tl-label-col")) {
+    const el = rootRef.value?.querySelector<HTMLElement>(".tl-tracks") ?? null;
+    if (el && el.scrollHeight > el.clientHeight + 1) {
+      e.preventDefault();
+      // Chrome 按住 Shift 会交换 deltaX/deltaY，两轴都计入
+      el.scrollTop += e.deltaY + e.deltaX;
+    }
+    return;
+  }
   // 标尺上滚轮也缩放（与滑条一致），锚点取标尺内容区左缘
   if (t.closest(".ruler")) {
     e.preventDefault();
@@ -588,17 +598,6 @@ function onWheelRoot(e: WheelEvent) {
   }
   const tracksEl = rootRef.value?.querySelector<HTMLElement>(".tl-tracks") ?? null;
   const canScrollTracks = !!tracksEl && tracksEl.scrollHeight > tracksEl.clientHeight + 1;
-  if (canScrollTracks && t.closest(".tl-tracks")) {
-    if (e.shiftKey) {
-      e.preventDefault();
-      timeline.pan(e.deltaY + e.deltaX);
-      return;
-    }
-    if (Math.abs(e.deltaY) >= Math.abs(e.deltaX)) {
-      // 放行原生垂直滚动（保留触控板惯性）：不要 preventDefault
-      return;
-    }
-  }
   // Shift+滚轮：垂直滚动轨道区
   if (e.shiftKey) {
     if (canScrollTracks) {
