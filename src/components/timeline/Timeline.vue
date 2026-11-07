@@ -568,6 +568,10 @@ function onMergeConfirm() {
 }
 
 // ── 滚轮：普通滚轮水平平移时间轴；Shift+滚轮垂直滚动轨道区 ──
+//
+// 例外（轨道区）：轨道多到垂直溢出时，纵向滚轮改为上下翻轨道——看得见下面的行
+// 比横向平移更急，且此时原生滚动容器就在脚下。此时横向平移改用 Shift+滚轮
+// （Chrome 按住 Shift 会交换 deltaX/deltaY，两轴都计入）。轨道没溢出时一切照旧。
 
 function onWheelRoot(e: WheelEvent) {
   const t = e.target as HTMLElement;
@@ -582,15 +586,26 @@ function onWheelRoot(e: WheelEvent) {
     if (rect) timeline.zoom(e.deltaY < 0 ? 1.1 : 0.9, e.clientX - rect.left);
     return;
   }
+  const tracksEl = rootRef.value?.querySelector<HTMLElement>(".tl-tracks") ?? null;
+  const canScrollTracks = !!tracksEl && tracksEl.scrollHeight > tracksEl.clientHeight + 1;
+  if (canScrollTracks && t.closest(".tl-tracks")) {
+    if (e.shiftKey) {
+      e.preventDefault();
+      timeline.pan(e.deltaY + e.deltaX);
+      return;
+    }
+    if (Math.abs(e.deltaY) >= Math.abs(e.deltaX)) {
+      // 放行原生垂直滚动（保留触控板惯性）：不要 preventDefault
+      return;
+    }
+  }
   // Shift+滚轮：垂直滚动轨道区
   if (e.shiftKey) {
-    const tracksEl = rootRef.value?.querySelector<HTMLElement>(".tl-tracks") ?? null;
-    if (tracksEl && tracksEl.scrollHeight > tracksEl.clientHeight) {
+    if (canScrollTracks) {
       // 轨道区内放行原生滚动（保留触控板惯性），轨道区外代为滚动
-      // 注意 Chrome 按住 Shift 会交换 deltaX/deltaY 轴，故两轴都计入
       if (t.closest(".tl-tracks")) return;
       e.preventDefault();
-      tracksEl.scrollTop += e.deltaY + e.deltaX;
+      tracksEl!.scrollTop += e.deltaY + e.deltaX;
       return;
     }
     // 轨道不足无法滚动：吸收输入

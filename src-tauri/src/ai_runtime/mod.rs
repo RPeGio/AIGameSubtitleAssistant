@@ -939,7 +939,8 @@ impl AsrManager {
             return Err("转写进行中，完成后再切换".into());
         }
         let config = RuntimeConfig::load(&self.runtime_dir)?;
-        config.validate(&self.runtime_dir)?;
+        // 只校验形状：这里要的是"能不能重建 provider"，路径存在性由 provider 自己报原因
+        config.validate_schema(&self.runtime_dir)?;
         let provider: Box<dyn AsrProvider> = if key == "moss" {
             build_moss(&config, &self.runtime_dir)
         } else {

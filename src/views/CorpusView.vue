@@ -204,13 +204,20 @@ const editingId = ref<string | null>(null);
 const editText = ref("");
 let editInputEl: HTMLTextAreaElement | null = null;
 
-/// 输入框挂上即聚焦并全选（编辑与新增共用）
+/// 输入框挂上即聚焦并全选（编辑与新增共用）。
+///
+/// 注意：函数式 ref 在**每次 patch** 都会被调用（不只是挂载），所以必须自己判重——
+/// 否则每敲一个字都会重新 focus + select，表现为"打一个字就全选一次"。
 function setEditInput(el: unknown) {
-  editInputEl = (el as HTMLTextAreaElement) ?? null;
-  if (editInputEl) {
-    editInputEl.focus();
-    editInputEl.select();
+  const next = (el as HTMLTextAreaElement) ?? null;
+  if (!next) {
+    editInputEl = null;
+    return;
   }
+  if (next === editInputEl) return;
+  editInputEl = next;
+  editInputEl.focus();
+  editInputEl.select();
 }
 
 /// 行数跟随内容（至少 2 行、最多 10 行）——语料条目可能是多行文本

@@ -347,6 +347,16 @@ impl RuntimeConfig {
     /// - moss_model / llm_model 不做存在性检查（模型缺失时由 provider 报告"未就绪"原因）
     /// - embed_* 四个字段**整组必配或整组为空**（半配状态视为配置错误，避免运行期才失败）
     pub fn validate(&self, runtime_dir: &Path) -> Result<(), String> {
+        self.validate_schema(runtime_dir)?;
+        self.validate_paths(runtime_dir)
+    }
+
+    /// 只校验"形状"：路径不越出 runtime、embed 整组、设备白名单。
+    ///
+    /// 设置面板改的都是**非路径**字段（设备 / 线程 / 下载源…），不该因为"运行时还没装、
+    /// python.exe 不存在"就整个保存失败——真机踩过：搬家后 `python_path` 指向目录，
+    /// 于是引擎组任何一项都存不进去。存在性检查留给 [`Self::validate_paths`]。
+    pub fn validate_schema(&self, runtime_dir: &Path) -> Result<(), String> {
         // 可执行文件 / worker 脚本 / 依赖目录必须留在 runtime 内：它们与同目录的 DLL、
         // 包进来的 python 绑定，挪出去只会"文件在但跑不起来"。
         for (name, value) in [
@@ -410,24 +420,6 @@ impl RuntimeConfig {
             ));
         }
 
-        let pp = PathBuf::from(&self.python_path);
-        let joined = if pp.is_absolute() {
-            pp
-        } else {
-            runtime_dir.join(&pp)
-        };
-        if !joined.is_file() {
-            return Err(format!(
-                "python_path 指向的文件不存在: {}（按 {} 解析）",
-                self.python_path,
-                joined.display()
-            ));
-        }
-
-        // moss_binary / llm_binary 非空时必须真的存在（与 python_path 同策略）
-        ensure_binary_exists("moss_binary", &self.moss_binary, runtime_dir)?;
-        ensure_binary_exists("llm_binary", &self.llm_binary, runtime_dir)?;
-
         // moss_device 白名单：空（自动）/ cpu / cuda / vulkan
         if !matches!(
             self.moss_device.as_str(),
@@ -448,6 +440,31 @@ impl RuntimeConfig {
                 self.funasr_device
             ));
         }
+        Ok(())
+    }
+
+    /// 只做存在性检查（python.exe / moss / llm 二进制）。与 [`Self::validate_schema`] 分开，
+    /// 是因为"运行时还没装完"不该阻塞设置保存。
+    ///
+    /// 判定口径与运行期一致：`ocr_paths` / `embed_paths` 的 `pick()` 在配置值解析不到时
+    /// 会回退标准布局，所以这里也接受"配置值失效但标准布局存在"——否则老配置里
+    /// `python_path: "python"`（指向目录）会让每次启动都报一次校验失败。
+    pub fn validate_paths(&self, runtime_dir: &Path) -> Result<(), String> {
+        let pp = PathBuf::from(&self.python_path);
+        let joined = if pp.is_absolute() {
+            pp
+        } else {
+            runtime_dir.join(&pp)
+        };
+        if !joined.is_file() && !runtime_dir.join(super::OCR_PYTHON_REL).is_file() {
+            return Err(format!(
+                "python_path 指向的文件不存在: {}（按 {} 解析）",
+                self.python_path,
+                joined.display()
+            ));
+        }
+        ensure_binary_exists("moss_binary", &self.moss_binary, runtime_dir)?;
+        ensure_binary_exists("llm_binary", &self.llm_binary, runtime_dir)?;
         Ok(())
     }
 }
@@ -771,7 +788,9 @@ pub async fn update_runtime_settings(
         config.setup_auto = v;
     }
 
-    config.validate(&runtime_dir)?;
+    // 设置面板改的都是非路径字段：这里只校验"形状"，不因运行时未装完而拒绝保存
+    // （真机踩过：搬家后 python_path 失效，引擎组任何一项都存不进去）。
+    config.validate_schema(&runtime_dir)?;
     config.save(&runtime_dir)?;
 
     // OCR 设备换了就重建 worker（它把设备当环境变量传给 python，热改只能重启子进程）
@@ -1324,6 +1343,25 @@ mod tests {
         // 但二进制不行：它要跟同目录的 ggml/cuda DLL 一起被加载
         cfg.moss_binary = "D:/tools/moss-transcribe.exe".into();
         assert!(cfg.validate(&dir).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_validate_schema_ignores_missing_python() {
+        // 真机踩过：搬家后 config.json 是默认值（python_path: "python"），设置面板
+        // 改任何一项都被 validate() 的存在性检查拦下。形状校验必须放行，
+        // 存在性只归 validate_paths，且标准布局在位时也算通过。
+        let dir = temp_dir("cfg_schema_ignores_python");
+        fs::create_dir_all(dir.join("python")).unwrap();
+        let mut cfg = RuntimeConfig::default();
+        cfg.python_path = "python".into();
+        assert!(cfg.validate_schema(&dir).is_ok());
+        assert!(cfg.validate_paths(&dir).is_err(), "标准布局也没有 python 时应报错");
+        assert!(cfg.validate(&dir).is_err());
+
+        // 标准布局 python/python.exe 在位时，失效的配置值不应再让校验失败
+        fs::write(dir.join("python/python.exe"), b"dummy").unwrap();
+        assert!(cfg.validate_paths(&dir).is_ok(), "{:?}", cfg.validate_paths(&dir));
         let _ = fs::remove_dir_all(&dir);
     }
 
