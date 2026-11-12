@@ -96,6 +96,8 @@ runtime/
 > 开发期仍可用 `scripts/bootstrap_ocr.ps1` 等分步脚本自行搭建。
 > 网络差也不用担心断流：下载器按 64 MB 分段、断点续传（缓存 `<runtime>\.downloads\`），
 > 并可 `-SegmentMB` / `-NoResume` / `-MaxAttempts` 调整；多源用清单里的 `urls[]`（见契约 §4.5）。
+> **选源靠实测而不是顺序**：`-ProbeMB`（默认 2 MB）先对每个候选发一个小 Range 请求测速、按实测
+> 排序再下（白天 ESA 快、夜间 gh-proxy 快，固定顺序会选错），`-ProbeMB 0` 可关掉。
 > 发版物的打包方式见 `scripts/package_ocr_runtime.ps1`（§8.11）与
 > `scripts/package_embed_runtime.ps1`（§8.12）。
 > **国内加速**：清单每条资产的 `urls[]` 第一项指向阿里云 ESA 镜像（`https://dl.rpegio.top/…`），

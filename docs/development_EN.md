@@ -100,7 +100,10 @@ runtime/
 > `scripts/package_embed_runtime.ps1` (§8.12). A flaky connection is no longer fatal: the downloader works in
 > 64 MB segments with resume (cache under `<runtime>\.downloads\`), tunable via
 > `-SegmentMB` / `-NoResume` / `-MaxAttempts`, and multiple sources come from the manifest's
-> `urls[]` (contract §4.5). How the artifacts are built is described in
+> `urls[]` (contract §4.5). **Source selection is measured, not ordered**: `-ProbeMB` (default 2 MB)
+> fires one small range request per candidate, sorts by measured throughput and only then downloads
+> (ESA is faster by day, gh-proxy by night, so a fixed order picks wrong); `-ProbeMB 0` disables it.
+> How the artifacts are built is described in
 > `scripts/package_ocr_runtime.ps1` and design doc §8.11.
 
 ### Key config.json fields

@@ -43,6 +43,9 @@ flavor 解析规则（每个条目独立匹配）：
                         断流只损失当前段，已下的段跨进程保留（见契约 §4.5）
   -NoResume             丢弃 .downloads 里已下的分段，从头开始（排障用）
   -MaxAttempts <int>    单段最多尝试次数，默认 3
+  -ProbeMB <int>        选源测速的探针大小（MB），默认 2；0 = 关闭测速，
+                        退回「按候选顺序取第一个支持 Range 的源」
+  -ProbeSec <int>       单源测速请求超时（秒），默认 4
   -Manifest <path>      覆盖内置清单（离线/自测用）
   -RuntimeDir <path>    落地根目录，默认 <仓库>/runtime；Rust 侧会传绝对路径
 
@@ -61,6 +64,8 @@ param(
   [int]$SegmentMB = 64,
   [switch]$NoResume,
   [int]$MaxAttempts = 3,
+  [int]$ProbeMB = 2,
+  [int]$ProbeSec = 4,
   [string]$Manifest = "",
   [string]$RuntimeDir = ""
 )
@@ -431,6 +436,43 @@ function Test-RangeSupport([string]$url) {
   return @{ ok = $false; length = [int64]0 }
 }
 
+# 小探针测速：发一个 Range 0..(ProbeMB-1) 的请求，一次拿到三个信息——
+#   ① 是否返回 206（分段/续传的前提）② 服务端报的总长 ③ 该源的瞬时吞吐。
+# 吞吐按 size / (time_total - time_starttransfer) 算，把首字节时间排除在外：
+# 跨境 TTFB 常 0.6–1.5 s，若直接用 time_total，2 MB 的探针会被摊薄成假慢速
+# （实测 ESA 白天真值 8.9 MB/s，含 TTFB 只算出 1.4 MB/s）。
+# 为什么需要测速：2026-11-02 夜间实测 ESA 香港 0.27 MB/s、gh-proxy 2.12 MB/s，
+# 而白天完全反过来（ESA 8.9、gh-proxy 0.3）——固定顺序必然在一半时间选错源。
+function Measure-UrlSpeed([string]$url, [int]$probeMB, [int]$timeoutSec) {
+  $bytes = [int64]$probeMB * 1MB
+  if ($bytes -le 0) { return @{ ok = $false; mbps = 0.0; length = [int64]0 } }
+  $last = $bytes - 1
+  $hdr = [System.IO.Path]::GetTempFileName()
+  try {
+    $out = & curl.exe -s -L --max-time $timeoutSec -r "0-$last" -D $hdr -o NUL -w "%{http_code} %{size_download} %{time_total} %{time_starttransfer}" $url 2>$null
+    $parts = (($out | Out-String).Trim() -split '\s+')
+    if ($parts.Count -lt 4) { return @{ ok = $false; mbps = 0.0; length = [int64]0 } }
+    $code = [int]$parts[0]
+    $size = [double]$parts[1]
+    $total = [double]$parts[2]
+    $ttfb = [double]$parts[3]
+    if ($code -ne 206 -or $size -le 0) { return @{ ok = $false; mbps = 0.0; length = [int64]0 } }
+    $len = [int64]0
+    try {
+      $h = [System.IO.File]::ReadAllText($hdr)
+      if ($h -match "(?i)Content-Range:\s*bytes\s+0-$last/(\d+)") { $len = [int64]$Matches[1] }
+    } catch { }
+    $xfer = $total - $ttfb
+    if ($xfer -lt 0.05) { $xfer = $total }
+    if ($xfer -le 0) { return @{ ok = $false; mbps = 0.0; length = $len } }
+    return @{ ok = $true; mbps = ($size / $xfer / 1MB); length = $len }
+  } catch {
+    return @{ ok = $false; mbps = 0.0; length = [int64]0 }
+  } finally {
+    Remove-Item -LiteralPath $hdr -Force -ErrorAction SilentlyContinue
+  }
+}
+
 # 下载一段（含段内续传：已落地的字节不再重下）。失败抛异常，由调用方重试。
 # $progress 是 scriptblock，收一个参数 = 本段已拿到的字节数（用于总进度）。
 function Invoke-CurlSegment([string]$url, [string]$segFile, [int64]$offset, [int64]$length, [scriptblock]$progress) {
@@ -594,10 +636,11 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
   $candidates = @(Get-UrlCandidates $it)
   if ($candidates.Count -eq 0) { throw "清单条目 $id 没有任何 url" }
 
-  $rangeUrl = $null
-  # 逐候选探测 Range：CDN/直链值得探（ESA 命中缓存 9 MB/s、4 并发 14 MB/s），
-  # 镜像前缀不探（2026-11-01 真机：镜像对 Range 的响应是"整包重取再切片"，
-  # 按段下只有 0.18 MB/s，同一 URL 单流却有 6.7 MB/s）。
+  # 选源：对每个候选先打一发小探针，同时得到「是否支持 Range」和「实测吞吐」，
+  # 再按吞吐从快到慢排序。镜像前缀不探（2026-11-01 真机：镜像对 Range 的响应是
+  # "整包重取再切片"，按段下只有 0.18 MB/s，同一 URL 单流却有 6.7 MB/s），
+  # 只留在队尾做单流兜底。
+  $probed = @()
   if ($SegmentMB -le 0) {
     Log "已关闭分段（-SegmentMB 0），单流下载"
   } else {
@@ -606,21 +649,48 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
         Log "跳过 $($c.Url)（镜像前缀：Range 会被整包重取，只作单流兜底）"
         continue
       }
-      $probe = Test-RangeSupport $c.Url
-      if ($probe.ok) {
-        if ($probe.length -gt 0) { $expectedSize = $probe.length }
-        $rangeUrl = $c.Url
-        Log "分段下载源：$($c.Url)（支持 Range，总长 $(Format-MB $expectedSize)）"
-        break
+      if ($ProbeMB -le 0) {
+        # 关闭测速：沿用旧行为，取第一个支持 Range 的源
+        $r = Test-RangeSupport $c.Url
+        if ($r.ok) { $probed += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Mbps = 0.0; Length = $r.length } }
+        else { Log "跳过 $($c.Url)（不支持 Range，或探测失败）" }
+        continue
       }
-      Log "跳过 $($c.Url)（不支持 Range，或探测失败）"
+      $m = Measure-UrlSpeed $c.Url $ProbeMB $ProbeSec
+      if ($m.ok) {
+        $probed += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Mbps = $m.mbps; Length = $m.length }
+      } else {
+        Log "跳过 $($c.Url)（不支持 Range，或探测失败）"
+      }
+    }
+    if ($probed.Count -gt 1) {
+      foreach ($p in ($probed | Sort-Object Mbps -Descending)) {
+        Log ("测速 {0,6:N2} MB/s  {1}" -f $p.Mbps, $p.Url)
+      }
     }
   }
 
-  # 不支持 Range / 未知长度 / 关掉分段 ⇒ 单流，且逐个候选源回退
+  # 排序队列：测速过的源（快→慢）→ 镜像候选（只做单流兜底）
+  $ranked = @()
+  foreach ($p in ($probed | Sort-Object Mbps -Descending)) {
+    $ranked += [pscustomobject]@{ Url = $p.Url; Kind = $p.Kind; Length = $p.Length }
+  }
+  foreach ($c in $candidates) {
+    if ($c.Kind -eq "mirror") { $ranked += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Length = [int64]0 } }
+  }
+  if ($ranked.Count -eq 0) { $ranked = @($candidates) }
+
+  $rangeUrl = $null
+  if ($SegmentMB -gt 0 -and $ranked.Count -gt 0 -and $ranked[0].Kind -ne "mirror") {
+    $rangeUrl = $ranked[0].Url
+    if ($ranked[0].Length -gt 0) { $expectedSize = $ranked[0].Length }
+    Log "分段下载源：$rangeUrl（支持 Range，总长 $(Format-MB $expectedSize)）"
+  }
+
+  # 不支持 Range / 未知长度 / 关掉分段 ⇒ 单流，且按测速顺序逐个候选源回退
   # （镜像前缀会把 localhost 之类也拼成死的，必须靠回退兜住）
   if (-not $rangeUrl -or $expectedSize -le 0) {
-    Invoke-SingleStream $candidates $dest $id $flavor $expectedSize
+    Invoke-SingleStream $ranked $dest $id $flavor $expectedSize
     return
   }
 
@@ -683,7 +753,10 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
     $segErr = $_.Exception.Message
     Log "分段下载失败（$segErr），改单流重试"
     Remove-Item -LiteralPath $cacheDir -Recurse -Force -ErrorAction SilentlyContinue
-    Invoke-SingleStream $candidates $dest $id $flavor $expectedSize
+    # 已经证伪的源排到队尾：它刚刚整段失败，别再让单流先撞一次
+    $rest = @($ranked | Where-Object { $_.Url -ne $rangeUrl }) + @($ranked | Where-Object { $_.Url -eq $rangeUrl })
+    if ($rest.Count -eq 0) { $rest = @($candidates) }
+    Invoke-SingleStream $rest $dest $id $flavor $expectedSize
   }
 }
 

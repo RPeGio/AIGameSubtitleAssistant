@@ -449,3 +449,61 @@ fallback**, so like OCR this is not an optional component.
   config falls back to the standard layout); `embed.rs` uses it and checks each file before spawning,
   so users see "reinstall deps-embed" instead of a Python `os error 3`; new command
   `probe_embed_install`. `cargo test --lib`: **335 passed**.
+
+### 8.13 CDN mirror: multi-source manifest + Alibaba Cloud ESA (2026-11-02)
+
+**Problem**: GitHub Releases measures 0.07–0.43 MB/s from mainland China and keeps dropping the
+connection; the 7 assets total ~2.1 GB (plus 1.77 GB of CUDA libs via pip), which makes first-run
+install unacceptable.
+
+**Approach (data only, no code change)**: every asset in the manifest gains `urls: [ESA, GitHub]` and
+the downloader probes them in order (multi-source landed in §4.5). ESA is a **pure pass-through
+mirror** — the origin is still GitHub Releases, so no asset has to be re-uploaded and the
+`gh release` flow is unchanged.
+
+**ESA configuration notes** (free Entrance plan, domain not ICP-filed, so the acceleration region can
+only be "Global (excluding mainland China)"):
+
+1. CNAME access; keep the record **grey-clouded** (DNS only). Orange-clouding turns it into a
+   CF → ESA → GitHub three-hop chain.
+2. A **free certificate must be issued and deployed**, otherwise the handshake fails outright with
+   `TLSV1_ALERT_INTERNAL_ERROR` (and port 80 just 301s to https).
+3. Cache rule by **file extension `zip`** (not "URI equals/prefix": ESA's URI is a bare path, the
+   version sits in the 5th segment, so any `^/`-anchored rule never matches), **ignore origin cache
+   headers**, TTL 30 days.
+4. `X-Site-Cache-Status` flipping from `BYPASS` to `HIT` and `Age` growing confirms the rule works.
+
+**Measured** (this machine, same time window, cache hit, 64 MB segments): `moss` 10.2 MB/s,
+`deps-ocr` 10.6 MB/s, `deps-embed` 10.0 MB/s, but `models-moss` 1.64 MB/s and `deps-ocr-gpu`
+1.24 MB/s — **the spread between objects under identical configuration reaches 8x**. The full
+six-item first install took 19.3 minutes (versus hours for 2.1 GB when going direct).
+
+**Conclusion and caveats**: the free ESA plan turns "can the first install finish at all" from luck
+into "usually yes", but ① no SLA and officially labelled "for testing only", with smart rate limiting
+(hard failures showed up under aggressive benchmarking); ② cold start still fetches the whole object
+from GitHub (TTFB ≈2.5 s, 6 MB/s) — the free plan has no pre-warming and no L2 cache; ③ without ICP
+filing only overseas PoPs are available, so latency is not comparable to mainland nodes.
+⇒ hence `urls[]` order is **ESA → GitHub** with `-Mirror` (gh-proxy) as the single-stream fallback;
+any one of the three suffices to finish, and real stability still needs ICP filing plus mainland
+nodes (or an object store).
+
+**2026-11-12 addendum: a fixed order is not enough — measure and pick.** Re-measuring the same
+sources at 22:10 flipped the picture completely:
+
+| Source | Daytime (11:00) | Night (22:10) |
+|---|---|---|
+| ESA Hong Kong (cache hit, `Age` 45k s) | 8.9–9.4 MB/s | **0.27 MB/s** |
+| gh-proxy (Cloudflare) | 0.3 MB/s | **2.12 MB/s** |
+| GitHub direct | 0.09 MB/s | 0.09 MB/s (3 of 4 attempts timed out) |
+
+Concurrency does not rescue it either: 1 / 4 / 8 parallel range requests to ESA moved 3.5 / 3.7 /
+5.5 MB in 12 s ⇒ **barely any stacking**, so the limit is the total capacity of the local
+international link at peak hours, not per-connection shaping. Cross-checking other objects flips the
+ranking again (`embed-runtime.zip`: ESA 0.38 vs gh-proxy 2.37; `ocr-runtime-cpu.zip`: ESA 0.98 vs
+gh-proxy 0.30).
+
+⇒ the downloader gained `-ProbeMB` (default 2 MB): it fires one small range request per candidate,
+measures instantaneous throughput, sorts by the measured rate and then downloads; failures still
+fall back in that order. Daytime therefore uses ESA and night-time switches to whichever source is
+faster right now — no manual manifest edits. Rules and measurements live in contract §4.5; a local
+two-source fault injection proves that "picking the wrong source still self-heals".
