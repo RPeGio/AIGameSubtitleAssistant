@@ -11,6 +11,7 @@
                       "dest":  "bin",
                       "backend_marker":  "cpu",
                       "urls":  [
+                                   "https://modelscope.cn/datasets/RPeGio/gsa-runtime/resolve/master/moss-runtime-v1/moss-cpu.zip",
                                    "https://dl.rpegio.top/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-cpu.zip",
                                    "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-cpu.zip"
                                ]
@@ -24,6 +25,7 @@
                       "dest":  "bin",
                       "backend_marker":  "vulkan",
                       "urls":  [
+                                   "https://modelscope.cn/datasets/RPeGio/gsa-runtime/resolve/master/moss-runtime-v1/moss-vulkan.zip",
                                    "https://dl.rpegio.top/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-vulkan.zip",
                                    "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-vulkan.zip"
                                ]
@@ -37,6 +39,7 @@
                       "dest":  "bin",
                       "backend_marker":  "cuda",
                       "urls":  [
+                                   "https://modelscope.cn/datasets/RPeGio/gsa-runtime/resolve/master/moss-runtime-v1/moss-cuda.zip",
                                    "https://dl.rpegio.top/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-cuda.zip",
                                    "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-cuda.zip"
                                ]
@@ -48,6 +51,7 @@
                       "size":  626397892,
                       "dest":  "models/moss",
                       "urls":  [
+                                   "https://modelscope.cn/datasets/RPeGio/gsa-runtime/resolve/master/moss-runtime-v1/models-moss.zip",
                                    "https://dl.rpegio.top/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/models-moss.zip",
                                    "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/models-moss.zip"
                                ]
@@ -61,6 +65,7 @@
                       "unpacked_size":  911518754,
                       "dest":  ".",
                       "urls":  [
+                                   "https://modelscope.cn/datasets/RPeGio/gsa-runtime/resolve/master/ocr-runtime-v1/ocr-runtime-cpu.zip",
                                    "https://dl.rpegio.top/RPeGio/AIGameSubtitleAssistant/releases/download/ocr-runtime-v1/ocr-runtime-cpu.zip",
                                    "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/ocr-runtime-v1/ocr-runtime-cpu.zip"
                                ]
@@ -75,6 +80,7 @@
                       "unpacked_size":  996251695,
                       "dest":  ".",
                       "urls":  [
+                                   "https://modelscope.cn/datasets/RPeGio/gsa-runtime/resolve/master/ocr-runtime-v1/ocr-runtime-cuda-paddle.zip",
                                    "https://dl.rpegio.top/RPeGio/AIGameSubtitleAssistant/releases/download/ocr-runtime-v1/ocr-runtime-cuda-paddle.zip",
                                    "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/ocr-runtime-v1/ocr-runtime-cuda-paddle.zip"
                                ]
@@ -87,6 +93,7 @@
                       "unpacked_size":  345868793,
                       "dest":  ".",
                       "urls":  [
+                                   "https://modelscope.cn/datasets/RPeGio/gsa-runtime/resolve/master/embed-runtime-v1/embed-runtime.zip",
                                    "https://dl.rpegio.top/RPeGio/AIGameSubtitleAssistant/releases/download/embed-runtime-v1/embed-runtime.zip",
                                    "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/embed-runtime-v1/embed-runtime.zip"
                                ]

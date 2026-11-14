@@ -100,9 +100,11 @@ runtime/
 > 排序再下（白天 ESA 快、夜间 gh-proxy 快，固定顺序会选错），`-ProbeMB 0` 可关掉。
 > 发版物的打包方式见 `scripts/package_ocr_runtime.ps1`（§8.11）与
 > `scripts/package_embed_runtime.ps1`（§8.12）。
-> **国内加速**：清单每条资产的 `urls[]` 第一项指向阿里云 ESA 镜像（`https://dl.rpegio.top/…`），
-> 第二项是 GitHub Releases 兜底；ESA 未命中缓存时会回源 GitHub，命中后实测 10 MB/s 量级
-> （但对象之间差异可达 8 倍，免费版有智能限频，无 SLA）。详见 §8.13。
+> **国内加速**：清单每条资产的 `urls[]` 是三级冗余 —— 第一项 **ModelScope 魔搭**（2026-11-14 起，
+> `https://modelscope.cn/datasets/RPeGio/gsa-runtime/resolve/master/…`，匿名可下、支持 Range、
+> 实测夜间 7.88 MB/s 而同期 GitHub/ESA 只有 0.09–0.13 MB/s），第二项阿里云 ESA 镜像
+> （`https://dl.rpegio.top/…`，白天 10 MB/s 量级），第三项 GitHub Releases 兜底。
+> 详见 §8.13 与 §8.14。
 
 ### config.json 关键字段
 

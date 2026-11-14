@@ -483,3 +483,68 @@ CUDA 运行库 1.77 GB 走 pip），首装体验不可接受。
 ⇒ 下载器新增 `-ProbeMB`（默认 2 MB）：对每个候选发一次小 Range 请求测瞬时吞吐，按实测速率排序后
 再下载，失败仍按排序回退。这样白天自动用 ESA、夜间自动切到当下更快的源，不需要人工改清单。
 规则与实测见契约 §4.5；本地双源故障注入验证「选错源也能自愈」。
+
+### 8.14 资产迁到 ModelScope 魔搭托管（2026-11-14）
+
+**为什么换**：ESA 走的是阿里云账号体系，内地版与国际版**账号与 token 不通用**，而用户手上的是内地版
+账号、国际版需要境外手机号认证；且免费 Entrance 版`加速区域`只能选「全球（不含中国内地）」，实测
+`dl.rpegio.top` 始终解析到香港段（`163.181.78.161-166`，`Via: …ens-cache19.hk24`）——备案与发帖解锁
+都只是让它"有资格"开内地加速，不是开了就快。于是放弃 ESA 主源，改为 ModelScope 托管。
+
+**做法（仍只改数据，代码零改动）**：
+
+| 项 | 值 |
+|---|---|
+| 仓库 | `RPeGio/gsa-runtime`（**dataset** 类型，public，apache-2.0） |
+| 直链 | `https://modelscope.cn/datasets/RPeGio/gsa-runtime/resolve/master/<tag>/<file>` → 302 → `cdn-lfs-cn-1.modelscope.cn` |
+| 结构 | `moss-runtime-v1/`、`ocr-runtime-v1/`、`embed-runtime-v1/`，文件名与 GitHub Release 完全一致 |
+| 清单 | `urls[]` 变为 **ModelScope → ESA → GitHub** 三级；`url` 仍指 GitHub（供 `-Mirror` 前缀与直连兜底） |
+
+**实测（2026-11-13 夜间 22:00–23:00，同一分钟对比）**：
+
+| 源 | 单连接 |
+|---|---|
+| ModelScope（匿名、无 token、Range 206） | **7.88 MB/s**（3 次采样 6.23 / 7.88 / 8.93） |
+| GitHub 直连 | 0.13 MB/s（8 线程并发直接连不上） |
+| gh-proxy | 0.13 MB/s（621.6 MB 大文件挂 54 分钟 0 字节） |
+| ESA 香港 | 0.09 MB/s |
+| 用户本地代理 `127.0.0.1:7877` | 0.18 MB/s |
+
+⇒ 结论：夜间不是"某个镜像慢"，而是**出境链路整体被打死**；境内 CDN 是唯一还通的路径。这也解释了
+为什么 `-ProbeMB` 在这种情况下仍是正确的：它只是"选当下最快的"，不预设谁是主源。
+
+**上传侧要点**（以后重传资产必读）：
+
+- 用官方轻量 CLI `pip install modelscope-hub`（仅依赖 requests/tqdm/filelock/urllib3），命令名
+  `ms-hub`。`ms-hub login --token <write 级 token>` 一次即可；token 在
+  `https://modelscope.cn/my/myaccesstoken` 生成。
+- 建仓 `ms-hub create RPeGio/gsa-runtime --repo-type dataset --visibility public --license apache-2.0`。
+- 上传 `ms-hub upload RPeGio/gsa-runtime <本地文件> <tag>/<file> --repo-type dataset`；
+  **断点续传默认开启**（缓存），中断后重跑同一条命令只补未传部分。
+- **刚提交立刻访问会 404**（CDN 传播延迟，实测 45 分钟那次是极端值，常见 20 s–数分钟）：
+  校验脚本必须"重试到 `Content-Range` 总长等于本地字节数"为止，不能一次 404 就判失败。
+- 删除仓库/文件只能去网页控制台（普通 write token 调 `delete_files` 返回 401）。
+- 迁移时逐个比对 `manifest.json` 记录的 sha256，不一致即中止——避免"魔搭上的包和清单不是同一份"。
+
+**白天全量首装对照（2026-11-14 10:38–11:21，同一台机、同一批条目、`-Flavor auto`，只把 `urls[]` 收成单一源）**：
+
+| 源 | 总耗时 | 2.09 GiB 加权平均 |
+|---|---|---|
+| ModelScope | **8 分 14 秒** | ≈ 4.3 MB/s（分段 64 MB，条目段数 10/10/5/8/3） |
+| ESA 香港 | **41 分 50 秒** | ≈ 0.86 MB/s |
+| 倍差 | **5.08×** | |
+
+ESA 逐条（`installed_at` 差值，含解压）：
+
+| 条目 | 大小 | 耗时 | 速率 |
+|---|---|---|---|
+| moss | 621.6 MiB | 7.5 min | 1.46 MB/s |
+| models-moss | 597.4 MiB | 10.8 min | 0.96 MB/s |
+| deps-ocr | 295.5 MiB | 3.9 min | 1.32 MB/s |
+| deps-ocr-gpu | 479.3 MiB | 11.1 min | 0.76 MB/s |
+| deps-embed | 150.1 MiB | 6.8 min | 0.39 MB/s |
+| CUDA 运行库 pip（8 轮子 1771 MB） | — | 1.8 min | 16.6 MB/s |
+
+三点结论：①ESA 速率随下载量持续走低（收尾 0.39 MB/s），与"共享出海口被限速"一致，不是文件本身问题；
+②pip 阶段在华为云镜像上 16.6 MB/s，两轮都不是瓶颈；③两轮落盘同为 6.34 GB、`exit=0`，条目集合一致
+（5 个下载条目 + CUDA 运行库 pip 阶段），即**换源不影响产物**。

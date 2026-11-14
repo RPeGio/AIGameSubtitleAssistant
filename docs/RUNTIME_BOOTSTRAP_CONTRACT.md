@@ -338,6 +338,17 @@ Range 走了单流镜像，反而成功。
   `测速 140.53 MB/s`(/bad) vs `1.02 MB/s`(/good) ⇒ 先选 /bad ⇒ 段重试 3 次失败后
   `改单流重试` ⇒ `单流下载：/good` 成功 ⇒ 证明"选错源也能自愈"。
 
+**2026-11-14 候选源改为三级**（清单 `urls[]` 顺序 ModelScope → ESA → GitHub，机制零改动）：
+
+| 项 | 说明 |
+|---|---|
+| 顺序 | 清单每条资产 `urls[]` = `https://modelscope.cn/datasets/RPeGio/gsa-runtime/resolve/master/<tag>/<file>`、`https://dl.rpegio.top/<tag>/<file>`、GitHub Release；三者都记为 `Kind=cdn`（探 Range、走分段），`url` 仍指 GitHub 供 `-Mirror` 前缀与直连兜底 |
+| 为什么换头 | ESA 走阿里云账号，内地/国际版**账号与 token 不通用**；免费版加速区域不含中国内地，`dl.rpegio.top` 始终落香港段。ESA 降为第二源 |
+| ModelScope 链路 | `resolve/master/<path>` → 302 → `cdn-lfs-cn-1.modelscope.cn`（Tengine），**匿名可下、支持 Range（206 + `Content-Range`）**，无需 token |
+| 实测（2026-11-13 夜间同分钟） | ModelScope 7.88 MB/s｜GitHub 直连 0.13｜gh-proxy 0.13｜ESA 0.09 ⇒ 出境链路整体被打死，境内 CDN 是唯一通路 |
+| 与 `-ProbeMB` 的关系 | 顺序只是"探针不可用时的缺省偏好"；正常路径仍按实测速率排序，故换源不需要改任何代码 |
+| 校验 | 7 条直链均以 `curl -r 0-0` 的 `Content-Range` 总长与 `manifest.size` 对齐（如 `moss-cuda` 651834262、`models-moss` 626397892） |
+
 ---
 
 ## 5. 退出码表（写进分发文档的错误码表）

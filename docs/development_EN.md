@@ -105,6 +105,11 @@ runtime/
 > (ESA is faster by day, gh-proxy by night, so a fixed order picks wrong); `-ProbeMB 0` disables it.
 > How the artifacts are built is described in
 > `scripts/package_ocr_runtime.ps1` and design doc §8.11.
+> **China acceleration**: each asset's `urls[]` carries three tiers — first **ModelScope**
+> (since 2026-11-14, `https://modelscope.cn/datasets/RPeGio/gsa-runtime/resolve/master/…`,
+> anonymously downloadable, Range-capable, measured 7.88 MB/s at night while GitHub/ESA served
+> 0.09–0.13 MB/s), then the Alibaba Cloud ESA mirror (`https://dl.rpegio.top/…`, ~10 MB/s by day),
+> then GitHub Releases as the last resort. See design §8.13 and §8.14.
 
 ### Key config.json fields
 
