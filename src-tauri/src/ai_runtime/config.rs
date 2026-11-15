@@ -1467,7 +1467,9 @@ mod tests {
 
     #[test]
     fn test_load_or_default_starts_from_default_when_missing() {
-        let dir = temp_dir("cfg_missing");
+        // 目录名不能和 test_load_missing_returns_err 的 "cfg_missing" 撞车：
+        // 两个测试并行跑，一边 create 一边 remove_dir_all 就会互相踩（实测偶发失败）。
+        let dir = temp_dir("cfg_load_or_default");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         // 没有 config.json ⇒ 默认值，不报错（一键安装后就是这个状态）
