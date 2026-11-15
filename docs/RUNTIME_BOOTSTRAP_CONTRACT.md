@@ -703,7 +703,7 @@ invoke("runtime_status")   // 无参数
 | 命令 | 入参 | 返回 | 说明 |
 |---|---|---|---|
 | `runtime_settings` | 无 | `SettingsSnapshot` | 读设置 + 运行时现场（目录、可用空间、日志目录、清单是否找到、待删旧目录） |
-| `update_runtime_settings` | `{ patch }` | `SettingsSnapshot` | 只改 patch 里出现的字段；落盘前过 `validate()` |
+| `update_runtime_settings` | `{ patch }` | `SettingsSnapshot` | 只改 patch 里出现的字段；落盘前过 `validate_schema()`（见下） |
 | `move_runtime_dir` | `{ target }` | `MoveResult` | 复制 + 对账 + 写指针；**重启生效** |
 | `delete_old_runtime_dir` | 无 | `string` | 删指针里的 `previous` 目录 |
 | `open_log_dir` | 无 | `string` | 建目录并用系统文件管理器打开 `runtime/logs` |
@@ -746,6 +746,21 @@ invoke("runtime_status")   // 无参数
 **分段**（`RuntimeConfig.segment_mb` → 脚本 `-SegmentMB`）：0 = 一律单流；>0 = 逐候选探 Range，
 支持才分段。注意 §4.5 的实测结论：镜像源的 Range 是"整包重取再切片"，所以镜像候选不参与分段探测，
 只作单流兜底。Rust 侧**显式传参**，不依赖脚本默认值。
+
+**配置校验分两半（2026-11-07 真机后新增）**
+
+| 函数 | 校验内容 | 谁用 |
+|---|---|---|
+| `validate_schema(runtime_dir)` | 形状：路径不得越出 runtime（严格组）、`embed_*` 整组、`moss_device` / `funasr_device` 白名单 | **设置面板**（`update_runtime_settings`）、`AsrManager::reload_engine` |
+| `validate_paths(runtime_dir)` | 存在性：`python_path`（相对路径按 runtime 解析）、`moss_binary`、`llm_binary` | 启动时（仅 eprintln 告警，不阻断） |
+| `validate(runtime_dir)` | 上面两者之和 | 需要"真的能跑"的场合 |
+
+- **设置面板只做形状校验**。真机踩过：搬家后 `config.json` 落到默认值（旧 `python_path` 是 `"python"`，
+  指向目录），`update_runtime_settings` 无论改哪一项都先被存在性检查拦下，报
+  `python_path 指向的文件不存在: python`。
+- `validate_paths` 的 `python_path` 判定必须与运行期 `ocr_paths` / `embed_paths` 的 `pick()` 口径一致：
+  **配置值解析不到时，标准布局 `python/python.exe` 在位也算通过**。否则"能跑但校验报错"。
+- `RuntimeConfig::default().python_path` 已改为标准布局的 `python/python.exe`（不再是指向目录的 `"python"`）。
 
 ---
 

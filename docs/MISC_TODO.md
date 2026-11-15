@@ -897,8 +897,8 @@
 
 | 组 | 条目 | 落点 |
 |---|---|---|
-| A 外观 | 主题、侧栏默认折叠、界面缩放（90/100/110/125%） | `stores/ui.ts`（`zoom` + `applyZoom`，`<html style="zoom">`）+ `composables/appPrefs.ts` |
-| B 运行时 | runtime 目录 + 可用空间、移动到…、删除旧目录、下载源、分段大小、启动时自动准备、重新检查、打开日志目录、清单状态 | `ai_runtime/config.rs` 四个新命令（见契约 §8.10） |
+| A 外观 | 主题、侧栏默认折叠、界面缩放（90/100/110/125%） | `stores/ui.ts`（`zoom` + `applyZoom`，调 `set_ui_zoom` 走 WebView2 原生缩放）+ `composables/appPrefs.ts` |
+| B 运行时 | runtime 目录 + 可用空间、移动到…、删除旧目录、下载源、分段大小、启动时自动准备、重新检查、打开日志目录、清单状态 | `ai_runtime/config.rs` 五个新命令（见契约 §8.10） |
 | C 引擎 | OCR 设备、MOSS 线程数、MOSS 超时、MOSS 设备只读（跳打轴页）、保留中间产物 | 同上，写 `runtime/config.json` |
 | E 时间轴与保存 | 默认吸附、分割策略、合并策略、自动保存开关 + 延迟（关闭时收起延迟项） | `stores/timeline.ts`、`stores/project.ts` 的 `scheduleSave` 读 `appPrefs` |
 | F 快捷键 | 只读对照表（5 组 21 行 27 键位），与 `composables/shortcuts.ts` 注册表同源 | `SettingsModal.vue` |
@@ -927,6 +927,17 @@
 **验证**：`cargo test --lib` **367 passed**；`pnpm build` EXIT=0；headless 复测 `tooltips: 0`、`zoomTest.calls = [set_ui_zoom 1, set_ui_zoom 1.1]`、`cssZoom: ""`（已无 CSS zoom）、`overflow: false`、无 console 错误；截图 `temp/css-preview/settings-open.png`、`gear-zoom.png`（5× 放大）。
 
 **真机现场（记录）**：用户搬家时把目标名打成 `D:\_GSA_RUNTIME`（实际数据在 `D:\__GSA_RUMTIME`），指针随后指向不存在的 `F:\...\rumtime`，旧目录已被删 ⇒ 全部运行时报"未找到"。已备份原指针为 `runtime-location.json.bak` 并改回真实目录。**教训：搬家目标路径由用户手输/选择，指针悬空必须有可见提示，不能只写日志。**
+
+**2026-11-07 补记（真机二次反馈：四处）**
+
+| 症状 | 根因 | 修法 |
+|---|---|---|
+| 语料行内编辑时每敲一个字就全选一次 | `CorpusView.vue` 的 `setEditInput` 是函数式 ref，**每次 patch 都会调用**（不只挂载），里面无条件 `focus()+select()` | 自己判重：同一元素只处理一次，传 `null` 时清记录 |
+| 时间轴轨道多到溢出后，标签列滚轮完全无响应 | `.timeline-col` 缺 `min-height:0`，作为 flex 项被内容撑高 ⇒ `.tl-tracks` 永不溢出，超出行被 `.timeline-root` 的 `overflow:hidden` 裁掉 | 补 `min-height:0`；标签列滚轮改为纵向滚动轨道区，**clip 区仍是水平平移**（用户明确只要求蓝框那一列） |
+| 打轴页 ASR/OCR 运行中，进度条、长诊断文字、按钮挤在一行，长句被压成竖排 | 三样塞进同一个 `.arow` flex 行 | 拆成三行（进度条 / 说明 / 取消+重新探测），整组用 `.astack` 贴底，多出的行向上生长 |
+| 搬家后设置面板引擎组任何一项都保存失败（`python_path 指向的文件不存在: python`） | `validate()` 里的 python_path 存在性检查无条件执行，而 `RuntimeConfig::default()` 的 `python_path` 是 `"python"`（指向目录）；运行期有 `pick()` 回退所以不受影响 | 拆成 `validate_schema()`（形状，设置面板只用这一半）+ `validate_paths()`（存在性，且与 `pick()` 口径对齐：标准布局在位即通过）；`default().python_path` 改 `python/python.exe` |
+
+**验证（2026-11-07）**：`cargo test --lib` **368 passed**（新增 `test_validate_schema_ignores_missing_python`）；`pnpm build` EXIT=0；`pnpm tauri build` EXIT=0（NSIS 57.5 MB / MSI 75.6 MB）。①②④ 需真机复测确认。
 
 **原始需求（保留）**
 
