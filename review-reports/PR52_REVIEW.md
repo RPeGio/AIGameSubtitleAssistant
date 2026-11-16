@@ -27,7 +27,7 @@
 
 **有 1 条 P0 阻塞合并，4 条 P1 建议本 PR 内处理。**
 
-> **更新（2026-11-16）**：P0-1 已在本分支修复并复测；P1-1 ~ P1-4 也已修复并复测。当前 P0/P1 清零，
+> **更新（2026-11-16）**：P0-1 已在本分支修复并复测；P1-1、P1-2、P1-4 也已修复并复测（P1-3 随后单独提交）。
 > 剩余 23 条 P2 按原优先级跟进。下方总评保留发现当时的判断。
 
 结构性设计是好的：`RuntimeConfig` 的 `download_source/segment_mb/setup_auto` 三字段与面板一一对应；
@@ -144,7 +144,9 @@
   />
   ```
 
-### 🟡 P1-2 搬家复制不完整时留下半搬目录，而提示里的「可重试」必然失败
+### 🟡 P1-2 搬家复制不完整时留下半搬目录，而提示里的「可重试」必然失败 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P1-2）。下方保留发现时的原始取证，行号对应修复前。
 
 - **位置**：`src-tauri/src/ai_runtime/config.rs:897-910`（`create_dir_all` 在 `:900`，对账失败在 `:906-910`）
 - **问题**：`:900` 已把 `target` 建出来，`:902` 开始拷；`:906` 对账缺文件时直接
@@ -153,21 +155,36 @@
   「目标目录非空」 —— 唯一出路是手工去资源管理器删掉那半个目录（而且删错就有丢数据风险）。
   这与设计文档自己的口径直接冲突：`docs/SETTINGS_PANEL_SCOPE.md` §3.4「失败回滚」、
   `docs/RUNTIME_BOOTSTRAP_CONTRACT.md:721-722`「失败不写指针（**半搬状态比不搬更糟**）」。
-- **修复建议**：只在「本次是自己新建的空目录」这种前提下回滚；指针与旧目录一律不动。
-- **修复后代码**：
+- **修复建议**：只回滚「本次自己拷进去的东西」；指针与旧目录一律不动。
+- **修复后代码**（实际落地版；比原建议多覆盖了「目标目录是用户原有的空目录」这一半）：
 
   ```rust
-  let created = !target.is_dir();                    // 记录是不是我们建的
+  // 只有自己新建的目录才敢在失败时整个删掉；用户指定的已存在空目录是别人的目录
+  let created_target = !target.is_dir();
   fs::create_dir_all(target).map_err(|e| format!("创建目标目录失败: {e}"))?;
+
+  let rollback = |created: bool| {
+      if created {
+          let _ = fs::remove_dir_all(target);
+          return;
+      }
+      // 目标目录是用户原有的空目录：目录本身留着，只清掉本次拷进去的内容
+      if let Ok(entries) = fs::read_dir(target) {
+          for p in entries.flatten().map(|e| e.path()) {
+              let _ = if p.is_dir() { fs::remove_dir_all(&p) } else { fs::remove_file(&p) };
+          }
+      }
+  };
+
   let bytes = match copy_dir_all(&current, target) {
       Ok(n) => n,
       Err(e) => {
-          if created { let _ = fs::remove_dir_all(target); }   // 回滚，别留半搬状态
-          return Err(format!("复制失败: {e}（已回滚，旧目录与指针未改动）"));
+          rollback(created_target);
+          return Err(format!("{e}（已回滚，旧目录与指针未改动）"));
       }
   };
   if let Some(missing) = src_paths.iter().find(|p| !dst_paths.contains(*p)) {
-      if created { let _ = fs::remove_dir_all(target); }
+      rollback(created_target);
       return Err(format!("复制不完整：目标目录缺少 {missing}（已回滚，旧目录与指针未改动）"));
   }
   ```
@@ -793,7 +810,7 @@
 
 ## 结论
 
-**P0-1、P1-1 ~ P1-4 均已修复（2026-11-16），P0/P1 清零，可进入合并流程；P2 余 23 条按档案规矩跟进。**
+**P0-1、P1-1、P1-2、P1-4 均已修复（2026-11-16），P1-3 随后单独提交；P2 余 23 条按档案规矩跟进。**
 P0-1 原本必须在本 PR 内修掉（一个变量改名 + 一条冒烟断言），否则「强制镜像」
 这个本 PR 自己新加的功能是空操作，且基线里还好的镜像兜底被静默打断。
 P1-1 ~ P1-3 属于「用户会撞上且撞上后没有出路」的失败语义问题，已同批修掉；
@@ -832,7 +849,13 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   `.tmp_p14/run_p11.mjs` 走 vite SSR 打包）：**修复后 10/10 通过**；同一套用例对修复前代码
   （`git stash` 三个文件）是 **7/10**，3 条 FAIL 正对应「`store.sidebarDefault` 不存在 / 改默认不清手动记录 /
   改默认后重启仍用旧手动值」。
-- **P1-2** ⚠ 未修复（`config.rs:906-910` 对账失败不回滚，重试撞「目标目录非空」）
+- **P1-2** ✅ **已修复**（2026-11-16，本分支，`src-tauri/src/ai_runtime/config.rs:900-931`）——
+  `created_target = !target.is_dir()` 记录目标目录是不是本次新建；`copy_dir_all` 或对账失败都走
+  `rollback(created_target)`：自建目录整个删掉，用户原有的空目录只清空内容（保留目录本身，不替人删）。
+  两条失败信息都改成「…（已回滚，旧目录与指针未改动）」，不再承诺一个必然失败的「可重试」。
+  复测：新增 `test_move_rolls_back_created_target_when_copy_incomplete`（用子目录里的 `.downloads`
+  稳定制造对账缺失）与 `test_move_rolls_back_into_existing_empty_target`；全量 `cargo test --lib`
+  **371 passed**；这两个新测试对修复前代码是 **2 failed**（负向对照），断言有区分力。
 - **P1-3** ⚠ 未修复（`config.rs:934` 用 `read_location`，新目录缺失时不可达）
 - **P1-4** ✅ **已修复**（2026-11-16，本分支，`src/components/timeline/Timeline.vue:570-617`）——
   按用户裁决「以改 UI 之前的逻辑为准」把 `onWheelRoot` **恢复为基线 `9cae08c` 的实现**

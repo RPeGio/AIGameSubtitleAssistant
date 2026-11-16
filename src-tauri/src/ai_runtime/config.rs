@@ -897,15 +897,46 @@ pub(crate) fn move_runtime_dir_impl(app_data: &Path, target: &Path) -> Result<Mo
     if target.is_dir() && dir_entry_count(target) > 0 {
         return Err(format!("目标目录非空: {}", target.display()));
     }
+    // 记住这个目录是不是「本次自己新建」的：只有自己新建的才敢在失败时删掉。
+    // 用户若指定了一个已存在的空目录，那是他的目录，失败时不能替人删。
+    let created_target = !target.is_dir();
     fs::create_dir_all(target).map_err(|e| format!("创建目标目录失败: {e}"))?;
 
-    let bytes = copy_dir_all(&current, target)?;
+    // 复制或对账失败一律回滚（设计口径见 docs/SETTINGS_PANEL_SCOPE.md §3.4「失败回滚」、
+    // docs/RUNTIME_BOOTSTRAP_CONTRACT.md「半搬状态比不搬更糟」）：不回滚会留下半个目标目录，
+    // 而用户按提示「可重试」重来时，上面那条「目标目录非空」立刻把路堵死，只能去资源管理器手删。
+    let rollback = |created: bool| {
+        if created {
+            let _ = fs::remove_dir_all(target);
+            return;
+        }
+        // 目标目录是用户原有的空目录：目录本身留着（那是他的目录），只清掉本次拷进去的内容，
+        // 否则同样会留下半边目录、重试撞「非空」。上面已确认它进门前是空的，清掉不会误删用户数据。
+        if let Ok(entries) = fs::read_dir(target) {
+            for p in entries.flatten().map(|e| e.path()) {
+                let _ = if p.is_dir() {
+                    fs::remove_dir_all(&p)
+                } else {
+                    fs::remove_file(&p)
+                };
+            }
+        }
+    };
+
+    let bytes = match copy_dir_all(&current, target) {
+        Ok(n) => n,
+        Err(e) => {
+            rollback(created_target);
+            return Err(format!("{e}（已回滚，旧目录与指针未改动）"));
+        }
+    };
     // 复制完按相对路径逐条对账，再写指针 —— 少一半文件就搬过去比不搬更糟
     let src_paths = rel_paths(&current);
     let dst_paths = rel_paths(target);
     if let Some(missing) = src_paths.iter().find(|p| !dst_paths.contains(*p)) {
+        rollback(created_target);
         return Err(format!(
-            "复制不完整：目标目录缺少 {missing}（未改动指针，可重试）"
+            "复制不完整：目标目录缺少 {missing}（已回滚，旧目录与指针未改动）"
         ));
     }
 
@@ -1597,4 +1628,84 @@ mod tests {
         let _ = fs::remove_dir_all(&cur);
         let _ = fs::remove_dir_all(&dst);
     }
+
+    /// P1-2：复制不完整时必须回滚。不回滚会留下半个目标目录，而用户按提示「重试」时
+    /// 会立刻撞上「目标目录非空」——提示与实现互相打脸。
+    ///
+    /// 这里用「子目录里的 `.downloads`」稳定地制造对账缺失：`copy_dir_all` 跳过任意层级的
+    /// `.downloads`，而 `rel_paths` 只跳过根上的，于是目标目录必然少这两条路径。
+    #[test]
+    fn test_move_rolls_back_created_target_when_copy_incomplete() {
+        let base = temp_dir("rb_base");
+        let cur = temp_dir("rb_cur");
+        let dst = temp_dir("rb_dst");
+        for d in [&base, &cur, &dst] {
+            let _ = fs::remove_dir_all(d);
+        }
+        fs::create_dir_all(cur.join("bin")).unwrap();
+        fs::write(cur.join("config.json"), b"{}").unwrap();
+        fs::create_dir_all(cur.join("bin").join(".downloads")).unwrap();
+        fs::write(cur.join("bin").join(".downloads").join("part"), b"y").unwrap();
+        write_location(
+            &base,
+            &RuntimeLocation {
+                runtime_dir: cur.display().to_string(),
+                previous: None,
+                moved_at: None,
+            },
+        )
+        .unwrap();
+
+        let err = move_runtime_dir_impl(&base, &dst).unwrap_err();
+        assert!(err.contains("已回滚"), "错误里应说明已回滚：{err}");
+        assert!(
+            !dst.exists(),
+            "本次新建的目标目录必须被删掉，否则重试会撞「目标目录非空」"
+        );
+
+        // 指针与旧目录都不许动
+        let loc = read_location(&base).unwrap();
+        assert_eq!(loc.runtime_dir, cur.display().to_string());
+        assert!(loc.previous.is_none(), "失败时不该写 previous");
+        assert_eq!(resolve_runtime_dir(Some(base.clone())), cur);
+        assert!(cur.join("config.json").is_file(), "旧目录必须完好");
+
+        let _ = fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&cur);
+    }
+
+    /// P1-2 的另一半：目标目录若是用户原本就有的空目录，失败时**不能删这个目录本身**
+    /// （那是别人的目录），但要把本次拷进去的内容清干净，否则同样把「重试」堵死。
+    #[test]
+    fn test_move_rolls_back_into_existing_empty_target() {
+        let base = temp_dir("rb2_base");
+        let cur = temp_dir("rb2_cur");
+        let dst = temp_dir("rb2_dst");
+        for d in [&base, &cur, &dst] {
+            let _ = fs::remove_dir_all(d);
+        }
+        fs::create_dir_all(cur.join("bin").join(".downloads")).unwrap();
+        fs::write(cur.join("config.json"), b"{}").unwrap();
+        fs::write(cur.join("bin").join(".downloads").join("part"), b"y").unwrap();
+        fs::create_dir_all(&dst).unwrap(); // 用户选中的已存在空目录
+        write_location(
+            &base,
+            &RuntimeLocation {
+                runtime_dir: cur.display().to_string(),
+                previous: None,
+                moved_at: None,
+            },
+        )
+        .unwrap();
+
+        let err = move_runtime_dir_impl(&base, &dst).unwrap_err();
+        assert!(err.contains("已回滚"), "错误里应说明已回滚：{err}");
+        assert!(dst.is_dir(), "用户原有的目标目录不该被删掉");
+        assert_eq!(dir_entry_count(&dst), 0, "但我们拷进去的内容必须清干净");
+
+        let _ = fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&cur);
+        let _ = fs::remove_dir_all(&dst);
+    }
+
 }
