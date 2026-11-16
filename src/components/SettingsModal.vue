@@ -105,12 +105,13 @@ async function saveRuntime(patch: Parameters<typeof settings.patch>[0]) {
 }
 
 async function onMove() {
-  const target = await open({ directory: true, title: "选择新的 runtime 目录" });
-  if (!target || typeof target !== "string") return;
+  // open() 也要放进 try：对话框插件异常时以前会变成未处理的 rejection，
+  // 用户看到的是「点了没反应」，与「用户自己取消了」完全无法区分（2026-11-16 审查 P2-10）。
   try {
-    const res = await settings.moveRuntimeDir(target);
-    if (res.ok) message.success(res.message);
-    else message.error(res.message);
+    const target = await open({ directory: true, title: "选择新的 runtime 目录" });
+    if (!target || typeof target !== "string") return;
+    // 后端失败一律走 Err 分支（MoveResult 只在成功时构造），所以这里不需要判 res.ok
+    message.success((await settings.moveRuntimeDir(target)).message);
   } catch (e) {
     message.error(`移动失败：${e}`);
   }

@@ -512,7 +512,9 @@
   </NButton>
   ```
 
-### 🟢 P2-10 `onMove` 的目录选择在 try 之外；`res.ok` 的 else 分支是死代码
+### 🟢 P2-10 `onMove` 的目录选择在 try 之外；`res.ok` 的 else 分支是死代码 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P2-10）。
 
 - **位置**：`src/components/SettingsModal.vue:92-102`；`src-tauri/src/ai_runtime/config.rs:919-929`
 - **问题**：①`open({directory:true})` 写在 `try` 外，插件异常会变成未捕获拒绝，与「用户取消」无法区分；
@@ -974,4 +976,11 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   `if (xxx.value) return;`，`try/finally` 复位；模板两个 NButton 补 `:loading` + `:disabled`。
   核对：`npx vue-tsc --noEmit` EXIT=0；已用 `Select-String` 确认两个按钮都带 `:loading` 与 `:disabled`
   且 handler 都有并发闸（本条无真机 UI 自动化，属静态 + 类型核对）。
-- **P2-10 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
+- **P2-10** ✅ **已修复**（2026-11-16，本分支，`src/components/SettingsModal.vue:107-118`）——
+  `open({ directory: true })` 移进 `try`：对话框插件抛错时走 `message.error("移动失败：…")`，
+  不再变成未处理 rejection（用户看到「点了没反应」，与「自己取消」无法区分）；
+  同时删掉 `if (res.ok) … else message.error(res.message)` 的死分支——后端
+  `move_runtime_dir_impl` 只在成功时构造 `MoveResult`，失败一律 `Err`（`config.rs:877-930`），
+  改为 `message.success((await settings.moveRuntimeDir(target)).message)`，并在注释里写明
+  「后端失败一律走 Err，故无需判 ok」。`npx vue-tsc --noEmit` EXIT=0。
+- **P2-11 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
