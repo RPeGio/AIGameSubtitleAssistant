@@ -1006,6 +1006,17 @@ pub(crate) fn move_runtime_dir_impl(app_data: &Path, target: &Path) -> Result<Mo
     if tgt_norm.parent().is_none() {
         return Err("不能直接搬到盘符根目录".into());
     }
+    // 设计要求（docs/SETTINGS_PANEL_SCOPE.md §3 第 5 条）：禁止目标是正在使用的 app_data 子路径。
+    // 理由不只是"防递归复制"——runtime 搬进 app_data 后，日志、`runtime-location.json` 指针、
+    // `recent_projects.json` 会和它会互相干扰，且下次启动 `resolve_runtime_dir` 的兜底
+    // (`app_data.join("runtime")`) 与指针可能指向同一棵树，删旧目录时风险放大。
+    let app_norm = normalize_lexical(app_data);
+    if tgt_norm.starts_with(&app_norm) {
+        return Err(format!(
+            "目标目录不能放在应用数据目录内部: {}（会与日志/指针文件互相干扰，请选盘上另一个位置）",
+            app_data.display()
+        ));
+    }
     if target.is_dir() && dir_entry_count(target) > 0 {
         return Err(format!("目标目录非空: {}", target.display()));
     }
@@ -1947,6 +1958,45 @@ mod tests {
         assert!(read_location_raw(&base).unwrap().previous.is_none());
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    /// P2-14：搬家目标不允许落在 app_data 内部（设计文档 §3 第 5 条）。
+    /// 以前只挡了「目标在当前 runtime 内 / 是其上级 / 盘符根」，把 `%APPDATA%\gsa-rt` 这种
+    /// 位置放过去了 —— 那会和日志、指针文件同树，且把源目录变成"待删旧目录"后风险更大。
+    #[test]
+    fn test_move_rejects_target_inside_app_data() {
+        let base = temp_dir("ad_base");
+        let cur = temp_dir("ad_cur");
+        for d in [&base, &cur] {
+            let _ = fs::remove_dir_all(d);
+        }
+        fs::create_dir_all(&cur).unwrap();
+        fs::write(cur.join("config.json"), b"{}").unwrap();
+        write_location(
+            &base,
+            &RuntimeLocation {
+                runtime_dir: cur.display().to_string(),
+                previous: None,
+                moved_at: None,
+            },
+        )
+        .unwrap();
+
+        // 目标就在 app_data 里面（且 它是 app_data 本身，不是当前 runtime 的子路径）
+        let inside = base.join("rt-inside");
+        let err = move_runtime_dir_impl(&base, &inside).unwrap_err();
+        assert!(err.contains("应用数据目录内部"), "错误串：{err}");
+        assert!(!inside.exists(), "被拒时不该建出目录");
+
+        // 目录外的正常目标不受影响（这里只验证前面那道闸放行到下一步）
+        let ok_target = temp_dir("ad_ok");
+        let _ = fs::remove_dir_all(&ok_target);
+        let res = move_runtime_dir_impl(&base, &ok_target).expect("app_data 之外的目标应放行");
+        assert!(res.ok);
+
+        let _ = fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&cur);
+        let _ = fs::remove_dir_all(&ok_target);
     }
 
     /// P2-13：空间校验留 10% 余量；探测不到可用空间时不拦。

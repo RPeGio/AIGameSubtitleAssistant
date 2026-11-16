@@ -621,7 +621,9 @@
   }
   ```
 
-### 🟢 P2-14 设计文档里「禁止目标是 %APPDATA% 子路径」没有实现
+### 🟢 P2-14 设计文档里「禁止目标是 %APPDATA% 子路径」没有实现 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P2-14）。
 
 - **位置**：`docs/SETTINGS_PANEL_SCOPE.md` §3.5 vs `src-tauri/src/ai_runtime/config.rs:882-899`
 - **问题**：实现只挡了「当前 runtime 内部/上级/盘符根/非空」四种，允许把运行时搬进
@@ -1023,4 +1025,11 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   `test_ensure_enough_space_leaves_margin_and_never_blocks_on_unknown`（None 放行 /
   刚好够但无余量拦 / 1099 拦而 1100 过 / 0 字节不误拦 / 报错带 GB 字样）。
   契约 §8.10 的搬家规则同步改口（空间预检、任意层级 `.downloads`、按「路径 + 大小」对账、回滚）。
-- **P2-14 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
+- **P2-14** ✅ **已修复**（2026-11-16，本分支，`src-tauri/src/ai_runtime/config.rs:1006-1017`）——
+  在「盘符根」检查之后补 `if tgt_norm.starts_with(&normalize_lexical(app_data))` →
+  `目标目录不能放在应用数据目录内部: …（会与日志/指针文件互相干扰，请选盘上另一个位置）`。
+  选择**实现文档承诺**而不是改文档口径：文档那条理由（防递归复制）之外还有实际风险——
+  runtime 搬进 app_data 后与日志、`runtime-location.json` 指针同树，且删旧目录时波及面更大。
+  验证：`cargo test --lib` **380 passed / 0 failed**，新增 `test_move_rejects_target_inside_app_data`
+  （`app_data\rt-inside` 被拒且不建目录；`app_data` 之外的正常目标照常搬成功）。
+- **P2-15 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
