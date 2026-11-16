@@ -129,6 +129,11 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
       "id": "moss",
       "flavor": "cuda",
       "url": "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-cuda.zip",
+      "urls": [
+        "https://modelscope.cn/datasets/RPeGio/gsa-runtime/resolve/master/moss-runtime-v1/moss-cuda.zip",
+        "https://dl.rpegio.top/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-cuda.zip",
+        "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-cuda.zip"
+      ],
       "sha256": "…",
       "size": 123456789,
       "dest": "bin",
@@ -180,6 +185,13 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
   永远记着上一版的出处、与上一版安装无法区分。`generated_at` 会被
   `scripts/package_moss_flavors.ps1:234` 带进 `packages.json`。
   当前约定：`version` 写成内容定稿的日期戳（如 `"2026-11-14"`）。
+
+> **关于示例里的 `urls`**：上面只给第一条（`moss/cuda`）写全了三档，其余条目为省版面省略。
+> **真实清单 7 条每条都有 3 条 `urls`**（ModelScope → `dl.rpegio.top` → GitHub，末项必须等于
+> `url`）。这张表没有生成器（`scripts/package_moss_flavors.ps1` 不产 `urls`，也没有脚本写
+> `src-tauri/resources/runtime/manifest.json`），所以
+> `src-tauri/src/ai_runtime/backend_probe.rs` 里的 `shipped_manifest_has_three_tier_urls`
+> 会逐条校验这 3 条与 host 顺序——谁重跑打包脚本覆盖了清单，那条测试就会红。
 
 | 字段 | 必填 | 语义 |
 |---|---|---|
