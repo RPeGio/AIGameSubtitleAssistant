@@ -445,18 +445,21 @@ function Test-RangeSupport([string]$url) {
 # 而白天完全反过来（ESA 8.9、gh-proxy 0.3）——固定顺序必然在一半时间选错源。
 function Measure-UrlSpeed([string]$url, [int]$probeMB, [int]$timeoutSec) {
   $bytes = [int64]$probeMB * 1MB
-  if ($bytes -le 0) { return @{ ok = $false; mbps = 0.0; length = [int64]0 } }
+  if ($bytes -le 0) { return @{ ok = $false; mbps = 0.0; length = [int64]0; rejected = $false } }
   $last = $bytes - 1
   $hdr = [System.IO.Path]::GetTempFileName()
   try {
     $out = & curl.exe -s -L --max-time $timeoutSec -r "0-$last" -D $hdr -o NUL -w "%{http_code} %{size_download} %{time_total} %{time_starttransfer}" $url 2>$null
     $parts = (($out | Out-String).Trim() -split '\s+')
-    if ($parts.Count -lt 4) { return @{ ok = $false; mbps = 0.0; length = [int64]0 } }
+    if ($parts.Count -lt 4) { return @{ ok = $false; mbps = 0.0; length = [int64]0; rejected = $false } }
     $code = [int]$parts[0]
     $size = [double]$parts[1]
     $total = [double]$parts[2]
     $ttfb = [double]$parts[3]
-    if ($code -ne 206 -or $size -le 0) { return @{ ok = $false; mbps = 0.0; length = [int64]0 } }
+    # rejected 区分「源有意拒绝」与「没测出来」：拿到 HTTP 状态码（200/4xx/5xx）说明源确实不可用；
+    # code=0 是连接失败/超时/零字节，源可能只是慢，仍可单流下载，不能从兜底队列里删掉
+    # （2026-11-16 审查 P1-2）。
+    if ($code -ne 206 -or $size -le 0) { return @{ ok = $false; mbps = 0.0; length = [int64]0; rejected = ($code -ne 0) } }
     $len = [int64]0
     try {
       $h = [System.IO.File]::ReadAllText($hdr)
@@ -464,10 +467,10 @@ function Measure-UrlSpeed([string]$url, [int]$probeMB, [int]$timeoutSec) {
     } catch { }
     $xfer = $total - $ttfb
     if ($xfer -lt 0.05) { $xfer = $total }
-    if ($xfer -le 0) { return @{ ok = $false; mbps = 0.0; length = $len } }
-    return @{ ok = $true; mbps = ($size / $xfer / 1MB); length = $len }
+    if ($xfer -le 0) { return @{ ok = $false; mbps = 0.0; length = $len; rejected = $false } }
+    return @{ ok = $true; mbps = ($size / $xfer / 1MB); length = $len; rejected = $false }
   } catch {
-    return @{ ok = $false; mbps = 0.0; length = [int64]0 }
+    return @{ ok = $false; mbps = 0.0; length = [int64]0; rejected = $false }
   } finally {
     Remove-Item -LiteralPath $hdr -Force -ErrorAction SilentlyContinue
   }
@@ -652,15 +655,20 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
       if ($ProbeMB -le 0) {
         # 关闭测速：沿用旧行为，取第一个支持 Range 的源
         $r = Test-RangeSupport $c.Url
-        if ($r.ok) { $probed += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Mbps = 0.0; Length = $r.length } }
+        if ($r.ok) { $probed += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Mbps = 0.0; Length = $r.length; Slow = $false } }
         else { Log "跳过 $($c.Url)（不支持 Range，或探测失败）" }
         continue
       }
       $m = Measure-UrlSpeed $c.Url $ProbeMB $ProbeSec
       if ($m.ok) {
-        $probed += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Mbps = $m.mbps; Length = $m.length }
+        $probed += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Mbps = $m.mbps; Length = $m.length; Slow = $false }
+      } elseif (-not $m.rejected) {
+        # 超时 / 零字节 / 时间不可信：源可能只是慢，仍能单流下完，不能当它不可用
+        # （2026-11-16 审查 P1-2）。降级到队尾，排在镜像之前。
+        Log "未测到速率 $($c.Url)（保留为单流兜底）"
+        $probed += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Mbps = 0.0; Length = [int64]0; Slow = $true }
       } else {
-        Log "跳过 $($c.Url)（不支持 Range，或探测失败）"
+        Log "跳过 $($c.Url)（HTTP 状态表明源不可用）"
       }
     }
   }
@@ -674,7 +682,7 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
   if ($ProbeMB -gt 0 -and $probed.Count -gt 1) {
     $seq = 0
     $keyed = foreach ($p in $probed) {
-      [pscustomobject]@{ Seq = $seq; Url = $p.Url; Kind = $p.Kind; Length = $p.Length; Mbps = $p.Mbps }
+      [pscustomobject]@{ Seq = $seq; Url = $p.Url; Kind = $p.Kind; Length = $p.Length; Mbps = $p.Mbps; Slow = [bool]$p.Slow }
       $seq = $seq + 1
     }
     $ordered = @($keyed | Sort-Object @{ Expression = "Mbps"; Descending = $true }, @{ Expression = "Seq"; Descending = $false })
@@ -691,27 +699,27 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
   # 都会退化成「只剩镜像可用」，三条真实直链连试都不试（2026-11-16 审查 P0-1）。
   $ranked = @()
   foreach ($p in $ordered) {
-    $ranked += [pscustomobject]@{ Url = $p.Url; Kind = $p.Kind; Length = $p.Length }
+    $ranked += [pscustomobject]@{ Url = $p.Url; Kind = $p.Kind; Length = $p.Length; Slow = [bool]$p.Slow }
   }
   if ($ranked.Count -eq 0) {
     # 探针一个都没过 ≠ 源不可用（超时/零字节只是「没测出来」），直链仍留在队列里做单流
     foreach ($c in $candidates) {
       if ($c.Kind -ne "mirror") {
-        $ranked += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Length = [int64]0 }
+        $ranked += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Length = [int64]0; Slow = $true }
       }
     }
   }
   # 镜像永远排最后：Range 会被整包重取，只适合单流兜底
   foreach ($c in $candidates) {
     if ($c.Kind -eq "mirror") {
-      $ranked += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Length = [int64]0 }
+      $ranked += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Length = [int64]0; Slow = $true }
     }
   }
   if ($ranked.Count -eq 0) { $ranked = @($candidates) }
 
   $rangeUrl = $null
-  # 只有「探针确认支持 Range」的源才配拿去分段（$probed 非空），否则直接走单流回退
-  if ($SegmentMB -gt 0 -and $probed.Count -gt 0 -and $ranked.Count -gt 0 -and $ranked[0].Kind -ne "mirror") {
+  # 只有「探针确认支持 Range 且没被降级为 Slow」的源才配拿去分段，否则直接走单流回退
+  if ($SegmentMB -gt 0 -and $probed.Count -gt 0 -and $ranked.Count -gt 0 -and $ranked[0].Kind -ne "mirror" -and -not $ranked[0].Slow) {
     $rangeUrl = $ranked[0].Url
     if ($ranked[0].Length -gt 0) { $expectedSize = $ranked[0].Length }
     Log "分段下载源：$rangeUrl（支持 Range，总长 $(Format-MB $expectedSize)）"
