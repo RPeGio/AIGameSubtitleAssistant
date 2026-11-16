@@ -497,7 +497,9 @@
   }
   ```
 
-### 🟢 P2-9 「重新检查运行时」「打开日志目录」没有 loading/disabled
+### 🟢 P2-9 「重新检查运行时」「打开日志目录」没有 loading/disabled ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P2-9）。
 
 - **位置**：`src/components/SettingsModal.vue:272-273`
 - **问题**：连点会开多个资源管理器窗口；P2-4 修好后还会并发多次 `runtime_status`。
@@ -967,4 +969,9 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   **6/6 PASS**（慢 load 不覆盖后发 patch、先发慢 load 不覆盖后发快 load、过期失败不写 error、loading 归位）；
   反向对照（同一 harness 指向 `git show HEAD:src/stores/settings.ts`）输出
   `最终快照 runtime_dir=STALE_LOAD`，确认断言有区分力。`npx vue-tsc --noEmit` EXIT=0。
-- **P2-9 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
+- **P2-9** ✅ **已修复**（2026-11-16，本分支，`src/components/SettingsModal.vue:130-161 / :340-356`）——
+  新增 `const rechecking = ref(false)` / `const openingLogs = ref(false)`；两个 handler 开头
+  `if (xxx.value) return;`，`try/finally` 复位；模板两个 NButton 补 `:loading` + `:disabled`。
+  核对：`npx vue-tsc --noEmit` EXIT=0；已用 `Select-String` 确认两个按钮都带 `:loading` 与 `:disabled`
+  且 handler 都有并发闸（本条无真机 UI 自动化，属静态 + 类型核对）。
+- **P2-10 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）

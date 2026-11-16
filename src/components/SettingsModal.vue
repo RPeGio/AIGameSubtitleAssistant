@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, watch } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
 import { NButton, NModal, NPopconfirm, NSelect, NSwitch, useMessage } from "naive-ui";
 import AppIcon from "./AppIcon.vue";
@@ -127,11 +127,20 @@ async function onDeleteOld() {
   }
 }
 
+/// 「校验与日志」两个按钮的进行中状态：都不是瞬时操作（一个要跑运行时自检、一个要起资源管理器），
+/// 不给反馈的话用户会连点，进而并发发起多次探测 / 开出多个窗口（2026-11-16 审查 P2-9）
+const rechecking = ref(false);
+const openingLogs = ref(false);
+
 async function onOpenLogs() {
+  if (openingLogs.value) return;
+  openingLogs.value = true;
   try {
     await settings.openLogDir();
   } catch (e) {
     message.error(`打开日志目录失败：${e}`);
+  } finally {
+    openingLogs.value = false;
   }
 }
 
@@ -142,14 +151,20 @@ async function onOpenLogs() {
 /// `App.vue` 的 `<router-view v-if="setup.passable">` 直接把主界面卸载 ——
 /// 用户点一下「重新检查」就被踢回准备页，看到的还是旧数据（2026-11-16 审查 P2-4）。
 async function onRecheckRuntime() {
-  await setup.refresh();
-  if (setup.stage === "needs") {
-    show.value = false;
-    setup.reopen();
-  } else if (setup.stage === "failed") {
-    message.error(setup.error || "运行时检查未通过");
-  } else {
-    message.success("运行时状态已更新");
+  if (rechecking.value) return;
+  rechecking.value = true;
+  try {
+    await setup.refresh();
+    if (setup.stage === "needs") {
+      show.value = false;
+      setup.reopen();
+    } else if (setup.stage === "failed") {
+      message.error(setup.error || "运行时检查未通过");
+    } else {
+      message.success("运行时状态已更新");
+    }
+  } finally {
+    rechecking.value = false;
   }
 }
 
@@ -310,8 +325,22 @@ function onZoom(next: number) {
         <div class="set-row">
           <span class="sl">校验与日志</span>
           <span class="sv">
-            <NButton size="small" @click="onRecheckRuntime">重新检查运行时</NButton>
-            <NButton size="small" @click="onOpenLogs">打开日志目录</NButton>
+            <NButton
+              size="small"
+              :loading="rechecking"
+              :disabled="rechecking"
+              @click="onRecheckRuntime"
+            >
+              重新检查运行时
+            </NButton>
+            <NButton
+              size="small"
+              :loading="openingLogs"
+              :disabled="openingLogs"
+              @click="onOpenLogs"
+            >
+              打开日志目录
+            </NButton>
           </span>
         </div>
         <div class="set-row">
