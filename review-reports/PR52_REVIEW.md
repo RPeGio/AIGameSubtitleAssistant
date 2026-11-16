@@ -27,8 +27,8 @@
 
 **有 1 条 P0 阻塞合并，4 条 P1 建议本 PR 内处理。**
 
-> **更新（2026-11-16）**：P0-1 已在本分支修复并复测。当前 P0 清零，
-> 剩余 4 条 P1 + 23 条 P2 按原优先级跟进。下方总评保留发现当时的判断。
+> **更新（2026-11-16）**：P0-1 已在本分支修复并复测；P1-1 ~ P1-4 也已修复并复测。当前 P0/P1 清零，
+> 剩余 23 条 P2 按原优先级跟进。下方总评保留发现当时的判断。
 
 结构性设计是好的：`RuntimeConfig` 的 `download_source/segment_mb/setup_auto` 三字段与面板一一对应；
 指针文件先写 `.tmp` 再 `rename`（真原子）；`load_or_default` 只在 `config.json` **不存在**时才兜默认、
@@ -106,7 +106,9 @@
   }
   ```
 
-### 🟡 P1-1 「侧栏默认折叠」开关写的是实时键，`gsa.sidebarDefault` 从 UI 永远设不上
+### 🟡 P1-1 「侧栏默认折叠」开关写的是实时键，`gsa.sidebarDefault` 从 UI 永远设不上 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P1-1）。下方保留发现时的原始取证，行号对应修复前。
 
 - **位置**：`src/components/SettingsModal.vue:159-171`、`src/stores/ui.ts:21-25 / 57-70`
 - **问题**：开关标签是「侧栏默认折叠」，InfoDot 明写「下次启动时的初始状态；**本次**已展开/折叠的状态
@@ -126,6 +128,9 @@
   function setSidebarDefaultCollapsed(collapsed: boolean) {
     sidebarDefault.value = collapsed;                        // 弹窗里立刻反映
     setSidebarDefault(collapsed);                            // 只写 gsa.sidebarDefault
+    // 顺手清掉手动折叠记录：readSidebarCollapsed 只在没有手动记录时才看默认值，
+    // 不清的话「改默认」对已经手动折叠过的用户永远不生效（后果③）
+    localStorage.removeItem(SIDEBAR_KEY);
   }
   return { ..., sidebarDefault, setSidebarDefaultCollapsed };
   ```
@@ -791,7 +796,16 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   对比修复前：`auto` 2 条（无 mirror）、`mirror` 2 条且 mirror 不排第一、`direct` 1 条。
   函数返回后参数仍为 `type=String value=https://gh-proxy.com/`（修复前函数内是 `ArrayList`/空）。
   这同时解开了 #53 的跨 PR 阻塞：合并后 `$ranked` 末尾的镜像兜底不再是死代码
-- **P1-1** ⚠ 未修复（`SettingsModal.vue:165-169` 绑实时键，`setSidebarDefaultCollapsed` 无调用方）
+- **P1-1** ✅ **已修复**（2026-11-16，本分支，`src/stores/ui.ts` + `src/components/SettingsModal.vue:162-169`）——
+  store 新增独立的 `sidebarDefault = ref(readSidebarDefault())` 并导出；`setSidebarDefaultCollapsed`
+  同时更新这个响应式值（弹窗里立刻反映），且**顺手 `localStorage.removeItem(SIDEBAR_KEY)`** ——
+  这修的是原报告后果③：`readSidebarCollapsed` 只在没有手动记录时才看默认值，不清记录的话
+  「改默认」对已经手动折叠过的用户永远不生效。模板开关改绑 `ui.sidebarDefault` /
+  `ui.setSidebarDefaultCollapsed`；InfoDot 补一句「改这里会清掉手动折叠记录，下次启动按此值」。
+  复测（Node 里跑真实 `src/stores/ui.ts`，stub `localStorage`/`document`，每例重新 `setActivePinia` 模拟重启，
+  `.tmp_p14/run_p11.mjs` 走 vite SSR 打包）：**修复后 10/10 通过**；同一套用例对修复前代码
+  （`git stash` 三个文件）是 **7/10**，3 条 FAIL 正对应「`store.sidebarDefault` 不存在 / 改默认不清手动记录 /
+  改默认后重启仍用旧手动值」。
 - **P1-2** ⚠ 未修复（`config.rs:906-910` 对账失败不回滚，重试撞「目标目录非空」）
 - **P1-3** ⚠ 未修复（`config.rs:934` 用 `read_location`，新目录缺失时不可达）
 - **P1-4** ⚠ 未修复（`Timeline.vue` clip 区普通滚轮不再纵向滚动，待裁决「改回」还是「登记为既定行为」）

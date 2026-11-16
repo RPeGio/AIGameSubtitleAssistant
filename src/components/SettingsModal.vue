@@ -159,13 +159,13 @@ function onZoom(next: number) {
         <div class="set-row">
           <span class="sl">
             侧栏默认折叠
-            <InfoDot text="下次启动时的初始状态；本次已展开/折叠的状态不受影响。" />
+            <InfoDot text="下次启动时的初始状态；本次已展开/折叠的状态不受影响。改这里会清掉手动折叠记录，下次启动按此值。" />
           </span>
           <span class="sv">
             <NSwitch
-              :value="ui.sidebarCollapsed"
+              :value="ui.sidebarDefault"
               size="small"
-              @update:value="ui.setSidebarCollapsed"
+              @update:value="ui.setSidebarDefaultCollapsed"
             />
           </span>
         </div>
