@@ -153,6 +153,12 @@ function onZoom(next: number) {
   >
     <div class="set-body">
       <p v-if="settings.loading" class="set-loading">正在读取运行时设置…</p>
+      <!-- 读失败时不能静默：快照为 null 的话，下面的「未找到 manifest.json」会把「不知道」
+           说成「没有」，用户会以为运行时坏了而去重装（2026-11-16 审查 P2-5） -->
+      <div v-else-if="settings.error" class="set-error">
+        <span>读取运行时设置失败：{{ settings.error }}</span>
+        <NButton size="tiny" @click="settings.load()">重试</NButton>
+      </div>
 
       <!-- ── A 外观 ─────────────────────────────────── -->
       <section class="set-group">
@@ -196,6 +202,7 @@ function onZoom(next: number) {
       </section>
 
       <!-- ── B 运行时 ───────────────────────────────── -->
+      <template v-if="snap">
       <section class="set-group">
         <h4>运行时</h4>
         <div class="set-row col">
@@ -368,6 +375,7 @@ function onZoom(next: number) {
           </span>
         </div>
       </section>
+      </template>
 
       <!-- ── E 时间轴 ───────────────────────────────── -->
       <section class="set-group">
@@ -453,6 +461,17 @@ function onZoom(next: number) {
   margin: 0 0 8px;
   font-size: 11px;
   color: var(--color-text-secondary);
+}
+
+/* 读失败：整行红字 + 重试，别让用户对着「默认值」猜 */
+.set-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--warn);
 }
 
 .set-group {

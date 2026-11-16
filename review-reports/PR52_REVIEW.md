@@ -388,7 +388,9 @@
   }
   ```
 
-### 🟢 P2-5 快照加载失败时面板照常渲染「默认值」，会把没装误报成未找到清单
+### 🟢 P2-5 快照加载失败时面板照常渲染「默认值」，会把没装误报成未找到清单 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P2-5）。
 
 - **位置**：`src/stores/settings.ts:31-42`（写 `error`） vs `src/components/SettingsModal.vue:143 / :192-193 / :279-281`
 - **问题**：`load()` 失败只写 `error.value` + `console.error`，而模板只消费 `settings.loading`。
@@ -931,4 +933,9 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   才 `show=false` + `reopen()` 回准备页；`failed` 走 `message.error`，`ready` 走
   `message.success("运行时状态已更新")` 并留在当前界面。这样「重新检查」不再把用户踢出主界面，
   也不会展示旧快照。`npx vue-tsc --noEmit` EXIT=0。
-- **P2-5 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
+- **P2-5** ✅ **已修复**（2026-11-16，本分支，`src/components/SettingsModal.vue:154-162 / :204-378 / :458-470`）——
+  模板在 `settings.loading` 之后新增 `v-else-if="settings.error"` 的错误行（整行红字 + 「重试」按钮，
+  直接再调 `settings.load()`），并把 **B 运行时 / C 引擎** 两组整体包进 `<template v-if="snap">`：
+  快照拿不到时不再渲染「默认值」，`未找到 manifest.json` 这句也不会在「未知」状态下出现。
+  新增 `.set-error` 样式（红字 + 行内按钮）。`npx vue-tsc --noEmit` EXIT=0。
+- **P2-6 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
