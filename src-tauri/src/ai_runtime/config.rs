@@ -867,12 +867,23 @@ pub async fn update_runtime_settings(
 }
 
 /// 递归复制目录（跳过 `.downloads` 临时缓存：它随时可重建，复制它只是浪费时间）
-fn copy_dir_all(src: &Path, dst: &Path) -> Result<u64, String> {
+///
+/// 顺带把「拷过去的每个文件的相对路径 + 字节数」记进 `copied`，供搬家后的对账直接复用。
+/// 原来对账要再整树走两遍（`rel_paths(&current)` + `rel_paths(target)`），而 runtime 动辄
+/// 几 GB、上万个文件，这两遍纯属白花时间；顺便还能顺手比大小，而不只是比路径集合。
+fn copy_dir_all(
+    root: &Path,
+    src: &Path,
+    dst: &Path,
+    copied: &mut Vec<(String, u64)>,
+) -> Result<u64, String> {
     let mut total = 0u64;
     let entries = fs::read_dir(src).map_err(|e| format!("读取 {} 失败: {e}", src.display()))?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("遍历 {} 失败: {e}", src.display()))?;
         let name = entry.file_name();
+        // `.downloads` 在任何层级都是下载器的临时缓存，一律不搬。
+        // 对账清单也走同一个判断，否则就成了「复制按 A 跳过、对账按 B 要求」的自相矛盾。
         if name == ".downloads" {
             continue;
         }
@@ -883,10 +894,16 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<u64, String> {
             .map_err(|e| format!("读取 {} 属性失败: {e}", from.display()))?;
         if meta.is_dir() {
             fs::create_dir_all(&to).map_err(|e| format!("创建 {} 失败: {e}", to.display()))?;
-            total += copy_dir_all(&from, &to)?;
+            total += copy_dir_all(root, &from, &to, copied)?;
         } else {
             let n = fs::copy(&from, &to)
                 .map_err(|e| format!("复制 {} → {} 失败: {e}", from.display(), to.display()))?;
+            let rel = from
+                .strip_prefix(root)
+                .unwrap_or(&from)
+                .to_string_lossy()
+                .to_string();
+            copied.push((rel, n));
             total += n;
         }
     }
@@ -899,13 +916,22 @@ fn dir_entry_count(dir: &Path) -> usize {
         .unwrap_or(0)
 }
 
-/// 收集目录下的全部相对路径（跳过根上的 `.downloads` 临时缓存），用于搬家后对账
-fn rel_paths(root: &Path) -> std::collections::BTreeSet<String> {
-    fn walk(root: &Path, dir: &Path, out: &mut std::collections::BTreeSet<String>) {
-        let Ok(entries) = fs::read_dir(dir) else { return };
-        for e in entries.flatten() {
+/// 收集目录下的全部相对路径 → 字节数（目录记 0，跳过任意层级的 `.downloads`），用于搬家后对账。
+///
+/// 这里**不允许**再静默跳过读不动的目录：以前写的是 `let Ok(entries) = fs::read_dir(dir)
+/// else { return }`，于是「某个子目录没权限」会变成「对账通过」，而那批文件根本没搬过去，
+/// 指针照样被改写 —— 正好踩中「半搬状态比不搬更糟」。读失败一律往上抛。
+fn rel_paths(root: &Path) -> Result<std::collections::BTreeMap<String, u64>, String> {
+    fn walk(
+        root: &Path,
+        dir: &Path,
+        out: &mut std::collections::BTreeMap<String, u64>,
+    ) -> Result<(), String> {
+        let entries = fs::read_dir(dir).map_err(|e| format!("读取 {} 失败: {e}", dir.display()))?;
+        for e in entries {
+            let e = e.map_err(|e| format!("遍历 {} 失败: {e}", dir.display()))?;
             let name = e.file_name();
-            if dir == root && name == ".downloads" {
+            if name == ".downloads" {
                 continue;
             }
             let p = e.path();
@@ -914,15 +940,21 @@ fn rel_paths(root: &Path) -> std::collections::BTreeSet<String> {
                 .unwrap_or(&p)
                 .to_string_lossy()
                 .to_string();
-            out.insert(rel);
-            if p.is_dir() {
-                walk(root, &p, out);
+            let meta = e
+                .metadata()
+                .map_err(|err| format!("读取 {} 属性失败: {err}", p.display()))?;
+            if meta.is_dir() {
+                out.insert(rel, 0);
+                walk(root, &p, out)?;
+            } else {
+                out.insert(rel, meta.len());
             }
         }
+        Ok(())
     }
-    let mut out = std::collections::BTreeSet::new();
-    walk(root, root, &mut out);
-    out
+    let mut out = std::collections::BTreeMap::new();
+    walk(root, root, &mut out)?;
+    Ok(out)
 }
 
 /// 搬家实现（拆出来便于单测，不依赖 AppHandle）
@@ -975,21 +1007,40 @@ pub(crate) fn move_runtime_dir_impl(app_data: &Path, target: &Path) -> Result<Mo
         }
     };
 
-    let bytes = match copy_dir_all(&current, target) {
+    // 复制时顺手记下每个文件的相对路径与字节数，对账直接用它，不必再扫源树一遍
+    let mut copied: Vec<(String, u64)> = Vec::new();
+    let bytes = match copy_dir_all(&current, &current, target, &mut copied) {
         Ok(n) => n,
         Err(e) => {
             rollback(created_target);
             return Err(format!("{e}（已回滚，旧目录与指针未改动）"));
         }
     };
-    // 复制完按相对路径逐条对账，再写指针 —— 少一半文件就搬过去比不搬更糟
-    let src_paths = rel_paths(&current);
-    let dst_paths = rel_paths(target);
-    if let Some(missing) = src_paths.iter().find(|p| !dst_paths.contains(*p)) {
-        rollback(created_target);
-        return Err(format!(
-            "复制不完整：目标目录缺少 {missing}（已回滚，旧目录与指针未改动）"
-        ));
+    // 复制完按「路径 + 大小」逐条对账，再写指针 —— 少一半文件、或拷了半个文件就搬过去，
+    // 都比不搬更糟（用户会以为搬完了，回头把旧目录删了）
+    let dst_paths = match rel_paths(target) {
+        Ok(m) => m,
+        Err(e) => {
+            rollback(created_target);
+            return Err(format!("{e}（已回滚，旧目录与指针未改动）"));
+        }
+    };
+    for (rel, size) in &copied {
+        match dst_paths.get(rel) {
+            Some(got) if got == size => {}
+            Some(got) => {
+                rollback(created_target);
+                return Err(format!(
+                    "复制不完整：{rel} 大小不符（源 {size} 字节，目标 {got} 字节）（已回滚，旧目录与指针未改动）"
+                ));
+            }
+            None => {
+                rollback(created_target);
+                return Err(format!(
+                    "复制不完整：目标目录缺少 {rel}（已回滚，旧目录与指针未改动）"
+                ));
+            }
+        }
     }
 
     let loc = RuntimeLocation {
@@ -1733,11 +1784,13 @@ mod tests {
         let _ = fs::remove_dir_all(&dst);
     }
 
-    /// P1-2：复制不完整时必须回滚。不回滚会留下半个目标目录，而用户按提示「重试」时
+    /// P1-2：复制失败时必须回滚。不回滚会留下半个目标目录，而用户按提示「重试」时
     /// 会立刻撞上「目标目录非空」——提示与实现互相打脸。
     ///
-    /// 这里用「子目录里的 `.downloads`」稳定地制造对账缺失：`copy_dir_all` 跳过任意层级的
-    /// `.downloads`，而 `rel_paths` 只跳过根上的，于是目标目录必然少这两条路径。
+    /// 造假方式：把源目录里的一个文件**独占打开**（`share_mode(0)`），随后的 `fs::copy`
+    /// 必然拿到「另一个程序正在使用此文件」。比依赖磁盘满/拔盘这类偶发条件稳定得多。
+    /// （原先这里靠「子目录里的 `.downloads`」制造对账缺失，P2-12 把两处跳过口径统一后，
+    /// 那个套路不再产生缺失，反而成了正常搬家的用例，见 `test_move_succeeds_with_nested_downloads`。）
     #[test]
     fn test_move_rolls_back_created_target_when_copy_incomplete() {
         let base = temp_dir("rb_base");
@@ -1748,8 +1801,9 @@ mod tests {
         }
         fs::create_dir_all(cur.join("bin")).unwrap();
         fs::write(cur.join("config.json"), b"{}").unwrap();
-        fs::create_dir_all(cur.join("bin").join(".downloads")).unwrap();
-        fs::write(cur.join("bin").join(".downloads").join("part"), b"y").unwrap();
+        let locked = cur.join("bin").join("locked.bin");
+        fs::write(&locked, b"z").unwrap();
+        let _hold = lock_exclusive(&locked);
         write_location(
             &base,
             &RuntimeLocation {
@@ -1788,9 +1842,11 @@ mod tests {
         for d in [&base, &cur, &dst] {
             let _ = fs::remove_dir_all(d);
         }
-        fs::create_dir_all(cur.join("bin").join(".downloads")).unwrap();
+        fs::create_dir_all(cur.join("bin")).unwrap();
         fs::write(cur.join("config.json"), b"{}").unwrap();
-        fs::write(cur.join("bin").join(".downloads").join("part"), b"y").unwrap();
+        let locked = cur.join("bin").join("locked.bin");
+        fs::write(&locked, b"z").unwrap();
+        let _hold = lock_exclusive(&locked);
         fs::create_dir_all(&dst).unwrap(); // 用户选中的已存在空目录
         write_location(
             &base,
@@ -1857,5 +1913,108 @@ mod tests {
         assert!(read_location_raw(&base).unwrap().previous.is_none());
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    /// 独占打开（Windows `share_mode(0)`，其它平台 chmod 0），让随后的复制必然失败。
+    fn lock_exclusive(path: &Path) -> std::fs::File {
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(path)
+                .unwrap()
+        }
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let f = std::fs::File::open(path).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            f
+        }
+    }
+
+    /// P2-12 的正面用例：`.downloads` 在任意层级都不搬，而且**不会**被对账判成缺失。
+    /// 修复前 `copy_dir_all` 跳任意层级、`rel_paths` 只跳根层，于是子目录里只要有一个
+    /// 下载缓存，搬家就会永远失败在「目标目录缺少 bin\\.downloads」（且已回滚）。
+    #[test]
+    fn test_move_succeeds_with_nested_downloads() {
+        let base = temp_dir("nd_base");
+        let cur = temp_dir("nd_cur");
+        let dst = temp_dir("nd_dst");
+        for d in [&base, &cur, &dst] {
+            let _ = fs::remove_dir_all(d);
+        }
+        fs::create_dir_all(cur.join("bin").join(".downloads")).unwrap();
+        fs::write(cur.join("config.json"), b"{}").unwrap();
+        fs::write(cur.join("bin").join(".downloads").join("part"), b"y").unwrap();
+        fs::write(cur.join("bin").join("worker.exe"), b"ok").unwrap();
+        write_location(
+            &base,
+            &RuntimeLocation {
+                runtime_dir: cur.display().to_string(),
+                previous: None,
+                moved_at: None,
+            },
+        )
+        .unwrap();
+
+        let res = move_runtime_dir_impl(&base, &dst).expect("子目录里的下载缓存不该让搬家失败");
+        assert!(res.ok);
+        assert!(dst.join("config.json").is_file(), "配置要搬过去");
+        assert!(dst.join("bin").join("worker.exe").is_file(), "可执行文件要搬过去");
+        assert!(
+            !dst.join("bin").join(".downloads").exists(),
+            "下载缓存不搬"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&cur);
+        let _ = fs::remove_dir_all(&dst);
+    }
+
+    /// P2-12：`.downloads` 在**任意层级**都算临时缓存 —— 复制不搬它，对账也必须不要求它。
+    /// 修复前 `copy_dir_all` 跳任意层级、`rel_paths` 只跳根层，两套口径互相矛盾：
+    /// 要么对账把「没搬的缓存」判成缺失（搬家永远失败），要么反过来漏检。
+    #[test]
+    fn test_rel_paths_skips_downloads_at_any_depth_and_records_size() {
+        let root = temp_dir("rp_root");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("a").join("b")).unwrap();
+        fs::create_dir_all(root.join(".downloads")).unwrap();
+        fs::create_dir_all(root.join("a").join(".downloads")).unwrap();
+        fs::write(root.join(".downloads").join("x"), b"x").unwrap();
+        fs::write(root.join("a").join(".downloads").join("y"), b"yy").unwrap();
+        fs::write(root.join("config.json"), b"{}").unwrap();
+        fs::write(root.join("a").join("b").join("w.bin"), b"0123456789").unwrap();
+
+        let map = rel_paths(&root).unwrap();
+        assert!(
+            map.keys().all(|k| !k.contains(".downloads")),
+            "任意层级的 .downloads 都不该进对账清单：{:?}",
+            map.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(map.get("config.json"), Some(&2), "文件要记字节数：{map:?}");
+        let nested = format!(
+            "a{0}b{0}w.bin",
+            std::path::MAIN_SEPARATOR
+        );
+        assert_eq!(map.get(&nested), Some(&10), "嵌套文件的相对路径与大小：{map:?}");
+        assert!(map.contains_key("a"), "目录本身也要在清单里：{map:?}");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// P2-12：读不动的目录必须报错，绝不能静默当成「没有文件」。
+    /// 修复前是 `let Ok(entries) = fs::read_dir(dir) else { return }`，于是
+    /// 「某子目录没权限 / 外接盘掉线」会让对账通过 —— 而那批文件根本没搬过去，
+    /// 指针照样被改写，正好踩中「半搬状态比不搬更糟」。
+    #[test]
+    fn test_rel_paths_propagates_unreadable_dir() {
+        let missing = temp_dir("rp_missing");
+        let _ = fs::remove_dir_all(&missing);
+        let err = rel_paths(&missing).unwrap_err();
+        assert!(err.contains("失败"), "错误里应说清哪个目录读不了：{err}");
     }
 }

@@ -559,7 +559,9 @@
   }
   ```
 
-### 🟢 P2-12 搬家对账的三处不一致：`.downloads` 深度、读目录失败静默、无大小校验
+### 🟢 P2-12 搬家对账的三处不一致：`.downloads` 深度、读目录失败静默、无大小校验 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P2-12）。
 
 - **位置**：`src-tauri/src/ai_runtime/config.rs:818-842`（`copy_dir_all`）、`:851-874`（`rel_paths`）
 - **问题**：
@@ -995,4 +997,18 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   反向对照（同一 harness 指向 `git show HEAD:` 的旧 appPrefs/ui）输出
   `invoke 失败后 zoom=1.25，localStorage["gsa.zoom"]="1.25"`，确认断言有区分力。
   `npx vue-tsc --noEmit` EXIT=0。
-- **P2-12 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
+- **P2-12** ✅ **已修复**（2026-11-16，本分支，`src-tauri/src/ai_runtime/config.rs:869-951`、`:1010-1045`）——
+  `copy_dir_all` 增加 `root` 与 `&mut Vec<(String, u64)>` 参数，复制时顺手记下每个文件的
+  相对路径与字节数；`rel_paths` 改成返回 `Result<BTreeMap<String, u64>, String>`：
+  ①`.downloads` 在任意层级都跳过（与复制口径统一，此前复制跳任意层、对账只跳根层）；
+  ②读不动的目录用 `map_err` 传播，不再 `else { return }` 静默当成「没有文件」；
+  ③顺带记录字节数。搬家对账改成「路径 + 大小」双向比较，并直接复用复制时记下的清单——
+  整树遍历从 3 次（复制 + 两次 rel_paths）降为 2 次（复制 + 目标侧一次）。
+  验证：`cargo test --lib` **378 passed / 0 failed**（新增 3 条：
+  `test_rel_paths_skips_downloads_at_any_depth_and_records_size`、
+  `test_rel_paths_propagates_unreadable_dir`、`test_move_succeeds_with_nested_downloads`）；
+  `test_move_succeeds_with_nested_downloads` 正是修复前必然失败的用例——
+  此前 P1-2 的反向验证就是靠「子目录里的 `.downloads` 能让搬家对账失败」成立的，
+  口径统一后那个套路不再产生缺失，故 P1-2 的两个测试改用「独占打开源文件」制造复制失败
+  （不依赖磁盘满/拔盘这类偶发条件）。
+- **P2-13 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
