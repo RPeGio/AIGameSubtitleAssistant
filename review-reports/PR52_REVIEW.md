@@ -681,7 +681,9 @@
   Ok(snap)
   ```
 
-### 🟢 P2-17 安装时 `config.json` 损坏会静默退回默认下载源/分段
+### 🟢 P2-17 安装时 `config.json` 损坏会静默退回默认下载源/分段 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P2-17）。
 
 - **位置**：`src-tauri/src/ai_runtime/runtime_install.rs:724`
 - **问题**：`RuntimeConfig::load(&runtime_dir).unwrap_or_default()` —— 配置坏了不报错，
@@ -1054,4 +1056,10 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   与 `runtime_settings`（`:739-752` 本来就是 spawn_blocking）口径一致。
   验证：`cargo test --lib` **381 passed / 0 failed**，`cargo check --lib` 零告警；
   签名/行为不变（仍是 `Result<SettingsSnapshot, String>`），前端无需改动。
-- **P2-17 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
+- **P2-17** ✅ **已修复**（2026-11-16，本分支，`src-tauri/src/ai_runtime/runtime_install.rs:724-733`）——
+  `run_install` 用 `RuntimeConfig::load(&runtime_dir).unwrap_or_default()`：config.json 损坏时
+  静默退回默认下载源/分段，用户明明改过设置却没有任何线索（装完才发现「设置没生效」）。
+  改成 `match`：Err 时先 `eprintln!("[ai_runtime] 读取配置失败，本次按默认参数安装: {e}")`
+  再用 `default()`。行为不变（安装仍继续，不因配置损坏而卡住安装入口），但原因不再被吞。
+  验证：`cargo test --lib` **381 passed / 0 failed**，`cargo check --lib` 零告警。
+- **P2-18 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）

@@ -721,7 +721,15 @@ fn run_install(
     }
     // 下载源与分段：设置面板里的两项（默认 auto / 64 MB）。
     // 显式传参而不是靠脚本默认值 —— 否则用户在设置里改了却毫无效果。
-    let cfg = super::RuntimeConfig::load(&runtime_dir).unwrap_or_default();
+    // 配置损坏时不能装作没事：`unwrap_or_default()` 会让用户改过的下载源/分段静默退回默认，
+    // 装完才发现「设置没生效」。这里至少把原因写进日志（安装仍继续，用默认参数）。
+    let cfg = match super::RuntimeConfig::load(&runtime_dir) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[ai_runtime] 读取配置失败，本次按默认参数安装: {e}");
+            super::RuntimeConfig::default()
+        }
+    };
     let source = if cfg.download_source.trim().is_empty() {
         "auto".to_string()
     } else {
