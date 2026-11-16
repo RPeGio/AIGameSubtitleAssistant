@@ -738,7 +738,16 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
   # 只有「探针确认支持 Range 且没被降级为 Slow」的源才配拿去分段，否则直接走单流回退
   if ($SegmentMB -gt 0 -and $probed.Count -gt 0 -and $ranked.Count -gt 0 -and $ranked[0].Kind -ne "mirror" -and -not $ranked[0].Slow) {
     $rangeUrl = $ranked[0].Url
-    if ($ranked[0].Length -gt 0) { $expectedSize = $ranked[0].Length }
+    # 总长以清单 `size` 为准，探针报的总长只在「清单没写」时兜底。
+    # 探针拿到的是 HTTP 服务端自报值，一个坏掉/被劫持的源可以谎报成任意值：谎报变大 ⇒
+    # 段数按 $expectedSize / $segBytes 爆炸（一路写盘到磁盘满），而磁盘预检用的是清单
+    # size，根本拦不住；谎报变小 ⇒ Join-Segments 的完整性校验直接失败。2026-11-16 审查 P2-2。
+    if ($ranked[0].Length -gt 0) {
+      if ($expectedSize -le 0) { $expectedSize = $ranked[0].Length }
+      elseif ($ranked[0].Length -ne $expectedSize) {
+        Log "探针报的总长 $(Format-MB $ranked[0].Length) 与清单 $(Format-MB $expectedSize) 不一致，以清单为准"
+      }
+    }
     Log "分段下载源：$rangeUrl（支持 Range，总长 $(Format-MB $expectedSize)）"
   }
 
