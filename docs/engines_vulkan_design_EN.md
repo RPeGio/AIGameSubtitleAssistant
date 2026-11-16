@@ -586,8 +586,17 @@ ESA per item (`installed_at` deltas, extraction included):
 | deps-embed | 150.1 MiB | 6.8 min | 0.39 MB/s |
 | CUDA runtime via pip (8 wheels, 1771 MB) | — | 1.8 min | 16.6 MB/s |
 
+> **This table and the table in contract §4.5 use different denominators — do not compare the
+> numbers side by side** (annotated 2026-11-16, review P2-10): the Size column here is **MiB**
+> (`manifest.size` ÷ 2^20), the Time column **includes extraction**, and the Rate column converts
+> with **1 MB = 10^6 bytes**. The §4.5 table in `docs/RUNTIME_BOOTSTRAP_CONTRACT.md` measures
+> **download only** and labels sizes in MB, so the same `moss` reads 621.6 MB / 61 s / 10.2 MB/s
+> there. Different runs and different denominators (extraction included vs not) — the ~10× gap is
+> not a contradiction.
+
 Three takeaways: (1) ESA throughput decays as the run progresses (0.39 MB/s at the tail), consistent
 with a throttled shared egress rather than anything file-specific; (2) the pip phase runs at
 16.6 MB/s off the Huawei Cloud mirror and is never the bottleneck in either round; (3) both rounds
-landed 6.34 GB with `exit=0` and an identical item set (5 download items plus the CUDA runtime pip
-phase) — **switching sources does not change the product**.
+landed 6.34 GB (the denominator is the **extracted on-disk footprint, not the download volume** — the
+measured downloads in the table above total only 2.09 GiB) with `exit=0` and an identical item set
+(5 download items plus the CUDA runtime pip phase) — **switching sources does not change the product**.
