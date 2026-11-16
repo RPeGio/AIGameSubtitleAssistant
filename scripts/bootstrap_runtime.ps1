@@ -451,6 +451,10 @@ function Measure-UrlSpeed([string]$url, [int]$probeMB, [int]$timeoutSec) {
   try {
     $out = & curl.exe -s -L --max-time $timeoutSec -r "0-$last" -D $hdr -o NUL -w "%{http_code} %{size_download} %{time_total} %{time_starttransfer}" $url 2>$null
     $parts = (($out | Out-String).Trim() -split '\s+')
+    # 这个守卫基本是死的：实测 curl 在连接被拒（exit 7）、DNS 失败（exit 6）、超时（exit 28）时
+    # 照样会把 -w 行吐出来（`000 0 0.000553 0.000550`），四个字段齐备。真正判失败的是下面
+    # 的 `$code -ne 206`——`[int]"000"` 就是 0（2026-11-16 审查 P2-4）。
+    # 保留它只为兜住 curl 连 -w 行都没输出的极端情形（比如进程被外部杀掉）。
     if ($parts.Count -lt 4) { return @{ ok = $false; mbps = 0.0; length = [int64]0; rejected = $false } }
     $code = [int]$parts[0]
     $size = [double]$parts[1]
