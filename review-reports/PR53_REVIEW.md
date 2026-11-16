@@ -20,8 +20,8 @@
 
 ## 总评
 
-**原为 1 条 P0 阻塞合并 + 6 条 P1；P0-1、P1-1 ~ P1-6 已于 2026-11-16 在本 PR 内修复并复测
-（见「处置记录」），当前 6 条 P1 全部清零，只剩 11 条 P2 建议另开分支处理。**
+**原为 1 条 P0 阻塞合并 + 6 条 P1；P0-1、P1-1 ~ P1-6、P2-1 ~ P2-12 已于 2026-11-16 在本 PR 内
+修复并复测（见「处置记录」），当前 P0/P1/P2 全部清零，建议合并。**
 
 这是一个「只改数据 + 一个函数」的小 PR，方向我认同：把「固定候选顺序」换成「实测选源」，
 恰好对应文档自己记下的那条事实——同一个源白天 8.9 MB/s、夜里 0.27 MB/s，固定顺序必然在一半
@@ -300,7 +300,7 @@ sha256 与清单记录的 sha256 全部吻合——**换源没有换掉字节**�
     自建 CF Worker 反代仍未做。
   ```
 
-### 🟢 P2-1 探针成本与目标尺寸脱钩：7 条目白下 ~42 MB，最小条目探针量是自身 5.5 倍
+### 🟢 P2-1 探针成本与目标尺寸脱钩：7 条目白下 ~42 MB，最小条目探针量是自身 5.5 倍 ✅ 已修复
 
 - **位置**：`scripts/bootstrap_runtime.ps1:647-665`（串行 foreach + 每候选 2 MB）、`:452` 的 `-o NUL`
 - **问题**：每个条目 3 条非镜像候选 × 2 MB = 6 MB，7 条目 **≈ 42 MB 探针流量全部丢弃**
@@ -316,7 +316,7 @@ sha256 与清单记录的 sha256 全部吻合——**换源没有换掉字节**�
     if ($expectedSize -gt 0 -and $expectedSize -lt (8 * $ProbeMB * 1MB)) { $probeMB = 0 }
   ```
 
-### 🟢 P2-2 探针报的总长无校验地覆盖清单 `size`，异常 CDN 可让段数爆炸
+### 🟢 P2-2 探针报的总长无校验地覆盖清单 `size`，异常 CDN 可让段数爆炸 ✅ 已修复
 
 - **位置**：`scripts/bootstrap_runtime.ps1:686` 对照 `:698-700`、`:714`
 - **问题**：`if ($ranked[0].Length -gt 0) { $expectedSize = $ranked[0].Length }` —— 清单里已有可信
@@ -336,7 +336,7 @@ sha256 与清单记录的 sha256 全部吻合——**换源没有换掉字节**�
       }
   ```
 
-### 🟢 P2-3 `$SegmentMB = 0` 是函数局部赋值，日志会重复 7 次，且「整个运行切单流」的意图未生效
+### 🟢 P2-3 `$SegmentMB = 0` 是函数局部赋值，日志会重复 7 次，且「整个运行切单流」的意图未生效 ✅ 已修复
 
 - **位置**：`scripts/bootstrap_runtime.ps1:629-632`
 - **问题**：PS 函数内给参数/脚本域变量赋值只影响本次调用。实测：脚本域 `$SegmentMB = 64`，
@@ -353,7 +353,7 @@ sha256 与清单记录的 sha256 全部吻合——**换源没有换掉字节**�
     }
   ```
 
-### 🟢 P2-4 `:454` 的字段数守卫是死的；真正拦住失败的是 `:459`
+### 🟢 P2-4 `:454` 的字段数守卫是死的；真正拦住失败的是 `:459` ✅ 已修复
 
 - **位置**：`scripts/bootstrap_runtime.ps1:454`
 - **问题**：`if ($parts.Count -lt 4)` 看上去像在处理网络失败，但实测 curl 在连接被拒（exit 7）、
@@ -363,7 +363,7 @@ sha256 与清单记录的 sha256 全部吻合——**换源没有换掉字节**�
 - **修复建议**：把注释写实（`000` 是 curl 的失败状态占位，由后面的 206 判定拦住），
   或直接删掉这个守卫。
 
-### 🟢 P2-5 新增的 `-ProbeMB` / `-ProbeSec`（以及文档承诺的 `-SegmentMB 0`）用户摸不到
+### 🟢 P2-5 新增的 `-ProbeMB` / `-ProbeSec`（以及文档承诺的 `-SegmentMB 0`）用户摸不到 ✅ 已修复
 
 - **位置**：`scripts/bootstrap_runtime.ps1:64,67,68` 对照 `src-tauri/src/ai_runtime/runtime_install.rs:711-726`
 - **问题**：Tauri 后端只传 `-Items -Flavor -RuntimeDir [-Manifest] [-Force]`，
@@ -375,7 +375,7 @@ sha256 与清单记录的 sha256 全部吻合——**换源没有换掉字节**�
 - **修复建议**：`RuntimeConfig` 增 `probe_mb`/`probe_sec` 并由 `runtime_install.rs` 显式下发
   （与该处既有注释「显式传参而不是靠脚本默认值」一致），或在契约里明确「这两个参数仅供命令行/运维使用」。
 
-### 🟢 P2-6 清单元数据过期，且 `source_version` 会把 11-14 的内容记成 11-02 的版本
+### 🟢 P2-6 清单元数据过期，且 `source_version` 会把 11-14 的内容记成 11-02 的版本 ✅ 已修复
 
 - **位置**：`src-tauri/resources/runtime/manifest.json:2-3`（`"version": "1"`、`"generated_at": "2026-11-02T01:37:25Z"`）
 - **问题**：7 条 `urls[]` 全部在 2026-11-14 重写，但这两个字段与基线 `9cae08c` 逐字节相同。
@@ -389,7 +389,7 @@ sha256 与清单记录的 sha256 全部吻合——**换源没有换掉字节**�
 - **修复建议**：把 `generated_at` 更新到真实上传日，`version` 改成日期戳；
   或在契约 `:117` 注明这两个字段仅作参考。
 
-### 🟢 P2-7 仓库里没有任何东西能重新生成这份清单，重跑打包脚本会静默删掉本 PR 的全部成果
+### 🟢 P2-7 仓库里没有任何东西能重新生成这份清单，重跑打包脚本会静默删掉本 PR 的全部成果 ✅ 已修复
 
 - **位置**：`scripts/package_moss_flavors.ps1:186-195`（只产 `id/flavor/url/sha256/size/dest/backend_marker`）、`:222-228`（写出时 `version="1"` + 新 `generated_at`）
 - **问题**：该打包脚本不产 `urls`、不产 `unpacked_size`、不产 `optional`，也不产
@@ -400,7 +400,7 @@ sha256 与清单记录的 sha256 全部吻合——**换源没有换掉字节**�
 - **修复建议**：让打包脚本产出 `urls[]`（或加一个 `scripts/update_manifest_urls.ps1`），
   并加一条校验：每条资产必须有 3 个 `urls` 且 host 顺序符合预期。
 
-### 🟢 P2-8 设计文档 §8.13 的两条旧结论被本 PR 推翻但未标注
+### 🟢 P2-8 设计文档 §8.13 的两条旧结论被本 PR 推翻但未标注 ✅ 已修复
 
 - **位置**：`docs/engines_vulkan_design.md:468`（与 `_EN.md:486`）、`docs/engines_vulkan_design.md:397-406`（与 `_EN.md:398-408`）
 - **问题**：
@@ -413,7 +413,7 @@ sha256 与清单记录的 sha256 全部吻合——**换源没有换掉字节**�
      同时是选源规则的第三份副本（另两份在契约 `:172`、`:267`），三份互不一致。
 - **修复建议**：`:468` 追加取代标记；`:397-406` 改成「每候选探一次，总长复用」。
 
-### 🟢 P2-9 契约里的清单示例一个 `urls` 都没有
+### 🟢 P2-9 契约里的清单示例一个 `urls` 都没有 ✅ 已修复
 
 - **位置**：`docs/RUNTIME_BOOTSTRAP_CONTRACT.md:114-164`
 - **问题**：示例 JSON 含 `version`/`generated_at`/`id`/`flavor`/`optional`/`url`/`sha256`/
@@ -422,7 +422,7 @@ sha256 与清单记录的 sha256 全部吻合——**换源没有换掉字节**�
   但照着这个示例抄出来的清单是单源的，会静默失去本 PR 的全部收益。
 - **修复建议**：在示例里补一个三元素的 `urls` 数组，并用注释标出 `ModelScope → ESA → GitHub`。
 
-### 🟢 P2-10 两张 ESA 实测表的速率口径不同，读者会误判「ESA 变慢了」
+### 🟢 P2-10 两张 ESA 实测表的速率口径不同，读者会误判「ESA 变慢了」 ✅ 已修复
 
 - **位置**：`docs/engines_vulkan_design.md:537-546` 对照 `docs/RUNTIME_BOOTSTRAP_CONTRACT.md:304-311`
 - **问题**：设计文档新增的逐条表标注「`installed_at` 差值，**含解压**」，
@@ -435,7 +435,7 @@ sha256 与清单记录的 sha256 全部吻合——**换源没有换掉字节**�
   设计 `:534` 的「ESA 41 分 50 秒」差 2.2 倍（不同日期、后者含解压）。
 - **修复建议**：给速率列标注口径「（按纯下载时长计）」，并给 6.34 GB 补分母说明。
 
-### 🟢 P2-11 `verify_cdn_mirror.ps1` 正好是本 PR 叙事里「验证一个源」的工具，却零引用，且缺文档要求的那段
+### 🟢 P2-11 `verify_cdn_mirror.ps1` 正好是本 PR 叙事里「验证一个源」的工具，却零引用，且缺文档要求的那段 ✅ 已修复
 
 - **位置**：`scripts/verify_cdn_mirror.ps1`（唯一引用是自身头部的示例 `:15-16`）
 - **问题**：它会探 Range、报 TTFB 与持续速率、读 `Content-Range` 总长（`:79-82`）、算 ETA（`:120-122`），
@@ -443,6 +443,26 @@ sha256 与清单记录的 sha256 全部吻合——**换源没有换掉字节**�
   但两处文档都没提它。另外它**没有**实现设计 `:524-525` 要求的那句
   「重试到 `Content-Range` 总长等于本地字节数为止」（ModelScope 刚上传会 404 传播延迟）。
 - **修复建议**：在契约 `:350` 与设计 `:524` 引用该脚本；把重试循环补上或在文档里注明缺口。
+
+### 🟢 P2-12 主循环里的 `$flavor` 赋值覆盖了 `-Flavor` 参数本身（当前无害，但是同一类撞名坑）✅ 已修复
+
+- **位置**：`scripts/bootstrap_runtime.ps1:845-850`（主循环 `foreach ($it in $selected)` 内）
+  `$flavor = if ($it.flavor) { ([string]$it.flavor).ToLower() } else { "" }`
+- **问题**：PowerShell 变量名大小写不敏感，这一行赋的 `$flavor` 就是 `-Flavor` 参数（`$Flavor`）本身。
+  **当前不构成 bug**：参数在 `:210-221` 已消费进 `$effectiveFlavor`，`:240/243/250/254` 的挑选逻辑
+  与 `:262 $willFetchGpuLibs` 都在循环之前，之后不再读 `$Flavor`；循环内 `$flavor` 是设计上的
+  条目级变量（`:850/853/874/881/892/909/917/925` 使用，`:591/631/764/799/830` 传参）。
+  但这是 PR #52 P0-1（`$mirror` 覆盖 `-Mirror`）的同类坑，**一旦将来有人在循环体里再读 `$Flavor`
+  做「用户传的 flavor」判断，拿到的就是最后一个条目的 flavor**——无报错、无告警。
+- **修复建议**：不动行为，只在该行上方留注说明覆盖关系与别名禁忌（本条由用户指令并入 P2 批次）。
+- **修复后代码示例**（实际落地，`:845-850`）：
+  ```powershell
+    # 注意：PowerShell 变量名大小写不敏感，这里给 $flavor 赋值就是覆盖 -Flavor 参数本身
+    # （参数在 :210-221 已消费进 $effectiveFlavor，之后不再需要 $Flavor，故当前无害）。
+    # 但别在循环体里再用 $Flavor：那时它已经是「当前条目的 flavor」，不是用户传的参数了。
+    # 同类坑见 PR#52 的 $mirror 覆盖 -Mirror，那条直接把镜像兜底整条断掉且不报错。
+    $flavor = if ($it.flavor) { ([string]$it.flavor).ToLower() } else { "" }
+  ```
 
 ## 已核对无误的点（抽查清单）
 
@@ -492,7 +512,7 @@ sha256 与清单记录的 sha256 全部吻合——**换源没有换掉字节**�
 
 ## 结论
 
-**P0-1 已修复（2026-11-16），当前建议：修完 P1 后再合并。**
+**P0/P1/P2 已全部清零（2026-11-16），当前建议：合并。**
 原始 P0-1 的处置是把兜底判据从 `$ranked.Count` 改成 `$probed.Count`、并把镜像追加挪到兜底之后
 （`scripts/bootstrap_runtime.ps1:673-703`），修复后 `-SegmentMB 0` 与「探针全失败」两条路径
 的兜底队列从「mirror 1 条」恢复成「ModelScope → ESA → GitHub → mirror 4 条」，
@@ -500,18 +520,23 @@ sha256 与清单记录的 sha256 全部吻合——**换源没有换掉字节**�
 **只依赖第三方代理**，而本 PR 恰好把一条真实直链设成了主源。
 
 P1-1 ~ P1-3 是同一个函数里三处「测量不可信」（排序不稳定、失败即删除、假高速），
-建议同批修：它们决定「选哪条源」，而这个 PR 的全部价值都压在这一次选择上。
+已同批修：它们决定「选哪条源」，而这个 PR 的全部价值都压在这一次选择上。
 P1-4 ~ P1-6 是文档：契约 §4.5 是唯一权威描述却与实现四栏不符，字段表的关键语义被本 PR 推翻，
-设计文档留着一条彻底的假话——**建议随本 PR 一起修**，因为这三处正是后来者的前提。
+设计文档留着一条彻底的假话——已随本 PR 一并订正，因为这三处正是后来者的前提。
 
-P2 共 11 条，绝大多数可以合并后按档案规矩逐条跟进。其中 **P2-7（清单没有生成器也没有 CI 守卫）**
-和 **P2-6（`source_version` 会把 11-14 记成 11-02）** 建议优先，因为它们让这份手工维护的
-三级 URL 表在下一次「重新打包清单」时静默失效，而没有任何东西会报警。
+P2 共 12 条（P2-12 为修复期新登记的 `$flavor` 撞名留档），已全部按最小幅度修完：
+其中 **P2-7（清单没有生成器也没有 CI 守卫）** 补了一条会红的单元测试
+（`shipped_manifest_has_three_tier_urls`，反向验证过：改坏 URL 立刻失败），
+**P2-6（`source_version` 会把 11-14 记成 11-02）** 已把清单 `version`/`generated_at` 对齐到 11-14 ——
+这两条原本让这份手工维护的三级 URL 表在下一次「重新打包清单」时静默失效且无人报警。
 
-**合并顺序建议**：先修 PR #52 的 P0-1（`$mirror` 遮蔽），再合本 PR。否则本 PR 里
-「镜像只做单流兜底」这条设计会被 PR #52 的 bug 架空，两边的 P0 交织成一个更难查的症状。
+**合并顺序建议**：PR #52 的 P0-1（`$mirror` 遮蔽）已在其本分支修复（提交 `dc59140`），
+本 PR 可以合并。若先把本 PR 合入而 #52 的修复尚未落地，「镜像只做单流兜底」这条设计
+会被 #52 的 bug 架空，两边的 P0 会交织成一个更难查的症状。
 
 ## 处置记录（2026-11-16，用户裁决「均按建议修复」；每条一提交）
+
+> **落地方式（2026-11-16）**：P0-1 与 P1-1 ~ P1-6 随 PR #53 合入；P2-1 ~ P2-12 因为推送时间晚于 #53 的合并（合并 20:15，P2 推送 20:28–20:57），改由续 PR #54（`feat/runtime-distribution` → `feat/first-run-prep`，13 提交 / 7 文件 +288−48）承载。
 
 > 按 `AGENTS.md` 的档案同步规矩：**修复提交与本文档的状态行必须同一提交更新**，
 > 状态行要写依据（提交号 / PR 号），不要只写「已修复」。
@@ -567,4 +592,68 @@ P2 共 11 条，绝大多数可以合并后按档案规矩逐条跟进。其中 
   标注为已落地并指向 §8.14（`urls[0]`，2026-11-14 起），自建 CF Worker 反代仍记为未做；
   原来指向 §8.11 的错误指针一并删除（§8.11 的结尾正是这条过期 bullet 本身）。
   EN 侧按同一语义重译，保留「仍写迁移前置状态」以外的全部上下文
-- **P2-1 ~ P2-11** ⚠ 未修复（见上；建议 P2-6 / P2-7 优先）
+- **P2-1** ✅ **已修复**（2026-11-16，续 PR #54（#53 合并后补推）内，提交 `b738036`，`scripts/bootstrap_runtime.ps1:666-669`）——
+  探针量随条目尺寸收缩：`$probeSizeMB = $ProbeMB`，当 `$expectedSize` 小于 `8 × ProbeMB` 时打印
+  「条目仅 …，跳过测速（探针量不成比例）」并把 `$probeSizeMB = 0`（走 `Test-RangeSupport` 轻探）。
+  下游三处（轻探分支、`Measure-UrlSpeed` 入参、排序门 `if ($probeSizeMB -gt 0 -and $probed.Count -gt 1)`）
+  统一改用 `$probeSizeMB`；变量名不能叫 `$probeMB`，否则重演 P0-1 的大小写别名坑。
+  复测（`powershell.exe` 5.1，逐字抽取函数体 + 桩）：8/8 通过；端到端 `-Items moss -Flavor cpu`
+  出现「条目仅 1.1 MB，跳过测速」，仍选中 ModelScope，`EXIT=0`。原问题：7 条目白下 ~42 MB，
+  最小条目探针量是其自身 5.5 倍
+- **P2-2** ✅ **已修复**（2026-11-16，续 PR #54（#53 合并后补推）内，提交 `76d51c6`，`scripts/bootstrap_runtime.ps1:748-755`）——
+  分段总长以清单 `size` 为准，探针报的总长只在「清单没写」时兜底，不一致时打印
+  「探针报的总长 … 与清单 … 不一致，以清单为准」。复测 9/9 通过；端到端
+  `-Items moss,deps-embed` 两条目都选中 ModelScope，`EXIT=0`。原问题：异常 CDN 可让段数爆炸
+- **P2-3** ✅ **已修复**（2026-11-16，续 PR #54（#53 合并后补推）内，提交 `f269911`，`scripts/bootstrap_runtime.ps1:646-649`）——
+  `$SegmentMB = 0` 改为 `$script:SegmentMB = 0`，日志改成「本次运行退回单流下载」，
+  只提示一次而非按条目重复 7 次。复测 5/5 通过
+- **P2-4** ✅ **已修复**（2026-11-16，续 PR #54（#53 合并后补推）内，提交 `c07aba9`，`scripts/bootstrap_runtime.ps1:458`）——
+  给 `$parts.Count -lt 4` 守卫加注：实测 `curl` 在 exit 6/7/28 时仍会输出完整 `-w` 行
+  （连接被拒得 `000 0 0.000578 0.000575`），该守卫基本不触发，真正拦失败的是 `$code -ne 206`
+- **P2-5** ✅ **已修复**（2026-11-16，续 PR #54（#53 合并后补推）内，提交 `34deecb`，`docs/RUNTIME_BOOTSTRAP_CONTRACT.md:48`）——
+  参数表 `-ProbeMB` 行尾标注「**当前 GUI 不下发，仅供命令行/运维**」，并补一段「参数可达性」blockquote：
+  指明 `src-tauri/src/ai_runtime/runtime_install.rs:711-726` 目前只下发
+  `-Items -Flavor -RuntimeDir [-Manifest] [-Force]`，三参数无法从 GUI 触发，
+  合并 `feat/first-run-prep`（`RuntimeConfig.download_source` / `segment_mb`）后即可改口
+- **P2-6** ✅ **已修复**（2026-11-16，续 PR #54（#53 合并后补推）内，提交 `9c8888d`，`src-tauri/resources/runtime/manifest.json:2-3`）——
+  `"version": "1"` → `"2026-11-14"`，`"generated_at": "2026-11-02T01:37:25Z"` → `"2026-11-14T03:46:00Z"`；
+  契约 schema 示例同步；schema 块后补说明：两字段仅作出处标注、代码不读，但 `version` 会写进用户状态
+  当 `source_version`（`scripts/bootstrap_runtime.ps1:911` / `installed_state.rs:40`），
+  改内容必须同改 `version`；`generated_at` 被 `scripts/package_moss_flavors.ps1:234` 带进 `packages.json`；
+  约定 `version` = 内容定稿日期戳。`cargo test --lib shipped_manifest*` 2 passed
+- **P2-7** ✅ **已修复**（2026-11-16，续 PR #54（#53 合并后补推）内，提交 `26b22b0`，`src-tauri/src/ai_runtime/backend_probe.rs` `mod tests` 末尾）——
+  新增 `#[test] fn shipped_manifest_has_three_tier_urls()`：断言每条 `urls.len() == 3`、三段 host 依次为
+  `modelscope.cn` / `dl.rpegio.top` / `github.com`、且 `urls[2] == item["url"]`。
+  正向 `cargo test --lib shipped_manifest` → 2 passed；**反向验证过会红**：把 `dl.rpegio.top` 换成
+  `example.com` 后测试失败（`moss/cpu 的第 2 条候选 host 应为 dl.rpegio.top，实际 example.com`），
+  随后已还原、`git diff --numstat` 为空。原问题：这份 7×3 表没有生成器（`scripts/package_moss_flavors.ps1:186-195`
+  不产 `urls`、也不产 4 个非 moss 条目；`scripts/` 无脚本写该清单；`.github/` 零引用），
+  重跑打包脚本会静默删掉本 PR 全部成果
+- **P2-8** ✅ **已修复**（2026-11-16，续 PR #54（#53 合并后补推）内，提交 `75a8e87`，`docs/engines_vulkan_design.md:397-406`、`:449`、`:468` + EN 对应段）——
+  ① `:397-406`「每段先 `curl -r 0-0` 探 206」改为「**每个候选探一次** 206（2026-11-12 起带测速，
+  2026-11-14 起探针顺带报总长，不再每段探一次）」；② `:449` 的 `urls: [ESA, GitHub]` 后补
+  「2026-11-14 起扩成三档 `ModelScope → ESA → GitHub`，见 §8.14」；③ `ESA → GitHub` 结论后加
+  blockquote「**已被 §8.14 取代（2026-11-14）**…顺序不再是硬优先级——正常路径按 §8.13 的测速结果排序。
+  本节保留当日结论与取证，勿据此判断当前候选顺序。」EN 侧同义重译（`Each candidate is probed once` /
+  `Superseded by §8.14`）
+- **P2-9** ✅ **已修复**（2026-11-16，续 PR #54（#53 合并后补推）内，提交 `23a294c`，`docs/RUNTIME_BOOTSTRAP_CONTRACT.md:129-137` + 其后 blockquote）——
+  给示例第一条（`moss/cuda`）补全三档 `"urls": [...]`，并加注「只给第一条写全，其余为省版面省略；
+  **真实清单 7 条每条都有 3 条 `urls`**（ModelScope → `dl.rpegio.top` → GitHub，末项必须等于 `url`）。
+  `shipped_manifest_has_three_tier_urls` 会逐条校验——谁重跑打包脚本覆盖清单，那条测试就会红」
+- **P2-10** ✅ **已修复**（2026-11-16，续 PR #54（#53 合并后补推）内，提交 `3d1094d`，`docs/engines_vulkan_design.md:537-546` 后 blockquote、`:554` + EN）——
+  声明两张表分母不同、别横向比数值：本表「大小」列为 **MiB**（`manifest.size` ÷ 2^20）、
+  「耗时」列**含解压落盘**、「速率」列按 **1 MB = 10^6 字节** 折算；同一 `moss` 记 621.6 MB / 61 s / 10.2 MB/s。
+  另把 `:554`「两轮落盘同为 6.34 GB」注明「**分母是解压后的占盘量，不是下载量**；下表实测下载量合计只有 2.09 GiB」。
+  写作前重算过：`sum size = 2265216807 B = 2.11 GiB`、`sum unpacked = 3549132982 B = 3.31 GiB`、
+  加 1771 MB pip 约 5.03 GiB，故 6.34 GB 是 GB/GiB 混算的安装器口径，只声明「占盘量非下载量」而不硬凑分解
+- **P2-11** ✅ **已修复**（2026-11-16，续 PR #54（#53 合并后补推）内，提交 `3bbb7b0`，`docs/RUNTIME_BOOTSTRAP_CONTRACT.md:383-387` + `docs/engines_vulkan_design.md:533-534` 与 EN `:568-570`）——
+  三处点名 `scripts/verify_cdn_mirror.ps1`：说明它固定做 Range 探测、多次采样报 TTFB 与持续速率**中位数**
+  （单次测速没有意义，同源相邻两次能差 70 倍）、读 `Age`/`X-Cache` 缓存迹象，并给出用法
+  `powershell -ExecutionPolicy Bypass -File scripts\verify_cdn_mirror.ps1 -Url <直链> -Samples 5 -Seconds 15`，
+  要求三档候选都跑一遍再改 `urls[]`
+- **P2-12** ✅ **已修复**（2026-11-16，续 PR #54（#53 合并后补推）内，提交 `8ac6058`，`scripts/bootstrap_runtime.ps1:845-850`）——
+  不改变行为，只在主循环 `$flavor` 赋值上方加 5 行注释：说明该赋值覆盖的就是 `-Flavor` 参数
+  （参数已在 `:210-221` 消费进 `$effectiveFlavor`，循环后不再读，故当前无害），
+  并警告「别在循环体里再用 `$Flavor`」，附 PR#52 `$mirror` 同类坑指路。
+  复测：`BOM=True bytes=55642 CRLF=1065 LF-only=0 PARSE_ERRORS=0`，端到端 `-Items moss -Flavor cpu`
+  `item_done` flavor=cpu、`EXIT=0`、11 files

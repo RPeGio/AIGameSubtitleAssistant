@@ -45,12 +45,20 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
 | `-Force` | 开关 | 忽略已安装标记，强制重装 |
 | `-Manifest <path>` | 默认 app 内置 manifest | 覆盖内置清单（离线/自测用） |
 | `-SegmentMB <n>` | 默认 `64`，`0` = 不分段 | 分段大小；见 §4.5 |
-| `-ProbeMB <n>` | 默认 `2`，`0` = 关闭测速 | 选源前对每个候选发 n MB Range 请求测瞬时速率，按实测排序；见 §4.5 |
+| `-ProbeMB <n>` | 默认 `2`，`0` = 关闭测速 | 选源前对每个候选发 n MB Range 请求测瞬时速率，按实测排序；见 §4.5。**当前 GUI 不下发，仅供命令行/运维**（见下方「参数可达性」） |
 | `-ProbeSec <n>` | 默认 `4` | 单源测速请求的超时（秒）。**这是「慢但能通的源算不算可用」的旋钮**：超时只把该源降级为单流兜底（`Slow`），不判它不可用；见 §4.5 |
 | `-NoResume` | 开关 | 不读、不留 `.downloads` 缓存（每次从头下） |
 | `-MaxAttempts <n>` | 默认 `3` | 单段失败重试次数 |
 | `-PipMirror <url>` | 默认华为云 | CUDA 运行库 pip 索引（§4.3）；`-SkipGpuLibs` 可整段跳过 |
 | `-PipUseProxy` | 开关 | **默认清空 `HTTP(S)_PROXY`** 跑 pip（代理常拉慢 pip），加了才走代理 |
+
+> **参数可达性（2026-11-16 审查 P2-5 留档）**：`src-tauri/src/ai_runtime/runtime_install.rs:711-726`
+> 目前只下发 `-Items -Flavor -RuntimeDir [-Manifest] [-Force]`，`-ProbeMB` / `-ProbeSec` /
+> `-SegmentMB` **无法从 GUI 触发**。后果：慢链路用户不能把探针调小以缩短探测时间
+> （默认 2 MB × 3 候选 × 7 条目 ≈ 42 MB 白流量 + 最坏 84 s），镜像被打死时运维只能走命令行。
+> 计划：GUI 侧参数由设置面板一并下发（`RuntimeConfig.download_source` / `segment_mb` 已在
+> `feat/first-run-prep` 分支实现，合并后本表这三行即可改为「受设置面板控制」）。
+> 在合并前，这三行按**命令行/运维参数**对待。
 
 - **无参运行** = `-Items <§2 表里的全部条目> -Flavor auto`，即「首启默认动作」（装齐运行时 + 模型 + OCR/向量运行时）。
 
@@ -114,13 +122,18 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
 
 ```json
 {
-  "version": "1",
-  "generated_at": "2026-10-30T03:01:00Z",
+  "version": "2026-11-14",
+  "generated_at": "2026-11-14T03:46:00Z",
   "items": [
     {
       "id": "moss",
       "flavor": "cuda",
       "url": "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-cuda.zip",
+      "urls": [
+        "https://modelscope.cn/datasets/RPeGio/gsa-runtime/resolve/master/moss-runtime-v1/moss-cuda.zip",
+        "https://dl.rpegio.top/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-cuda.zip",
+        "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-cuda.zip"
+      ],
       "sha256": "…",
       "size": 123456789,
       "dest": "bin",
@@ -163,6 +176,22 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
   ]
 }
 ```
+
+- **`version` / `generated_at` 仅作出处标注，不是协议版本门禁**：代码不读、不比对这两个字段
+  （Rust 侧只取 `items[]` 的 `id/flavor/sha256/size/unpacked_size`，见
+  `src-tauri/src/ai_runtime/installed_state.rs:125` `parse_manifest_items`）。但 `version` 会被
+  安装器写进用户状态作为 `source_version`（`scripts/bootstrap_runtime.ps1:911`，
+  类型见 `installed_state.rs:40`），所以**改内容必须同改 `version`**，否则从这份清单装的机器
+  永远记着上一版的出处、与上一版安装无法区分。`generated_at` 会被
+  `scripts/package_moss_flavors.ps1:234` 带进 `packages.json`。
+  当前约定：`version` 写成内容定稿的日期戳（如 `"2026-11-14"`）。
+
+> **关于示例里的 `urls`**：上面只给第一条（`moss/cuda`）写全了三档，其余条目为省版面省略。
+> **真实清单 7 条每条都有 3 条 `urls`**（ModelScope → `dl.rpegio.top` → GitHub，末项必须等于
+> `url`）。这张表没有生成器（`scripts/package_moss_flavors.ps1` 不产 `urls`，也没有脚本写
+> `src-tauri/resources/runtime/manifest.json`），所以
+> `src-tauri/src/ai_runtime/backend_probe.rs` 里的 `shipped_manifest_has_three_tier_urls`
+> 会逐条校验这 3 条与 host 顺序——谁重跑打包脚本覆盖了清单，那条测试就会红。
 
 | 字段 | 必填 | 语义 |
 |---|---|---|
@@ -350,6 +379,13 @@ Range 走了单流镜像，反而成功。
 | 实测（2026-11-13 夜间同分钟） | ModelScope 7.88 MB/s｜GitHub 直连 0.13｜gh-proxy 0.13｜ESA 0.09 ⇒ 出境链路整体被打死，境内 CDN 是唯一通路 |
 | 与 `-ProbeMB` 的关系 | 顺序只是"探针不可用时的缺省偏好"；正常路径仍按实测速率排序，故换源不需要改任何代码 |
 | 校验 | 7 条直链均以 `curl -r 0-0` 的 `Content-Range` 总长与 `manifest.size` 对齐（如 `moss-cuda` 651834262、`models-moss` 626397892） |
+
+> **换源/加源请用 `scripts/verify_cdn_mirror.ps1` 复核**（2026-11-16 审查 P2-11 补引用）：它固定做三件事
+> ——Range 探测（不返 206 的源会被 `bootstrap_runtime.ps1` 降级成单流、不再续传）、多次采样报
+> TTFB 与持续速率的**中位数**（单次测速没有意义，同一源相邻两次能差 70 倍）、以及 `Age`/`X-Cache`
+> 缓存迹象（判断"命中边缘"还是"每次回源"）。用法：
+> `powershell -ExecutionPolicy Bypass -File scripts\verify_cdn_mirror.ps1 -Url <直链> -Samples 5 -Seconds 15`。
+> 三档候选都要跑一遍再改 `urls[]`。
 
 ---
 

@@ -1281,4 +1281,54 @@ GPU3:
             f.flavors
         );
     }
+
+    /// 多源 URL 表的守卫（2026-11-16 审查 P2-7）。
+    ///
+    /// 这张 7×3 的 `urls[]` 表**没有生成器**：`scripts/package_moss_flavors.ps1` 只产
+    /// `id/flavor/url/sha256/size/dest/backend_marker`，`scripts/` 下没有任何脚本写
+    /// `src-tauri/resources/runtime/manifest.json`，`.github/` 里也没有清单引用。
+    /// 于是「重跑打包脚本覆盖清单」会让全量首装对所有用户失效，而没有任何测试会红。
+    ///
+    /// 这里补的就是那条会红的测试：每个条目必须有三级候选，host 顺序固定
+    /// （ModelScope 主源 → 自建 CDN → GitHub 直连），且**最后一项必须等于 `url`**
+    /// ——下载器把 `url` 当作「直连兜底」，两者分叉会让候选集合莫名多一条或少一条。
+    #[test]
+    fn shipped_manifest_has_three_tier_urls() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/runtime/manifest.json");
+        if !path.is_file() {
+            return;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let items = json.get("items").and_then(|v| v.as_array()).unwrap();
+        assert!(!items.is_empty(), "清单没有 items");
+
+        // host 顺序即优先级：ModelScope 主源 → 自建 CDN → GitHub 直连
+        let want_hosts = ["modelscope.cn", "dl.rpegio.top", "github.com"];
+        for item in items {
+            let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+            let flavor = item.get("flavor").and_then(|v| v.as_str()).unwrap_or("");
+            let tag = format!("{}/{}", id, flavor);
+            let urls: Vec<&str> = item
+                .get("urls")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|u| u.as_str()).collect())
+                .unwrap_or_default();
+            assert_eq!(
+                urls.len(),
+                want_hosts.len(),
+                "{} 的 urls 必须恰好 {} 条（ModelScope/CDN/GitHub），实际 {:?}",
+                tag,
+                want_hosts.len(),
+                urls
+            );
+            for (i, want) in want_hosts.iter().enumerate() {
+                let host = urls[i].split('/').nth(2).unwrap_or("");
+                assert_eq!(&host, want, "{} 的第 {} 条候选 host 应为 {}，实际 {}", tag, i + 1, want, host);
+            }
+            // 最后一级 = url 直连兜底，两者分叉会让候选集合对不上
+            let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("");
+            assert_eq!(urls[want_hosts.len() - 1], url, "{} 的 urls 末项必须等于 url", tag);
+        }
+    }
 }

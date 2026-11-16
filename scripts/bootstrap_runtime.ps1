@@ -471,6 +471,10 @@ function Measure-UrlSpeed([string]$url, [int]$probeMB, [int]$timeoutSec) {
   try {
     $out = & curl.exe -s -L --max-time $timeoutSec -r "0-$last" -D $hdr -o NUL -w "%{http_code} %{size_download} %{time_total} %{time_starttransfer}" $url 2>$null
     $parts = (($out | Out-String).Trim() -split '\s+')
+    # 这个守卫基本是死的：实测 curl 在连接被拒（exit 7）、DNS 失败（exit 6）、超时（exit 28）时
+    # 照样会把 -w 行吐出来（`000 0 0.000553 0.000550`），四个字段齐备。真正判失败的是下面
+    # 的 `$code -ne 206`——`[int]"000"` 就是 0（2026-11-16 审查 P2-4）。
+    # 保留它只为兜住 curl 连 -w 行都没输出的极端情形（比如进程被外部杀掉）。
     if ($parts.Count -lt 4) { return @{ ok = $false; mbps = 0.0; length = [int64]0; rejected = $false } }
     $code = [int]$parts[0]
     $size = [double]$parts[1]
@@ -658,8 +662,11 @@ function Invoke-SingleStream($candidates, [string]$dest, $id, $flavor, [int64]$e
 function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $flavor) {
   # 分段依赖系统自带 curl（Windows 10 1803+ 都有）；老系统上别硬失败，退回单流
   if ($SegmentMB -gt 0 -and -not (Get-Command curl.exe -ErrorAction SilentlyContinue)) {
-    Log "未找到 curl.exe（Win10 1803+ 自带），退回单流下载（无分段、无续传）"
-    $SegmentMB = 0
+    Log "未找到 curl.exe（Win10 1803+ 自带），本次运行退回单流下载（无分段、无续传）"
+    # 必须写 $script:SegmentMB：函数内的 `$SegmentMB = 0` 只会建一个函数局部变量，
+    # 脚本级 -SegmentMB 参数原封不动 ⇒ 7 个条目各打一遍同样的日志、各撞一次同样的失败。
+    # （PowerShell 变量名大小写不敏感，这类遮蔽与 PR#52 的 $mirror 撞名是同一类坑，2026-11-16 审查 P2-3）
+    $script:SegmentMB = 0
   }
 
   $expectedSize = [int64]0
@@ -671,6 +678,16 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
   # 再按吞吐从快到慢排序。镜像前缀不探（2026-11-01 真机：镜像对 Range 的响应是
   # "整包重取再切片"，按段下只有 0.18 MB/s，同一 URL 单流却有 6.7 MB/s），
   # 只留在队尾做单流兜底。
+  #
+  # 探针量必须随条目尺寸收缩：默认 2 MB × 3 个非镜像候选，而 moss/cpu 整包才 1.1 MB
+  # ⇒ 为了下它先下 6 MB，7 个条目合计约 42 MB 全部丢弃（-o NUL），最坏还串行等
+  # 3 × ProbeSec × 7 ≈ 84 s 才开始下载。条目小于探针总量的 8 倍时直接退回旧的
+  # 「探 Range 能力」路径——那种尺寸下分段收益本来也有限（2026-11-16 审查 P2-1）。
+  $probeSizeMB = $ProbeMB
+  if ($expectedSize -gt 0 -and $expectedSize -lt ([int64]8 * [int64]$ProbeMB * 1MB)) {
+    if ($ProbeMB -gt 0) { Log "条目仅 $(Format-MB $expectedSize)，跳过测速（探针量不成比例）" }
+    $probeSizeMB = 0
+  }
   $probed = @()
   if ($SegmentMB -le 0) {
     Log "已关闭分段（-SegmentMB 0），单流下载"
@@ -680,14 +697,14 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
         Log "跳过 $($c.Url)（镜像前缀：Range 会被整包重取，只作单流兜底）"
         continue
       }
-      if ($ProbeMB -le 0) {
-        # 关闭测速：沿用旧行为，取第一个支持 Range 的源
+      if ($probeSizeMB -le 0) {
+        # 关闭测速（或条目太小不值得测）：沿用旧行为，取第一个支持 Range 的源
         $r = Test-RangeSupport $c.Url
         if ($r.ok) { $probed += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Mbps = 0.0; Length = $r.length; Slow = $false } }
         else { Log "跳过 $($c.Url)（不支持 Range，或探测失败）" }
         continue
       }
-      $m = Measure-UrlSpeed $c.Url $ProbeMB $ProbeSec
+      $m = Measure-UrlSpeed $c.Url $probeSizeMB $ProbeSec
       if ($m.ok) {
         $probed += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Mbps = $m.mbps; Length = $m.length; Slow = $false }
       } elseif (-not $m.rejected) {
@@ -705,17 +722,16 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
   # PS 5.1 的 Sort-Object 等键时不保序（实测输入 ModelScope→ESA→GitHub 全 0.0 时整体倒序，
   # n=3/4/5/8 全部失败），且 5.1 根本没有 -Stable。而等速恰恰是常态：夜间实测 GitHub 与
   # gh-proxy 同为 0.13 MB/s；-ProbeMB 0 这条路径更是全 0.0 等键。所以显式拿原始下标做次键，
-  # -ProbeMB 0 则完全不排序（它承诺的是「按候选顺序取第一个支持 Range 的源」，2026-11-16 审查 P1-1）。
+  # 没测速（-ProbeMB 0 或条目太小跳过测速）则完全不排序——那两条路径承诺的是「按候选顺序取
+  # 第一个支持 Range 的源」，2026-11-16 审查 P1-1 / P2-1。
   $ordered = @($probed)
-  if ($ProbeMB -gt 0 -and $probed.Count -gt 1) {
+  if ($probeSizeMB -gt 0 -and $probed.Count -gt 1) {
     $seq = 0
     $keyed = foreach ($p in $probed) {
       [pscustomobject]@{ Seq = $seq; Url = $p.Url; Kind = $p.Kind; Length = $p.Length; Mbps = $p.Mbps; Slow = [bool]$p.Slow }
       $seq = $seq + 1
     }
     $ordered = @($keyed | Sort-Object @{ Expression = "Mbps"; Descending = $true }, @{ Expression = "Seq"; Descending = $false })
-  }
-  if ($ordered.Count -gt 1) {
     foreach ($p in $ordered) {
       Log ("测速 {0,6:N2} MB/s  {1}" -f $p.Mbps, $p.Url)
     }
@@ -749,7 +765,16 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
   # 只有「探针确认支持 Range 且没被降级为 Slow」的源才配拿去分段，否则直接走单流回退
   if ($SegmentMB -gt 0 -and $probed.Count -gt 0 -and $ranked.Count -gt 0 -and $ranked[0].Kind -ne "mirror" -and -not $ranked[0].Slow) {
     $rangeUrl = $ranked[0].Url
-    if ($ranked[0].Length -gt 0) { $expectedSize = $ranked[0].Length }
+    # 总长以清单 `size` 为准，探针报的总长只在「清单没写」时兜底。
+    # 探针拿到的是 HTTP 服务端自报值，一个坏掉/被劫持的源可以谎报成任意值：谎报变大 ⇒
+    # 段数按 $expectedSize / $segBytes 爆炸（一路写盘到磁盘满），而磁盘预检用的是清单
+    # size，根本拦不住；谎报变小 ⇒ Join-Segments 的完整性校验直接失败。2026-11-16 审查 P2-2。
+    if ($ranked[0].Length -gt 0) {
+      if ($expectedSize -le 0) { $expectedSize = $ranked[0].Length }
+      elseif ($ranked[0].Length -ne $expectedSize) {
+        Log "探针报的总长 $(Format-MB $ranked[0].Length) 与清单 $(Format-MB $expectedSize) 不一致，以清单为准"
+      }
+    }
     Log "分段下载源：$rangeUrl（支持 Range，总长 $(Format-MB $expectedSize)）"
   }
 
@@ -838,6 +863,11 @@ $hashFailed = $false
 
 foreach ($it in $selected) {
   $id = [string]$it.id
+  # 注意：PowerShell 变量名大小写不敏感，这里给 `$flavor` 赋值就是覆盖 `-Flavor` 参数本身
+  # （参数在 :210-221 已消费进 `$effectiveFlavor`，之后不再需要 `$Flavor`，故当前无害）。
+  # 但**别在循环体里再用 `$Flavor`**：那时它已经是"当前条目的 flavor"，不是用户传的参数了。
+  # 同类坑见 PR#52 的 `$mirror` 覆盖 `-Mirror`，那条直接把镜像兜底整条断掉且不报错
+  # （2026-11-16 审查 P2-12 留档）。
   $flavor = if ($it.flavor) { ([string]$it.flavor).ToLower() } else { "" }
   $destRel = if ($it.dest) { [string]$it.dest } else { "bin" }
   $destDir = Join-Path $runtime $destRel

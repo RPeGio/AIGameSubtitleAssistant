@@ -399,9 +399,11 @@ all mean the product does not run.
   from zero. `bootstrap_runtime.ps1` now does "multi-source candidates + byte-range segments +
   in-segment resume", **without repacking any asset** (the largest pack is 502 MB; repacking and
   re-uploading costs more than it saves). Candidate order: `urls[]` → `-Mirror` prefix → `url`
-  direct. Each candidate is probed with `curl -r 0-0` for `206`; sources that ignore Range
-  (gh-proxy does this for large files) are used single-stream and **never resumed** (`curl -C -`
-  appends duplicates when Range is ignored — measured: a 1770 MB download grew to 2036 MB). Segments
+  direct. **Each candidate is probed once** for `206` (throughput probing since 2026-11-12; since
+  2026-11-14 the probe also reports the total length, so it is no longer re-probed per segment);
+  sources that ignore Range (gh-proxy does this for large files) are used single-stream and **never
+  resumed** (`curl -C -` appends duplicates when Range is ignored — measured: a 1770 MB download grew
+  to 2036 MB). Segments
   live in `<runtime>\.downloads\<id>-<sha8>\`, and a leftover `.curlpart` is merged into the segment
   file on the next run ⇒ resume across processes. Measured: a 20 MB asset in 5 segments, and after a
   kill it logged `续传：缓存里已有 3.0 MB，只需补 17.0 MB` and still matched the manifest SHA256; the
@@ -456,7 +458,8 @@ fallback**, so like OCR this is not an optional component.
 connection; the 7 assets total ~2.1 GB (plus 1.77 GB of CUDA libs via pip), which makes first-run
 install unacceptable.
 
-**Approach (data only, no code change)**: every asset in the manifest gains `urls: [ESA, GitHub]` and
+**Approach (data only, no code change)**: every asset in the manifest gains `urls: [ESA, GitHub]`
+(three tiers `ModelScope → ESA → GitHub` since 2026-11-14, see §8.14) and
 the downloader probes them in order (multi-source landed in §4.5). ESA is a **pure pass-through
 mirror** — the origin is still GitHub Releases, so no asset has to be re-uploaded and the
 `gh release` flow is unchanged.
@@ -486,6 +489,11 @@ filing only overseas PoPs are available, so latency is not comparable to mainlan
 ⇒ hence `urls[]` order is **ESA → GitHub** with `-Mirror` (gh-proxy) as the single-stream fallback;
 any one of the three suffices to finish, and real stability still needs ICP filing plus mainland
 nodes (or an object store).
+
+> **Superseded by §8.14 (2026-11-14)**: the fixed `ESA → GitHub` order above no longer holds. It is
+> now three tiers, `ModelScope → ESA (dl.rpegio.top) → GitHub`, and the order is no longer a hard
+> priority — the normal path ranks by the throughput measured in §8.13. This section keeps the
+> conclusion and evidence of that day; do not read the current candidate order out of it.
 
 **2026-11-12 addendum: a fixed order is not enough — measure and pick.** Re-measuring the same
 sources at 22:10 flipped the picture completely:
@@ -557,6 +565,11 @@ fastest right now" and never presumes a primary source.
   `delete_files`).
 - During migration compare each package against the sha256 recorded in `manifest.json` and abort on
   mismatch — never end up with "the pack on ModelScope is not the one the manifest describes".
+- **Verify with `scripts/verify_cdn_mirror.ps1`** (cross-reference added 2026-11-16, review P2-11):
+  before and after touching `urls[]`, run it once per tier —
+  `powershell -ExecutionPolicy Bypass -File scripts\verify_cdn_mirror.ps1 -Url <direct-link> -Samples 5 -Seconds 15`
+  — it reports Range support (a source not returning 206 gets downgraded to single-stream by the
+  downloader), median TTFB/sustained throughput, and `Age`/`X-Cache` cache hints.
 
 **Daytime full first-install comparison (2026-11-14 10:38–11:21, same machine, same item set,
 `-Flavor auto`, only `urls[]` reduced to a single source)**:
@@ -578,8 +591,17 @@ ESA per item (`installed_at` deltas, extraction included):
 | deps-embed | 150.1 MiB | 6.8 min | 0.39 MB/s |
 | CUDA runtime via pip (8 wheels, 1771 MB) | — | 1.8 min | 16.6 MB/s |
 
+> **This table and the table in contract §4.5 use different denominators — do not compare the
+> numbers side by side** (annotated 2026-11-16, review P2-10): the Size column here is **MiB**
+> (`manifest.size` ÷ 2^20), the Time column **includes extraction**, and the Rate column converts
+> with **1 MB = 10^6 bytes**. The §4.5 table in `docs/RUNTIME_BOOTSTRAP_CONTRACT.md` measures
+> **download only** and labels sizes in MB, so the same `moss` reads 621.6 MB / 61 s / 10.2 MB/s
+> there. Different runs and different denominators (extraction included vs not) — the ~10× gap is
+> not a contradiction.
+
 Three takeaways: (1) ESA throughput decays as the run progresses (0.39 MB/s at the tail), consistent
 with a throttled shared egress rather than anything file-specific; (2) the pip phase runs at
 16.6 MB/s off the Huawei Cloud mirror and is never the bottleneck in either round; (3) both rounds
-landed 6.34 GB with `exit=0` and an identical item set (5 download items plus the CUDA runtime pip
-phase) — **switching sources does not change the product**.
+landed 6.34 GB (the denominator is the **extracted on-disk footprint, not the download volume** — the
+measured downloads in the table above total only 2.09 GiB) with `exit=0` and an identical item set
+(5 download items plus the CUDA runtime pip phase) — **switching sources does not change the product**.
