@@ -670,18 +670,33 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
     }
   }
 
-  # 排序队列：测速过的源（快→慢）→ 镜像候选（只做单流兜底）
+  # 排序队列：探针通过的源（快→慢）→ 未探查成功的直链（保序）→ 镜像（只做单流兜底）。
+  # 兜底判据必须看「有没有探针通过的源」($probed)，不能看 $ranked.Count：镜像总会被追加，
+  # $ranked 永不为空，于是 -SegmentMB 0 / curl.exe 缺失 / 探针全失败 这三条正式路径
+  # 都会退化成「只剩镜像可用」，三条真实直链连试都不试（2026-11-16 审查 P0-1）。
   $ranked = @()
   foreach ($p in ($probed | Sort-Object Mbps -Descending)) {
     $ranked += [pscustomobject]@{ Url = $p.Url; Kind = $p.Kind; Length = $p.Length }
   }
+  if ($ranked.Count -eq 0) {
+    # 探针一个都没过 ≠ 源不可用（超时/零字节只是「没测出来」），直链仍留在队列里做单流
+    foreach ($c in $candidates) {
+      if ($c.Kind -ne "mirror") {
+        $ranked += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Length = [int64]0 }
+      }
+    }
+  }
+  # 镜像永远排最后：Range 会被整包重取，只适合单流兜底
   foreach ($c in $candidates) {
-    if ($c.Kind -eq "mirror") { $ranked += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Length = [int64]0 } }
+    if ($c.Kind -eq "mirror") {
+      $ranked += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Length = [int64]0 }
+    }
   }
   if ($ranked.Count -eq 0) { $ranked = @($candidates) }
 
   $rangeUrl = $null
-  if ($SegmentMB -gt 0 -and $ranked.Count -gt 0 -and $ranked[0].Kind -ne "mirror") {
+  # 只有「探针确认支持 Range」的源才配拿去分段（$probed 非空），否则直接走单流回退
+  if ($SegmentMB -gt 0 -and $probed.Count -gt 0 -and $ranked.Count -gt 0 -and $ranked[0].Kind -ne "mirror") {
     $rangeUrl = $ranked[0].Url
     if ($ranked[0].Length -gt 0) { $expectedSize = $ranked[0].Length }
     Log "分段下载源：$rangeUrl（支持 Range，总长 $(Format-MB $expectedSize)）"
