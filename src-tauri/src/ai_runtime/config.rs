@@ -962,7 +962,12 @@ pub(crate) fn move_runtime_dir_impl(app_data: &Path, target: &Path) -> Result<Mo
 
 /// 删除旧目录实现
 pub(crate) fn delete_old_runtime_dir_impl(app_data: &Path) -> Result<String, String> {
-    let mut loc = read_location(app_data).ok_or_else(|| "没有搬家记录（指针文件缺失）".to_string())?;
+    // 这里要的是「指针文件里记了什么」，而不是「指针指向的新目录此刻在不在」：
+    // 用 read_location 的话，新目录缺失（外接盘没插 / 被手动删）时会返回 None，
+    // 明明指针文件好好的却报「没有搬家记录（指针文件缺失）」，清理旧目录这条路也永远走不到。
+    // 2026-11-07 真机就是这么卡住的（D:\_GSA_RUNTIME 少打一个下划线，旧目录反而删不掉）。
+    let mut loc =
+        read_location_raw(app_data).ok_or_else(|| "没有搬家记录（指针文件缺失）".to_string())?;
     let previous = loc
         .previous
         .clone()
@@ -972,17 +977,24 @@ pub(crate) fn delete_old_runtime_dir_impl(app_data: &Path) -> Result<String, Str
     if normalize_lexical(&old) == normalize_lexical(&current) {
         return Err("旧目录就是当前 runtime 目录，拒绝删除".into());
     }
+    // 新目录不在时给一句人话，别让用户以为搬家成功过
+    let new_dir_missing = !PathBuf::from(&loc.runtime_dir).is_dir();
+    let hint = if new_dir_missing {
+        "（注意：指针指向的新目录当前不存在，删完旧目录后只剩悬空指针）"
+    } else {
+        ""
+    };
     if !old.exists() {
         loc.previous = None;
         write_location(app_data, &loc)?;
-        return Ok(format!("旧目录已不存在：{previous}（已清理记录）"));
+        return Ok(format!("旧目录已不存在：{previous}（已清理记录）{hint}"));
     }
     fs::remove_dir_all(&old).map_err(|e| {
         format!("删除 {previous} 失败: {e}（可能有文件正被占用，先退出所有转写/OCR 任务再试）")
     })?;
     loc.previous = None;
     write_location(app_data, &loc)?;
-    Ok(format!("已删除旧目录：{previous}"))
+    Ok(format!("已删除旧目录：{previous}{hint}"))
 }
 
 /// Tauri 命令：把 runtime 目录整体搬到别处（重启生效）
@@ -1708,4 +1720,50 @@ mod tests {
         let _ = fs::remove_dir_all(&dst);
     }
 
+    /// P1-3：新目录不存在时（外接盘没插 / 被手动删掉），「删除旧目录」必须仍然可用。
+    /// 修复前这里走 `read_location`（要求指针目标 `is_dir()`），会直接报
+    /// 「没有搬家记录（指针文件缺失）」——明明指针文件在，文案是假的，而且清理路径不可达。
+    #[test]
+    fn test_delete_old_dir_works_when_new_dir_missing() {
+        let base = temp_dir("del_base");
+        let old = temp_dir("del_old");
+        let new = temp_dir("del_new_missing");
+        for d in [&base, &old, &new] {
+            let _ = fs::remove_dir_all(d);
+        }
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("config.json"), b"{}").unwrap();
+        // 指针指向一个**不存在**的新目录，previous 记着旧目录
+        write_location(
+            &base,
+            &RuntimeLocation {
+                runtime_dir: new.display().to_string(),
+                previous: Some(old.display().to_string()),
+                moved_at: Some(now_epoch()),
+            },
+        )
+        .unwrap();
+        assert!(!new.exists());
+
+        let msg = delete_old_runtime_dir_impl(&base).unwrap();
+        assert!(msg.contains("已删除"), "删除结果：{msg}");
+        assert!(!old.exists(), "旧目录应被真正删掉");
+        assert!(read_location_raw(&base).unwrap().previous.is_none(), "previous 应被清掉");
+
+        // 连「已不存在」的清记录路径也要能走通
+        write_location(
+            &base,
+            &RuntimeLocation {
+                runtime_dir: new.display().to_string(),
+                previous: Some(temp_dir("del_old2").display().to_string()),
+                moved_at: Some(now_epoch()),
+            },
+        )
+        .unwrap();
+        let msg = delete_old_runtime_dir_impl(&base).unwrap();
+        assert!(msg.contains("已不存在"), "删除结果：{msg}");
+        assert!(read_location_raw(&base).unwrap().previous.is_none());
+
+        let _ = fs::remove_dir_all(&base);
+    }
 }

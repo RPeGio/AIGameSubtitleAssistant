@@ -27,7 +27,7 @@
 
 **有 1 条 P0 阻塞合并，4 条 P1 建议本 PR 内处理。**
 
-> **更新（2026-11-16）**：P0-1 已在本分支修复并复测；P1-1、P1-2、P1-4 也已修复并复测（P1-3 随后单独提交）。
+> **更新（2026-11-16）**：P0-1 与 P1-1 ~ P1-4 均已在本分支修复并复测，当前 P0/P1 清零，
 > 剩余 23 条 P2 按原优先级跟进。下方总评保留发现当时的判断。
 
 结构性设计是好的：`RuntimeConfig` 的 `download_source/segment_mb/setup_auto` 三字段与面板一一对应；
@@ -189,7 +189,9 @@
   }
   ```
 
-### 🟡 P1-3 新目录不存在时「删除旧目录」不可达，且报错信息误导
+### 🟡 P1-3 新目录不存在时「删除旧目录」不可达，且报错信息误导 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P1-3）。下方保留发现时的原始取证，行号对应修复前。
 
 - **位置**：`src-tauri/src/ai_runtime/config.rs:934`（`read_location` 的 `is_dir()` 检查在 `:234-246`）
 - **问题**：`delete_old_runtime_dir_impl` 第一行用 `read_location(app_data)`，而 `read_location`
@@ -200,17 +202,40 @@
   这正是 `docs/MISC_TODO.md` 里记下的真机事故（把 `D:\__GSA_RUMTIME` 打成 `D:\_GSA_RUNTIME`，
   指针悬空+旧目录待删）所需要的那个入口。
 - **修复建议**：读指针时改用不校验目录存在性的 `read_location_raw`，把「新目录是否在」只用于提示。
-- **修复后代码**：
+- **修复后代码**（实际落地版）：
 
   ```rust
   pub(crate) fn delete_old_runtime_dir_impl(app_data: &Path) -> Result<String, String> {
-      // 这里要的是「记录里写了什么」，不是「那个目录还在不在」：
-      // 新目录所在盘拔掉时，用户更需要能清掉旧目录
-      let mut loc = read_location_raw(app_data)
-          .ok_or_else(|| "没有搬家记录（指针文件缺失）".to_string())?;
-      let new_dir_missing = !PathBuf::from(&loc.runtime_dir).is_dir();
+      // 这里要的是「指针文件里记了什么」，而不是「指针指向的新目录此刻在不在」：
+      // 用 read_location 的话，新目录缺失（外接盘没插 / 被手动删）时会返回 None，
+      // 明明指针文件好好的却报「没有搬家记录（指针文件缺失）」，清理旧目录这条路也永远走不到。
+      // 2026-11-07 真机就是这么卡住的（D:\_GSA_RUNTIME 少打一个下划线，旧目录反而删不掉）。
+      let mut loc =
+          read_location_raw(app_data).ok_or_else(|| "没有搬家记录（指针文件缺失）".to_string())?;
       let previous = loc.previous.clone().ok_or_else(|| "没有待删除的旧目录".to_string())?;
-      // …（后略，逻辑不变；结束时若 new_dir_missing 可在返回串里附带一句提示）
+      let old = PathBuf::from(&previous);
+      let current = resolve_runtime_dir(Some(app_data.to_path_buf()));
+      if normalize_lexical(&old) == normalize_lexical(&current) {
+          return Err("旧目录就是当前 runtime 目录，拒绝删除".into());
+      }
+      // 新目录不在时给一句人话，别让用户以为搬家成功过
+      let new_dir_missing = !PathBuf::from(&loc.runtime_dir).is_dir();
+      let hint = if new_dir_missing {
+          "（注意：指针指向的新目录当前不存在，删完旧目录后只剩悬空指针）"
+      } else {
+          ""
+      };
+      if !old.exists() {
+          loc.previous = None;
+          write_location(app_data, &loc)?;
+          return Ok(format!("旧目录已不存在：{previous}（已清理记录）{hint}"));
+      }
+      fs::remove_dir_all(&old).map_err(|e| {
+          format!("删除 {previous} 失败: {e}（可能有文件正被占用，先退出所有转写/OCR 任务再试）")
+      })?;
+      loc.previous = None;
+      write_location(app_data, &loc)?;
+      Ok(format!("已删除旧目录：{previous}{hint}"))
   }
   ```
 
@@ -810,7 +835,7 @@
 
 ## 结论
 
-**P0-1、P1-1、P1-2、P1-4 均已修复（2026-11-16），P1-3 随后单独提交；P2 余 23 条按档案规矩跟进。**
+**P0-1、P1-1 ~ P1-4 均已修复（2026-11-16），P0/P1 清零，可进入合并流程；P2 余 23 条按档案规矩跟进。**
 P0-1 原本必须在本 PR 内修掉（一个变量改名 + 一条冒烟断言），否则「强制镜像」
 这个本 PR 自己新加的功能是空操作，且基线里还好的镜像兜底被静默打断。
 P1-1 ~ P1-3 属于「用户会撞上且撞上后没有出路」的失败语义问题，已同批修掉；
@@ -856,7 +881,12 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   复测：新增 `test_move_rolls_back_created_target_when_copy_incomplete`（用子目录里的 `.downloads`
   稳定制造对账缺失）与 `test_move_rolls_back_into_existing_empty_target`；全量 `cargo test --lib`
   **371 passed**；这两个新测试对修复前代码是 **2 failed**（负向对照），断言有区分力。
-- **P1-3** ⚠ 未修复（`config.rs:934` 用 `read_location`，新目录缺失时不可达）
+- **P1-3** ✅ **已修复**（2026-11-16，本分支，`src-tauri/src/ai_runtime/config.rs:963-997`）——
+  读指针改用 `read_location_raw`（不校验目录存在性），「新目录是否在」只用来在返回串里附带一句
+  「（注意：指针指向的新目录当前不存在，删完旧目录后只剩悬空指针）」。清理旧目录不再受新目录是否挂载影响，
+  文案也不再谎称「指针文件缺失」。复测：新增 `test_delete_old_dir_works_when_new_dir_missing`
+  （指针指向不存在的新目录 + 存在旧目录 ⇒ 旧目录被真删、`previous` 清空；再测旧目录也不存在时的清记录路径）；
+  全量 `cargo test --lib` **372 passed**，该测试对修复前代码 **failed**（负向对照）。
 - **P1-4** ✅ **已修复**（2026-11-16，本分支，`src/components/timeline/Timeline.vue:570-617`）——
   按用户裁决「以改 UI 之前的逻辑为准」把 `onWheelRoot` **恢复为基线 `9cae08c` 的实现**
   （`git diff` 抽函数体算 SHA256，与基线同为 `7254366D…`，逐字节一致），并在函数头补「三处约定」注释
