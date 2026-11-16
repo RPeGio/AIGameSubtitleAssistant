@@ -319,7 +319,9 @@
   }
   ```
 
-### 🟢 P2-2 同一个 patch 接口里，有的字段静默钳位、有的字段硬报错
+### 🟢 P2-2 同一个 patch 接口里，有的字段静默钳位、有的字段硬报错 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P2-2）。
 
 - **位置**：`src-tauri/src/ai_runtime/config.rs:775`、`:778`（钳位） vs `:784`、`:787`（报错）
 - **问题**：`moss_threads = v.min(256)`、`moss_timeout_minutes = v.min(24*60)` 静默截断，
@@ -908,4 +910,10 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   `reload()` 在换 provider 的同时 `*self.config.write() = config`。新增
   `test_ocr_reload_refreshes_config_too`（改盘上 `dev_debug=true` → `reload()` → `config().dev_debug` 为真），
   全量 `cargo test --lib` **373 passed**。
-- **P2-2 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
+- **P2-2** ✅ **已修复**（2026-11-16，本分支，`src-tauri/src/ai_runtime/config.rs:680-717`）——
+  新增 `normalize_moss_threads`（0–256）/ `normalize_moss_timeout_minutes`（0–1440），
+  与 `segment_mb`/`download_source` 统一成「超范围报错、错误串带原值与允许区间」，
+  `update_runtime_settings` 里两处 `.min(...)` 改成 `?` 传播。新增
+  `test_normalize_threads_and_timeout_reject_instead_of_clamping`；契约 §8.10 的字段表同步改口
+  （明确「不静默钳位」）。全量 `cargo test --lib` **374 passed**。
+- **P2-3 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）

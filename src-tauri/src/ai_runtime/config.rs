@@ -685,6 +685,30 @@ pub fn normalize_segment_mb(raw: u32) -> Result<u32, String> {
     Ok(raw)
 }
 
+/// MOSS 推理线程数归一化：0（不设置 MTD_THREADS，CLI 默认全核）~ 256。
+///
+/// 与 `segment_mb`/`download_source` 同一套契约——**超范围就报错，不静默钳位**。
+/// 之前这里是 `v.min(256)`，用户填 999 会被告知成功、实际存成 256，
+/// 面板上看到的又还是 256，谁也说不清到底生没生效（2026-11-16 审查 P2-2）。
+pub fn normalize_moss_threads(raw: u32) -> Result<u32, String> {
+    if raw > 256 {
+        return Err(format!(
+            "moss_threads 取值非法: {raw}（0–256，0 表示用 CLI 默认全核）"
+        ));
+    }
+    Ok(raw)
+}
+
+/// MOSS 单段超时归一化：0（不超时）~ 1440 分钟。契约同 `normalize_moss_threads`。
+pub fn normalize_moss_timeout_minutes(raw: u32) -> Result<u32, String> {
+    if raw > 24 * 60 {
+        return Err(format!(
+            "moss_timeout_minutes 取值非法: {raw}（0–1440 分钟，0 表示不超时）"
+        ));
+    }
+    Ok(raw)
+}
+
 /// OCR 设备归一化：空（CPU/自动）| "gpu:0" 这类
 fn normalize_ocr_device(raw: &str) -> String {
     raw.trim().to_ascii_lowercase()
@@ -772,10 +796,10 @@ pub async fn update_runtime_settings(
         config.ocr_device = normalize_ocr_device(&v);
     }
     if let Some(v) = patch.moss_threads {
-        config.moss_threads = v.min(256);
+        config.moss_threads = normalize_moss_threads(v)?;
     }
     if let Some(v) = patch.moss_timeout_minutes {
-        config.moss_timeout_minutes = v.min(24 * 60);
+        config.moss_timeout_minutes = normalize_moss_timeout_minutes(v)?;
     }
     if let Some(v) = patch.dev_debug {
         config.dev_debug = v;
@@ -1535,6 +1559,25 @@ mod tests {
         assert_eq!(normalize_segment_mb(0).unwrap(), 0);
         assert_eq!(normalize_segment_mb(64).unwrap(), 64);
         assert!(normalize_segment_mb(2048).is_err());
+    }
+
+    #[test]
+    fn test_normalize_threads_and_timeout_reject_instead_of_clamping() {
+        // P2-2：同一个 patch 接口不能有的字段静默钳位、有的字段报错。
+        // 超范围一律报错，且错误串里要带上允许区间（用户得知道填多少才合法）。
+        assert_eq!(normalize_moss_threads(0).unwrap(), 0);
+        assert_eq!(normalize_moss_threads(16).unwrap(), 16);
+        assert_eq!(normalize_moss_threads(256).unwrap(), 256);
+        let err = normalize_moss_threads(999).unwrap_err();
+        assert!(err.contains("999") && err.contains("256"), "错误串应带原值与区间: {err}");
+
+        assert_eq!(normalize_moss_timeout_minutes(0).unwrap(), 0);
+        assert_eq!(normalize_moss_timeout_minutes(1440).unwrap(), 1440);
+        let err = normalize_moss_timeout_minutes(1441).unwrap_err();
+        assert!(
+            err.contains("1441") && err.contains("1440"),
+            "错误串应带原值与区间: {err}"
+        );
     }
 
     #[test]

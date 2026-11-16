@@ -778,8 +778,11 @@ invoke("runtime_status")   // 无参数
 | `delete_old_runtime_dir` | 无 | `string` | 删指针里的 `previous` 目录 |
 | `open_log_dir` | 无 | `string` | 建目录并用系统文件管理器打开 `runtime/logs` |
 
-`SettingsPatch` 允许的字段：`ocr_device` / `moss_threads`（≤256）/ `moss_timeout_minutes`（≤1440）/
-`dev_debug` / `download_source` / `segment_mb`（≤1024，0 = 关分段）/ `setup_auto`。
+`SettingsPatch` 允许的字段：`ocr_device` / `moss_threads`（0–256，0 = CLI 默认全核）/
+`moss_timeout_minutes`（0–1440，0 = 不超时）/ `dev_debug` / `download_source` /
+`segment_mb`（0–1024，0 = 关分段）/ `setup_auto`。
+**超出区间的数值一律报错**（错误串带原值与允许区间），不静默钳位——
+同一个命令不能对 `segment_mb` 报错、对 `moss_threads` 悄悄改成 256（2026-11-16 审查 P2-2）。
 `ocr_device` 变更后**当场重建 OCR provider**（失败不阻断，下次启动生效）。
 
 **runtime 目录指针**：`<app_data>/runtime-location.json`，形如
