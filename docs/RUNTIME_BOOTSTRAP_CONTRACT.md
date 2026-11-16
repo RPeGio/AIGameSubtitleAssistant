@@ -45,12 +45,20 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
 | `-Force` | 开关 | 忽略已安装标记，强制重装 |
 | `-Manifest <path>` | 默认 app 内置 manifest | 覆盖内置清单（离线/自测用） |
 | `-SegmentMB <n>` | 默认 `64`，`0` = 不分段 | 分段大小；见 §4.5 |
-| `-ProbeMB <n>` | 默认 `2`，`0` = 关闭测速 | 选源前对每个候选发 n MB Range 请求测瞬时速率，按实测排序；见 §4.5 |
+| `-ProbeMB <n>` | 默认 `2`，`0` = 关闭测速 | 选源前对每个候选发 n MB Range 请求测瞬时速率，按实测排序；见 §4.5。**当前 GUI 不下发，仅供命令行/运维**（见下方「参数可达性」） |
 | `-ProbeSec <n>` | 默认 `4` | 单源测速请求的超时（秒）。**这是「慢但能通的源算不算可用」的旋钮**：超时只把该源降级为单流兜底（`Slow`），不判它不可用；见 §4.5 |
 | `-NoResume` | 开关 | 不读、不留 `.downloads` 缓存（每次从头下） |
 | `-MaxAttempts <n>` | 默认 `3` | 单段失败重试次数 |
 | `-PipMirror <url>` | 默认华为云 | CUDA 运行库 pip 索引（§4.3）；`-SkipGpuLibs` 可整段跳过 |
 | `-PipUseProxy` | 开关 | **默认清空 `HTTP(S)_PROXY`** 跑 pip（代理常拉慢 pip），加了才走代理 |
+
+> **参数可达性（2026-11-16 审查 P2-5 留档）**：`src-tauri/src/ai_runtime/runtime_install.rs:711-726`
+> 目前只下发 `-Items -Flavor -RuntimeDir [-Manifest] [-Force]`，`-ProbeMB` / `-ProbeSec` /
+> `-SegmentMB` **无法从 GUI 触发**。后果：慢链路用户不能把探针调小以缩短探测时间
+> （默认 2 MB × 3 候选 × 7 条目 ≈ 42 MB 白流量 + 最坏 84 s），镜像被打死时运维只能走命令行。
+> 计划：GUI 侧参数由设置面板一并下发（`RuntimeConfig.download_source` / `segment_mb` 已在
+> `feat/first-run-prep` 分支实现，合并后本表这三行即可改为「受设置面板控制」）。
+> 在合并前，这三行按**命令行/运维参数**对待。
 
 - **无参运行** = `-Items <§2 表里的全部条目> -Flavor auto`，即「首启默认动作」（装齐运行时 + 模型 + OCR/向量运行时）。
 
