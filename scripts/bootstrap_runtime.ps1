@@ -397,23 +397,26 @@ function Resolve-Url([string]$url) {
 #   cdn/direct = 直链，值得探 Range（ESA/R2 这类 CDN 支持 206，分段才快）
 #   mirror     = 代理前缀，实测会把 Range 变成"整包重取再切片"（0.18 MB/s），只走单流
 function Get-UrlCandidates($it) {
+  # ⚠ 局部变量禁止叫 $mirror / $direct 这类与参数同名的名字：PowerShell 变量名大小写不敏感，
+  #   `$mirror = New-Object ArrayList` 会直接覆盖 [string]$Mirror 参数，镜像候选从此恒为空。
+  #   PR#52 就是这么把镜像兜底整条断掉的（不报错、不告警，只少一条候选），故一律带 Cands 后缀。
   $cdn = New-Object System.Collections.ArrayList
   foreach ($u in @($it.urls)) {
     if ($u) { [void]$cdn.Add([pscustomobject]@{ Url = [string]$u; Kind = "cdn" }) }
   }
-  $mirror = New-Object System.Collections.ArrayList
-  if ($it.url -and $Mirror) { [void]$mirror.Add([pscustomobject]@{ Url = (Resolve-Url ([string]$it.url)); Kind = "mirror" }) }
-  $direct = New-Object System.Collections.ArrayList
-  if ($it.url) { [void]$direct.Add([pscustomobject]@{ Url = [string]$it.url; Kind = "direct" }) }
+  $mirrorCands = New-Object System.Collections.ArrayList
+  if ($it.url -and $Mirror) { [void]$mirrorCands.Add([pscustomobject]@{ Url = (Resolve-Url ([string]$it.url)); Kind = "mirror" }) }
+  $directCands = New-Object System.Collections.ArrayList
+  if ($it.url) { [void]$directCands.Add([pscustomobject]@{ Url = [string]$it.url; Kind = "direct" }) }
 
   # 候选顺序按 -Source 决定（设置面板三档）：
   #   auto   → 清单顺序（ESA/CDN 在前）→ 镜像前缀 → 直链
   #   mirror → 镜像前缀优先（ESA 被墙、gh-proxy 能通的网络）
   #   direct → 只要 GitHub 直链（cdn 里非 github 的 ESA 地址一并排除）
   $list = switch ($Source) {
-    "mirror" { @($mirror) + @($cdn) + @($direct) }
-    "direct" { @(@($cdn) | Where-Object { $_.Url -match "://github\.com/" }) + @($direct) }
-    default { @($cdn) + @($mirror) + @($direct) }
+    "mirror" { @($mirrorCands) + @($cdn) + @($directCands) }
+    "direct" { @(@($cdn) | Where-Object { $_.Url -match "://github\.com/" }) + @($directCands) }
+    default { @($cdn) + @($mirrorCands) + @($directCands) }
   }
   $seen = @{}
   $out = @()

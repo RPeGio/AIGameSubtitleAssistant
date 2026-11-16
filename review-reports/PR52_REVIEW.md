@@ -27,6 +27,9 @@
 
 **有 1 条 P0 阻塞合并，4 条 P1 建议本 PR 内处理。**
 
+> **更新（2026-11-16）**：P0-1 已在本分支修复并复测。当前 P0 清零，
+> 剩余 4 条 P1 + 23 条 P2 按原优先级跟进。下方总评保留发现当时的判断。
+
 结构性设计是好的：`RuntimeConfig` 的 `download_source/segment_mb/setup_auto` 三字段与面板一一对应；
 指针文件先写 `.tmp` 再 `rename`（真原子）；`load_or_default` 只在 `config.json` **不存在**时才兜默认、
 坏了仍然报错（这一点踩过 2026-11-02 真机「改任何一项都失败」的坑，注释把因果写透了）；
@@ -39,7 +42,10 @@
 
 ## 逐条发现
 
-### 🔴 P0-1 `-Mirror` 参数被同函数局部变量覆盖，镜像兜底从此永远失效
+### 🔴 P0-1 `-Mirror` 参数被同函数局部变量覆盖，镜像兜底从此永远失效 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P0-1，提交号见该条）。
+> 下方保留发现时的原始取证，行号对应修复前（`$mirror` 现为 `$mirrorCands`）。
 
 - **位置**：`scripts/bootstrap_runtime.ps1:404`（配合 `:56` 参数、`:405`、`:414`、`:416`）
 - **问题**：PowerShell 变量名**大小写不敏感**，`$mirror` 与参数 `$Mirror` 是同一个变量。
@@ -757,7 +763,8 @@
 
 ## 结论
 
-**不建议直接合并**：P0-1 必须在本 PR 内修掉（一个变量改名 + 一条冒烟断言），否则「强制镜像」
+**P0-1 已修复（2026-11-16），当前不建议直接合并的唯一硬阻塞已解除；建议修完 P1-1 ~ P1-3 再合并。**
+P0-1 原本必须在本 PR 内修掉（一个变量改名 + 一条冒烟断言），否则「强制镜像」
 这个本 PR 自己新加的功能是空操作，且基线里还好的镜像兜底被静默打断。
 P1-1 ~ P1-3 属于「用户会撞上且撞上后没有出路」的失败语义问题，建议同批修；
 P1-4 是设计取舍，至少要显式登记为既定行为。
@@ -769,7 +776,21 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
 > 按 `AGENTS.md` 的档案同步规矩：**修复提交与本文档的状态行必须同一提交更新**，
 > 状态行要写依据（提交号 / PR 号），不要只写「已修复」。
 
-- **P0-1** ⚠ 未修复（`scripts/bootstrap_runtime.ps1:404` `$mirror` 覆盖参数 `$Mirror`）
+- **P0-1** ✅ **已修复**（2026-11-16，本分支，`scripts/bootstrap_runtime.ps1:399-420`）——
+  `Get-UrlCandidates` 内三个局部 ArrayList 全部改名（`$mirror` → `$mirrorCands`、
+  `$direct` → `$directCands`），并在函数头写下「禁止与同名参数撞名」的注释说明因果
+  （PowerShell 变量名大小写不敏感，`$mirror = New-Object ArrayList` 直接覆盖 `[string]$Mirror`）。
+  复测（真实 `powershell.exe` 5.1，逐字抽取 `Resolve-Url`+`Get-UrlCandidates`，喂真实
+  `manifest.json` 的 `moss/cpu` 条目）：
+
+  | 清单形状 | `-Source auto` | `-Source mirror` | `-Source direct` |
+  |---|---|---|---|
+  | 当前（2 条 `urls`） | **3**（cdn×2 + mirror） | **3**，mirror 排第一 | 1（仅 github） |
+  | 合并 #53 后（3 条 `urls`） | **4**（ModelScope + cdn×2 + mirror） | **4**，mirror 排第一 | 1（仅 github） |
+
+  对比修复前：`auto` 2 条（无 mirror）、`mirror` 2 条且 mirror 不排第一、`direct` 1 条。
+  函数返回后参数仍为 `type=String value=https://gh-proxy.com/`（修复前函数内是 `ArrayList`/空）。
+  这同时解开了 #53 的跨 PR 阻塞：合并后 `$ranked` 末尾的镜像兜底不再是死代码
 - **P1-1** ⚠ 未修复（`SettingsModal.vue:165-169` 绑实时键，`setSidebarDefaultCollapsed` 无调用方）
 - **P1-2** ⚠ 未修复（`config.rs:906-910` 对账失败不回滚，重试撞「目标目录非空」）
 - **P1-3** ⚠ 未修复（`config.rs:934` 用 `read_location`，新目录缺失时不可达）
