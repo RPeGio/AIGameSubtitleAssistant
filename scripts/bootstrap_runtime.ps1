@@ -663,10 +663,25 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
         Log "跳过 $($c.Url)（不支持 Range，或探测失败）"
       }
     }
-    if ($probed.Count -gt 1) {
-      foreach ($p in ($probed | Sort-Object Mbps -Descending)) {
-        Log ("测速 {0,6:N2} MB/s  {1}" -f $p.Mbps, $p.Url)
-      }
+  }
+
+  # 统一排序：实测速率降序，**等速按候选顺序**。
+  # PS 5.1 的 Sort-Object 等键时不保序（实测输入 ModelScope→ESA→GitHub 全 0.0 时整体倒序，
+  # n=3/4/5/8 全部失败），且 5.1 根本没有 -Stable。而等速恰恰是常态：夜间实测 GitHub 与
+  # gh-proxy 同为 0.13 MB/s；-ProbeMB 0 这条路径更是全 0.0 等键。所以显式拿原始下标做次键，
+  # -ProbeMB 0 则完全不排序（它承诺的是「按候选顺序取第一个支持 Range 的源」，2026-11-16 审查 P1-1）。
+  $ordered = @($probed)
+  if ($ProbeMB -gt 0 -and $probed.Count -gt 1) {
+    $seq = 0
+    $keyed = foreach ($p in $probed) {
+      [pscustomobject]@{ Seq = $seq; Url = $p.Url; Kind = $p.Kind; Length = $p.Length; Mbps = $p.Mbps }
+      $seq = $seq + 1
+    }
+    $ordered = @($keyed | Sort-Object @{ Expression = "Mbps"; Descending = $true }, @{ Expression = "Seq"; Descending = $false })
+  }
+  if ($ordered.Count -gt 1) {
+    foreach ($p in $ordered) {
+      Log ("测速 {0,6:N2} MB/s  {1}" -f $p.Mbps, $p.Url)
     }
   }
 
@@ -675,7 +690,7 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
   # $ranked 永不为空，于是 -SegmentMB 0 / curl.exe 缺失 / 探针全失败 这三条正式路径
   # 都会退化成「只剩镜像可用」，三条真实直链连试都不试（2026-11-16 审查 P0-1）。
   $ranked = @()
-  foreach ($p in ($probed | Sort-Object Mbps -Descending)) {
+  foreach ($p in $ordered) {
     $ranked += [pscustomobject]@{ Url = $p.Url; Kind = $p.Kind; Length = $p.Length }
   }
   if ($ranked.Count -eq 0) {
