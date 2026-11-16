@@ -957,6 +957,34 @@ fn rel_paths(root: &Path) -> Result<std::collections::BTreeMap<String, u64>, Str
     Ok(out)
 }
 
+/// 搬家前确认目标盘装得下：`need` 是本次要写的字节数，`free` 是该盘可用字节。
+///
+/// 留 10% 余量（日志、指针文件、NTFS 元数据都要占地方）。`free` 为 None 表示查不到
+/// 可用空间（非 Windows 盘符路径、`Get-PSDrive` 失败等），此时**不拦**——宁可让复制过程
+/// 自己失败并回滚，也不能因为探测失败就把路堵死。
+fn ensure_enough_space(need: u64, free: Option<u64>) -> Result<(), String> {
+    let Some(free) = free else { return Ok(()) };
+    let margin = need / 10;
+    if free < need.saturating_add(margin) {
+        return Err(format!(
+            "目标盘空间不足：需要 {} 复制 + 10% 余量，可用 {}（先清理磁盘或换个位置）",
+            fmt_bytes(need),
+            fmt_bytes(free)
+        ));
+    }
+    Ok(())
+}
+
+/// 把字节数写成人类可读形式（GB/MB），用于报错信息
+fn fmt_bytes(n: u64) -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    if n as f64 >= 1024.0 * MB {
+        format!("{:.2} GB", n as f64 / (1024.0 * MB))
+    } else {
+        format!("{:.0} MB", n as f64 / MB)
+    }
+}
+
 /// 搬家实现（拆出来便于单测，不依赖 AppHandle）
 pub(crate) fn move_runtime_dir_impl(app_data: &Path, target: &Path) -> Result<MoveResult, String> {
     let current = resolve_runtime_dir(Some(app_data.to_path_buf()));
@@ -981,6 +1009,12 @@ pub(crate) fn move_runtime_dir_impl(app_data: &Path, target: &Path) -> Result<Mo
     if target.is_dir() && dir_entry_count(target) > 0 {
         return Err(format!("目标目录非空: {}", target.display()));
     }
+    // 搬家是要把几 GB 的 runtime 整份写进去：空间不够时提前报错，别等复制到一半
+    // 才 ENOSPC（那时只能靠回滚收拾，还得让用户重来一遍）。这里的字节数用
+    // `rel_paths` 现算——它和复制共用同一套跳过口径，算出来的就是要写的量。
+    let need: u64 = rel_paths(&current)?.values().copied().sum();
+    ensure_enough_space(need, super::runtime_install::query_free_bytes(target))?;
+
     // 记住这个目录是不是「本次自己新建」的：只有自己新建的才敢在失败时删掉。
     // 用户若指定了一个已存在的空目录，那是他的目录，失败时不能替人删。
     let created_target = !target.is_dir();
@@ -1913,6 +1947,27 @@ mod tests {
         assert!(read_location_raw(&base).unwrap().previous.is_none());
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    /// P2-13：空间校验留 10% 余量；探测不到可用空间时不拦。
+    #[test]
+    fn test_ensure_enough_space_leaves_margin_and_never_blocks_on_unknown() {
+        // 探测失败（None）一律放行：宁可让复制自己失败回滚，也不因探测不到就堵死
+        assert!(ensure_enough_space(1 << 40, None).is_ok());
+
+        // 刚好够、但没有余量 ⇒ 拦（10% 余量）
+        assert!(ensure_enough_space(1000, Some(1000)).is_err());
+        assert!(ensure_enough_space(1000, Some(1099)).is_err()); // 1099 < 1000 + 100
+        assert!(ensure_enough_space(1000, Some(1100)).is_ok());
+
+        // 0 字节目录不该因为"余量"被误拦
+        assert!(ensure_enough_space(0, Some(0)).is_ok());
+
+        // 报错要带上两个数字，让用户一眼看出差多少
+        let err = ensure_enough_space(2 * 1024 * 1024 * 1024, Some(1024 * 1024 * 1024))
+            .unwrap_err();
+        assert!(err.contains("空间不足"), "错误串：{err}");
+        assert!(err.contains("GB"), "错误串应带人类可读的量：{err}");
     }
 
     /// 独占打开（Windows `share_mode(0)`，其它平台 chmod 0），让随后的复制必然失败。

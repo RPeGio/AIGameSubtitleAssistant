@@ -599,7 +599,9 @@
   }
   ```
 
-### 🟢 P2-13 搬家前不校验目标盘剩余空间
+### 🟢 P2-13 搬家前不校验目标盘剩余空间 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P2-13）。
 
 - **位置**：`src-tauri/src/ai_runtime/config.rs:877-900`；`free_bytes` 仅在 `:717` 用于展示
 - **问题**：面板上「可用 xx GB」只是显示。源目录 9 GB、目标盘只剩 4 GB 时，会拷到一半失败，
@@ -1011,4 +1013,14 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   此前 P1-2 的反向验证就是靠「子目录里的 `.downloads` 能让搬家对账失败」成立的，
   口径统一后那个套路不再产生缺失，故 P1-2 的两个测试改用「独占打开源文件」制造复制失败
   （不依赖磁盘满/拔盘这类偶发条件）。
-- **P2-13 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
+- **P2-13** ✅ **已修复**（2026-11-16，本分支，`src-tauri/src/ai_runtime/config.rs:965-987`、`:1015-1016`）——
+  新增 `ensure_enough_space(need, free) -> Result<(), String>`（纯函数，便于单测）与 `fmt_bytes`；
+  搬家在 `create_dir_all` **之前**用 `rel_paths(&current)?.values().sum()` 算要写的字节数，
+  再与 `runtime_install::query_free_bytes(target)` 比对，留 10% 余量，不足直接报错并点名两个数字。
+  探测失败（`free_bytes = None`，如非 Windows 盘符路径）**不拦**——宁可让复制自己失败回滚，
+  也不因探测不到就把路堵死（与 `precheck_runtime_disk` 的既有口径一致）。
+  验证：`cargo test --lib` **379 passed / 0 failed**，新增
+  `test_ensure_enough_space_leaves_margin_and_never_blocks_on_unknown`（None 放行 /
+  刚好够但无余量拦 / 1099 拦而 1100 过 / 0 字节不误拦 / 报错带 GB 字样）。
+  契约 §8.10 的搬家规则同步改口（空间预检、任意层级 `.downloads`、按「路径 + 大小」对账、回滚）。
+- **P2-14 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）

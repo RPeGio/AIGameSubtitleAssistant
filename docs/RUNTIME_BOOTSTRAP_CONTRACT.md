@@ -774,7 +774,7 @@ invoke("runtime_status")   // 无参数
 |---|---|---|---|
 | `runtime_settings` | 无 | `SettingsSnapshot` | 读设置 + 运行时现场（目录、可用空间、日志目录、清单是否找到、待删旧目录） |
 | `update_runtime_settings` | `{ patch }` | `SettingsSnapshot` | 只改 patch 里出现的字段；落盘前过 `validate_schema()`（见下） |
-| `move_runtime_dir` | `{ target }` | `MoveResult` | 复制 + 对账 + 写指针；**重启生效** |
+| `move_runtime_dir` | `{ target }` | `MoveResult` | 空间预检 + 复制 + 对账 + 写指针；**重启生效** |
 | `delete_old_runtime_dir` | 无 | `string` | 删指针里的 `previous` 目录 |
 | `open_log_dir` | 无 | `string` | 建目录并用系统文件管理器打开 `runtime/logs` |
 
@@ -791,8 +791,12 @@ invoke("runtime_status")   // 无参数
 - `resolve_runtime_dir` 的入参语义是**应用数据目录**（不是 runtime 目录），解析顺序：
   指针文件 → `GSA_RUNTIME_DIR`（须含 `config.json`）→ 从 exe 向上找 `runtime/config.json` → `<app_data>/runtime`。
   指针指向的目录不存在时（外接盘掉线）退回后面的兜底，**不返回死路径**。
-- 搬家规则：目标不能是当前目录 / 其子目录 / 其上级，不能是盘符根，**必须是空目录**；复制时跳过根上的
-  `.downloads` 临时缓存；复制完按**相对路径逐条对账**，缺一条就报错且**不写指针**（半搬状态比不搬更糟）。
+- 搬家规则：目标不能是当前目录 / 其子目录 / 其上级，不能是盘符根，**必须是空目录**；**先查目标盘剩余空间**
+  （要写的量 = 源目录实际字节数，另留 10% 余量；探测不到可用空间时**不拦**，交给复制过程自己失败回滚）；
+  复制时跳过**任意层级**的 `.downloads` 临时缓存；复制完按**相对路径 + 文件大小逐条对账**，缺一条或大小不符
+  就报错且**不写指针**（半搬状态比不搬更糟）。
+- 复制失败或对账失败**一律回滚**：本次新建的目标目录整个删掉；若是用户原有的空目录则只清掉本次拷进去的内容，
+  目录本身留着。回滚后才能真按提示「重试」，否则第二次必然撞上「目标目录非空」（2026-11-16 审查 P1-2 / P2-12）。
 - 旧目录**一律保留**，由用户在设置里点「删除旧目录」——搬完立刻删，出问题就没法回退。
 - 只搬 runtime：`recent_projects.json` 等仍在 app_data，不受影响。
 
