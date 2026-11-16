@@ -407,9 +407,9 @@ all mean the product does not run.
   kill it logged `续传：缓存里已有 3.0 MB，只需补 17.0 MB` and still matched the manifest SHA256; the
   real 295.6 MB `deps-ocr` came down through gh-proxy in 5 segments.
 - **Still not done (on record)**: the OCR install gate UI (block project entry until OCR is installed)
-  belongs to the frontend wiring and ships together with 11c; the external acceleration options
-  (ModelScope as primary source / self-hosted Cloudflare Worker reverse proxy) are researched but not
-  deployed — see the survey summary at the end of §8.11.
+  belongs to the frontend wiring and ships together with 11c; external acceleration: **ModelScope as
+  the primary source has landed** (`urls[0]` since 2026-11-14, see §8.14); the self-hosted Cloudflare
+  Worker reverse proxy is still not deployed.
 
 ### 8.12 Vector-fusion (embed) runtime joins the distribution (`deps-embed`, 2026-10-30)
 
@@ -449,3 +449,137 @@ fallback**, so like OCR this is not an optional component.
   config falls back to the standard layout); `embed.rs` uses it and checks each file before spawning,
   so users see "reinstall deps-embed" instead of a Python `os error 3`; new command
   `probe_embed_install`. `cargo test --lib`: **335 passed**.
+
+### 8.13 CDN mirror: multi-source manifest + Alibaba Cloud ESA (2026-11-02)
+
+**Problem**: GitHub Releases measures 0.07–0.43 MB/s from mainland China and keeps dropping the
+connection; the 7 assets total ~2.1 GB (plus 1.77 GB of CUDA libs via pip), which makes first-run
+install unacceptable.
+
+**Approach (data only, no code change)**: every asset in the manifest gains `urls: [ESA, GitHub]` and
+the downloader probes them in order (multi-source landed in §4.5). ESA is a **pure pass-through
+mirror** — the origin is still GitHub Releases, so no asset has to be re-uploaded and the
+`gh release` flow is unchanged.
+
+**ESA configuration notes** (free Entrance plan, domain not ICP-filed, so the acceleration region can
+only be "Global (excluding mainland China)"):
+
+1. CNAME access; keep the record **grey-clouded** (DNS only). Orange-clouding turns it into a
+   CF → ESA → GitHub three-hop chain.
+2. A **free certificate must be issued and deployed**, otherwise the handshake fails outright with
+   `TLSV1_ALERT_INTERNAL_ERROR` (and port 80 just 301s to https).
+3. Cache rule by **file extension `zip`** (not "URI equals/prefix": ESA's URI is a bare path, the
+   version sits in the 5th segment, so any `^/`-anchored rule never matches), **ignore origin cache
+   headers**, TTL 30 days.
+4. `X-Site-Cache-Status` flipping from `BYPASS` to `HIT` and `Age` growing confirms the rule works.
+
+**Measured** (this machine, same time window, cache hit, 64 MB segments): `moss` 10.2 MB/s,
+`deps-ocr` 10.6 MB/s, `deps-embed` 10.0 MB/s, but `models-moss` 1.64 MB/s and `deps-ocr-gpu`
+1.24 MB/s — **the spread between objects under identical configuration reaches 8x**. The full
+six-item first install took 19.3 minutes (versus hours for 2.1 GB when going direct).
+
+**Conclusion and caveats**: the free ESA plan turns "can the first install finish at all" from luck
+into "usually yes", but ① no SLA and officially labelled "for testing only", with smart rate limiting
+(hard failures showed up under aggressive benchmarking); ② cold start still fetches the whole object
+from GitHub (TTFB ≈2.5 s, 6 MB/s) — the free plan has no pre-warming and no L2 cache; ③ without ICP
+filing only overseas PoPs are available, so latency is not comparable to mainland nodes.
+⇒ hence `urls[]` order is **ESA → GitHub** with `-Mirror` (gh-proxy) as the single-stream fallback;
+any one of the three suffices to finish, and real stability still needs ICP filing plus mainland
+nodes (or an object store).
+
+**2026-11-12 addendum: a fixed order is not enough — measure and pick.** Re-measuring the same
+sources at 22:10 flipped the picture completely:
+
+| Source | Daytime (11:00) | Night (22:10) |
+|---|---|---|
+| ESA Hong Kong (cache hit, `Age` 45k s) | 8.9–9.4 MB/s | **0.27 MB/s** |
+| gh-proxy (Cloudflare) | 0.3 MB/s | **2.12 MB/s** |
+| GitHub direct | 0.09 MB/s | 0.09 MB/s (3 of 4 attempts timed out) |
+
+Concurrency does not rescue it either: 1 / 4 / 8 parallel range requests to ESA moved 3.5 / 3.7 /
+5.5 MB in 12 s ⇒ **barely any stacking**, so the limit is the total capacity of the local
+international link at peak hours, not per-connection shaping. Cross-checking other objects flips the
+ranking again (`embed-runtime.zip`: ESA 0.38 vs gh-proxy 2.37; `ocr-runtime-cpu.zip`: ESA 0.98 vs
+gh-proxy 0.30).
+
+⇒ the downloader gained `-ProbeMB` (default 2 MB): it fires one small range request per candidate,
+measures instantaneous throughput, sorts by the measured rate and then downloads; failures still
+fall back in that order. Daytime therefore uses ESA and night-time switches to whichever source is
+faster right now — no manual manifest edits. Rules and measurements live in contract §4.5; a local
+two-source fault injection proves that "picking the wrong source still self-heals".
+
+### 8.14 Runtime assets migrated to ModelScope (2026-11-14)
+
+**Why switch**: ESA belongs to the Alibaba Cloud account system, and the mainland and international
+editions **do not share accounts or tokens**; the user only has the mainland account, while the
+international one demands a foreign phone number. On top of that the free Entrance plan only allows
+`acceleration region = Global (excluding mainland China)`, and the domain kept resolving to Hong Kong
+addresses (`163.181.78.161-166`, `Via: …ens-cache19.hk24`) — ICP filing and the forum unlock only make
+a site *eligible* for mainland acceleration, they do not enable it. So ESA was demoted from primary
+source and the assets moved to ModelScope.
+
+**Approach (data only again, zero code change)**:
+
+| Item | Value |
+|---|---|
+| Repo | `RPeGio/gsa-runtime` (**dataset** type, public, apache-2.0) |
+| Direct URL | `https://modelscope.cn/datasets/RPeGio/gsa-runtime/resolve/master/<tag>/<file>` → 302 → `cdn-lfs-cn-1.modelscope.cn` |
+| Layout | `moss-runtime-v1/`, `ocr-runtime-v1/`, `embed-runtime-v1/`; file names identical to the GitHub release |
+| Manifest | `urls[]` becomes **ModelScope → ESA → GitHub**; `url` still points at GitHub (for the `-Mirror` prefix and the direct fallback) |
+
+**Measurements (2026-11-13, 22:00–23:00, same minute)**:
+
+| Source | Single connection |
+|---|---|
+| ModelScope (anonymous, no token, Range 206) | **7.88 MB/s** (samples 6.23 / 7.88 / 8.93) |
+| GitHub direct | 0.13 MB/s (8 parallel connections failed outright) |
+| gh-proxy | 0.13 MB/s (a 621.6 MB file stalled at 0 bytes for 54 minutes) |
+| ESA Hong Kong | 0.09 MB/s |
+| User's local proxy `127.0.0.1:7877` | 0.18 MB/s |
+
+⇒ At night the problem is not "one slow mirror" but the **whole cross-border path being dead**; a
+domestic CDN is the only surviving route. This also justifies `-ProbeMB`: it only picks "whichever is
+fastest right now" and never presumes a primary source.
+
+**Upload-side notes** (read before re-uploading assets):
+
+- Use the official light CLI `pip install modelscope-hub` (depends only on requests/tqdm/filelock/urllib3);
+  the command is `ms-hub`. `ms-hub login --token <write-scope token>` once; generate the token at
+  `https://modelscope.cn/my/myaccesstoken`.
+- Create with `ms-hub create RPeGio/gsa-runtime --repo-type dataset --visibility public --license apache-2.0`.
+- Upload with `ms-hub upload RPeGio/gsa-runtime <local file> <tag>/<file> --repo-type dataset`;
+  **resume is on by default** (cached), so re-running the same command after an interruption only
+  sends the missing part.
+- **A fresh commit 404s for a while** (CDN propagation; the 45-minute case was an outlier, usually
+  20 s to a few minutes): the verification loop must retry until `Content-Range` total length equals
+  the local byte count, never fail on a single 404.
+- Deleting repos or files is only possible in the web console (a normal write token gets 401 from
+  `delete_files`).
+- During migration compare each package against the sha256 recorded in `manifest.json` and abort on
+  mismatch — never end up with "the pack on ModelScope is not the one the manifest describes".
+
+**Daytime full first-install comparison (2026-11-14 10:38–11:21, same machine, same item set,
+`-Flavor auto`, only `urls[]` reduced to a single source)**:
+
+| Source | Total | Weighted average over 2.09 GiB |
+|---|---|---|
+| ModelScope | **8 min 14 s** | ≈ 4.3 MB/s (64 MB segments; 10/10/5/8/3 per item) |
+| ESA (Hong Kong) | **41 min 50 s** | ≈ 0.86 MB/s |
+| Ratio | **5.08×** | |
+
+ESA per item (`installed_at` deltas, extraction included):
+
+| Item | Size | Time | Rate |
+|---|---|---|---|
+| moss | 621.6 MiB | 7.5 min | 1.46 MB/s |
+| models-moss | 597.4 MiB | 10.8 min | 0.96 MB/s |
+| deps-ocr | 295.5 MiB | 3.9 min | 1.32 MB/s |
+| deps-ocr-gpu | 479.3 MiB | 11.1 min | 0.76 MB/s |
+| deps-embed | 150.1 MiB | 6.8 min | 0.39 MB/s |
+| CUDA runtime via pip (8 wheels, 1771 MB) | — | 1.8 min | 16.6 MB/s |
+
+Three takeaways: (1) ESA throughput decays as the run progresses (0.39 MB/s at the tail), consistent
+with a throttled shared egress rather than anything file-specific; (2) the pip phase runs at
+16.6 MB/s off the Huawei Cloud mirror and is never the bottleneck in either round; (3) both rounds
+landed 6.34 GB with `exit=0` and an identical item set (5 download items plus the CUDA runtime pip
+phase) — **switching sources does not change the product**.

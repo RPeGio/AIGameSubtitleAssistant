@@ -45,6 +45,8 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
 | `-Force` | 开关 | 忽略已安装标记，强制重装 |
 | `-Manifest <path>` | 默认 app 内置 manifest | 覆盖内置清单（离线/自测用） |
 | `-SegmentMB <n>` | 默认 `64`，`0` = 不分段 | 分段大小；见 §4.5 |
+| `-ProbeMB <n>` | 默认 `2`，`0` = 关闭测速 | 选源前对每个候选发 n MB Range 请求测瞬时速率，按实测排序；见 §4.5 |
+| `-ProbeSec <n>` | 默认 `4` | 单源测速请求的超时（秒）。**这是「慢但能通的源算不算可用」的旋钮**：超时只把该源降级为单流兜底（`Slow`），不判它不可用；见 §4.5 |
 | `-NoResume` | 开关 | 不读、不留 `.downloads` 缓存（每次从头下） |
 | `-MaxAttempts <n>` | 默认 `3` | 单段失败重试次数 |
 | `-PipMirror <url>` | 默认华为云 | CUDA 运行库 pip 索引（§4.3）；`-SkipGpuLibs` 可整段跳过 |
@@ -168,7 +170,7 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
 | `flavor` | ✖ | 缺省 = 该条目与 flavor 无关 |
 | `optional` | ✖ | `true` = 该条目在当前机器没有匹配 flavor 时**静默跳过**（不计失败）。OCR 的 CUDA 增量专用（AMD/Intel 机器 `-Flavor auto` 会选到 vulkan，而 OCR 没有 vulkan 版） |
 | `url` | ✔ | 下载地址，**写绝对地址**；`-Mirror` 缺省时按 §4.1 拼接 |
-| `urls` | ✖ | 多源候选（字符串数组，**顺序即优先级**）。存在时排在 `-Mirror` 拼接结果与 `url` 之前，见 §4.5。Rust 侧不消费该字段（`parse_manifest_items` 只取 `id/flavor/sha256/size/unpacked_size`），它是**下载器的输入** |
+| `urls` | ✖ | 多源候选（字符串数组）。**顺序只在「探针不可用」时作为缺省偏好**——正常路径按 §4.5 的实测吞吐排序，顺序不生效；`-ProbeMB 0` / `-SegmentMB 0` / `curl` 缺失这三条退化路径才严格按它。存在时排在 `-Mirror` 拼接结果与 `url` 之前，见 §4.5。Rust 侧不消费该字段（`parse_manifest_items` 只取 `id/flavor/sha256/size/unpacked_size`），它是**下载器的输入** |
 | `sha256` | ✔ | 下载物哈希，校验不过 = 退出码 2 |
 | `size` | ✔ | 字节数，用于磁盘预检 |
 | `unpacked_size` | ✖ | 解压后字节数。**有它就按它做预检**：`Σ下载 + Σ解压 + 最大单包解压 + 100 MB`（最后一项是临时目录与 dest 同时存在的那一份；早先漏了它，cuda 的 2.69 GB 包正好卡在这个差额上），没有才退回老的 `size × 3`。OCR 的 `deps` 有 24 065 个文件、压缩率只有 ~3 倍以内，`×3` 会低估 |
@@ -316,6 +318,38 @@ Range 走了单流镜像，反而成功。
   与镜像兜底的理由。
 - 冷启动（对象未被边缘缓存）TTFB 约 2.5 s、6 MB/s，回源走 GitHub；免费版无预热、无 L2 缓存，
   每个边缘节点首访都要整份回源。
+
+**2026-11-12 测速选源**（`-ProbeMB`，默认 2 MB；超时 `-ProbeSec`，默认 4 s）：上一条的"每对象随机"意味着**固定的候选顺序必然
+在一半时间段选错源**，实测最坏情形是夜间 ESA 0.27 MB/s 与 gh-proxy 2.12 MB/s 之间的 8 倍差距。
+
+| 环节 | 规则 |
+|---|---|
+| 探针 | `Measure-UrlSpeed(url, ProbeMB, ProbeSec)`：`curl -s -L --max-time <ProbeSec，默认 4> -r "0-(<ProbeMB，默认 2>MB-1)" -D <临时头文件> -o NUL -w "%{http_code} %{size_download} %{time_total} %{time_starttransfer}"`，**只接受 `http_code = 206` 且实收字节 > 0**（200/4xx/5xx 一律判不可用）；并且**必须命中 `Content-Range: bytes 0-<n>/<总长>`、实收字节不少于「请求量与总长的较小者」的一半**，否则只算「没测出来」（短响应算出的吞吐是假高速）。吞吐 = `size_download / (time_total − time_starttransfer)`（**扣掉 TTFB**，否则 2 MB 探针会被跨境首字节时间系统性摊薄：实测 ESA 真值 8.9 MB/s，含 TTFB 只算出 1.4 MB/s）；总长从临时头文件解析，解析不到就回落到清单 `size`（2026-11-16 订正，见审查记录 P1-3 / P1-4） |
+| 排序 | 全部候选测完后按 `mbps` 降序，只保留可用的；**等速时按候选顺序**（显式带原始下标做次键，不依赖 `Sort-Object` 的稳定性——PS 5.1 等键不保序且没有 `-Stable`）；日志逐条打 `测速 <n> MB/s <url>` |
+| 探针失败 | 分两种：拿到 HTTP 状态码（200/4xx/5xx）才判定「源不可用」并丢弃；超时 / 零字节 / 计时不可信只是「没测出来」，源保留在队尾（`Slow`）做单流兜底，排在镜像之前。`-SegmentMB 0`、`curl` 缺失、全都未测到时，兜底队列用**清单全部非镜像直链**（保序）打底。只有「测到速率且非 `Slow`」的源才配拿去分段（2026-11-16 修正，见审查记录 P0-1 / P1-2） |
+| 复用 | 探针测到的 `length`（`Content-Range` 总长）直接给分段用，不再额外发一次 Range 探测 |
+| 关闭 | `-ProbeMB 0` = 回到"第一个支持 Range 的候选优先"（这条路径完全不进速率排序，严格按 `urls[]` 顺序）；`curl` 缺失或单流路径（`-SegmentMB 0`）也会跳过测速 |
+| 失败回退 | 选定源在段级重试用尽后，按**测速排序的剩余顺序**改单流重试 ⇒ 刚失败的那个源自然被排到后面 |
+| 代价 | 每候选一次 2 MB 请求（本地/局域网源会秒回；真实源约 1–6 s），换来避免 40 分钟级的选错源 |
+
+实测（2026-11-12，本机）：
+
+- 真实网络：`deps-embed` 150.1 MB —— `测速 1.85 MB/s`(ESA) vs `0.17 MB/s`(GitHub) ⇒ 选 ESA，
+  3 段下载、`item_done`；`-SegmentMB 0` 与 `-ProbeMB 0` 两条退化路径均正常。
+- 故障回退（本地双源服务：`/bad` 只对 ≤2 MB 的探针返 206、段请求返 500；`/good` 限速 1 MB/s）：
+  `测速 140.53 MB/s`(/bad) vs `1.02 MB/s`(/good) ⇒ 先选 /bad ⇒ 段重试 3 次失败后
+  `改单流重试` ⇒ `单流下载：/good` 成功 ⇒ 证明"选错源也能自愈"。
+
+**2026-11-14 候选源改为三级**（清单 `urls[]` 顺序 ModelScope → ESA → GitHub，机制零改动）：
+
+| 项 | 说明 |
+|---|---|
+| 顺序 | 清单每条资产 `urls[]` = `https://modelscope.cn/datasets/RPeGio/gsa-runtime/resolve/master/<tag>/<file>`、`https://dl.rpegio.top/<tag>/<file>`、GitHub Release；三者都记为 `Kind=cdn`（探 Range、走分段），`url` 仍指 GitHub 供 `-Mirror` 前缀与直连兜底 |
+| 为什么换头 | ESA 走阿里云账号，内地/国际版**账号与 token 不通用**；免费版加速区域不含中国内地，`dl.rpegio.top` 始终落香港段。ESA 降为第二源 |
+| ModelScope 链路 | `resolve/master/<path>` → 302 → `cdn-lfs-cn-1.modelscope.cn`（Tengine），**匿名可下、支持 Range（206 + `Content-Range`）**，无需 token |
+| 实测（2026-11-13 夜间同分钟） | ModelScope 7.88 MB/s｜GitHub 直连 0.13｜gh-proxy 0.13｜ESA 0.09 ⇒ 出境链路整体被打死，境内 CDN 是唯一通路 |
+| 与 `-ProbeMB` 的关系 | 顺序只是"探针不可用时的缺省偏好"；正常路径仍按实测速率排序，故换源不需要改任何代码 |
+| 校验 | 7 条直链均以 `curl -r 0-0` 的 `Content-Range` 总长与 `manifest.size` 对齐（如 `moss-cuda` 651834262、`models-moss` 626397892） |
 
 ---
 

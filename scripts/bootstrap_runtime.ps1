@@ -43,6 +43,9 @@ flavor 解析规则（每个条目独立匹配）：
                         断流只损失当前段，已下的段跨进程保留（见契约 §4.5）
   -NoResume             丢弃 .downloads 里已下的分段，从头开始（排障用）
   -MaxAttempts <int>    单段最多尝试次数，默认 3
+  -ProbeMB <int>        选源测速的探针大小（MB），默认 2；0 = 关闭测速，
+                        退回「按候选顺序取第一个支持 Range 的源」
+  -ProbeSec <int>       单源测速请求超时（秒），默认 4
   -Manifest <path>      覆盖内置清单（离线/自测用）
   -RuntimeDir <path>    落地根目录，默认 <仓库>/runtime；Rust 侧会传绝对路径
 
@@ -64,6 +67,8 @@ param(
   [int]$SegmentMB = 64,
   [switch]$NoResume,
   [int]$MaxAttempts = 3,
+  [int]$ProbeMB = 2,
+  [int]$ProbeSec = 4,
   [string]$Manifest = "",
   [string]$RuntimeDir = ""
 )
@@ -451,6 +456,54 @@ function Test-RangeSupport([string]$url) {
   return @{ ok = $false; length = [int64]0 }
 }
 
+# 小探针测速：发一个 Range 0..(ProbeMB-1) 的请求，一次拿到三个信息——
+#   ① 是否返回 206（分段/续传的前提）② 服务端报的总长 ③ 该源的瞬时吞吐。
+# 吞吐按 size / (time_total - time_starttransfer) 算，把首字节时间排除在外：
+# 跨境 TTFB 常 0.6–1.5 s，若直接用 time_total，2 MB 的探针会被摊薄成假慢速
+# （实测 ESA 白天真值 8.9 MB/s，含 TTFB 只算出 1.4 MB/s）。
+# 为什么需要测速：2026-11-02 夜间实测 ESA 香港 0.27 MB/s、gh-proxy 2.12 MB/s，
+# 而白天完全反过来（ESA 8.9、gh-proxy 0.3）——固定顺序必然在一半时间选错源。
+function Measure-UrlSpeed([string]$url, [int]$probeMB, [int]$timeoutSec) {
+  $bytes = [int64]$probeMB * 1MB
+  if ($bytes -le 0) { return @{ ok = $false; mbps = 0.0; length = [int64]0; rejected = $false } }
+  $last = $bytes - 1
+  $hdr = [System.IO.Path]::GetTempFileName()
+  try {
+    $out = & curl.exe -s -L --max-time $timeoutSec -r "0-$last" -D $hdr -o NUL -w "%{http_code} %{size_download} %{time_total} %{time_starttransfer}" $url 2>$null
+    $parts = (($out | Out-String).Trim() -split '\s+')
+    if ($parts.Count -lt 4) { return @{ ok = $false; mbps = 0.0; length = [int64]0; rejected = $false } }
+    $code = [int]$parts[0]
+    $size = [double]$parts[1]
+    $total = [double]$parts[2]
+    $ttfb = [double]$parts[3]
+    # rejected 区分「源有意拒绝」与「没测出来」：拿到 HTTP 状态码（200/4xx/5xx）说明源确实不可用；
+    # code=0 是连接失败/超时/零字节，源可能只是慢，仍可单流下载，不能从兜底队列里删掉
+    # （2026-11-16 审查 P1-2）。
+    if ($code -ne 206 -or $size -le 0) { return @{ ok = $false; mbps = 0.0; length = [int64]0; rejected = ($code -ne 0) } }
+    $len = [int64]0
+    try {
+      $h = [System.IO.File]::ReadAllText($hdr)
+      # 不写死上界：服务端可以按自己的上限裁短，对象也可能比探针还小（整包 + 206）
+      if ($h -match "(?i)Content-Range:\s*bytes\s+0-\d+/(\d+)") { $len = [int64]$Matches[1] }
+    } catch { }
+    # 没有 Content-Range 的 206 不是可信的 Range 证据；实收字节不足请求量一半，说明服务端
+    # 「回得少、回得快」，此时 $size / $xfer 会把一个只有几 KB 的响应算成几百 MB/s
+    # （实测同款响应算出 897 MB/s，随后每段都 SEGMENT_SHORT）。
+    # 这两类都只算「没测出来」，不是「源不可用」——留给单流兜底，不参与选源（2026-11-16 审查 P1-3）。
+    if ($len -le 0) { return @{ ok = $false; mbps = 0.0; length = [int64]0; rejected = $false } }
+    $want = [math]::Min([int64]$last + 1, $len)
+    if ($size -lt ($want * 0.5)) { return @{ ok = $false; mbps = 0.0; length = $len; rejected = $false } }
+    $xfer = $total - $ttfb
+    if ($xfer -lt 0.05) { $xfer = $total }
+    if ($xfer -le 0) { return @{ ok = $false; mbps = 0.0; length = $len; rejected = $false } }
+    return @{ ok = $true; mbps = ($size / $xfer / 1MB); length = $len; rejected = $false }
+  } catch {
+    return @{ ok = $false; mbps = 0.0; length = [int64]0; rejected = $false }
+  } finally {
+    Remove-Item -LiteralPath $hdr -Force -ErrorAction SilentlyContinue
+  }
+}
+
 # 下载一段（含段内续传：已落地的字节不再重下）。失败抛异常，由调用方重试。
 # $progress 是 scriptblock，收一个参数 = 本段已拿到的字节数（用于总进度）。
 function Invoke-CurlSegment([string]$url, [string]$segFile, [int64]$offset, [int64]$length, [scriptblock]$progress) {
@@ -614,10 +667,11 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
   $candidates = @(Get-UrlCandidates $it)
   if ($candidates.Count -eq 0) { throw "清单条目 $id 没有任何 url" }
 
-  $rangeUrl = $null
-  # 逐候选探测 Range：CDN/直链值得探（ESA 命中缓存 9 MB/s、4 并发 14 MB/s），
-  # 镜像前缀不探（2026-11-01 真机：镜像对 Range 的响应是"整包重取再切片"，
-  # 按段下只有 0.18 MB/s，同一 URL 单流却有 6.7 MB/s）。
+  # 选源：对每个候选先打一发小探针，同时得到「是否支持 Range」和「实测吞吐」，
+  # 再按吞吐从快到慢排序。镜像前缀不探（2026-11-01 真机：镜像对 Range 的响应是
+  # "整包重取再切片"，按段下只有 0.18 MB/s，同一 URL 单流却有 6.7 MB/s），
+  # 只留在队尾做单流兜底。
+  $probed = @()
   if ($SegmentMB -le 0) {
     Log "已关闭分段（-SegmentMB 0），单流下载"
   } else {
@@ -626,21 +680,83 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
         Log "跳过 $($c.Url)（镜像前缀：Range 会被整包重取，只作单流兜底）"
         continue
       }
-      $probe = Test-RangeSupport $c.Url
-      if ($probe.ok) {
-        if ($probe.length -gt 0) { $expectedSize = $probe.length }
-        $rangeUrl = $c.Url
-        Log "分段下载源：$($c.Url)（支持 Range，总长 $(Format-MB $expectedSize)）"
-        break
+      if ($ProbeMB -le 0) {
+        # 关闭测速：沿用旧行为，取第一个支持 Range 的源
+        $r = Test-RangeSupport $c.Url
+        if ($r.ok) { $probed += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Mbps = 0.0; Length = $r.length; Slow = $false } }
+        else { Log "跳过 $($c.Url)（不支持 Range，或探测失败）" }
+        continue
       }
-      Log "跳过 $($c.Url)（不支持 Range，或探测失败）"
+      $m = Measure-UrlSpeed $c.Url $ProbeMB $ProbeSec
+      if ($m.ok) {
+        $probed += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Mbps = $m.mbps; Length = $m.length; Slow = $false }
+      } elseif (-not $m.rejected) {
+        # 超时 / 零字节 / 时间不可信：源可能只是慢，仍能单流下完，不能当它不可用
+        # （2026-11-16 审查 P1-2）。降级到队尾，排在镜像之前。
+        Log "未测到速率 $($c.Url)（保留为单流兜底）"
+        $probed += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Mbps = 0.0; Length = [int64]0; Slow = $true }
+      } else {
+        Log "跳过 $($c.Url)（HTTP 状态表明源不可用）"
+      }
     }
   }
 
-  # 不支持 Range / 未知长度 / 关掉分段 ⇒ 单流，且逐个候选源回退
+  # 统一排序：实测速率降序，**等速按候选顺序**。
+  # PS 5.1 的 Sort-Object 等键时不保序（实测输入 ModelScope→ESA→GitHub 全 0.0 时整体倒序，
+  # n=3/4/5/8 全部失败），且 5.1 根本没有 -Stable。而等速恰恰是常态：夜间实测 GitHub 与
+  # gh-proxy 同为 0.13 MB/s；-ProbeMB 0 这条路径更是全 0.0 等键。所以显式拿原始下标做次键，
+  # -ProbeMB 0 则完全不排序（它承诺的是「按候选顺序取第一个支持 Range 的源」，2026-11-16 审查 P1-1）。
+  $ordered = @($probed)
+  if ($ProbeMB -gt 0 -and $probed.Count -gt 1) {
+    $seq = 0
+    $keyed = foreach ($p in $probed) {
+      [pscustomobject]@{ Seq = $seq; Url = $p.Url; Kind = $p.Kind; Length = $p.Length; Mbps = $p.Mbps; Slow = [bool]$p.Slow }
+      $seq = $seq + 1
+    }
+    $ordered = @($keyed | Sort-Object @{ Expression = "Mbps"; Descending = $true }, @{ Expression = "Seq"; Descending = $false })
+  }
+  if ($ordered.Count -gt 1) {
+    foreach ($p in $ordered) {
+      Log ("测速 {0,6:N2} MB/s  {1}" -f $p.Mbps, $p.Url)
+    }
+  }
+
+  # 排序队列：探针通过的源（快→慢）→ 未探查成功的直链（保序）→ 镜像（只做单流兜底）。
+  # 兜底判据必须看「有没有探针通过的源」($probed)，不能看 $ranked.Count：镜像总会被追加，
+  # $ranked 永不为空，于是 -SegmentMB 0 / curl.exe 缺失 / 探针全失败 这三条正式路径
+  # 都会退化成「只剩镜像可用」，三条真实直链连试都不试（2026-11-16 审查 P0-1）。
+  $ranked = @()
+  foreach ($p in $ordered) {
+    $ranked += [pscustomobject]@{ Url = $p.Url; Kind = $p.Kind; Length = $p.Length; Slow = [bool]$p.Slow }
+  }
+  if ($ranked.Count -eq 0) {
+    # 探针一个都没过 ≠ 源不可用（超时/零字节只是「没测出来」），直链仍留在队列里做单流
+    foreach ($c in $candidates) {
+      if ($c.Kind -ne "mirror") {
+        $ranked += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Length = [int64]0; Slow = $true }
+      }
+    }
+  }
+  # 镜像永远排最后：Range 会被整包重取，只适合单流兜底
+  foreach ($c in $candidates) {
+    if ($c.Kind -eq "mirror") {
+      $ranked += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Length = [int64]0; Slow = $true }
+    }
+  }
+  if ($ranked.Count -eq 0) { $ranked = @($candidates) }
+
+  $rangeUrl = $null
+  # 只有「探针确认支持 Range 且没被降级为 Slow」的源才配拿去分段，否则直接走单流回退
+  if ($SegmentMB -gt 0 -and $probed.Count -gt 0 -and $ranked.Count -gt 0 -and $ranked[0].Kind -ne "mirror" -and -not $ranked[0].Slow) {
+    $rangeUrl = $ranked[0].Url
+    if ($ranked[0].Length -gt 0) { $expectedSize = $ranked[0].Length }
+    Log "分段下载源：$rangeUrl（支持 Range，总长 $(Format-MB $expectedSize)）"
+  }
+
+  # 不支持 Range / 未知长度 / 关掉分段 ⇒ 单流，且按测速顺序逐个候选源回退
   # （镜像前缀会把 localhost 之类也拼成死的，必须靠回退兜住）
   if (-not $rangeUrl -or $expectedSize -le 0) {
-    Invoke-SingleStream $candidates $dest $id $flavor $expectedSize
+    Invoke-SingleStream $ranked $dest $id $flavor $expectedSize
     return
   }
 
@@ -703,7 +819,10 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
     $segErr = $_.Exception.Message
     Log "分段下载失败（$segErr），改单流重试"
     Remove-Item -LiteralPath $cacheDir -Recurse -Force -ErrorAction SilentlyContinue
-    Invoke-SingleStream $candidates $dest $id $flavor $expectedSize
+    # 已经证伪的源排到队尾：它刚刚整段失败，别再让单流先撞一次
+    $rest = @($ranked | Where-Object { $_.Url -ne $rangeUrl }) + @($ranked | Where-Object { $_.Url -eq $rangeUrl })
+    if ($rest.Count -eq 0) { $rest = @($candidates) }
+    Invoke-SingleStream $rest $dest $id $flavor $expectedSize
   }
 }
 
