@@ -77,8 +77,15 @@ export const useUiStore = defineStore("ui", () => {
     localStorage.removeItem(SIDEBAR_KEY);
   }
 
-  document.documentElement.dataset.theme = theme.value;
-  void applyZoom(zoom.value);
+  /// 启动期的一次性副作用：把主题写到 DOM、把界面缩放推给 WebView。
+  /// 原先写在本函数体末尾（store 求值时执行），任何 import 到这个 store 的地方都会
+  /// 连带触发一次 IPC 与 DOM 写入 —— 包括只在 Node 里跑 store 逻辑的测试。
+  /// 改成显式调用，由 App.vue 的 onMounted 负责（P2-21）。
+  function initUiShell() {
+    if (typeof document === "undefined") return;
+    document.documentElement.dataset.theme = theme.value;
+    void applyZoom(zoom.value);
+  }
 
   return {
     theme,
@@ -86,6 +93,7 @@ export const useUiStore = defineStore("ui", () => {
     sidebarCollapsed,
     sidebarDefault,
     zoom,
+    initUiShell,
     focusedPane,
     setTheme,
     toggleTheme,

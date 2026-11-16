@@ -527,13 +527,13 @@ async function startEmbedOcr() {
             <div v-if="projectStore.asrMessage" class="arow arow-msg">
               <span class="enote">{{ projectStore.asrMessage }}</span>
             </div>
-            <div class="arow arow-acts">
+            <div class="arow">
               <button class="btn ghost sm" @click="cancelAsr">取消</button>
               <span class="sp"></span>
               <button class="btn ghost sm" @click="openAsrPanel">重新探测引擎状态</button>
             </div>
           </template>
-          <div v-else class="arow arow-acts">
+          <div v-else class="arow">
             <span class="sp"></span>
             <button class="btn ghost sm" @click="openAsrPanel">重新探测引擎状态</button>
           </div>
@@ -640,6 +640,9 @@ async function startEmbedOcr() {
 }
 
 .arow-msg .enote {
+  /* min-width:0 是这个 flex 项能被压缩的前提：默认 min-width:auto 会让长路径/长报错
+     按最长不可断词撑宽，把 .accb 的 overflow-x:auto 撑出一条横向滚动条 */
+  min-width: 0;
   line-height: 1.5;
   word-break: break-word;
 }

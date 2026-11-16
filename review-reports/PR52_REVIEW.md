@@ -762,7 +762,9 @@
   const MERGE_KEY = PREF_KEYS.mergeStrategy;
   ```
 
-### 🟢 P2-21 死类名、缺 `min-width:0`、store 模块求值期副作用
+### 🟢 P2-21 死类名、缺 `min-width:0`、store 模块求值期副作用 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P2-21）。
 
 - **位置**：`src/views/AsrView.vue:530 / :536`（`.arow-acts` 全仓库无 CSS 规则）、
   `:642-645`（`.arow-msg .enote` 无 `min-width:0`）、`src/stores/ui.ts:72-73`
@@ -1092,4 +1094,16 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   改一边漏一边就会静默变成两个互不相干的偏好。改为 `const SPLIT_KEY = PREF_KEYS.splitStrategy;`
   / `const MERGE_KEY = PREF_KEYS.mergeStrategy;`（`readStrategy` 的兜底逻辑与 `SPLIT_VALUES`/`MERGE_VALUES` 校验不动）。
   验证：`npx vue-tsc --noEmit` EXIT=0；`grep` 确认 `timeline.ts` 内已无字面量键名，键值本身未变（仍写 `gsa.timeline.*`，老数据继续可读）。
-- **P2-21 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
+- **P2-21** ✅ **已修复**（2026-11-16，本分支，`src/views/AsrView.vue:530 / :536 / :642-645`、
+  `src/stores/ui.ts:71-90`、`src/main.ts:13-15`）——三条互不相干的小口子：
+  ① `.arow-acts` 是全仓零规则的死类名（两处模板拼了它，没有一条 CSS 命中），直接去掉，
+     布局全由 `.arow` + `.astack` 决定；② `.arow-msg .enote` 补 `min-width: 0` —— flex 项默认
+     `min-width: auto`，长路径/长报错会按最长不可断词撑宽父级，把 `.accb` 的 `overflow-x: auto`
+     撑出一条横向滚动条；③ store 求值期副作用（写 `data-theme` + `void applyZoom(...)`）收进
+     显式 `initUiShell()`：原先任何 import 到 ui store 的路径（包括 Node 里跑 store 逻辑的测试）
+     都会连带触发一次 IPC 与 DOM 写入。调用点只有一处 —— `src/main.ts` 的 `useUiStore().initUiShell()`，
+     时序与注释原意一致（挂载前写主题，避免首帧闪色）。
+  验证：`npx vue-tsc --noEmit` EXIT=0；`pnpm build` EXIT=0（js 713.05 kB / gzip 221.90 kB）；
+  Node harness 6/6 PASS（"import 不发 IPC"、"initUiShell 恰好发一次 set_ui_zoom"、
+  "写入 data-theme"），同一 harness 对修复前的 `ui.ts` 为 2/4（失败项：实例化即发 IPC、无 initUiShell）。
+- **P2-22 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
