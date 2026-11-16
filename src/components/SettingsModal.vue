@@ -66,6 +66,28 @@ const OCR_DEVICE_OPTIONS = [
   { label: "GPU:0", value: "gpu:0" },
 ];
 
+const MOSS_THREAD_OPTIONS = [0, 4, 8, 12, 16, 24, 32].map((n) => ({
+  label: n === 0 ? "自动" : `${n}`,
+  value: n,
+}));
+
+const MOSS_TIMEOUT_OPTIONS = [0, 15, 30, 45, 60, 120].map((n) => ({
+  label: n === 0 ? "不限制" : `${n} 分钟`,
+  value: n,
+}));
+
+/// 前端候选表比后端允许的区间窄（后端 segment 0–1024、threads 0–256、timeout 0–1440、
+/// ocr_device 还支持 npu/xpu）。别处带来一个 32、gpu:1 这类「非枚举值」时，下拉框
+/// 会显示成空白，用户一旦切走就再也选不回来 —— 故按当前值动态补一项「自定义」。
+function withCustom<T extends string | number>(
+  opts: { label: string; value: T }[],
+  cur: T | null | undefined
+): { label: string; value: T }[] {
+  if (cur === null || cur === undefined) return opts;
+  if (opts.some((o) => o.value === cur)) return opts;
+  return [...opts, { label: `自定义（${cur}）`, value: cur }];
+}
+
 const AUTOSAVE_DELAY_OPTIONS = AUTOSAVE_DELAYS.map((d) => ({
   label: d < 1000 ? `${d} 毫秒` : `${d / 1000} 秒`,
   value: d,
@@ -305,7 +327,7 @@ function onZoom(next: number) {
           <span class="sv">
             <NSelect
               :value="snap?.segment_mb ?? 64"
-              :options="SEGMENT_OPTIONS"
+              :options="withCustom(SEGMENT_OPTIONS, snap?.segment_mb)"
               size="small"
               style="width: 200px"
               :disabled="!snap || settings.saving"
@@ -366,7 +388,7 @@ function onZoom(next: number) {
           <span class="sv">
             <NSelect
               :value="snap?.ocr_device ?? ''"
-              :options="OCR_DEVICE_OPTIONS"
+              :options="withCustom(OCR_DEVICE_OPTIONS, snap?.ocr_device)"
               size="small"
               style="width: 200px"
               :disabled="!snap || settings.saving"
@@ -382,7 +404,7 @@ function onZoom(next: number) {
           <span class="sv">
             <NSelect
               :value="snap?.moss_threads ?? 0"
-              :options="[0, 4, 8, 12, 16, 24, 32].map((n) => ({ label: n === 0 ? '自动' : `${n}`, value: n }))"
+              :options="withCustom(MOSS_THREAD_OPTIONS, snap?.moss_threads)"
               size="small"
               style="width: 132px"
               :disabled="!snap || settings.saving"
@@ -395,7 +417,7 @@ function onZoom(next: number) {
           <span class="sv">
             <NSelect
               :value="snap?.moss_timeout_minutes ?? 0"
-              :options="[0, 15, 30, 45, 60, 120].map((n) => ({ label: n === 0 ? '不限制' : `${n} 分钟`, value: n }))"
+              :options="withCustom(MOSS_TIMEOUT_OPTIONS, snap?.moss_timeout_minutes)"
               size="small"
               style="width: 148px"
               :disabled="!snap || settings.saving"
