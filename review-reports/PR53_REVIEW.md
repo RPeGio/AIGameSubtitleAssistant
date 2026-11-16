@@ -511,7 +511,7 @@ P2 共 11 条，绝大多数可以合并后按档案规矩逐条跟进。其中 
 **合并顺序建议**：先修 PR #52 的 P0-1（`$mirror` 遮蔽），再合本 PR。否则本 PR 里
 「镜像只做单流兜底」这条设计会被 PR #52 的 bug 架空，两边的 P0 交织成一个更难查的症状。
 
-## 处置记录（待用户裁决后回填）
+## 处置记录（2026-11-16，用户裁决「均按建议修复」；每条一提交）
 
 > 按 `AGENTS.md` 的档案同步规矩：**修复提交与本文档的状态行必须同一提交更新**，
 > 状态行要写依据（提交号 / PR 号），不要只写「已修复」。
@@ -522,15 +522,15 @@ P2 共 11 条，绝大多数可以合并后按档案规矩逐条跟进。其中 
   守卫（`:699`）。修复后复跑同一套用例矩阵（真实 `powershell.exe` 5.1，
   逐字抽取 `:673-704`）：`-SegmentMB 0` 与「探针全失败」从 **mirror 1 条**变成
   **ModelScope → ESA → GitHub → mirror 4 条**；`-SegmentMB 0` 端到端实跑选中 ModelScope
-  （修复前必然是 gh-proxy）。处置提交号待用户手动提交后回填
-- **P1-1** ✅ **已修复**（2026-11-16，PR #53 内，`scripts/bootstrap_runtime.ps1:668-695`）——
+  （修复前必然是 gh-proxy）。提交 `1964dc8`
+- **P1-1** ✅ **已修复**（2026-11-16，PR #53 内，提交 `963b278`，`scripts/bootstrap_runtime.ps1:668-695`）——
   `-ProbeMB 0` 不再进速率排序（直接沿用插入序），需要按速率排序时显式构造 `Seq` 次键：
   `Sort-Object @{ Expression = "Mbps"; Descending = $true }, @{ Expression = "Seq"; Descending = $false }`
   （面板里不用 `-Stable`，PS 5.1 没有它）。日志与下载队列共用同一次排序结果，避免两处顺序不一致。
   复测（真实 `powershell.exe` 5.1，逐字抽取 `:668-695`）：等键 n=3/5 由「整体倒序 / 乱序」变为
   **严格保序**（ModelScope → ESA → GitHub、A→B→C→D→E），夜间 GitHub 与 gh-proxy 等速的用例
   得到 ModelScope → ESA → GitHub，`-ProbeMB 0` 完全保序，不等键（9.0/5.0/1.5）仍正确降序
-- **P1-2** ✅ **已修复**（2026-11-16，PR #53 内，`scripts/bootstrap_runtime.ps1:446-475` + `:659-671`）——
+- **P1-2** ✅ **已修复**（2026-11-16，PR #53 内，提交 `eb55ba5`，`scripts/bootstrap_runtime.ps1:446-475` + `:659-671`）——
   `Measure-UrlSpeed` 的每个返回点都带上 `rejected`：拿到 HTTP 状态码（200/4xx/5xx）才为 `true`，
   `code = 0` 的连接失败 / 超时 / 零字节 / 计时不可信为 `false`（`:462`）。调用侧据此分三支
   （`:659-671`）：`ok` 正常入队；`-not rejected` 记 `Slow` 保留在队尾并打
@@ -540,7 +540,7 @@ P2 共 11 条，绝大多数可以合并后按档案规矩逐条跟进。其中 
   超时源从「消失」变为**保留在队尾**（`ESA → GitHub → ModelScope`，ModelScope 标 `Slow`）；
   404 源仍被丢弃；**全部未测到时三名直链全部保留且不选源分段**（`rangeUrl = $null`）；
   真实网络端到端实装 `moss/cpu`：测速 5.14 / 0.43 / 0.28 MB/s，选 ModelScope，`EXIT=0`
-- **P1-3** ✅ **已修复**（2026-11-16，PR #53 内，`scripts/bootstrap_runtime.ps1:463-475`）——
+- **P1-3** ✅ **已修复**（2026-11-16，PR #53 内，提交 `275b212`，`scripts/bootstrap_runtime.ps1:463-475`）——
   ① 正则放宽成 `bytes\s+0-\d+/(\d+)`（`:467`），服务端裁短或对象小于探针的合法 206 也能取到总长；
   ② 取不到 `Content-Range` 直接判「没测出来」（`:469-472`）；
   ③ 新增可信度门槛：`$want = min($last+1, $len)`，`$size < $want * 0.5` 即判「没测出来」（`:474-475`），
@@ -550,19 +550,19 @@ P2 共 11 条，绝大多数可以合并后按档案规矩逐条跟进。其中 
   **由 0.705 MB/s `ok=True` 变为 `ok=False`（`Slow`）**；无 `Content-Range` 的 206 由
   897 MB/s `ok=True` 变为 `ok=False`；200/404 仍 `rejected=True`，超时仍 `rejected=False`。
   ⚠ 契约 §4.5 的探针行在本提交内未改（同一行的四栏订正由 P1-4 一次性重写，见下条）
-- **P1-4** ✅ **已修复**（2026-11-16，PR #53 内，`docs/RUNTIME_BOOTSTRAP_CONTRACT.md:326-332` + `:48-49`）——
+- **P1-4** ✅ **已修复**（2026-11-16，PR #53 内，提交 `3cf85ff`，`docs/RUNTIME_BOOTSTRAP_CONTRACT.md:326-332` + `:48-49`）——
   探针行整行重写，四栏对齐实现：超时为 `--max-time <ProbeSec，默认 4>`（不再是写死的 6）、
   `-w` 四字段 + `-D <临时头文件>`（不再提代码从不使用的 `speed_download`）、
   状态码门槛改为「只接受 206（200/4xx/5xx 判不可用）」、补上「扣掉 TTFB」的吞吐公式；
   同时把 P1-3 新增的两条可信度门槛（必须命中 `Content-Range`、实收不少于请求量一半）写进同一行。
   参数表在 `:48` 后新增 `-ProbeSec` 一行并点明它是「慢但能通的源算不算可用」的旋钮；
   §4.5 标题也补上 `-ProbeSec`。「排序」行补「等速按候选顺序」，「关闭」行去掉已失效的 P1-1 注解
-- **P1-5** ✅ **已修复**（2026-11-16，PR #53 内，`docs/RUNTIME_BOOTSTRAP_CONTRACT.md:173`）——
+- **P1-5** ✅ **已修复**（2026-11-16，PR #53 内，提交 `1384ee6`，`docs/RUNTIME_BOOTSTRAP_CONTRACT.md:173`）——
   `urls` 行改为「**顺序只在「探针不可用」时作为缺省偏好**——正常路径按 §4.5 的实测吞吐排序，
   顺序不生效；`-ProbeMB 0` / `-SegmentMB 0` / `curl` 缺失这三条退化路径才严格按它」，
   与同文件 §8.13 的「与 `-ProbeMB` 的关系」行、以及修复后的实现（探针有结果就按速率排序，
   无结果才按清单顺序打底）三方一致
-- **P1-6** ✅ **已修复**（2026-11-16，PR #53 内，`docs/engines_vulkan_design.md:405-406` +
+- **P1-6** ✅ **已修复**（2026-11-16，PR #53 内，提交 `8307737`，`docs/engines_vulkan_design.md:405-406` +
   `docs/engines_vulkan_design_EN.md:409-412`）——改成「已落地 + 未做部分」：ModelScope 主源
   标注为已落地并指向 §8.14（`urls[0]`，2026-11-14 起），自建 CF Worker 反代仍记为未做；
   原来指向 §8.11 的错误指针一并删除（§8.11 的结尾正是这条过期 bullet 本身）。
