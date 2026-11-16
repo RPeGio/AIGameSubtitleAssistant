@@ -16,6 +16,8 @@ const statusMeta = computed(() => {
       return { color: "var(--color-warning)", text: "保存中…" };
     case "error":
       return { color: "var(--color-error)", text: "保存失败" };
+    case "manual":
+      return { color: "var(--color-text-secondary)", text: "自动保存已关" };
   }
 });
 </script>

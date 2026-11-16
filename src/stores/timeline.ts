@@ -3,7 +3,7 @@ import { ref, computed } from "vue";
 import type { InjectionKey } from "vue";
 import type { TimelineEvent } from "../types";
 import type { MergeStrategy, SplitStrategy } from "../composables/sentenceCuts";
-import { readSnapDefault } from "../composables/appPrefs";
+import { readSnapDefault, setSnapDefault } from "../composables/appPrefs";
 
 /// 轨道片段配色：bg 底 / fg 文字 / line 描边，三值都指向主题令牌
 export interface ClipTone {
@@ -242,6 +242,9 @@ export const useTimelineStore = defineStore("timeline", () => {
 
   function toggleSnap() {
     snapEnabled.value = !snapEnabled.value;
+    // 顺手落盘：面板里那个「默认开启吸附」写的是同一个偏好键，
+    // 不写回的话本会话的切换重启即丢，且面板显示的还是旧默认值。
+    setSnapDefault(snapEnabled.value);
     snapGuideX.value = null;
   }
 

@@ -722,7 +722,9 @@
   }
   ```
 
-### 🟢 P2-19 「吸附」在会话内切换不落盘；关掉自动保存后状态条永远显示「未保存」
+### 🟢 P2-19 「吸附」在会话内切换不落盘；关掉自动保存后状态条永远显示「未保存」 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P2-19）。
 
 - **位置**：`src/stores/timeline.ts:243-246`、`src/stores/project.ts:274-283`
 - **问题**：①`toggleSnap` 只改内存值，`readSnapDefault()` 仅决定初值，用户这次关掉吸附、重启又回来；
@@ -1073,4 +1075,14 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   `MOSS_THREAD_OPTIONS` / `MOSS_TIMEOUT_OPTIONS`（顺带止住每次 patch 重建数组）。
   验证：`npx vue-tsc --noEmit` EXIT=0；抽 `withCustom` 真实实现到 node 跑 8 条断言 **8/8 PASS**
   （枚举值不添加、null/undefined 不添加、0 不被当空值、非枚举数值/字符串各补一项且标签为「自定义（…）」）。
-- **P2-19 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
+- **P2-19** ✅ **已修复**（2026-11-16，本分支，`src/stores/timeline.ts:243-250`、
+  `src/stores/project.ts:242-244 / :277-281`、`src/components/SaveStatusIndicator.vue:20-21`）——
+  两个小毛病同源：「状态灯说的不是真话」。
+  ① `toggleSnap()` 只改内存，不写 `gsa.timeline.snap`；而设置面板的「默认开启吸附」写的是
+     同一个键 ⇒ 本会话切换重启即丢，面板还显示旧值。改为顺带 `setSnapDefault(snapEnabled.value)`。
+  ② 关掉自动保存后 `scheduleSave()` 早退却仍置 `saveState = "pending"`，于是每次改动状态灯都
+     亮「未保存」且永不复位（其实根本没有定时器要跑）。新增中性态 `"manual"`，状态灯映射为
+     「自动保存已关」（灰点），与 `pending`（黄点、马上就写盘）区分开。
+  验证：`npx vue-tsc --noEmit` EXIT=0（`saveState` 的字面量联合类型与 `statusMeta` 的 switch
+  同步扩展，漏写分支会被穷尽性检查抓到）。
+- **P2-20 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
