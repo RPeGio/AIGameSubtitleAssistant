@@ -340,7 +340,9 @@
   }
   ```
 
-### 🟢 P2-3 `normalize_ocr_device` 没有白名单，非法设备串会被照存
+### 🟢 P2-3 `normalize_ocr_device` 没有白名单，非法设备串会被照存 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P2-3）。
 
 - **位置**：`src-tauri/src/ai_runtime/config.rs:689-691`
 - **问题**：只做 `trim().to_ascii_lowercase()`；对照 `validate_schema` 里 `moss_device`（`:426-434`）
@@ -916,4 +918,10 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   `update_runtime_settings` 里两处 `.min(...)` 改成 `?` 传播。新增
   `test_normalize_threads_and_timeout_reject_instead_of_clamping`；契约 §8.10 的字段表同步改口
   （明确「不静默钳位」）。全量 `cargo test --lib` **374 passed**。
-- **P2-3 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
+- **P2-3** ✅ **已修复**（2026-11-16，本分支，`src-tauri/src/ai_runtime/config.rs:713-745 / :445-449`）——
+  `normalize_ocr_device` 改为返回 `Result` 并做白名单：空 / `cpu` / `gpu:<n>`（同时放行 `npu`/`xpu`，
+  与 `scripts/ocr_worker.py:_resolve_device` 的口径一致——worker 明确把 npu/xpu 交给 paddle 判断），
+  挡下 `gpu:abc`/`cuda`/`gup:0`/`gpu:-1` 等；`validate_schema` 也复用同一函数，手改 `config.json`
+  写坏设备串会被挡在保存/启动校验处。新增 `test_normalize_ocr_device_whitelist`；
+  全量 `cargo test --lib` **375 passed**。
+- **P2-4 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）

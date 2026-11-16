@@ -442,6 +442,11 @@ impl RuntimeConfig {
                 self.funasr_device
             ));
         }
+        // ocr_device 同样要有白名单：面板走 normalize_ocr_device，但手改 config.json
+        // 会绕过它。这里放行「空 / cpu / gpu:N（npu/xpu 同理）」，其余判非法（2026-11-16 审查 P2-3）。
+        normalize_ocr_device(&self.ocr_device).map_err(|e| {
+            format!("{e}（配置文件里手写的值也会被挡，请改成合法设备串）")
+        })?;
         Ok(())
     }
 
@@ -709,9 +714,32 @@ pub fn normalize_moss_timeout_minutes(raw: u32) -> Result<u32, String> {
     Ok(raw)
 }
 
-/// OCR 设备归一化：空（CPU/自动）| "gpu:0" 这类
-fn normalize_ocr_device(raw: &str) -> String {
-    raw.trim().to_ascii_lowercase()
+/// OCR 设备归一化：空（交给 paddlex 自动选）| "cpu" | "gpu:<n>"（也可 npu/xpu）。
+///
+/// 与 `moss_device`/`funasr_device` 一致做白名单校验：非法串以前会照存，
+/// 直到 OCR 真跑起来才被 worker 静默退回 CPU，用户以为在用 GPU（2026-11-16 审查 P2-3）。
+/// 这里只挡「明显不是设备串」的输入（如 `gpu:abc`、`cuda`、`gup:0`）；
+/// `npu`/`xpu` 仍放行——worker 侧明确把它交给 paddle 自己判断，此处不越权臆测。
+fn normalize_ocr_device(raw: &str) -> Result<String, String> {
+    let v = raw.trim().to_ascii_lowercase();
+    if v.is_empty() || v == "cpu" {
+        return Ok(v);
+    }
+    let (kind, index) = match v.split_once(':') {
+        Some((k, n)) => (k, Some(n)),
+        None => (v.as_str(), None),
+    };
+    let known = matches!(kind, "gpu" | "npu" | "xpu");
+    let index_ok = match index {
+        None => known,
+        Some(n) => known && n.parse::<u32>().is_ok(),
+    };
+    if !index_ok {
+        return Err(format!(
+            "ocr_device 取值非法: {raw}（可选空 / cpu / gpu:0 这类「设备:序号」，也支持 npu/xpu）"
+        ));
+    }
+    Ok(v)
 }
 
 fn settings_snapshot(
@@ -793,7 +821,7 @@ pub async fn update_runtime_settings(
     let ocr_device_before = config.ocr_device.clone();
 
     if let Some(v) = patch.ocr_device {
-        config.ocr_device = normalize_ocr_device(&v);
+        config.ocr_device = normalize_ocr_device(&v)?;
     }
     if let Some(v) = patch.moss_threads {
         config.moss_threads = normalize_moss_threads(v)?;
@@ -1559,6 +1587,27 @@ mod tests {
         assert_eq!(normalize_segment_mb(0).unwrap(), 0);
         assert_eq!(normalize_segment_mb(64).unwrap(), 64);
         assert!(normalize_segment_mb(2048).is_err());
+    }
+
+    #[test]
+    fn test_normalize_ocr_device_whitelist() {
+        // P2-3：非法设备串以前照存，直到 OCR 跑起来才被 worker 静默退回 CPU
+        for (raw, want) in [
+            ("", ""),
+            ("  CPU ", "cpu"),
+            ("gpu:0", "gpu:0"),
+            ("GPU:1", "gpu:1"),
+            ("npu", "npu"),
+            ("xpu:0", "xpu:0"),
+        ] {
+            assert_eq!(normalize_ocr_device(raw).unwrap(), want, "输入 {raw:?}");
+        }
+        for bad in ["gpu:abc", "cuda", "gup:0", "gpu:", "gpu:-1", "cpu:0"] {
+            assert!(
+                normalize_ocr_device(bad).is_err(),
+                "{bad:?} 应被白名单挡下（错误串要能告诉用户可选值）"
+            );
+        }
     }
 
     #[test]
