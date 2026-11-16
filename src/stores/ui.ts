@@ -62,9 +62,10 @@ export const useUiStore = defineStore("ui", () => {
     localStorage.setItem(SIDEBAR_KEY, collapsed ? "1" : "0");
   }
 
-  function setZoom(next: number) {
-    zoom.value = next;
-    void persistZoom(next);
+  /// 只有 WebView 真的改成功才更新内存状态与本地偏好：
+  /// 否则界面没变、下拉却显示新值、下次启动才突然生效（2026-11-16 审查 P2-11）
+  async function setZoom(next: number) {
+    if (await persistZoom(next)) zoom.value = next;
   }
 
   /// 侧栏「默认折叠」是给下次启动用的，当前状态不动（避免用户点一下就跳）

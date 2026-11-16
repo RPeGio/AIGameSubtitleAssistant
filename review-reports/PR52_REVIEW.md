@@ -536,7 +536,9 @@
   }
   ```
 
-### 🟢 P2-11 缩放先落盘后应用，失败时 UI、localStorage 与真实缩放三者不一致
+### 🟢 P2-11 缩放先落盘后应用，失败时 UI、localStorage 与真实缩放三者不一致 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P2-11）。
 
 - **位置**：`src/composables/appPrefs.ts:44-56`、`src/stores/ui.ts:62-65`
 - **问题**：`setZoom` 先写 localStorage 再 `invoke`，`applyZoom` 内部把异常吞成 `console.warn`。
@@ -983,4 +985,14 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   `move_runtime_dir_impl` 只在成功时构造 `MoveResult`，失败一律 `Err`（`config.rs:877-930`），
   改为 `message.success((await settings.moveRuntimeDir(target)).message)`，并在注释里写明
   「后端失败一律走 Err，故无需判 ok」。`npx vue-tsc --noEmit` EXIT=0。
-- **P2-11 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
+- **P2-11** ✅ **已修复**（2026-11-16，本分支，`src/composables/appPrefs.ts:39-62`、`src/stores/ui.ts:65-69`、`src/components/SettingsModal.vue:172-175`）——
+  `applyZoom` 改为返回 `Promise<boolean>`（`invoke` 成功 true，异常 catch 后 false）；
+  `setZoom(zoom)` 只在 `applyZoom` 成功后才 `localStorage.setItem`；
+  `ui.setZoom` 改成 `async`：`if (await persistZoom(next)) zoom.value = next;`——
+  三层同时改，才能保证「界面没变 ⇒ 内存状态与 localStorage 都没变」。
+  验证：`.tmp_p2\p211_entry.ts` + `run_p211.mjs`（vite SSR + invoke 桩）**8/8 PASS**
+  （失败不写盘/不改状态、成功才写、重启读回、失败不污染已有值）；
+  反向对照（同一 harness 指向 `git show HEAD:` 的旧 appPrefs/ui）输出
+  `invoke 失败后 zoom=1.25，localStorage["gsa.zoom"]="1.25"`，确认断言有区分力。
+  `npx vue-tsc --noEmit` EXIT=0。
+- **P2-12 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）

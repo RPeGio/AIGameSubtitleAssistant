@@ -170,7 +170,8 @@ async function onRecheckRuntime() {
 }
 
 function onZoom(next: number) {
-  ui.setZoom(next);
+  // setZoom 现在是 async（失败就不改状态与偏好），这里不等待——失败已在 store 里 console.warn
+  void ui.setZoom(next);
 }
 </script>
 

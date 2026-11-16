@@ -41,18 +41,25 @@ export function readZoom(): number {
 /// CSS zoom 只缩放内容，`100vh` 这类视口单位不跟着变：缩到 90% 时应用底部空出
 /// 一条、放大到 125% 时内容溢出把文字挤着换行。WebView 缩放改的是 CSS 像素换算比，
 /// 视口单位随之正确。
-export async function applyZoom(zoom: number) {
+/// 返回是否真的生效了：调用方（`ui.setZoom`）只在成功时才更新内存状态与 localStorage，
+/// 否则会出现「界面没变、localStorage 已经记下新值、下次启动才突然变」的三方不一致
+/// （2026-11-16 审查 P2-11）。
+export async function applyZoom(zoom: number): Promise<boolean> {
   try {
     await invoke("set_ui_zoom", { scale: zoom });
+    return true;
   } catch (e) {
-    // 非 Tauri 环境（vite preview / 单测）没有这个命令，忽略即可
+    // 非 Tauri 环境（vite preview / 单测）没有这个命令，属于预期失败
     console.warn("设置界面缩放失败:", e);
+    return false;
   }
 }
 
-export async function setZoom(zoom: number) {
-  localStorage.setItem(PREF_KEYS.zoom, String(zoom));
-  await applyZoom(zoom);
+/// 只在 apply 成功后落盘：失败就不该把新值写进 localStorage
+export async function setZoom(zoom: number): Promise<boolean> {
+  const ok = await applyZoom(zoom);
+  if (ok) localStorage.setItem(PREF_KEYS.zoom, String(zoom));
+  return ok;
 }
 
 // ── 自动保存 ────────────────────────────────────────────
