@@ -674,6 +674,16 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
   $candidates = @(Get-UrlCandidates $it)
   if ($candidates.Count -eq 0) { throw "清单条目 $id 没有任何 url" }
 
+  # -Source mirror 是「强制走镜像」（CDN 被墙、只有 gh-proxy 能通的网络）：镜像候选必须排最前，
+  # 而不是像 auto/direct 那样留到队尾兜底——否则设置面板里选「强制镜像」等于什么都没发生，
+  # 因为下面的统一排序会把镜像无条件压到队尾（PR#53 的镜像尾部队列，2026-11-16 叠加到 PR#52）。
+  # 两条约束同时成立：
+  #   · 镜像的 Range 是「整包重取再切片」（实测按段 0.18 MB/s，同 URL 单流 6.7 MB/s）⇒ 强制镜像直接走单流、不参与分段；
+  #   · 既然只走镜像，就不必再花探针流量去测 CDN（2 MB × 每候选）⇒ 跳过测速。
+  # -Mirror 为空时 Get-UrlCandidates 的 mirror 分支筛不出候选，此时退回普通排序（不能凭空造候选）。
+  $mirrorCands = @($candidates | Where-Object { $_.Kind -eq "mirror" })
+  $mirrorFirst = ($Source -eq "mirror") -and ($mirrorCands.Count -gt 0)
+
   # 选源：对每个候选先打一发小探针，同时得到「是否支持 Range」和「实测吞吐」，
   # 再按吞吐从快到慢排序。镜像前缀不探（2026-11-01 真机：镜像对 Range 的响应是
   # "整包重取再切片"，按段下只有 0.18 MB/s，同一 URL 单流却有 6.7 MB/s），
@@ -691,6 +701,8 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
   $probed = @()
   if ($SegmentMB -le 0) {
     Log "已关闭分段（-SegmentMB 0），单流下载"
+  } elseif ($mirrorFirst) {
+    Log "强制镜像（-Source mirror）：跳过测速与分段，直接单流走镜像前缀"
   } else {
     foreach ($c in $candidates) {
       if ($c.Kind -eq "mirror") {
@@ -742,21 +754,33 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
   # $ranked 永不为空，于是 -SegmentMB 0 / curl.exe 缺失 / 探针全失败 这三条正式路径
   # 都会退化成「只剩镜像可用」，三条真实直链连试都不试（2026-11-16 审查 P0-1）。
   $ranked = @()
-  foreach ($p in $ordered) {
-    $ranked += [pscustomobject]@{ Url = $p.Url; Kind = $p.Kind; Length = $p.Length; Slow = [bool]$p.Slow }
-  }
-  if ($ranked.Count -eq 0) {
-    # 探针一个都没过 ≠ 源不可用（超时/零字节只是「没测出来」），直链仍留在队列里做单流
+  if ($mirrorFirst) {
+    # 强制镜像：镜像在最前，其余直链按候选顺序跟在后面（镜像挂了才有机会轮到它们）
+    foreach ($c in $mirrorCands) {
+      $ranked += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Length = [int64]0; Slow = $false }
+    }
     foreach ($c in $candidates) {
       if ($c.Kind -ne "mirror") {
         $ranked += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Length = [int64]0; Slow = $true }
       }
     }
-  }
-  # 镜像永远排最后：Range 会被整包重取，只适合单流兜底
-  foreach ($c in $candidates) {
-    if ($c.Kind -eq "mirror") {
-      $ranked += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Length = [int64]0; Slow = $true }
+  } else {
+    foreach ($p in $ordered) {
+      $ranked += [pscustomobject]@{ Url = $p.Url; Kind = $p.Kind; Length = $p.Length; Slow = [bool]$p.Slow }
+    }
+    if ($ranked.Count -eq 0) {
+      # 探针一个都没过 ≠ 源不可用（超时/零字节只是「没测出来」），直链仍留在队列里做单流
+      foreach ($c in $candidates) {
+        if ($c.Kind -ne "mirror") {
+          $ranked += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Length = [int64]0; Slow = $true }
+        }
+      }
+    }
+    # 镜像永远排最后：Range 会被整包重取，只适合单流兜底
+    foreach ($c in $candidates) {
+      if ($c.Kind -eq "mirror") {
+        $ranked += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Length = [int64]0; Slow = $true }
+      }
     }
   }
   if ($ranked.Count -eq 0) { $ranked = @($candidates) }
