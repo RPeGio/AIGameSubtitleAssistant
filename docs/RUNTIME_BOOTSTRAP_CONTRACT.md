@@ -122,8 +122,8 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
 
 ```json
 {
-  "version": "1",
-  "generated_at": "2026-10-30T03:01:00Z",
+  "version": "2026-11-14",
+  "generated_at": "2026-11-14T03:46:00Z",
   "items": [
     {
       "id": "moss",
@@ -171,6 +171,15 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
   ]
 }
 ```
+
+- **`version` / `generated_at` 仅作出处标注，不是协议版本门禁**：代码不读、不比对这两个字段
+  （Rust 侧只取 `items[]` 的 `id/flavor/sha256/size/unpacked_size`，见
+  `src-tauri/src/ai_runtime/installed_state.rs:125` `parse_manifest_items`）。但 `version` 会被
+  安装器写进用户状态作为 `source_version`（`scripts/bootstrap_runtime.ps1:911`，
+  类型见 `installed_state.rs:40`），所以**改内容必须同改 `version`**，否则从这份清单装的机器
+  永远记着上一版的出处、与上一版安装无法区分。`generated_at` 会被
+  `scripts/package_moss_flavors.ps1:234` 带进 `packages.json`。
+  当前约定：`version` 写成内容定稿的日期戳（如 `"2026-11-14"`）。
 
 | 字段 | 必填 | 语义 |
 |---|---|---|
