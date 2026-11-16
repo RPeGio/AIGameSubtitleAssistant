@@ -23,8 +23,8 @@
 
 | 条目 | 现状 | 生效 | 新增命令 | 建议 |
 |---|---|---|---|---|
-| 主题（深 / 浅） | 已实现：`gsa.theme`（`src/stores/ui.ts:6`），顶栏有切换按钮 | 即时 | 否 | **v1**：设置里放同款分段控件，与顶栏双向同步 |
-| 侧栏默认折叠 | 已实现：`gsa.sidebar`（`ui.ts:7`） | 即时 | 否 | **v1**：只是把已有开关挪一份进设置 |
+| 主题（深 / 浅） | 已实现：`gsa.theme`（键定义在 `src/composables/appPrefs.ts:6`，`src/stores/ui.ts:14` 取别名），顶栏有切换按钮 | 即时 | 否 | **v1**：设置里放同款分段控件，与顶栏双向同步 |
+| 侧栏默认折叠 | 已实现：`gsa.sidebarDefault`（`appPrefs.ts:9`；`gsa.sidebar` 是当前折叠状态，`ui.ts:15`），仅在还没有手动折叠记录时生效 | 下次启动 | 否 | **v1**：只是把已有开关挪一份进设置 |
 | 界面缩放（0.9 / 1.0 / 1.1 / 1.25） | **无** | 即时 | 否 | v2：需要给 `<html>` 设基准字号并逐页核对，工作量在回归测试 |
 | 校对区宽度 | **固定 `min-width: 520px`**（`ReviewPane.vue:123`），不可拖 | — | 否 | v2：属于交互改造（拖拽手柄），不是设置项 |
 
@@ -45,7 +45,7 @@
 |---|---|---|---|---|
 | MOSS 推理设备 | 已有 UI：打轴页「转写参数 → 推理设备」（`set_moss_device`） | 即时（重建 provider） | 否 | 设置里**只读显示**并给「去打轴页改」的跳转，避免双份真相 |
 | FunASR 推理设备 | 同上（`set_funasr_device`） | 即时 | 否 | 同上 |
-| OCR 推理设备 `ocr_device` | **无 UI**，但真的生效（`paddle.rs:187` → `GSA_OCR_DEVICE`） | 下次 OCR 启动 | 是（`set_ocr_device` 或通用 patch） | **v1** |
+| OCR 推理设备 `ocr_device` | 已实现（设置面板 B 组）：`paddle.rs:185` 读环境变量 `GSA_OCR_DEVICE`，`:211` 再写回子进程 | | 下次 OCR 启动 | 是（`set_ocr_device` 或通用 patch） | **v1** |
 | OCR 模型 `ocr_model` | **无 UI**，生效（`paddle.rs:209` → `GSA_OCR_MODEL`） | 下次 OCR 启动 | 是 | v2（高级，写错就废） |
 | MOSS 线程数 `moss_threads` | 无 UI，生效（`moss.rs:294`） | 即时 | 是 | **v1** |
 | MOSS 超时 `moss_timeout_minutes` | 无 UI，生效（`moss.rs:296`） | 即时 | 是 | v2（长音频才需要） |
@@ -68,15 +68,15 @@
 
 | 条目 | 现状 | 生效 | 新增命令 | 建议 |
 |---|---|---|---|---|
-| 吸附默认开关 | `timeline.ts:64` 默认 true，**未持久化** | 即时 | 否 | **v1** |
+| 吸附默认开关 | 已持久化 `gsa.timeline.snap`（`appPrefs.ts:13`；`timeline.ts:67` 读初值，`:249` 切换时写回） | 即时 | 否 | **v1** |
 | 分割策略默认 | 已持久化 `gsa.timeline.splitStrategy`（`punct/space/raw`） | 即时 | 否 | **v1** |
 | 合并策略默认 | 已持久化 `gsa.timeline.mergeStrategy`（`latter/former/stack`） | 即时 | 否 | **v1** |
-| 撤销深度 | 硬编码 `MAX_HISTORY = 60`（`project.ts:307`） | 重启 | 否 | v2 |
-| 自动保存延迟 | 硬编码 1000 ms（`project.ts:273`） | 即时 | 否 | v2 |
+| 撤销深度 | 硬编码 `MAX_HISTORY = 60`（`project.ts:315`） | 重启 | 否 | v2 |
+| 自动保存延迟 | 已可配置 `gsa.autosaveDelay`（`appPrefs.ts:19` 可选 `[300, 1000, 3000]`，`project.ts:284` 消费） | 即时 | 否 | **v1** |
 
 ### F. 快捷键（只读）
 
-现状：`src/composables/shortcuts.ts:23-47` 全部硬编码，无自定义能力（22 个动作）。
+现状：`src/composables/shortcuts.ts:22-48` 全部硬编码，无自定义能力（5 组 **21** 个动作 / 27 个键位）。
 
 > 建议 v1 只做**只读对照表**（用户查键位），自定义改键单独开一项（要处理冲突检测、平台差异、导入导出）。
 
@@ -93,10 +93,10 @@
 ## 3. 「移动 runtime 目录」实现要点
 
 1. **指针文件优先**：`resolve_runtime_dir()` 当前顺序是 `GSA_RUNTIME_DIR`（须含 `config.json`）→ 从 exe 向上找 → `fallback`。插入第一级：`app_data_dir()/runtime-location.json` 里的 `runtime_dir`（目录存在才采纳，否则告警并回退）。
-2. **7 处调用点改造**：现在都传 `app_data_dir()/runtime`，改为传 `app_data_dir()`，由 `resolve_runtime_dir` 自己拼 `runtime` 或读指针（`backend_probe.rs:808`、`config.rs:435/463`、`installed_state.rs:338/366`、`runtime_install.rs:499`、`setup.rs:257`）。
-3. **移动流程**：目标目录必须为空或不存在 → 递归复制 → 逐文件比对大小（大文件可只比大小 + 抽查 sha）→ 写指针 → 提示「重启后生效，旧目录可手动删除」。
-4. **失败回滚**：复制中途失败不写指针，保留旧目录；UI 报出失败的文件与原因。
-5. **禁止目标在旧目录内**、禁止目标为盘符根、禁止目标是正在使用的 `%APPDATA%` 子路径（防递归复制）。
+2. **13 处调用点改造（已完成）**：都改为传 `app_data_dir()`，由 `resolve_runtime_dir` 自己拼 `runtime` 或读指针（`lib.rs:39`、`config.rs:562/590/798/827/1023/1157/1224`、`backend_probe.rs:807`、`installed_state.rs:337/363`、`runtime_install.rs:498`、`setup.rs:261`）。
+3. **移动流程（按 2026-11-16 落地版校正）**：先查目标盘空间（留 10% 余量）→ 目标目录必须为空或不存在、且不得在应用数据目录内 → 递归复制（任意层级跳过 `.downloads`）→ 按「相对路径 + 字节数」逐条对账 → 写指针 → 提示「重启后生效，旧目录可手动删除」。任一步失败都**回滚本次新建的目标目录**，不留半搬残局。
+4. **失败回滚**：复制/对账失败不写指针、保留旧目录，**并清掉本次拷进目标的内容**（原先只承诺「不写指针」，留下半搬目录后按提示重试会撞「目标目录非空」）；UI 报出失败的文件与原因。
+5. **禁止目标在旧目录内 / 是其上级**、禁止目标为盘符根、禁止目标落在**应用数据目录内**（`move_runtime_dir_impl` 已实现 lexical 前缀检查）。
 
 ## 4. 需要新增的 Rust 命令（草案）
 
@@ -104,7 +104,7 @@
 |---|---|
 | `runtime_settings()` | 一次性返回：runtime 目录、可用磁盘、各引擎配置（脱敏只读值）、下载源、日志目录 |
 | `update_runtime_settings(patch)` | 局部更新 `config.json` 的**非路径**字段（线程/超时/设备/下载源），走 `validate()` 后原子写 |
-| `move_runtime_dir(target, delete_source: bool)` | 搬迁 + 校验 + 写指针；返回 `{ok, message, needs_restart}` |
+| `move_runtime_dir(target: string)` | 搬迁 + 校验 + 写指针；返回 `{ok, message, old_dir, new_dir, needs_restart}`。**没有 `delete_source` 参数**（旧目录另有 `delete_old_runtime_dir()` 单独删） |
 | `open_log_dir()` | 用系统文件管理器打开 `runtime/logs` |
 
 > 设备类沿用已有的 `set_moss_device` / `set_funasr_device`（它们会顺带重建 provider，别重复实现）。

@@ -27,8 +27,9 @@
 
 **有 1 条 P0 阻塞合并，4 条 P1 建议本 PR 内处理。**
 
-> **更新（2026-11-16）**：P0-1 与 P1-1 ~ P1-4 均已在本分支修复并复测，当前 P0/P1 清零，
-> 剩余 23 条 P2 按原优先级跟进。下方总评保留发现当时的判断。
+> **更新（2026-11-17）**：P0-1、P1-1 ~ P1-4、P2-1 ~ P2-23 **全部在本分支修复并复测**，
+> 当前 P0/P1/P2 三条线全部清零（23 条 P2 见「处置记录」，每条一提交）。
+> 下方总评保留发现当时的判断。
 
 结构性设计是好的：`RuntimeConfig` 的 `download_source/segment_mb/setup_auto` 三字段与面板一一对应；
 指针文件先写 `.tmp` 再 `rename`（真原子）；`load_or_default` 只在 `config.json` **不存在**时才兜默认、
@@ -825,7 +826,10 @@
   > 出问题的两条路径（`$tmpZip` / `$tmpDir`）本来就建在 `GetTempPath()`，不在 `.downloads`
   > 之下；按原建议写会把正常清理也拦掉。
 
-### 🟢 P2-23 同一 PR 内文档与代码漂移（5 处）
+### 🟢 P2-23 同一 PR 内文档与代码漂移（5 处） ✅ 已修复
+
+> **状态**：✅ 2026-11-17 已在本分支修复（见文末「处置记录」P2-23）。
+> 下方保留发现时的原始取证（行号对应修复前）。
 
 - **位置/问题**：
   1. `docs/SETTINGS_PANEL_SCOPE.md:79` 写「22 个动作」，`src/composables/shortcuts.ts:23-47` 实为 **21** 条；
@@ -890,14 +894,15 @@
 
 ## 结论
 
-**P0-1、P1-1 ~ P1-4 均已修复（2026-11-16），P0/P1 清零，可进入合并流程；P2 余 23 条按档案规矩跟进。**
+**P0-1、P1-1 ~ P1-4 已修复（2026-11-16），P2-1 ~ P2-23 已修复（2026-11-17），P0/P1/P2 全部清零，可进入合并流程。**
 P0-1 原本必须在本 PR 内修掉（一个变量改名 + 一条冒烟断言），否则「强制镜像」
 这个本 PR 自己新加的功能是空操作，且基线里还好的镜像兜底被静默打断。
 P1-1 ~ P1-3 属于「用户会撞上且撞上后没有出路」的失败语义问题，已同批修掉；
 P1-4 经用户裁决为「以改 UI 之前的逻辑为准」，已把 `onWheelRoot` 恢复为基线实现
 （同时更正了原报告「基线能力被删」的错判，实际是标签列从原生滚动被改成显式代滚、丢了惯性）。
-P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P2-23（文档漂移）建议随本 PR 一起修**——
-它是「同一 PR 内两份文档互相矛盾」，属于档案自伤，拖到后面就变成后来者的错误前提。
+P2 共 23 条，已按「每条一提交」全部修在本分支（2026-11-17）。其中 P2-23（文档漂移）
+原本只建议随本 PR 修，实际也一并修了——它是「同一 PR 内两份文档互相矛盾」，属于档案自伤，
+拖到后面就变成后来者的错误前提。
 
 ## 处置记录（待用户裁决后回填）
 
@@ -1136,4 +1141,26 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   端到端：`verify_cdn_mirror.ps1` 对真实 ModelScope 直链跑通（206 / TTFB 0.36s / 1.85 MB/s，EXIT=0）；
   `bootstrap_runtime.ps1 -Items moss -Flavor cpu` 装成功（`{"ok":true}`，11 个文件），
   `%TEMP%` 下 `gsa_rt_*` 残留 0 个。
-- **P2-23** ⚠ 未修复（文档漂移，建议随本 PR 修）
+- **P2-23** ✅ 已修复（同一 PR 内文档漂移，9 处口径全部按落地版校正）
+  - `docs/SETTINGS_PANEL_SCOPE.md`：`gsa.theme` 的键定义点由 `ui.ts:6` 改为
+    `appPrefs.ts:6`（`ui.ts:14` 只是取别名）；「侧栏默认折叠」明确写成
+    `gsa.sidebarDefault`（`appPrefs.ts:9`）并与 `gsa.sidebar`（`ui.ts:15`）区分；
+    `GSA_OCR_DEVICE` 行号 `paddle.rs:187` → `:185`；`MAX_HISTORY` 的
+    `project.ts:307` → `:315`；吸附默认开关由「未持久化」改为「已持久化
+    `gsa.timeline.snap`（`appPrefs.ts:13`，`timeline.ts:67` 读初值、`:249` 写回）」；
+    自动保存延迟由「硬编码 1000 ms」改为「已可配置 `gsa.autosaveDelay`
+    （`appPrefs.ts:19` 可选 `[300,1000,3000]`，`project.ts:284` 消费）」；
+    快捷键动作数「22」→「**21** 条 / 27 键位」；§3.2 调用点由「7 处」改为
+    「**13 处（已完成）**」并换成实测行号（`lib.rs:39`、`config.rs:562/590/798/
+    827/1023/1157/1224`、`backend_probe.rs:807`、`installed_state.rs:337/363`、
+    `runtime_install.rs:498`、`setup.rs:261`）；§3.3–3.5 三条（移动流程 / 失败回滚 /
+    禁止目标）按 P1-2、P2-12、P2-13、P2-14 的落地版重写；§4 命令表
+    `move_runtime_dir(target, delete_source: bool)` 改为
+    `move_runtime_dir(target: string)` 并注明「没有 `delete_source` 参数，旧目录由
+    `delete_old_runtime_dir()` 单独删」。
+  - `docs/RUNTIME_BOOTSTRAP_CONTRACT.md`：参数表补上漏掉的两行 `-Source`
+    （`auto`/`mirror`/`direct` 三档）与 `-RuntimeDir`（默认 `<脚本目录>/../runtime`，
+    GUI 每次都显式传，`runtime_install.rs:711-726`）。
+  - 复测：`git diff --stat` = 2 files / 14 insertions / 12 deletions；
+    `Select-String` 复查每条替换后的行号与数字与代码一致（本报告自身引用的
+    行号亦已按当前文件核对）。

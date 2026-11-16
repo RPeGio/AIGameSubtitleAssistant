@@ -42,8 +42,10 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
 | `-Items <ids>` | 逗号分隔的条目 id | 缺省 `moss,models-moss,deps-ocr,deps-ocr-gpu,deps-embed`；`deps-ocr-cuda-libs` 是"要 CUDA 运行库"的开关，不是清单条目（§4.3） |
 | `-Flavor <auto\|cpu\|cuda\|vulkan>` | 默认 `auto` | `auto` = L0 机器能力探测，判定顺序同 `backend_probe`：**nvidia-smi → vulkaninfo → cpu** |
 | `-Mirror <url>` | 默认 gh-proxy 代理前缀 | **代理前缀语义**（见 §4.1），非资源基址 |
+| `-Source <auto\|mirror\|direct>` | 默认 `auto` | 候选源顺序：`auto` = 清单 `urls[]` → 镜像 → 直链；`mirror` = 镜像优先且跳过测速/分段；`direct` = 只用 GitHub 直链。见 §8.10「下载源三档」 |
 | `-Force` | 开关 | 忽略已安装标记，强制重装 |
 | `-Manifest <path>` | 默认 app 内置 manifest | 覆盖内置清单（离线/自测用） |
+| `-RuntimeDir <path>` | 默认 `<脚本目录>/../runtime` | 安装落点。**GUI 每次都显式传**（`runtime_install.rs:711-726`），命令行手跑务必也传，否则会装进仓库根下的 `runtime/` |
 | `-SegmentMB <n>` | 默认 `64`，`0` = 不分段 | 分段大小；见 §4.5 |
 | `-ProbeMB <n>` | 默认 `2`，`0` = 关闭测速 | 选源前对每个候选发 n MB Range 请求测瞬时速率，按实测排序；见 §4.5。**当前 GUI 不下发，仅供命令行/运维**（见下方「参数可达性」） |
 | `-ProbeSec <n>` | 默认 `4` | 单源测速请求的超时（秒）。**这是「慢但能通的源算不算可用」的旋钮**：超时只把该源降级为单流兜底（`Slow`），不判它不可用；见 §4.5 |
