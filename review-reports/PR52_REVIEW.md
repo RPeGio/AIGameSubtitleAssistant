@@ -44,7 +44,7 @@
 
 ### 🔴 P0-1 `-Mirror` 参数被同函数局部变量覆盖，镜像兜底从此永远失效 ✅ 已修复
 
-> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P0-1，提交号见该条）。
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P0-1，提交号 `dc59140`）。
 > 下方保留发现时的原始取证，行号对应修复前（`$mirror` 现为 `$mirrorCands`）。
 
 - **位置**：`scripts/bootstrap_runtime.ps1:404`（配合 `:56` 参数、`:405`、`:414`、`:416`）
@@ -88,7 +88,7 @@
     }
     $directCands = New-Object System.Collections.ArrayList
     if ($it.url) { [void]$directCands.Add([pscustomobject]@{ Url = [string]$it.url; Kind = "direct" }) }
-
+  
     $list = switch ($Source) {
       "mirror" { @($mirrorCands) + @($cdn) + @($directCands) }
       "direct" { @(@($cdn) | Where-Object { $_.Url -match "://github\.com/" }) + @($directCands) }
