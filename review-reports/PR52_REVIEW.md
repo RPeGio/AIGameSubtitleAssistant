@@ -747,7 +747,9 @@
   if (!readAutosaveEnabled()) { saveState.value = "manual"; return; }  // 新增中性态
   ```
 
-### 🟢 P2-20 `PREF_KEYS` 里 splitStrategy/mergeStrategy 重复定义且无人使用
+### 🟢 P2-20 `PREF_KEYS` 里 splitStrategy/mergeStrategy 重复定义且无人使用 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P2-20）。
 
 - **位置**：`src/composables/appPrefs.ts:14-15` vs `src/stores/timeline.ts:43-51`
 - **问题**：两处各写一份 `"gsa.timeline.splitStrategy"` 字符串常量，面板/时间轴改任一侧漏改另一侧就是静默不生效。
@@ -1085,4 +1087,9 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
      「自动保存已关」（灰点），与 `pending`（黄点、马上就写盘）区分开。
   验证：`npx vue-tsc --noEmit` EXIT=0（`saveState` 的字面量联合类型与 `statusMeta` 的 switch
   同步扩展，漏写分支会被穷尽性检查抓到）。
-- **P2-20 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
+- **P2-20** ✅ **已修复**（2026-11-16，本分支，`src/stores/timeline.ts:6 / :43-46`）——
+  `gsa.timeline.splitStrategy` / `gsa.timeline.mergeStrategy` 这两个键在`appPrefs.ts:14-15`（`PREF_KEYS`）与 `timeline.ts:43-44` 各写了一份字符串，而 `PREF_KEYS` 的那两个导出无人使用。
+  改一边漏一边就会静默变成两个互不相干的偏好。改为 `const SPLIT_KEY = PREF_KEYS.splitStrategy;`
+  / `const MERGE_KEY = PREF_KEYS.mergeStrategy;`（`readStrategy` 的兜底逻辑与 `SPLIT_VALUES`/`MERGE_VALUES` 校验不动）。
+  验证：`npx vue-tsc --noEmit` EXIT=0；`grep` 确认 `timeline.ts` 内已无字面量键名，键值本身未变（仍写 `gsa.timeline.*`，老数据继续可读）。
+- **P2-21 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）

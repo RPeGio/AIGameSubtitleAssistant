@@ -3,7 +3,7 @@ import { ref, computed } from "vue";
 import type { InjectionKey } from "vue";
 import type { TimelineEvent } from "../types";
 import type { MergeStrategy, SplitStrategy } from "../composables/sentenceCuts";
-import { readSnapDefault, setSnapDefault } from "../composables/appPrefs";
+import { PREF_KEYS, readSnapDefault, setSnapDefault } from "../composables/appPrefs";
 
 /// 轨道片段配色：bg 底 / fg 文字 / line 描边，三值都指向主题令牌
 export interface ClipTone {
@@ -40,8 +40,10 @@ export const TEXT_TRACK_TYPES = ["ocr_text", "embed_ocr", "asr", "fused", "manua
 export const SNAP_THRESHOLD_PX = 8;
 
 /// 分割/合并策略的持久化键与合法值（第 8 项）；不合法或缺失时回落默认档
-const SPLIT_KEY = "gsa.timeline.splitStrategy";
-const MERGE_KEY = "gsa.timeline.mergeStrategy";
+// 键名统一从 appPrefs.PREF_KEYS 取：相同的两个字符串曾经在这里与 appPrefs 各写一份，
+// 改一边漏一边就会静默变成两个互不相干的偏好（P2-20）。
+const SPLIT_KEY = PREF_KEYS.splitStrategy;
+const MERGE_KEY = PREF_KEYS.mergeStrategy;
 const SPLIT_VALUES: SplitStrategy[] = ["punct", "space", "raw"];
 const MERGE_VALUES: MergeStrategy[] = ["latter", "former", "stack"];
 
