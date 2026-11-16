@@ -463,8 +463,16 @@ function Measure-UrlSpeed([string]$url, [int]$probeMB, [int]$timeoutSec) {
     $len = [int64]0
     try {
       $h = [System.IO.File]::ReadAllText($hdr)
-      if ($h -match "(?i)Content-Range:\s*bytes\s+0-$last/(\d+)") { $len = [int64]$Matches[1] }
+      # 不写死上界：服务端可以按自己的上限裁短，对象也可能比探针还小（整包 + 206）
+      if ($h -match "(?i)Content-Range:\s*bytes\s+0-\d+/(\d+)") { $len = [int64]$Matches[1] }
     } catch { }
+    # 没有 Content-Range 的 206 不是可信的 Range 证据；实收字节不足请求量一半，说明服务端
+    # 「回得少、回得快」，此时 $size / $xfer 会把一个只有几 KB 的响应算成几百 MB/s
+    # （实测同款响应算出 897 MB/s，随后每段都 SEGMENT_SHORT）。
+    # 这两类都只算「没测出来」，不是「源不可用」——留给单流兜底，不参与选源（2026-11-16 审查 P1-3）。
+    if ($len -le 0) { return @{ ok = $false; mbps = 0.0; length = [int64]0; rejected = $false } }
+    $want = [math]::Min([int64]$last + 1, $len)
+    if ($size -lt ($want * 0.5)) { return @{ ok = $false; mbps = 0.0; length = $len; rejected = $false } }
     $xfer = $total - $ttfb
     if ($xfer -lt 0.05) { $xfer = $total }
     if ($xfer -le 0) { return @{ ok = $false; mbps = 0.0; length = $len; rejected = $false } }

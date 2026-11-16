@@ -20,8 +20,8 @@
 
 ## 总评
 
-**原为 1 条 P0 阻塞合并 + 6 条 P1；P0-1、P1-1、P1-2 已于 2026-11-16 在本 PR 内修复并复测
-（见「处置记录」），现在剩余 4 条 P1 建议本 PR 内处理。**
+**原为 1 条 P0 阻塞合并 + 6 条 P1；P0-1、P1-1 ~ P1-3 已于 2026-11-16 在本 PR 内修复并复测
+（见「处置记录」），现在剩余 3 条 P1（均为文档）建议本 PR 内处理。**
 
 这是一个「只改数据 + 一个函数」的小 PR，方向我认同：把「固定候选顺序」换成「实测选源」，
 恰好对应文档自己记下的那条事实——同一个源白天 8.9 MB/s、夜里 0.27 MB/s，固定顺序必然在一半
@@ -196,7 +196,7 @@ sha256 与清单记录的 sha256 全部吻合——**换源没有换掉字节**�
   `Measure-UrlSpeed` 相应地在返回值里带 `rejected`（`$code` 是 200/4xx/5xx 时为 true，
   `$code -eq 0` 的超时/连接失败为 false）。
 
-### 🟡 P1-3 `Measure-UrlSpeed` 会把「无 `Content-Range` 的 206」「只回几百字节的 206」判成高速源
+### 🟡 P1-3 `Measure-UrlSpeed` 会把「无 `Content-Range` 的 206」「只回几百字节的 206」判成高速源 ✅ 已修复
 
 - **位置**：`scripts/bootstrap_runtime.ps1:452-468`（判据只有 `:459` 的 `$code -ne 206 -or $size -le 0`）
 - **问题**：健康的唯一判据是 `http_code = 206 且 size > 0`，而 `mbps` 直接由
@@ -540,7 +540,16 @@ P2 共 11 条，绝大多数可以合并后按档案规矩逐条跟进。其中 
   超时源从「消失」变为**保留在队尾**（`ESA → GitHub → ModelScope`，ModelScope 标 `Slow`）；
   404 源仍被丢弃；**全部未测到时三名直链全部保留且不选源分段**（`rangeUrl = $null`）；
   真实网络端到端实装 `moss/cpu`：测速 5.14 / 0.43 / 0.28 MB/s，选 ModelScope，`EXIT=0`
-- **P1-3** ⚠ 未修复（`:459`/`:463` 无 `Content-Range` 或短 206 被判高速；正则写死 `0-$last`）
+- **P1-3** ✅ **已修复**（2026-11-16，PR #53 内，`scripts/bootstrap_runtime.ps1:463-475`）——
+  ① 正则放宽成 `bytes\s+0-\d+/(\d+)`（`:467`），服务端裁短或对象小于探针的合法 206 也能取到总长；
+  ② 取不到 `Content-Range` 直接判「没测出来」（`:469-472`）；
+  ③ 新增可信度门槛：`$want = min($last+1, $len)`，`$size < $want * 0.5` 即判「没测出来」（`:474-475`），
+  不再让「回得少、回得快」算出假高速。两类都只降级为 `Slow`，不判 `rejected`（与 P1-2 同一语义）。
+  复测（真实 `powershell.exe` 5.1，逐字抽取 `:446-482`，用桩 `curl.exe` 喂构造响应）：
+  正常 206 与「对象小于探针的整包 206」仍 `ok=True` 且总长正确；裁短到 1 KiB 的 206
+  **由 0.705 MB/s `ok=True` 变为 `ok=False`（`Slow`）**；无 `Content-Range` 的 206 由
+  897 MB/s `ok=True` 变为 `ok=False`；200/404 仍 `rejected=True`，超时仍 `rejected=False`。
+  ⚠ 契约 §4.5 的探针行在本提交内未改（同一行的四栏订正由 P1-4 一次性重写，见下条）
 - **P1-4** ⚠ 未修复（`docs/RUNTIME_BOOTSTRAP_CONTRACT.md:326` 探针行四栏与实现不符；`-ProbeSec` 无文档）
 - **P1-5** ⚠ 未修复（`docs/RUNTIME_BOOTSTRAP_CONTRACT.md:172` 「顺序即优先级」被 `:349` 与代码推翻）
 - **P1-6** ⚠ 未修复（`docs/engines_vulkan_design.md:406` 仍写 ModelScope「已调研未落地」）
