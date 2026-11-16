@@ -407,9 +407,9 @@ all mean the product does not run.
   kill it logged `续传：缓存里已有 3.0 MB，只需补 17.0 MB` and still matched the manifest SHA256; the
   real 295.6 MB `deps-ocr` came down through gh-proxy in 5 segments.
 - **Still not done (on record)**: the OCR install gate UI (block project entry until OCR is installed)
-  belongs to the frontend wiring and ships together with 11c; the external acceleration options
-  (ModelScope as primary source / self-hosted Cloudflare Worker reverse proxy) are researched but not
-  deployed — see the survey summary at the end of §8.11.
+  belongs to the frontend wiring and ships together with 11c; external acceleration: **ModelScope as
+  the primary source has landed** (`urls[0]` since 2026-11-14, see §8.14); the self-hosted Cloudflare
+  Worker reverse proxy is still not deployed.
 
 ### 8.12 Vector-fusion (embed) runtime joins the distribution (`deps-embed`, 2026-10-30)
 

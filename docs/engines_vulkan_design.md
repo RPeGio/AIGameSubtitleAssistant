@@ -403,7 +403,7 @@ gh release upload  moss-runtime-v1 moss-cuda.zip
   `续传：缓存里已有 3.0 MB，只需补 17.0 MB` 并最终 SHA256 相符；真实网络 295.6 MB 的
   `deps-ocr` 分 5 段经 gh-proxy 下完。
 - **仍未做（留档）**：OCR 的安装门禁 UI（未装 OCR 时不许进项目）属前端接线，与 11c 一并做；
-  外网加速（ModelScope 主源 / 自建 CF Worker 反代）已调研未落地，见 §8.11 的调研结论。
+  外网加速：**ModelScope 主源已落地**（2026-11-14 起为 `urls[0]`，见 §8.14），自建 CF Worker 反代仍未做。
 
 ### 8.12 向量融合（embed）运行时并入分发（`deps-embed`，2026-10-30）
 
