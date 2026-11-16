@@ -364,7 +364,9 @@
   }
   ```
 
-### 🟢 P2-4 「重新检查运行时」把用户踢出主界面，且不带任何新信息
+### 🟢 P2-4 「重新检查运行时」把用户踢出主界面，且不带任何新信息 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P2-4）。
 
 - **位置**：`src/components/SettingsModal.vue:121-124`、`src/stores/setup.ts:100-104`、`src/App.vue:30`
 - **问题**：`onRecheckRuntime` 只做 `setup.reopen(); show.value = false;`，而 `reopen()` 只是把
@@ -924,4 +926,9 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   挡下 `gpu:abc`/`cuda`/`gup:0`/`gpu:-1` 等；`validate_schema` 也复用同一函数，手改 `config.json`
   写坏设备串会被挡在保存/启动校验处。新增 `test_normalize_ocr_device_whitelist`；
   全量 `cargo test --lib` **375 passed**。
-- **P2-4 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
+- **P2-4** ✅ **已修复**（2026-11-16，本分支，`src/components/SettingsModal.vue:120-140`）——
+  `onRecheckRuntime` 改为先 `await setup.refresh()`（真的重探 `runtime_status`），只有仍然 `needs`
+  才 `show=false` + `reopen()` 回准备页；`failed` 走 `message.error`，`ready` 走
+  `message.success("运行时状态已更新")` 并留在当前界面。这样「重新检查」不再把用户踢出主界面，
+  也不会展示旧快照。`npx vue-tsc --noEmit` EXIT=0。
+- **P2-5 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）

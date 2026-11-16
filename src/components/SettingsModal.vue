@@ -117,10 +117,22 @@ async function onOpenLogs() {
   }
 }
 
-/// 「重新检查运行时」= 回到准备页重新判定（不强制重装）
-function onRecheckRuntime() {
-  setup.reopen();
-  show.value = false;
+/// 「重新检查运行时」= 真的重新探测一次，再按结果决定要不要回准备页。
+///
+/// 以前这里只 `setup.reopen()`：它只把 stage 置 needs、不调 `runtime_status`，
+/// 于是 status/items 全是旧值；而 stage=needs 又让 passable=false，
+/// `App.vue` 的 `<router-view v-if="setup.passable">` 直接把主界面卸载 ——
+/// 用户点一下「重新检查」就被踢回准备页，看到的还是旧数据（2026-11-16 审查 P2-4）。
+async function onRecheckRuntime() {
+  await setup.refresh();
+  if (setup.stage === "needs") {
+    show.value = false;
+    setup.reopen();
+  } else if (setup.stage === "failed") {
+    message.error(setup.error || "运行时检查未通过");
+  } else {
+    message.success("运行时状态已更新");
+  }
 }
 
 function onZoom(next: number) {
