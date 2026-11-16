@@ -663,7 +663,9 @@
   }
   ```
 
-### 🟢 P2-16 `update_runtime_settings` 在异步线程上做阻塞 I/O 与 powershell 调用
+### 🟢 P2-16 `update_runtime_settings` 在异步线程上做阻塞 I/O 与 powershell 调用 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P2-16）。
 
 - **位置**：`src-tauri/src/ai_runtime/config.rs:814` vs 同文件 `:739-752`（`runtime_settings` 用了 `spawn_blocking`）
 - **问题**：返回前要 `find_manifest` + `query_free_bytes`（`powershell -Command Get-PSDrive`），
@@ -1043,4 +1045,13 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   验证：`cargo test --lib` **381 passed / 0 failed**，新增
   `test_delete_refuses_dir_that_does_not_look_like_runtime`（伪造的普通目录被拒不误删，
   名字带 `runtime` 的目录放行并删掉）。
-- **P2-16 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
+- **P2-16** ✅ **已修复**（2026-11-16，本分支，`src-tauri/src/ai_runtime/config.rs:820-885`）——
+  `update_runtime_settings` 原先在 async 线程上做完「读配置 → 校验 → 写盘」再拼快照，
+  而拼快照里的 `find_manifest`（读清单）与 `query_free_bytes`（spawn 一次 powershell
+  `Get-PSDrive`）都是阻塞调用，慢盘/杀软扫盘时会把同一 runtime 的其它命令一起拖住。
+  改法：写盘段整体 `spawn_blocking`，返回 `(config, runtime_dir, ocr_device_before)`；
+  快照段再单独 `spawn_blocking`；两处都 `map_err` 出人话（`保存设置失败: …` / `读取设置失败: …`）。
+  与 `runtime_settings`（`:739-752` 本来就是 spawn_blocking）口径一致。
+  验证：`cargo test --lib` **381 passed / 0 failed**，`cargo check --lib` 零告警；
+  签名/行为不变（仍是 `Result<SettingsSnapshot, String>`），前端无需改动。
+- **P2-17 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）

@@ -816,36 +816,48 @@ pub async fn update_runtime_settings(
         .path()
         .app_data_dir()
         .map_err(|e| format!("取应用数据目录失败: {e}"))?;
-    let runtime_dir = resolve_runtime_dir(Some(app_data.clone()));
-    let mut config = RuntimeConfig::load_or_default(&runtime_dir)?;
-    let ocr_device_before = config.ocr_device.clone();
 
-    if let Some(v) = patch.ocr_device {
-        config.ocr_device = normalize_ocr_device(&v)?;
-    }
-    if let Some(v) = patch.moss_threads {
-        config.moss_threads = normalize_moss_threads(v)?;
-    }
-    if let Some(v) = patch.moss_timeout_minutes {
-        config.moss_timeout_minutes = normalize_moss_timeout_minutes(v)?;
-    }
-    if let Some(v) = patch.dev_debug {
-        config.dev_debug = v;
-    }
-    if let Some(v) = patch.download_source {
-        config.download_source = normalize_download_source(&v)?;
-    }
-    if let Some(v) = patch.segment_mb {
-        config.segment_mb = normalize_segment_mb(v)?;
-    }
-    if let Some(v) = patch.setup_auto {
-        config.setup_auto = v;
-    }
+    // 读配置 → 校验 → 写盘整段都在阻塞线程里：慢盘/杀软扫盘时 fs 调用能卡几百毫秒，
+    // 放在 async 线程上会连带拖住同一 runtime 里的其它命令（`runtime_settings` 就是这么写的）。
+    // 闭包顺带把 `ocr_device` 的旧值返出来，供下面判断是否要重建 OCR。
+    // `app_data` 后面那半段（拼快照）还要用，所以只把副本 move 进写盘闭包
+    let app_data_for_write = app_data.clone();
+    let (config, runtime_dir, ocr_device_before) =
+        tauri::async_runtime::spawn_blocking(move || -> Result<_, String> {
+            let runtime_dir = resolve_runtime_dir(Some(app_data_for_write));
+            let mut config = RuntimeConfig::load_or_default(&runtime_dir)?;
+            let ocr_device_before = config.ocr_device.clone();
 
-    // 设置面板改的都是非路径字段：这里只校验"形状"，不因运行时未装完而拒绝保存
-    // （真机踩过：搬家后 python_path 失效，引擎组任何一项都存不进去）。
-    config.validate_schema(&runtime_dir)?;
-    config.save(&runtime_dir)?;
+            if let Some(v) = patch.ocr_device {
+                config.ocr_device = normalize_ocr_device(&v)?;
+            }
+            if let Some(v) = patch.moss_threads {
+                config.moss_threads = normalize_moss_threads(v)?;
+            }
+            if let Some(v) = patch.moss_timeout_minutes {
+                config.moss_timeout_minutes = normalize_moss_timeout_minutes(v)?;
+            }
+            if let Some(v) = patch.dev_debug {
+                config.dev_debug = v;
+            }
+            if let Some(v) = patch.download_source {
+                config.download_source = normalize_download_source(&v)?;
+            }
+            if let Some(v) = patch.segment_mb {
+                config.segment_mb = normalize_segment_mb(v)?;
+            }
+            if let Some(v) = patch.setup_auto {
+                config.setup_auto = v;
+            }
+
+            // 设置面板改的都是非路径字段：这里只校验"形状"，不因运行时未装完而拒绝保存
+            // （真机踩过：搬家后 python_path 失效，引擎组任何一项都存不进去）。
+            config.validate_schema(&runtime_dir)?;
+            config.save(&runtime_dir)?;
+            Ok((config, runtime_dir, ocr_device_before))
+        })
+        .await
+        .map_err(|e| format!("保存设置失败: {e}"))??;
 
     // OCR 设备换了就重建 worker（它把设备当环境变量传给 python，热改只能重启子进程）
     if config.ocr_device != ocr_device_before {
@@ -863,7 +875,14 @@ pub async fn update_runtime_settings(
         }
     }
 
-    Ok(settings_snapshot(&app, &runtime_dir, &app_data, &config))
+    // 快照里有 `find_manifest`（读清单）和 `query_free_bytes`（spawn 一次 powershell
+    // 查 Get-PSDrive），同样不能占着 async 线程跑——这正是 `runtime_settings` 的做法。
+    let app_for_snapshot = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        settings_snapshot(&app_for_snapshot, &runtime_dir, &app_data, &config)
+    })
+    .await
+    .map_err(|e| format!("读取设置失败: {e}"))
 }
 
 /// 递归复制目录（跳过 `.downloads` 临时缓存：它随时可重建，复制它只是浪费时间）
