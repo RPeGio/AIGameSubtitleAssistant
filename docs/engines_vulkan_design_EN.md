@@ -399,9 +399,11 @@ all mean the product does not run.
   from zero. `bootstrap_runtime.ps1` now does "multi-source candidates + byte-range segments +
   in-segment resume", **without repacking any asset** (the largest pack is 502 MB; repacking and
   re-uploading costs more than it saves). Candidate order: `urls[]` → `-Mirror` prefix → `url`
-  direct. Each candidate is probed with `curl -r 0-0` for `206`; sources that ignore Range
-  (gh-proxy does this for large files) are used single-stream and **never resumed** (`curl -C -`
-  appends duplicates when Range is ignored — measured: a 1770 MB download grew to 2036 MB). Segments
+  direct. **Each candidate is probed once** for `206` (throughput probing since 2026-11-12; since
+  2026-11-14 the probe also reports the total length, so it is no longer re-probed per segment);
+  sources that ignore Range (gh-proxy does this for large files) are used single-stream and **never
+  resumed** (`curl -C -` appends duplicates when Range is ignored — measured: a 1770 MB download grew
+  to 2036 MB). Segments
   live in `<runtime>\.downloads\<id>-<sha8>\`, and a leftover `.curlpart` is merged into the segment
   file on the next run ⇒ resume across processes. Measured: a 20 MB asset in 5 segments, and after a
   kill it logged `续传：缓存里已有 3.0 MB，只需补 17.0 MB` and still matched the manifest SHA256; the
@@ -456,7 +458,8 @@ fallback**, so like OCR this is not an optional component.
 connection; the 7 assets total ~2.1 GB (plus 1.77 GB of CUDA libs via pip), which makes first-run
 install unacceptable.
 
-**Approach (data only, no code change)**: every asset in the manifest gains `urls: [ESA, GitHub]` and
+**Approach (data only, no code change)**: every asset in the manifest gains `urls: [ESA, GitHub]`
+(three tiers `ModelScope → ESA → GitHub` since 2026-11-14, see §8.14) and
 the downloader probes them in order (multi-source landed in §4.5). ESA is a **pure pass-through
 mirror** — the origin is still GitHub Releases, so no asset has to be re-uploaded and the
 `gh release` flow is unchanged.
@@ -486,6 +489,11 @@ filing only overseas PoPs are available, so latency is not comparable to mainlan
 ⇒ hence `urls[]` order is **ESA → GitHub** with `-Mirror` (gh-proxy) as the single-stream fallback;
 any one of the three suffices to finish, and real stability still needs ICP filing plus mainland
 nodes (or an object store).
+
+> **Superseded by §8.14 (2026-11-14)**: the fixed `ESA → GitHub` order above no longer holds. It is
+> now three tiers, `ModelScope → ESA (dl.rpegio.top) → GitHub`, and the order is no longer a hard
+> priority — the normal path ranks by the throughput measured in §8.13. This section keeps the
+> conclusion and evidence of that day; do not read the current candidate order out of it.
 
 **2026-11-12 addendum: a fixed order is not enough — measure and pick.** Re-measuring the same
 sources at 22:10 flipped the picture completely:
