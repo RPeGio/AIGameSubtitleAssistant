@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch } from "vue";
+import { computed, onUnmounted, watch } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
 import { NButton, NModal, NPopconfirm, NSelect, NSwitch, useMessage } from "naive-ui";
 import AppIcon from "./AppIcon.vue";
@@ -8,7 +8,7 @@ import { useSettingsStore } from "../stores/settings";
 import { useUiStore } from "../stores/ui";
 import { useTimelineStore } from "../stores/timeline";
 import { useSetupStore } from "../stores/setup";
-import { SHORTCUTS, SHORTCUT_GROUPS } from "../composables/shortcuts";
+import { SHORTCUTS, SHORTCUT_GROUPS, suppressShortcuts } from "../composables/shortcuts";
 import type { MergeStrategy, SplitStrategy } from "../composables/sentenceCuts";
 import { AUTOSAVE_DELAYS, ZOOM_VALUES } from "../composables/appPrefs";
 
@@ -20,9 +20,24 @@ const timeline = useTimelineStore();
 const setup = useSetupStore();
 const message = useMessage();
 
-/// 打开时才拉运行时快照（命令要读盘 + 查可用空间，不必常驻）
+/// 面板开着时抑制全局快捷键（否则 Delete / Ctrl+Z / Space / Esc 会打到被遮住的时间轴），
+/// 同时拉一次运行时快照（命令要读盘 + 查可用空间，不必常驻）。
+/// 释放函数在关面板与卸载时都要调，避免面板被强关后快捷键永久失效（2026-11-16 审查 P2-6）。
+let releaseShortcuts: (() => void) | null = null;
+
 watch(show, (on) => {
-  if (on) void settings.load();
+  if (on) {
+    releaseShortcuts = suppressShortcuts();
+    void settings.load();
+  } else {
+    releaseShortcuts?.();
+    releaseShortcuts = null;
+  }
+});
+
+onUnmounted(() => {
+  releaseShortcuts?.();
+  releaseShortcuts = null;
 });
 
 const snap = computed(() => settings.snapshot);

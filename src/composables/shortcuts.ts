@@ -106,8 +106,29 @@ export function isActiveTimeline(owner: object, primary: boolean): boolean {
   return hoveredTimeline ? hoveredTimeline === owner : primary;
 }
 
+/// 模态抑制计数：设置面板这类弹窗打开期间，全局快捷键必须整段失效。
+///
+/// 单靠 `isEditableTarget` 挡不住——焦点落在 NSwitch/NButton 这类 div 上时它一律放行；
+/// `isActiveTimeline` 在 `hoveredTimeline` 为 null 时又会回落到主时间轴（NModal 是 portal，
+/// `isAttached()` 仍为 true）。于是面板开着时 Delete 会删掉被遮住的片段、Ctrl+Z/Y 撤销整个工程、
+/// Space 连带切换视频播放、Esc 既关面板又执行 `exitSplitPair`（2026-11-16 审查 P2-6）。
+/// 用计数而非布尔，是为了嵌套弹窗时先关的那个不会把还在开的那个的抑制提前放开。
+let suppressDepth = 0;
+
+/// 抑制期间返回一个释放函数；必须在 `onUnmounted` 里也调一次，否则面板被强关会永久卡住快捷键
+export function suppressShortcuts(): () => void {
+  suppressDepth++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    suppressDepth = Math.max(0, suppressDepth - 1);
+  };
+}
+
 /// 分发一次按键；返回是否命中（调用方据此 preventDefault）
 export function dispatchShortcut(e: KeyboardEvent): boolean {
+  if (suppressDepth > 0) return false;
   const def = DEF_BY_KEY.get(shortcutKey(e));
   if (!def) return false;
   let hit = false;

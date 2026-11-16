@@ -411,7 +411,9 @@
   </template>
   ```
 
-### 🟢 P2-6 设置面板打开时全局快捷键仍然生效，Delete 能删掉被遮住的片段
+### 🟢 P2-6 设置面板打开时全局快捷键仍然生效，Delete 能删掉被遮住的片段 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P2-6）。
 
 - **位置**：`src/layouts/ProjectLayout.vue:75-78`、`src/composables/shortcuts.ts:105-128`、`src/components/timeline/Timeline.vue:843-845`
 - **问题**：`isEditableTarget`（`shortcuts.ts:124-128`）只排除 INPUT/TEXTAREA/contentEditable，
@@ -938,4 +940,14 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   直接再调 `settings.load()`），并把 **B 运行时 / C 引擎** 两组整体包进 `<template v-if="snap">`：
   快照拿不到时不再渲染「默认值」，`未找到 manifest.json` 这句也不会在「未知」状态下出现。
   新增 `.set-error` 样式（红字 + 行内按钮）。`npx vue-tsc --noEmit` EXIT=0。
-- **P2-6 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
+- **P2-6** ✅ **已修复**（2026-11-16，本分支，`src/composables/shortcuts.ts:109-127 / :130`、`src/components/SettingsModal.vue:24-42`）——
+  `shortcuts.ts` 新增 `suppressDepth` 计数 + `suppressShortcuts()`（返回幂等释放函数，嵌套弹窗先关的
+  那个不会提前放开），`dispatchShortcut` 开头 `if (suppressDepth > 0) return false;`；
+  `SettingsModal.vue` 把两个 `watch(show)` 合成一个：打开时 `releaseShortcuts = suppressShortcuts()`
+  并 `void settings.load()`，关闭时释放，`onUnmounted` 兜底释放。
+  验证：`.tmp_p2\p26_entry.ts` + `run_p26.mjs`（vite SSR 打包后 node 跑）**13/13 PASS**
+  —— 覆盖「无抑制时 Delete 命中」「抑制期间 Delete 与 Ctrl+Z 都短路且处理器不执行」
+  「释放后恢复」「重复释放不多减」「嵌套两层只放一层仍抑制」；
+  反向对照（同一 harness 指向 `git show HEAD:src/composables/shortcuts.ts`）
+  输出「修复前：Delete 命中=true，处理器调用=1 次」。`npx vue-tsc --noEmit` EXIT=0。
+- **P2-7 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
