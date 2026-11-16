@@ -530,6 +530,9 @@ CUDA 运行库 1.77 GB 走 pip），首装体验不可接受。
   校验脚本必须"重试到 `Content-Range` 总长等于本地字节数"为止，不能一次 404 就判失败。
 - 删除仓库/文件只能去网页控制台（普通 write token 调 `delete_files` 返回 401）。
 - 迁移时逐个比对 `manifest.json` 记录的 sha256，不一致即中止——避免"魔搭上的包和清单不是同一份"。
+- **复核用 `scripts/verify_cdn_mirror.ps1`**（2026-11-16 审查 P2-11 补引用）：改 `urls[]` 前后对三档
+  每一档各跑一次 `powershell -ExecutionPolicy Bypass -File scripts\verify_cdn_mirror.ps1 -Url <直链> -Samples 5 -Seconds 15`，
+  它报 Range 支持（不返 206 会被下载器降级成单流）、TTFB/持续速率中位数、以及 `Age`/`X-Cache` 缓存迹象。
 
 **白天全量首装对照（2026-11-14 10:38–11:21，同一台机、同一批条目、`-Flavor auto`，只把 `urls[]` 收成单一源）**：
 

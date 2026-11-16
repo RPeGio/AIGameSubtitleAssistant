@@ -380,6 +380,13 @@ Range 走了单流镜像，反而成功。
 | 与 `-ProbeMB` 的关系 | 顺序只是"探针不可用时的缺省偏好"；正常路径仍按实测速率排序，故换源不需要改任何代码 |
 | 校验 | 7 条直链均以 `curl -r 0-0` 的 `Content-Range` 总长与 `manifest.size` 对齐（如 `moss-cuda` 651834262、`models-moss` 626397892） |
 
+> **换源/加源请用 `scripts/verify_cdn_mirror.ps1` 复核**（2026-11-16 审查 P2-11 补引用）：它固定做三件事
+> ——Range 探测（不返 206 的源会被 `bootstrap_runtime.ps1` 降级成单流、不再续传）、多次采样报
+> TTFB 与持续速率的**中位数**（单次测速没有意义，同一源相邻两次能差 70 倍）、以及 `Age`/`X-Cache`
+> 缓存迹象（判断"命中边缘"还是"每次回源"）。用法：
+> `powershell -ExecutionPolicy Bypass -File scripts\verify_cdn_mirror.ps1 -Url <直链> -Samples 5 -Seconds 15`。
+> 三档候选都要跑一遍再改 `urls[]`。
+
 ---
 
 ## 5. 退出码表（写进分发文档的错误码表）

@@ -565,6 +565,11 @@ fastest right now" and never presumes a primary source.
   `delete_files`).
 - During migration compare each package against the sha256 recorded in `manifest.json` and abort on
   mismatch — never end up with "the pack on ModelScope is not the one the manifest describes".
+- **Verify with `scripts/verify_cdn_mirror.ps1`** (cross-reference added 2026-11-16, review P2-11):
+  before and after touching `urls[]`, run it once per tier —
+  `powershell -ExecutionPolicy Bypass -File scripts\verify_cdn_mirror.ps1 -Url <direct-link> -Samples 5 -Seconds 15`
+  — it reports Range support (a source not returning 206 gets downgraded to single-stream by the
+  downloader), median TTFB/sustained throughput, and `Age`/`X-Cache` cache hints.
 
 **Daytime full first-install comparison (2026-11-14 10:38–11:21, same machine, same item set,
 `-Flavor auto`, only `urls[]` reduced to a single source)**:
