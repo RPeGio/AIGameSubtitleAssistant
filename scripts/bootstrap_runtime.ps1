@@ -638,8 +638,11 @@ function Invoke-SingleStream($candidates, [string]$dest, $id, $flavor, [int64]$e
 function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $flavor) {
   # 分段依赖系统自带 curl（Windows 10 1803+ 都有）；老系统上别硬失败，退回单流
   if ($SegmentMB -gt 0 -and -not (Get-Command curl.exe -ErrorAction SilentlyContinue)) {
-    Log "未找到 curl.exe（Win10 1803+ 自带），退回单流下载（无分段、无续传）"
-    $SegmentMB = 0
+    Log "未找到 curl.exe（Win10 1803+ 自带），本次运行退回单流下载（无分段、无续传）"
+    # 必须写 $script:SegmentMB：函数内的 `$SegmentMB = 0` 只会建一个函数局部变量，
+    # 脚本级 -SegmentMB 参数原封不动 ⇒ 7 个条目各打一遍同样的日志、各撞一次同样的失败。
+    # （PowerShell 变量名大小写不敏感，这类遮蔽与 PR#52 的 $mirror 撞名是同一类坑，2026-11-16 审查 P2-3）
+    $script:SegmentMB = 0
   }
 
   $expectedSize = [int64]0
