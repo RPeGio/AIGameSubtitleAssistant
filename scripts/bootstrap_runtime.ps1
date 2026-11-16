@@ -843,6 +843,11 @@ $hashFailed = $false
 
 foreach ($it in $selected) {
   $id = [string]$it.id
+  # 注意：PowerShell 变量名大小写不敏感，这里给 `$flavor` 赋值就是覆盖 `-Flavor` 参数本身
+  # （参数在 :210-221 已消费进 `$effectiveFlavor`，之后不再需要 `$Flavor`，故当前无害）。
+  # 但**别在循环体里再用 `$Flavor`**：那时它已经是"当前条目的 flavor"，不是用户传的参数了。
+  # 同类坑见 PR#52 的 `$mirror` 覆盖 `-Mirror`，那条直接把镜像兜底整条断掉且不报错
+  # （2026-11-16 审查 P2-12 留档）。
   $flavor = if ($it.flavor) { ([string]$it.flavor).ToLower() } else { "" }
   $destRel = if ($it.dest) { [string]$it.dest } else { "bin" }
   $destDir = Join-Path $runtime $destRel
