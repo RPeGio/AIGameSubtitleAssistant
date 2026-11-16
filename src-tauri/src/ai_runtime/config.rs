@@ -985,6 +985,20 @@ fn fmt_bytes(n: u64) -> String {
     }
 }
 
+/// 判断某个目录「看起来像 runtime」：给「删除旧目录」兜底用。
+///
+/// 接受两种证据：目录里有 `config.json`（正常 runtime 必有），或目录名里带 `runtime`
+/// （`D:\_GSA_RUNTIME` 这类用户自选的目标名，可能还没落 config.json 就被搬到别处了）。
+/// 这当然挡不住所有误删，但足以挡住「手改指针文件指向 C:\Windows」这种事故。
+fn looks_like_runtime(dir: &Path) -> bool {
+    if dir.join("config.json").is_file() {
+        return true;
+    }
+    dir.file_name()
+        .map(|n| n.to_string_lossy().to_ascii_lowercase().contains("runtime"))
+        .unwrap_or(false)
+}
+
 /// 搬家实现（拆出来便于单测，不依赖 AppHandle）
 pub(crate) fn move_runtime_dir_impl(app_data: &Path, target: &Path) -> Result<MoveResult, String> {
     let current = resolve_runtime_dir(Some(app_data.to_path_buf()));
@@ -1124,6 +1138,16 @@ pub(crate) fn delete_old_runtime_dir_impl(app_data: &Path) -> Result<String, Str
     let current = resolve_runtime_dir(Some(app_data.to_path_buf()));
     if normalize_lexical(&old) == normalize_lexical(&current) {
         return Err("旧目录就是当前 runtime 目录，拒绝删除".into());
+    }
+    // 唯一的护栏不能只是「不等于当前目录」——指针文件是纯文本，手改成 `C:\Windows`
+    // 就会把整盘删了。这里要求它「看起来像 runtime」：要么写着 config.json，
+    // 要么目录名里带 runtime（搬家目标由用户自选，不保证有 config.json）。
+    if old.exists() && !looks_like_runtime(&old) {
+        return Err(format!(
+            "{} 不像 runtime 目录（没有 config.json，目录名也不含 runtime），拒绝删除；\
+             请手动确认后自行清理",
+            old.display()
+        ));
     }
     // 新目录不在时给一句人话，别让用户以为搬家成功过
     let new_dir_missing = !PathBuf::from(&loc.runtime_dir).is_dir();
@@ -1958,6 +1982,59 @@ mod tests {
         assert!(read_location_raw(&base).unwrap().previous.is_none());
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    /// P2-15：「删除旧目录」不能只靠「不等于当前目录」这一道护栏。
+    /// 指针文件是纯文本，手改成 `C:\Windows` 就会把整盘删掉 —— 要求目标「看起来像 runtime」。
+    #[test]
+    fn test_delete_refuses_dir_that_does_not_look_like_runtime() {
+        let base = temp_dir("lk_base");
+        let cur = temp_dir("lk_cur");
+        let bogus = temp_dir("lk_bogus");
+        for d in [&base, &cur, &bogus] {
+            let _ = fs::remove_dir_all(d);
+        }
+        fs::create_dir_all(&cur).unwrap();
+        fs::write(cur.join("config.json"), b"{}").unwrap();
+        fs::create_dir_all(bogus.join("deeper")).unwrap();
+        fs::write(bogus.join("deeper").join("keep.txt"), b"important").unwrap();
+        write_location(
+            &base,
+            &RuntimeLocation {
+                runtime_dir: cur.display().to_string(),
+                previous: Some(bogus.display().to_string()),
+                moved_at: Some(now_epoch()),
+            },
+        )
+        .unwrap();
+
+        let err = delete_old_runtime_dir_impl(&base).unwrap_err();
+        assert!(err.contains("不像 runtime"), "错误串：{err}");
+        assert!(
+            bogus.join("deeper").join("keep.txt").is_file(),
+            "被拒时绝不能动里面的文件"
+        );
+
+        // 名字里带 runtime 的目录应当放行（用户自选的搬家目标）
+        let named = temp_dir("lk_rt_RUNTIME");
+        let _ = fs::remove_dir_all(&named);
+        fs::create_dir_all(&named).unwrap();
+        write_location(
+            &base,
+            &RuntimeLocation {
+                runtime_dir: cur.display().to_string(),
+                previous: Some(named.display().to_string()),
+                moved_at: Some(now_epoch()),
+            },
+        )
+        .unwrap();
+        let msg = delete_old_runtime_dir_impl(&base).unwrap();
+        assert!(msg.contains("已删除"), "结果：{msg}");
+        assert!(!named.exists());
+
+        let _ = fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&cur);
+        let _ = fs::remove_dir_all(&bogus);
     }
 
     /// P2-14：搬家目标不允许落在 app_data 内部（设计文档 §3 第 5 条）。

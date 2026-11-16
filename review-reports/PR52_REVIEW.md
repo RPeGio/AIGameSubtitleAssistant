@@ -641,7 +641,9 @@
   }
   ```
 
-### 🟢 P2-15 删旧目录完全信任指针文件里的 `previous`，没有落点白名单
+### 🟢 P2-15 删旧目录完全信任指针文件里的 `previous`，没有落点白名单 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P2-15）。
 
 - **位置**：`src-tauri/src/ai_runtime/config.rs:934-949`
 - **问题**：唯一的护栏是 `normalize_lexical(&old) != normalize_lexical(&current)`（`:941`），
@@ -1032,4 +1034,13 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   runtime 搬进 app_data 后与日志、`runtime-location.json` 指针同树，且删旧目录时波及面更大。
   验证：`cargo test --lib` **380 passed / 0 failed**，新增 `test_move_rejects_target_inside_app_data`
   （`app_data\rt-inside` 被拒且不建目录；`app_data` 之外的正常目标照常搬成功）。
-- **P2-15 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
+- **P2-15** ✅ **已修复**（2026-11-16，本分支，`src-tauri/src/ai_runtime/config.rs:985-1000`、`:1142-1152`）——
+  新增 `looks_like_runtime(dir)`：目录里有 `config.json`，**或**目录名含 `runtime`
+  （用户自选的搬家目标可能还没落 config.json，故不能只认 config.json）；
+  `delete_old_runtime_dir_impl` 在「不等于当前目录」之外再加这道闸，拒绝时
+  `… 不像 runtime 目录（没有 config.json，目录名也不含 runtime），拒绝删除`。
+  定位说明：这不是完备防护，只求挡住「手改指针文件指向 `C:\Windows`」这类事故。
+  验证：`cargo test --lib` **381 passed / 0 failed**，新增
+  `test_delete_refuses_dir_that_does_not_look_like_runtime`（伪造的普通目录被拒不误删，
+  名字带 `runtime` 的目录放行并删掉）。
+- **P2-16 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
