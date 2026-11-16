@@ -315,7 +315,10 @@ pub struct OcrRuntimeStatus {
 
 /// 全局 OCR 管理器 —— 持有配置与当前 provider
 pub struct OcrManager {
-    config: RuntimeConfig,
+    /// 配置用 RwLock 而不是裸值：`reload()` 会从磁盘重读配置，
+    /// 若只换 provider 不换 config，`config().dev_debug` 就永远是启动时那份旧值，
+    /// 面板里改 `dev_debug` / `ocr_device` 得重启才生效（2026-11-16 审查 P2-1）。
+    config: RwLock<RuntimeConfig>,
     runtime_dir: PathBuf,
     provider: Mutex<Box<dyn OcrProvider>>,
 }
@@ -332,14 +335,21 @@ impl OcrManager {
         };
         let provider = create_ocr_provider(kind, &config, &runtime_dir);
         Self {
-            config,
+            config: RwLock::new(config),
             runtime_dir,
             provider: Mutex::new(provider),
         }
     }
 
-    pub fn config(&self) -> &RuntimeConfig {
-        &self.config
+    /// 返回配置的一份拷贝（不是引用）。
+    ///
+    /// 配置会在 `reload()` 时被整体替换，拿引用不可能既安全又不过期；
+    /// 调用方都只用一两个字段，克隆一次的成本远小于「读到旧值」的代价。
+    pub fn config(&self) -> RuntimeConfig {
+        self.config
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     pub fn runtime_dir(&self) -> &PathBuf {
@@ -382,8 +392,7 @@ impl OcrManager {
     /// 与 `new()` 用同一套判定（含「空配置回退标准布局」），所以「装完必须重启」
     /// 这条边界不存在了 —— 真机 2026-10-31 的「脚本跑完 4 个都未就绪」就是它。
     pub fn reload(&self) -> Result<String, String> {
-        let config =
-            RuntimeConfig::load(&self.runtime_dir).unwrap_or_else(|_| self.config.clone());
+        let config = RuntimeConfig::load(&self.runtime_dir).unwrap_or_else(|_| self.config());
         let worker = ocr_paths(&config, &self.runtime_dir).3;
         let kind = if config.worker_script.is_empty() && !worker.is_file() {
             OcrProviderKind::None
@@ -399,6 +408,12 @@ impl OcrManager {
         {
             let mut guard = self.provider.lock().unwrap_or_else(|e| e.into_inner());
             *guard = provider;
+        }
+        // 关键：config 必须跟着一起换，否则 config().dev_debug 永远是启动时的旧值，
+        // 面板上「改这里立即生效」就成了半句真话（2026-11-16 审查 P2-1）。
+        {
+            let mut guard = self.config.write().unwrap_or_else(|e| e.into_inner());
+            *guard = config;
         }
         Ok(if ready {
             format!("OCR 已重新加载（provider: {name}）")
@@ -442,6 +457,31 @@ mod tests {
         let manager = OcrManager::new(RuntimeConfig::default(), dir.clone());
         let msg = manager.reload().expect("没有 config.json 也应能重建（回退默认配置）");
         assert!(msg.contains("未就绪"), "reload 应如实说未就绪：{msg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_ocr_reload_refreshes_config_too() {
+        // P2-1：reload() 只换 provider 不换 config 时，config().dev_debug 永远是启动那份旧值，
+        // 面板里改 dev_debug 得重启才生效。这里直接验证「reload 之后能读到磁盘上的新值」。
+        let dir = std::env::temp_dir().join(format!("gsa_ocr_reload_cfg_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 启动时：dev_debug = false
+        let manager = OcrManager::new(RuntimeConfig::default(), dir.clone());
+        assert!(!manager.config().dev_debug);
+
+        // 面板把它改成 true 并存盘，然后热加载
+        let mut saved = RuntimeConfig::default();
+        saved.dev_debug = true;
+        saved.save(&dir).unwrap();
+        manager.reload().expect("有合法 config.json 时应能重建");
+
+        assert!(
+            manager.config().dev_debug,
+            "reload 之后 config() 必须反映磁盘新值，否则 dev_debug 要重启才生效"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -544,7 +584,7 @@ mod tests {
             std::panic::panic_any("poison");
         }));
         let mgr = OcrManager {
-            config: RuntimeConfig::default(),
+            config: RwLock::new(RuntimeConfig::default()),
             runtime_dir: PathBuf::from("runtime"),
             provider: mutex,
         };

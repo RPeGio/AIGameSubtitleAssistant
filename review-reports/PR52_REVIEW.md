@@ -295,7 +295,9 @@
   }
   ```
 
-### 🟢 P2-1 `OcrManager::reload()` 换掉了 provider，却没更新 `self.config`，`dev_debug` 改不动
+### 🟢 P2-1 `OcrManager::reload()` 换掉了 provider，却没更新 `self.config`，`dev_debug` 改不动 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P2-1）。
 
 - **位置**：`src-tauri/src/ai_runtime/mod.rs:384-410`、`:341-343`；消费方 `src-tauri/src/ocr/pipeline.rs:240`、`src-tauri/src/asr/mod.rs:90`
 - **问题**：`reload()` 从磁盘重读配置构造新 provider，但**没有** `self.config = config`
@@ -901,4 +903,9 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   轨道区外 Shift 由 handler 代滚；标签列连滚累计 >200px）。
   **负向对照**：同一 harness 跑修复前的 `4c51e3b` 版本为 **8/9**，唯一 FAIL 正是
   「标签列普通滚轮不应 `preventDefault`」——证明这些断言有区分力。
-- **P2-1 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
+- **P2-1** ✅ **已修复**（2026-11-16，本分支，`src-tauri/src/ai_runtime/mod.rs:317-411`）——
+  `OcrManager.config` 改为 `RwLock<RuntimeConfig>`，`config()` 返回**拷贝**而非引用（引用不可能既安全又不过期），
+  `reload()` 在换 provider 的同时 `*self.config.write() = config`。新增
+  `test_ocr_reload_refreshes_config_too`（改盘上 `dev_debug=true` → `reload()` → `config().dev_debug` 为真），
+  全量 `cargo test --lib` **373 passed**。
+- **P2-2 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
