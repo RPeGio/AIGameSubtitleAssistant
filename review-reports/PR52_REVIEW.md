@@ -447,7 +447,9 @@
   onUnmounted(() => release?.());
   ```
 
-### 🟢 P2-7 「删除旧目录」确认按钮忽略 loading，双击会连发两次删除
+### 🟢 P2-7 「删除旧目录」确认按钮忽略 loading，双击会连发两次删除 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P2-7）。
 
 - **位置**：`src/components/SettingsModal.vue:210-220`、`src/stores/settings.ts:74-83`
 - **问题**：`:loading` 只作用于 NPopconfirm 的 trigger（`:215`），确认按钮不吃这个 prop；
@@ -950,4 +952,9 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   「释放后恢复」「重复释放不多减」「嵌套两层只放一层仍抑制」；
   反向对照（同一 harness 指向 `git show HEAD:src/composables/shortcuts.ts`）
   输出「修复前：Delete 命中=true，处理器调用=1 次」。`npx vue-tsc --noEmit` EXIT=0。
-- **P2-7 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
+- **P2-7** ✅ **已修复**（2026-11-16，本分支，`src/components/SettingsModal.vue:118-127 / :236-243`）——
+  `onDeleteOld` 开头加 `if (settings.saving) return;`（并发的第二个请求直接丢掉，不再拿「没有搬家记录」的 Err
+  去弹红色失败）；`NPopconfirm` 补 `:positive-button-props="{ loading: settings.saving, disabled: settings.saving }"`
+  ——naive-ui 的 `:loading` 只作用于 trigger NButton，确认按钮必须走 `positiveButtonProps`（已核对
+  `node_modules/naive-ui/es/popconfirm/src/Popconfirm.mjs:21-22` 确有该 prop）。`npx vue-tsc --noEmit` EXIT=0。
+- **P2-8 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）

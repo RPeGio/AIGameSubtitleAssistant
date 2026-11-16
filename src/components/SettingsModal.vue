@@ -117,6 +117,9 @@ async function onMove() {
 }
 
 async function onDeleteOld() {
+  // NPopconfirm 的 :loading 只作用于 trigger NButton，确认按钮不认它 ⇒ 双击会连发两次删除，
+  // 第二个请求拿到「没有搬家记录」的 Err，用户先看到成功再看到红色失败（2026-11-16 审查 P2-7）
+  if (settings.saving) return;
   try {
     message.success(await settings.deleteOldRuntimeDir());
   } catch (e) {
@@ -243,6 +246,10 @@ function onZoom(next: number) {
             </NButton>
             <NPopconfirm
               v-if="snap?.previous_runtime_dir"
+              :positive-button-props="{
+                loading: settings.saving,
+                disabled: settings.saving,
+              }"
               @positive-click="onDeleteOld"
             >
               <template #trigger>
