@@ -472,7 +472,9 @@
   >
   ```
 
-### 🟢 P2-8 settings store 的 `load`/`patch` 没有序号，慢的快照会覆盖新的
+### 🟢 P2-8 settings store 的 `load`/`patch` 没有序号，慢的快照会覆盖新的 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P2-8）。
 
 - **位置**：`src/stores/settings.ts:31-61`
 - **问题**：`runtime_settings` 走 `spawn_blocking` 且内含一次 `powershell Get-PSDrive`
@@ -957,4 +959,12 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   去弹红色失败）；`NPopconfirm` 补 `:positive-button-props="{ loading: settings.saving, disabled: settings.saving }"`
   ——naive-ui 的 `:loading` 只作用于 trigger NButton，确认按钮必须走 `positiveButtonProps`（已核对
   `node_modules/naive-ui/es/popconfirm/src/Popconfirm.mjs:21-22` 确有该 prop）。`npx vue-tsc --noEmit` EXIT=0。
-- **P2-8 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
+- **P2-8** ✅ **已修复**（2026-11-16，本分支，`src/stores/settings.ts:31-77`）——
+  加 `let seq = 0;`，`load()`/`patch()` 各自 `const mine = ++seq;`，回来时 `if (mine !== seq) return;`
+  丢弃过期结果；`loading`/`saving`/`error` 的复位也 gate 在 `mine === seq` 上（过期请求的失败
+  不污染 `error`）。`patch` 开头自增，意在作废任何还在飞的 `load`——patch 的返回值才是最新真相。
+  验证：`.tmp_p2\p28_entry.ts` + `run_p28.mjs`（vite SSR + `@tauri-apps/api/core` 桩，可控延时）
+  **6/6 PASS**（慢 load 不覆盖后发 patch、先发慢 load 不覆盖后发快 load、过期失败不写 error、loading 归位）；
+  反向对照（同一 harness 指向 `git show HEAD:src/stores/settings.ts`）输出
+  `最终快照 runtime_dir=STALE_LOAD`，确认断言有区分力。`npx vue-tsc --noEmit` EXIT=0。
+- **P2-9 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
