@@ -569,25 +569,18 @@ function onMergeConfirm() {
 
 // ── 滚轮：普通滚轮水平平移时间轴；Shift+滚轮垂直滚动轨道区 ──
 //
-// 例外只有一处——**标签列**（轨道名/操作图标那列，宽度固定、不横向溢出）：
-// 在那里滚轮只做纵向滚动，把下面的轨道翻上来；clip 区仍是水平平移，行为不变。
+// 三处约定（改样式前后都一样，别再动）：
+//   ① clip 区普通滚轮 = 横向平移（纵向轨道滚动不是这里的语义）
+//   ② Shift+滚轮 = 纵向滚动轨道区
+//   ③ 轨道信息标签列 = 纵向滚动：**不在这里处理**，直接放行让浏览器原生滚
+//      （标签列在 .tl-tracks 内，原生滚轮会滚到那个 overflow-y:auto 容器上，
+//      顺带保留触控板惯性。曾经在这里显式 scrollTop 代滚，反倒丢了惯性）
 
 function onWheelRoot(e: WheelEvent) {
   const t = e.target as HTMLElement;
-  // 滑条自己处理缩放
+  // 滑条自己处理缩放；工具条/标签列不响应
   if (t.closest(".scrollbar-track")) return;
-  if (t.closest(".tool-strip")) return;
-  // 标签列（轨道名/操作图标那一列）：滚轮只做纵向滚动轨道区。
-  // 这里没有横向平移的语义，且列宽固定不会横向溢出，所以不会和 clip 区冲突。
-  if (t.closest(".tl-label-col")) {
-    const el = rootRef.value?.querySelector<HTMLElement>(".tl-tracks") ?? null;
-    if (el && el.scrollHeight > el.clientHeight + 1) {
-      e.preventDefault();
-      // Chrome 按住 Shift 会交换 deltaX/deltaY，两轴都计入
-      el.scrollTop += e.deltaY + e.deltaX;
-    }
-    return;
-  }
+  if (t.closest(".tool-strip") || t.closest(".tl-label-col")) return;
   // 标尺上滚轮也缩放（与滑条一致），锚点取标尺内容区左缘
   if (t.closest(".ruler")) {
     e.preventDefault();
@@ -596,15 +589,15 @@ function onWheelRoot(e: WheelEvent) {
     if (rect) timeline.zoom(e.deltaY < 0 ? 1.1 : 0.9, e.clientX - rect.left);
     return;
   }
-  const tracksEl = rootRef.value?.querySelector<HTMLElement>(".tl-tracks") ?? null;
-  const canScrollTracks = !!tracksEl && tracksEl.scrollHeight > tracksEl.clientHeight + 1;
   // Shift+滚轮：垂直滚动轨道区
   if (e.shiftKey) {
-    if (canScrollTracks) {
+    const tracksEl = rootRef.value?.querySelector<HTMLElement>(".tl-tracks") ?? null;
+    if (tracksEl && tracksEl.scrollHeight > tracksEl.clientHeight) {
       // 轨道区内放行原生滚动（保留触控板惯性），轨道区外代为滚动
+      // 注意 Chrome 按住 Shift 会交换 deltaX/deltaY 轴，故两轴都计入
       if (t.closest(".tl-tracks")) return;
       e.preventDefault();
-      tracksEl!.scrollTop += e.deltaY + e.deltaX;
+      tracksEl.scrollTop += e.deltaY + e.deltaX;
       return;
     }
     // 轨道不足无法滚动：吸收输入

@@ -197,37 +197,59 @@
   }
   ```
 
-### 🟡 P1-4 clip 区普通滚轮不再纵向滚动（能力被删，只因另一处修复才变得可见）
+### 🟡 P1-4 滚轮语义被本 PR 中途改掉（标签列由原生滚动改为显式代滚，丢了触控板惯性） ✅ 已修复
 
-- **位置**：`src/components/timeline/Timeline.vue:575-617`（`onWheelRoot`）、`:1124-1133`（`min-height:0`）
-- **问题**：`0025211` 删掉了基线里的这段：
+> **状态**：✅ 2026-11-16 已按用户裁决「以改 UI 之前的逻辑为准」恢复（见文末「处置记录」P1-4）。
+> **同时更正原报告的一处错判**：下方原先写「`0025211` 删掉了**基线里的**这段 `canScrollTracks`」，
+> 实测不成立——`git show 9cae08c:src/components/timeline/Timeline.vue` 里没有 `canScrollTracks`，
+> `git log -S canScrollTracks` 只有 `aca4210`（加）与 `0025211`（删）两个提交，即那段是**同一 PR 内
+> 自己加又自己删**，不是基线能力回退。基线 `onWheelRoot` 正是恢复后的实现（逐字节一致）。
+
+- **位置**：`src/components/timeline/Timeline.vue:570-617`（`onWheelRoot`）、`:1124-1133`（`min-height:0`）
+- **问题**（按更正后的事实重写）：基线（`9cae08c`，含样稿 06 皮肤）的 `onWheelRoot` 约定是
+  「clip 区普通滚轮 = 横向平移；Shift+滚轮 = 纵向滚动；**轨道信息标签列不在 JS 里处理**，
+  直接放行让浏览器原生滚（标签列位于 `.tl-tracks` 内，原生滚轮会滚到那个 `overflow-y:auto` 容器）」。`0025211` 把标签列改成显式代滚：
 
   ```ts
-  if (canScrollTracks && t.closest(".tl-tracks")) {
-    if (e.shiftKey) { /* pan */ }
-    if (Math.abs(e.deltaY) >= Math.abs(e.deltaX)) { return; }   // ← 纵向交还原生滚动
+  // 0025211（修复前）
+  if (t.closest(".tl-label-col")) {
+    const el = rootRef.value?.querySelector<HTMLElement>(".tl-tracks") ?? null;
+    if (el && el.scrollHeight > el.clientHeight + 1) {
+      e.preventDefault();                       // ← 吃掉原生滚动
+      el.scrollTop += e.deltaY + e.deltaX;      // ← 每帧按增量手动推，无惯性
+    }
+    return;
   }
   ```
 
-  之后 `.tl-tracks` 上的**普通滚轮纵向滚动消失，只剩 Shift+滚轮**。要注意这条回归的隐蔽性：
-  基线 `.timeline-col` **没有** `min-height:0`，`.tl-tracks` 实际上从不溢出，那条分支本来也是死的；
-  正是本 PR 的 `min-height:0` 修复让轨道「真的能滚了」，同时也让这条丢失的能力第一次可被感知。
-  提交信息写的是「clip 区仍是水平平移」，属于**有意的设计取舍**，但对用户是能力回退
-  （大工程纵览时 Shift 是隐式手势）。
-- **修复建议**：二选一并写清：①恢复 `.tl-tracks` 上的原生纵向滚动（推荐，横向平移交给 Shift+滚轮和
-  滚动条，符合轨道编辑器惯例）；②保留现状，但必须在 `docs/MISC_TODO.md` 或面板快捷键表里显式登记
-  「纵向滚动需按 Shift」，否则下一个人只会当成 bug 又改回去。
-- **修复后代码**（方案①）：
+  后果：①`preventDefault` + 逐帧 `scrollTop` 让触控板/精度的惯性滚动失效，滚动手感与其它区域不一致；
+  ②这条路径还依赖 `scrollHeight > clientHeight + 1` 的阈值，边界处会出现「滚不动也不放行」的死区。
+  安全网：这条回归之所以能看出来，是同一 PR 的 `min-height:0`（`:1124-1133`）让 `.tl-tracks`
+  真的开始溢出——否则旧分支本来也不生效。
+- **用户裁决**（2026-11-16）：「之前的滚轮逻辑是：在 clip 区滚轮横向滚动，shift+滚轮纵向滚动，
+  在轨道信息标签处滚轮纵向滚动。如果改 UI 前的逻辑与我有冲突，以之前的逻辑为准。」
+  ⇒ 即**恢复基线实现**，不要「clip 区普通滚轮纵向滚动」那种改写。
+- **修复后代码**（= 基线实现，已逐字节还原，并补上「三处约定」注释头防止再被改）：
 
   ```ts
-  if (t.closest(".tl-tracks")) {
-    if (e.shiftKey) {                       // Shift+滚轮 = 水平平移
+  function onWheelRoot(e: WheelEvent) {
+    const t = e.target as HTMLElement;
+    if (t.closest(".scrollbar-track")) return;
+    if (t.closest(".tool-strip") || t.closest(".tl-label-col")) return;  // 标签列放行原生滚动
+    if (t.closest(".ruler")) { /* 缩放，锚点取标尺左缘 */ return; }
+    if (e.shiftKey) {
+      const tracksEl = rootRef.value?.querySelector<HTMLElement>(".tl-tracks") ?? null;
+      if (tracksEl && tracksEl.scrollHeight > tracksEl.clientHeight) {
+        if (t.closest(".tl-tracks")) return;          // 区内放行原生（保留惯性）
+        e.preventDefault();
+        tracksEl.scrollTop += e.deltaY + e.deltaX;    // 区外代为滚动
+        return;
+      }
       e.preventDefault();
-      timeline.pan(e.deltaY + e.deltaX);
       return;
     }
-    // 普通滚轮：不拦截，交给 .tl-tracks 的 overflow-y:auto 原生滚动
-    return;
+    e.preventDefault();
+    timeline.pan(e.deltaY + e.deltaX);                 // clip 区普通滚轮 = 横向平移
   }
   ```
 
@@ -764,15 +786,19 @@
 - P0-1 用真实 `powershell.exe`（5.1.26100.9818）复现：从 BASE/HEAD 抽真实函数体 + 真实
   `manifest.json` 条目运行，得到 3 / 2 / 2 / 1 条候选的对比（见 P0-1 表格）
 - 文档漂移逐条按「文件:行号」点开核对（见 P2-23）
-- 未做交互式 GUI 验证（本环境无真机），UI 行为结论来自源码路径推演 + 提交信息里的实测记录采信
+- 审查当时未做交互式 GUI 验证（本环境无真机），UI 行为结论来自源码路径推演 + 提交信息里的实测记录采信。
+  **补记（2026-11-16，修 P1-1 / P1-4 时补做）**：P1-4 用真 Chrome headless + CDP 派发可信滚轮事件验证
+  （9/9，含修复前 8/9 的负向对照）；P1-1 用 vite SSR 把真实 `src/stores/ui.ts` 打进 Node 跑（10/10，
+  含修复前 7/10 的负向对照）。方法见「处置记录」P1-1 / P1-4 两条。
 
 ## 结论
 
-**P0-1 已修复（2026-11-16），当前不建议直接合并的唯一硬阻塞已解除；建议修完 P1-1 ~ P1-3 再合并。**
+**P0-1、P1-1 ~ P1-4 均已修复（2026-11-16），P0/P1 清零，可进入合并流程；P2 余 23 条按档案规矩跟进。**
 P0-1 原本必须在本 PR 内修掉（一个变量改名 + 一条冒烟断言），否则「强制镜像」
 这个本 PR 自己新加的功能是空操作，且基线里还好的镜像兜底被静默打断。
-P1-1 ~ P1-3 属于「用户会撞上且撞上后没有出路」的失败语义问题，建议同批修；
-P1-4 是设计取舍，至少要显式登记为既定行为。
+P1-1 ~ P1-3 属于「用户会撞上且撞上后没有出路」的失败语义问题，已同批修掉；
+P1-4 经用户裁决为「以改 UI 之前的逻辑为准」，已把 `onWheelRoot` 恢复为基线实现
+（同时更正了原报告「基线能力被删」的错判，实际是标签列从原生滚动被改成显式代滚、丢了惯性）。
 P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P2-23（文档漂移）建议随本 PR 一起修**——
 它是「同一 PR 内两份文档互相矛盾」，属于档案自伤，拖到后面就变成后来者的错误前提。
 
@@ -808,5 +834,18 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   改默认后重启仍用旧手动值」。
 - **P1-2** ⚠ 未修复（`config.rs:906-910` 对账失败不回滚，重试撞「目标目录非空」）
 - **P1-3** ⚠ 未修复（`config.rs:934` 用 `read_location`，新目录缺失时不可达）
-- **P1-4** ⚠ 未修复（`Timeline.vue` clip 区普通滚轮不再纵向滚动，待裁决「改回」还是「登记为既定行为」）
+- **P1-4** ✅ **已修复**（2026-11-16，本分支，`src/components/timeline/Timeline.vue:570-617`）——
+  按用户裁决「以改 UI 之前的逻辑为准」把 `onWheelRoot` **恢复为基线 `9cae08c` 的实现**
+  （`git diff` 抽函数体算 SHA256，与基线同为 `7254366D…`，逐字节一致），并在函数头补「三处约定」注释
+  （clip 区普通滚轮=横向、Shift=纵向、标签列交原生）。删除了 `0025211` 引入的
+  `canScrollTracks` 变量与标签列显式 `scrollTop` 代滚。
+  **同时更正原报告错判**：`canScrollTracks` 那段从来不在基线里（`git log -S canScrollTracks`
+  只有 `aca4210` 加、`0025211` 删），所以「基线能力被删」的说法不成立；真正的回归是标签列
+  从「放行原生滚动」被改成「显式代滚」，代价是丢触控板惯性 —— 见 P1-4 正文的更正说明。
+  复测（真 Chrome headless + CDP 派发**可信** `Input.dispatchMouseEvent` 滚轮，harness
+  `.tmp_p14/wheel_test.mjs` 从 `.vue` 里抽取真实 `onWheelRoot` 原文去 TS 后注入）：**9/9 通过**
+  （clip 普通滚轮只 `pan` 不纵滚且 `defaultPrevented=true`；标签列纵滚 `defaultPrevented=false` 且有位移；
+  轨道区外 Shift 由 handler 代滚；标签列连滚累计 >200px）。
+  **负向对照**：同一 harness 跑修复前的 `4c51e3b` 版本为 **8/9**，唯一 FAIL 正是
+  「标签列普通滚轮不应 `preventDefault`」——证明这些断言有区分力。
 - **P2-1 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
