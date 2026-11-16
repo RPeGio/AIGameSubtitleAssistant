@@ -651,6 +651,16 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
   # 再按吞吐从快到慢排序。镜像前缀不探（2026-11-01 真机：镜像对 Range 的响应是
   # "整包重取再切片"，按段下只有 0.18 MB/s，同一 URL 单流却有 6.7 MB/s），
   # 只留在队尾做单流兜底。
+  #
+  # 探针量必须随条目尺寸收缩：默认 2 MB × 3 个非镜像候选，而 moss/cpu 整包才 1.1 MB
+  # ⇒ 为了下它先下 6 MB，7 个条目合计约 42 MB 全部丢弃（-o NUL），最坏还串行等
+  # 3 × ProbeSec × 7 ≈ 84 s 才开始下载。条目小于探针总量的 8 倍时直接退回旧的
+  # 「探 Range 能力」路径——那种尺寸下分段收益本来也有限（2026-11-16 审查 P2-1）。
+  $probeSizeMB = $ProbeMB
+  if ($expectedSize -gt 0 -and $expectedSize -lt ([int64]8 * [int64]$ProbeMB * 1MB)) {
+    if ($ProbeMB -gt 0) { Log "条目仅 $(Format-MB $expectedSize)，跳过测速（探针量不成比例）" }
+    $probeSizeMB = 0
+  }
   $probed = @()
   if ($SegmentMB -le 0) {
     Log "已关闭分段（-SegmentMB 0），单流下载"
@@ -660,14 +670,14 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
         Log "跳过 $($c.Url)（镜像前缀：Range 会被整包重取，只作单流兜底）"
         continue
       }
-      if ($ProbeMB -le 0) {
-        # 关闭测速：沿用旧行为，取第一个支持 Range 的源
+      if ($probeSizeMB -le 0) {
+        # 关闭测速（或条目太小不值得测）：沿用旧行为，取第一个支持 Range 的源
         $r = Test-RangeSupport $c.Url
         if ($r.ok) { $probed += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Mbps = 0.0; Length = $r.length; Slow = $false } }
         else { Log "跳过 $($c.Url)（不支持 Range，或探测失败）" }
         continue
       }
-      $m = Measure-UrlSpeed $c.Url $ProbeMB $ProbeSec
+      $m = Measure-UrlSpeed $c.Url $probeSizeMB $ProbeSec
       if ($m.ok) {
         $probed += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Mbps = $m.mbps; Length = $m.length; Slow = $false }
       } elseif (-not $m.rejected) {
@@ -685,17 +695,16 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
   # PS 5.1 的 Sort-Object 等键时不保序（实测输入 ModelScope→ESA→GitHub 全 0.0 时整体倒序，
   # n=3/4/5/8 全部失败），且 5.1 根本没有 -Stable。而等速恰恰是常态：夜间实测 GitHub 与
   # gh-proxy 同为 0.13 MB/s；-ProbeMB 0 这条路径更是全 0.0 等键。所以显式拿原始下标做次键，
-  # -ProbeMB 0 则完全不排序（它承诺的是「按候选顺序取第一个支持 Range 的源」，2026-11-16 审查 P1-1）。
+  # 没测速（-ProbeMB 0 或条目太小跳过测速）则完全不排序——那两条路径承诺的是「按候选顺序取
+  # 第一个支持 Range 的源」，2026-11-16 审查 P1-1 / P2-1。
   $ordered = @($probed)
-  if ($ProbeMB -gt 0 -and $probed.Count -gt 1) {
+  if ($probeSizeMB -gt 0 -and $probed.Count -gt 1) {
     $seq = 0
     $keyed = foreach ($p in $probed) {
       [pscustomobject]@{ Seq = $seq; Url = $p.Url; Kind = $p.Kind; Length = $p.Length; Mbps = $p.Mbps; Slow = [bool]$p.Slow }
       $seq = $seq + 1
     }
     $ordered = @($keyed | Sort-Object @{ Expression = "Mbps"; Descending = $true }, @{ Expression = "Seq"; Descending = $false })
-  }
-  if ($ordered.Count -gt 1) {
     foreach ($p in $ordered) {
       Log ("测速 {0,6:N2} MB/s  {1}" -f $p.Mbps, $p.Url)
     }
