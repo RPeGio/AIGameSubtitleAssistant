@@ -58,6 +58,11 @@ try {
 $prevEap = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 
+# 下面的采样体只在 try 里跑，finally 负责还原 $ErrorActionPreference：
+# 原先的还原语句排在采样循环之后，中途任何 throw / Ctrl+C / 参数非法都会把全局
+# 偏好永久留在 Continue（诊断脚本后续行为全变）。为保持 diff 最小，块内不重排缩进。
+try {
+
 # ─── 2. 响应头（HEAD 拿不到就退回 GET 0 字节）──────────────
 Write-Host ""
 Write-Host "── 响应头 ──"
@@ -116,7 +121,9 @@ for ($i = 1; $i -le $Samples; $i++) {
   if ($speed -gt 0) { $speeds += $speed }
   Write-Host ("  #{0}: HTTP {1}  TTFB {2:N2}s  速率 {3:N2} MB/s  实收 {4}" -f $i, $code, $ttfb, $speed, (Fmt $got))
 }
-$ErrorActionPreference = $prevEap
+} finally {
+  $ErrorActionPreference = $prevEap
+}
 
 # ─── 5. 结论 ───────────────────────────────────────────────
 Write-Host ""

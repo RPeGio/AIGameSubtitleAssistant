@@ -785,7 +785,9 @@
   onMounted(() => { ui.initUiShell(); });   // 内部才写 dataset.theme / applyZoom
   ```
 
-### 🟢 P2-22 两个 PowerShell 脚本的健壮性小口子
+### 🟢 P2-22 两个 PowerShell 脚本的健壮性小口子 ✅ 已修复
+
+> **状态**：✅ 2026-11-16 已在本分支修复（见文末「处置记录」P2-22）。下方保留发现时的原始取证。
 
 - **位置**：`scripts/verify_cdn_mirror.ps1:119`、`scripts/bootstrap_runtime.ps1:767 / :804`
 - **问题**：①`$ErrorActionPreference` 的恢复在正常路径上，中途 `throw` 会把全局偏好留在 `Continue`；
@@ -796,21 +798,32 @@
 - **修复后代码**：
 
   ```powershell
+  # verify_cdn_mirror.ps1：采样体整段进 try，还原动作进 finally
   $prevEap = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
   try {
-    # …curl 采样…
+    # …响应头 / Range 探测 / 采样循环…
   } finally {
     $ErrorActionPreference = $prevEap
   }
   ```
 
   ```powershell
-  if (-not $tmpDir.StartsWith($runtime, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "临时目录越界: $tmpDir"
+  # bootstrap_runtime.ps1：新增统一清理入口，删除一律 -LiteralPath + 临时目录断言
+  function Remove-TempArtifact([string]$path, [switch]$Recurse) {
+    if (-not $path) { return }
+    $tempRoot = [System.IO.Path]::GetTempPath().TrimEnd('\', '/')
+    $full = [System.IO.Path]::GetFullPath($path)
+    if (-not $full.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+      Write-Warning "拒绝清理临时目录之外的路径：$full"
+      return
+    }
+    Remove-Item -LiteralPath $full -Recurse:$Recurse -Force -ErrorAction SilentlyContinue
   }
-  Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
   ```
+  > 注：与本节原建议的「校验落在 `.downloads` 内」相比，实际落的是**落在系统临时目录内** ——
+  > 出问题的两条路径（`$tmpZip` / `$tmpDir`）本来就建在 `GetTempPath()`，不在 `.downloads`
+  > 之下；按原建议写会把正常清理也拦掉。
 
 ### 🟢 P2-23 同一 PR 内文档与代码漂移（5 处）
 
@@ -1106,4 +1119,21 @@ P2 共 23 条，绝大部分可以合并后按档案规矩逐条跟进，但 **P
   验证：`npx vue-tsc --noEmit` EXIT=0；`pnpm build` EXIT=0（js 713.05 kB / gzip 221.90 kB）；
   Node harness 6/6 PASS（"import 不发 IPC"、"initUiShell 恰好发一次 set_ui_zoom"、
   "写入 data-theme"），同一 harness 对修复前的 `ui.ts` 为 2/4（失败项：实例化即发 IPC、无 initUiShell）。
-- **P2-22 ~ P2-23** ⚠ 未修复（见上，建议合并后按严重度跟进；其中 P2-23 文档漂移建议随本 PR 修）
+- **P2-22** ✅ **已修复**（2026-11-16，本分支，`scripts/verify_cdn_mirror.ps1:47-125`、
+  `scripts/bootstrap_runtime.ps1:878-894 / :958 / :995-996`）——
+  ① `verify_cdn_mirror.ps1` 的 `$ErrorActionPreference` 还原原先排在采样循环之后，中途
+     `throw` / `Ctrl+C` / 参数非法都会把全局偏好永久留在 `Continue`（诊断脚本后续行为全变）；
+     现把采样体整段包进 `try { … } finally { $ErrorActionPreference = $prevEap }`（块内不重排缩进，
+     diff 保持最小）。
+  ② `bootstrap_runtime.ps1` 的两处 `Remove-Item $tmpDir -Recurse -Force` 未用 `-LiteralPath`
+     （`[ ] * ?` 会被当通配符）、也未校验路径在系统临时目录内 —— 今天不可利用（7 个 manifest id
+     都是静态字面量），但这是「以后加一条清单项」最容易变成真问题的地方。
+     新增 `Remove-TempArtifact($path, -Recurse)`：`-LiteralPath` + `GetFullPath` 后断言落在
+     `GetTempPath()` 之内，越界只 `Write-Warning` 不删；`Expand-Archive` 前与 `finally` 两处改用它。
+  验证：两脚本 `PARSE_ERRORS=0`、`BOM=EF BB BF`、CRLF-only（`bootstrap_runtime.ps1` 1124 行 /
+  `verify_cdn_mirror.ps1` 147 行，LF-only 均 0）。`Remove-TempArtifact` 单测：临时目录内真删（True）、
+  仓库内路径被拒且保留（True）。EAP 用例：脚本内 `throw` 后外层 `$ErrorActionPreference` 仍为 `Stop`。
+  端到端：`verify_cdn_mirror.ps1` 对真实 ModelScope 直链跑通（206 / TTFB 0.36s / 1.85 MB/s，EXIT=0）；
+  `bootstrap_runtime.ps1 -Items moss -Flavor cpu` 装成功（`{"ok":true}`，11 个文件），
+  `%TEMP%` 下 `gsa_rt_*` 残留 0 个。
+- **P2-23** ⚠ 未修复（文档漂移，建议随本 PR 修）

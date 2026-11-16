@@ -875,6 +875,21 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
   }
 }
 
+# 删除临时产物时统一走这里（2026-11-16 审查 P2-22）。
+# 两个理由：① `Remove-Item` 不加 `-LiteralPath` 会把 `[ ] * ?` 当通配符，清单 id 目前
+# 都是静态字面量，但一个 `[` 就足以删到别的目录上；② 这些路径由清单 id 拼成，
+# 加一道「必须落在系统临时目录内」的断言，才不至于清单被改坏时越界删除用户文件。
+function Remove-TempArtifact([string]$path, [switch]$Recurse) {
+  if (-not $path) { return }
+  $tempRoot = [System.IO.Path]::GetTempPath().TrimEnd('\', '/')
+  $full = [System.IO.Path]::GetFullPath($path)
+  if (-not $full.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    Write-Warning "拒绝清理临时目录之外的路径：$full"
+    return
+  }
+  Remove-Item -LiteralPath $full -Recurse:$Recurse -Force -ErrorAction SilentlyContinue
+}
+
 function Get-Sha256([string]$path) {
   return (Get-FileHash -Path $path -Algorithm SHA256).Hash.ToLower()
 }
@@ -940,7 +955,7 @@ foreach ($it in $selected) {
     $extractEvt = @{ event = "progress"; item = $id; phase = "extract"; percent = 0; detail = "解压" }
     if ($flavor) { $extractEvt.flavor = $flavor }
     Emit $extractEvt
-    if (Test-Path $tmpDir) { Remove-Item $tmpDir -Recurse -Force }
+    if (Test-Path -LiteralPath $tmpDir) { Remove-TempArtifact $tmpDir -Recurse }
     Expand-Archive -Path $tmpZip -DestinationPath $tmpDir -Force
     if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
     Copy-Item -Path (Join-Path $tmpDir "*") -Destination $destDir -Recurse -Force
@@ -976,8 +991,8 @@ foreach ($it in $selected) {
     $failed += $id
     Log "安装 $label 失败：$msg"
   } finally {
-    Remove-Item $tmpZip -Force -ErrorAction SilentlyContinue
-    Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-TempArtifact $tmpZip
+    Remove-TempArtifact $tmpDir -Recurse
   }
 }
 
