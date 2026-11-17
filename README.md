@@ -24,7 +24,7 @@ GameSubtitleAssistant 面向游戏剧情实况翻译（烤肉）、切片和字�
 ### **无需账号、无需 API Key、不上传视频、不依赖云端服务**——所有 AI 推理（OCR / ASR / 说话人分离 / 多语言向量召回对齐）**均在本地完成**。
 ### [（点击跳转使用指南）](#使用指南)
 
-> ⚠️ 本项目处于早期阶段（v0.3.0），目前仅支持 Windows，尚未提供安装包：AI 运行环境需要通过脚本在本地搭建（见[快速开始](#快速开始)）。
+> ⚠️ 当前版本 **v1.0.0**，仅支持 Windows 10/11 x64。**安装包见 [Releases](https://github.com/RPeGio/AIGameSubtitleAssistant/releases)**：首次启动会进入「准备工作」页，自动下载并校验 AI 运行时（内嵌 Python + OCR / MOSS / 向量融合模型，约 4 GB 下载、约 5 GB 占用，支持镜像与断点续传），装完即可用。源码开发见[快速开始](#快速开始)。
 
 ## 功能特性
 
@@ -62,35 +62,34 @@ GameSubtitleAssistant 面向游戏剧情实况翻译（烤肉）、切片和字�
 
 ## 快速开始
 
+### 方式一：安装包（推荐）
+
+从 [Releases](https://github.com/RPeGio/AIGameSubtitleAssistant/releases) 下载 `GameSubtitleAssistant_1.0.0_x64-setup.exe`（NSIS）安装后直接启动。首次启动会停在「准备工作」页自动装齐运行时；失败可「先跳过」进受限模式，之后在欢迎页「重新准备」或在设置面板里重试、搬家或换下载源。
+
+### 方式二：源码
+
 ```powershell
 git clone https://github.com/RPeGio/AIGameSubtitleAssistant.git
 cd AIGameSubtitleAssistant
 pnpm install
 ```
 
-AI 运行环境通过 `scripts/` 下的 PowerShell 引导脚本搭建，脚本会把内嵌 Python、依赖和模型统一装到 `runtime/` 目录（已 gitignore），并自动下载、校验（SHA256）官方模型：
+AI 运行环境由 `scripts/bootstrap_runtime.ps1` 按 `src-tauri/resources/runtime/manifest.json` 统一装到 `runtime/` 目录（已 gitignore）——内嵌 Python、OCR 依赖、MOSS 二进制与模型、e5-small 向量模型一次装齐，并自动校验 SHA256、分段续传、多源择优：
 
 ```powershell
-# ① OCR（必装：语料页与嵌字轴依赖它；也是其它脚本的 Python 基础）
-powershell -ExecutionPolicy Bypass -File scripts/bootstrap_ocr.ps1
-
-# ② ASR：MOSS（唯一引擎，默认 cpu 后端；GPU 版二进制用 build_moss.ps1 自构建，或让 app 的「安装运行时」自动选）
-powershell -ExecutionPolicy Bypass -File scripts/bootstrap_moss.ps1 [-Backend cpu]
-
-# ③ 向量融合（必装：AI 融合依赖；CPU 推理，模型约 113 MB）
-powershell -ExecutionPolicy Bypass -File scripts/bootstrap_embed.ps1
+powershell -ExecutionPolicy Bypass -File scripts/bootstrap_runtime.ps1
 ```
+
+常用参数：`-Items moss,models-moss,deps-ocr,deps-embed`（只装部分条目）、`-Flavor auto|cpu|cuda|vulkan`（默认 `auto`，按本机探测）、`-Source auto|mirror|direct`、`-Mirror ""`（直连；默认走 gh-proxy 镜像）、`-PipMirror <index-url>`（CUDA 运行库的 PyPI 源）、`-SegmentMB <n>`（分段大小）、`-Force`（重装/重下）、`-NoResume`（丢弃已下分段）。详见脚本头部注释与 [docs/RUNTIME_BOOTSTRAP_CONTRACT.md](docs/RUNTIME_BOOTSTRAP_CONTRACT.md)。
 
 > 已弃用、不参与分发：FunASR（`bootstrap_funasr.ps1`）与本地 LLM（`bootstrap_llm.ps1`，llama.cpp + Qwen2.5-3B）。
 > 两个脚本仍留在仓库里，仅用于开发期复现历史问题；产品构建与运行时清单都不会引用它们。
-
-常用参数：`-HfMirror https://hf-mirror.com`（模型镜像）、`-GitMirror https://gh-proxy.com/`（GitHub 镜像）、`-PipMirror https://mirrors.aliyun.com/pypi/simple`（pip 镜像）、`-Force`（重装/重下）。详见各脚本头部注释。
 
 启动开发模式或构建：
 
 ```powershell
 pnpm tauri dev     # 开发模式
-pnpm tauri build   # 产出安装包（注：运行时资源打包尚未配置，见下文已知限制）
+pnpm tauri build   # 产出 NSIS / MSI 安装包到 src-tauri/target/release/bundle/
 ```
 
 ## 使用指南
@@ -132,16 +131,16 @@ pnpm tauri build   # 产出安装包（注：运行时资源打包尚未配置�
 
 ## 路线图
 
-**已完成**：四页工作台全链路（语料 → 打轴+转写 → 融合 → 编辑导出）、OCR 流水线（区域框选 / 变化检测 / 多数投票 / 多帧合并）、MOSS ASR 引擎与说话人分离（cpu / cuda / vulkan 自动选优）、嵌字 OCR 轴、AI 融合（本地向量召回 + 统一转移 DP，含**融合后置信度审计表**）、多轨时间轴编辑与撤销重做、单轨多格式导出、自动保存。
+**已完成**：四页工作台全链路（语料 → 打轴+转写 → 融合 → 编辑导出）、OCR 流水线（区域框选 / 变化检测 / 多数投票 / 多帧合并）、MOSS ASR 引擎与说话人分离（cpu / cuda / vulkan 自动选优）、嵌字 OCR 轴、AI 融合（本地向量召回 + 统一转移 DP，含**融合后置信度审计表**）、多轨时间轴编辑与撤销重做、单轨多格式导出、自动保存、**运行时安装器与首启准备页（v1.0.0 起提供安装包）**。
 
-**进行中 / 待改进**：运行时资源打包（安装包分发）；融合置信度信号的进一步标定——`score` 不是正确性判据，审计表分层只作提示（依据见 [benchmark/FUSE_THRESHOLD_CALIBRATION.md](benchmark/FUSE_THRESHOLD_CALIBRATION.md) §7.9⑥）。
+**进行中 / 待改进**：融合置信度信号的进一步标定——`score` 不是正确性判据，审计表分层只作提示（依据见 [benchmark/FUSE_THRESHOLD_CALIBRATION.md](benchmark/FUSE_THRESHOLD_CALIBRATION.md) §7.9⑥）。
 
 **未来计划**：翻译辅助与双语字幕、更多导出格式（Premiere XML / DaVinci Resolve XML / Aegisub）、应用内模型管理、TTS 与声音克隆（见计划书 Phase 7）。
 
 ## 已知限制
 
 - 仅支持 Windows；macOS / Linux 需要移植引导脚本与运行时。
-- 无安装包，AI 环境依赖脚本搭建；模型在安装阶段下载，应用内不自动下载（仅有就绪检测）。
+- 安装包内置的是引导脚本与运行时清单，**AI 运行时（Python + 模型 + CUDA 运行库）在首次启动时下载**（约 4 GB 下载 / 约 5 GB 占用），离线机器需自行准备 `runtime/` 目录；运行时可在设置面板里整体搬家到其它盘。
 - FFmpeg/ffprobe 已内嵌（LGPL 共享构建，随安装包分发）；源码检出后若未跑 `scripts/fetch_ffmpeg.ps1`，会回退到 `PATH` 上的 ffmpeg。
 - 融合产出仍需逐条人工校对：`score` 在任何阈值下的精确率都接近错误基准率（4.2%），**不能作为正确性判据**，审计表只提供结构化分层提示（依据见 [benchmark/FUSE_THRESHOLD_CALIBRATION.md](benchmark/FUSE_THRESHOLD_CALIBRATION.md) §7.9⑥）；「同台词跨说话人」场景（[F14](benchmark/FUSE_PIPELINE_DEFECTS.md)）错绑行的文本逐字相同、字幕内容不受影响，但审计表的说话人归属展示可能不准，该场景经实验否决算法侧修复、走人工裁决。
 - 本地 LLM（llama.cpp + Qwen2.5-3B-Instruct）**已退役、不参与分发**：历史实现仅保留在代码里作融合能力测试台，Qwen 采用 **Qwen Research 许可**（商用需另行授权），详见 [THIRD_PARTY.md](THIRD_PARTY.md)。

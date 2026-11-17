@@ -24,7 +24,7 @@ Video input ──► OCR + timing & transcription (speech ASR / on-screen hards
 ### **No account, no API keys, no video uploads, no cloud services** — all AI inference (OCR / ASR / speaker diarization / multilingual vector-recall alignment) runs **locally**.
 ### [(Jump to Usage)](#usage)
 
-> ⚠️ Early-stage project (v0.3.0). Windows only, no installer yet: the AI runtime is set up locally via scripts (see [Quick Start](#quick-start)).
+> ⚠️ Current version **v1.0.0**, Windows 10/11 x64 only. **Installers are on [Releases](https://github.com/RPeGio/AIGameSubtitleAssistant/releases)**: on first launch the app opens a "Preparing" page and downloads + verifies the AI runtime (embedded Python + OCR / MOSS / vector models, ~4 GB download, ~5 GB on disk, with mirrors and resume). Source development is described in [Quick Start](#quick-start).
 
 ## Features
 
@@ -63,36 +63,34 @@ The AI modules together occupy about 13.9 GB of disk (models + Python dependenci
 
 ## Quick Start
 
+### Option 1: installer (recommended)
+
+Download `GameSubtitleAssistant_1.0.0_x64-setup.exe` (NSIS) from [Releases](https://github.com/RPeGio/AIGameSubtitleAssistant/releases) and launch. On first start a "Preparing" page installs the full runtime automatically; if it fails you can skip into restricted mode and retry later from the welcome page or the settings panel (which also moves the runtime directory and switches download sources).
+
+### Option 2: from source
+
 ```powershell
 git clone https://github.com/RPeGio/AIGameSubtitleAssistant.git
 cd AIGameSubtitleAssistant
 pnpm install
 ```
 
-The AI runtime is provisioned by the PowerShell bootstrap scripts under `scripts/`. They install the embedded Python, dependencies and models into a `runtime/` directory (gitignored), downloading official models with SHA256 verification:
+The AI runtime is provisioned by `scripts/bootstrap_runtime.ps1` according to `src-tauri/resources/runtime/manifest.json` into a `runtime/` directory (gitignored) — embedded Python, OCR dependencies, MOSS binaries and models plus the e5-small vector model in one pass, with SHA256 verification, segmented resume and source probing:
 
 ```powershell
-# ① OCR (required: used by the corpus page and the hardsub track; also the Python base for the others)
-powershell -ExecutionPolicy Bypass -File scripts/bootstrap_ocr.ps1
-
-# ② ASR: MOSS (the only engine; cpu backend by default; a GPU binary is either self-built via build_moss.ps1
-#     or installed by the app's "install runtime" action, which picks the backend automatically)
-powershell -ExecutionPolicy Bypass -File scripts/bootstrap_moss.ps1 [-Backend cpu]
-
-# ③ Vector fusion (required by AI fusion; CPU inference, model ≈ 113 MB)
-powershell -ExecutionPolicy Bypass -File scripts/bootstrap_embed.ps1
+powershell -ExecutionPolicy Bypass -File scripts/bootstrap_runtime.ps1
 ```
+
+Useful parameters: `-Items moss,models-moss,deps-ocr,deps-embed` (install a subset), `-Flavor auto|cpu|cuda|vulkan` (default `auto`, detected locally), `-Source auto|mirror|direct`, `-Mirror ""` (direct; gh-proxy mirror by default), `-PipMirror <index-url>` (PyPI source for CUDA runtime libs), `-SegmentMB <n>` (segment size), `-Force` (reinstall / re-download), `-NoResume` (discard downloaded segments). See the script header and [docs/RUNTIME_BOOTSTRAP_CONTRACT.md](docs/RUNTIME_BOOTSTRAP_CONTRACT.md).
 
 > Retired, not distributed: FunASR (`bootstrap_funasr.ps1`) and the local LLM (`bootstrap_llm.ps1`, llama.cpp + Qwen2.5-3B).
 > Both scripts stay in the repo for reproducing historical issues; product builds and the runtime manifest never reference them.
-
-Useful parameters: `-HfMirror https://hf-mirror.com` (model mirror), `-GitMirror https://gh-proxy.com/` (GitHub mirror), `-PipMirror https://mirrors.aliyun.com/pypi/simple` (pip mirror), `-Force` (reinstall / re-download). See each script's header comment for details.
 
 Run in development mode or build:
 
 ```powershell
 pnpm tauri dev     # development mode
-pnpm tauri build   # produce installers (note: runtime-resource bundling is not configured yet, see Known Limitations)
+pnpm tauri build   # produce NSIS / MSI installers under src-tauri/target/release/bundle/
 ```
 
 ## Usage
@@ -134,16 +132,16 @@ pnpm tauri build   # produce installers (note: runtime-resource bundling is not 
 
 ## Roadmap
 
-**Done**: the full four-page workbench (corpus → timing + transcribe → fuse → edit/export), the OCR pipeline (region selection / change detection / majority vote / multi-frame merge), the MOSS ASR engine with speaker diarization (cpu / cuda / vulkan, best backend picked automatically), the hardsub OCR track, AI fusion (local vector recall + unified transition DP, including the **post-fusion confidence audit table**), multi-track timeline editing with undo/redo, single-track multi-format export, autosave.
+**Done**: the full four-page workbench (corpus → timing + transcribe → fuse → edit/export), the OCR pipeline (region selection / change detection / majority vote / multi-frame merge), the MOSS ASR engine with speaker diarization (cpu / cuda / vulkan, best backend picked automatically), the hardsub OCR track, AI fusion (local vector recall + unified transition DP, including the **post-fusion confidence audit table**), multi-track timeline editing with undo/redo, single-track multi-format export, autosave, and the **runtime installer with a first-run setup page (installers available since v1.0.0)**.
 
-**In progress / to improve**: runtime-resource bundling (installer distribution); further calibration of the fusion confidence signals — `score` is not a correctness signal, so the audit tiers are hints only (see [benchmark/FUSE_THRESHOLD_CALIBRATION.md](benchmark/FUSE_THRESHOLD_CALIBRATION.md) §7.9⑥).
+**In progress / to improve**: further calibration of the fusion confidence signals — `score` is not a correctness signal, so the audit tiers are hints only (see [benchmark/FUSE_THRESHOLD_CALIBRATION.md](benchmark/FUSE_THRESHOLD_CALIBRATION.md) §7.9⑥).
 
 **Planned**: translation assistance and bilingual subtitles, more export formats (Premiere XML / DaVinci Resolve XML / Aegisub), in-app model management, TTS and voice cloning (see Phase 7 of the plan).
 
 ## Known limitations
 
 - Windows only; macOS / Linux would require porting the bootstrap scripts and runtime.
-- No installer — the AI environment is set up by scripts; models are downloaded at setup time, not by the app (which only performs readiness checks).
+- The installer ships the bootstrap script and runtime manifest; **the AI runtime (Python + models + CUDA libs) is downloaded on first launch** (~4 GB download / ~5 GB on disk). Offline machines need a prepared `runtime/` directory; the settings panel can move it to another drive.
 - FFmpeg/ffprobe are bundled (LGPL shared build, shipped in the installer); a source checkout that skipped `scripts/fetch_ffmpeg.ps1` falls back to an `ffmpeg` on `PATH`.
 - Fusion output still needs per-event manual proofreading: at any threshold the precision of `score` stays close to the error base rate (4.2%), so it is **not a correctness signal** and the audit table only provides structural hints (see [benchmark/FUSE_THRESHOLD_CALIBRATION.md](benchmark/FUSE_THRESHOLD_CALIBRATION.md) §7.9⑥). In the "same line, different speakers" case ([F14](benchmark/FUSE_PIPELINE_DEFECTS.md)) the mis-bound row's text is verbatim identical — subtitle content is unaffected — but the audit table's speaker attribution may be wrong; experiments ruled out an algorithm-side fix, so it is left to human judgement.
 - The local LLM (llama.cpp + Qwen2.5-3B-Instruct) is **retired and not distributed**: the historical implementation remains only as the fusion-capability test bench, and Qwen uses the **Qwen Research license** (commercial use requires separate permission) — see [THIRD_PARTY.md](THIRD_PARTY.md).
