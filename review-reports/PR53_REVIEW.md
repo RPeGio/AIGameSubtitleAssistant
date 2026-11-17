@@ -544,7 +544,36 @@ P2 共 12 条（P2-12 为修复期新登记的 `$flavor` 撞名留档），已�
 
 ## 处置记录（2026-11-16，用户裁决「均按建议修复」；每条一提交）
 
-> **落地方式（2026-11-16）**：P0-1 与 P1-1 ~ P1-6 随 PR #53 合入；P2-1 ~ P2-12 因为推送时间晚于 #53 的合并（合并 20:15，P2 推送 20:28–20:57），改由续 PR #54（`feat/runtime-distribution` → `feat/first-run-prep`，13 提交 / 7 文件 +288−48）承载。
+> **落地方式（2026-11-16 记录，2026-11-17 更新）**：P0-1 与 P1-1 ~ P1-6 随 PR #53 合入；
+> P2-1 ~ P2-12 因为推送时间晚于 #53 的合并（合并 20:15，P2 推送 20:28–20:57），改由续 PR #54
+> （`feat/runtime-distribution` → `feat/first-run-prep`，14 提交 / 7 文件 +290−48）承载。
+> **PR #54 已于 2026-11-16T13:25:15Z 合并**（merge commit `d5583f6`，即 `origin/feat/first-run-prep`），
+> 12 条 P2 全部进入 `feat/first-run-prep`，本条不再有待合并项。
+
+> **合并后回归复验（2026-11-17，`feat/first-run-prep @ 38dfb70`）**：PR #53 之后该分支又叠了两次
+> 改动，都可能碰掉这批修复——`9f98e55` 把「镜像队首」逻辑并进了同一个 `$ranked` 构造块、
+> PR #52 自己的 P2 批次（`872e8d6`）重写了 `scripts/bootstrap_runtime.ps1` 的临时目录清理。
+> 逐条复查后 12 条修复全部在原位：
+>
+> | 条目 | 复验位置（当前 `feat/first-run-prep`） | 结论 |
+> |---|---|---|
+> | P2-1 | `scripts/bootstrap_runtime.ps1:696-699` `$probeSizeMB` 按条目尺寸收缩 | ✓ |
+> | P2-2 | `scripts/bootstrap_runtime.ps1:799`「探针报的总长 … 与清单 … 不一致，以清单为准」 | ✓ |
+> | P2-3 | `scripts/bootstrap_runtime.ps1:666-669` `$script:SegmentMB = 0`（脚本作用域） | ✓ |
+> | P2-4 | `scripts/bootstrap_runtime.ps1:474-477` 死守卫的注释说明 | ✓ |
+> | P2-5 | `docs/RUNTIME_BOOTSTRAP_CONTRACT.md:50,57-67` 参数可达性（**2026-11-17 按合并后实况更新**：
+> `-Source` / `-SegmentMB` 已受面板控制，只剩 `-ProbeMB` / `-ProbeSec` 是命令行参数） | ✓ |
+> | P2-6 | `src-tauri/resources/runtime/manifest.json:2-3` `version=2026-11-14`、`generated_at=2026-11-14T03:46:00Z` | ✓ |
+> | P2-7 | `src-tauri/src/ai_runtime/backend_probe.rs:1296` `shipped_manifest_has_three_tier_urls` | ✓ |
+> | P2-8 | `docs/engines_vulkan_design.md:399`（取代标记）、`:472`（每个候选探一次） | ✓ |
+> | P2-9 | `docs/RUNTIME_BOOTSTRAP_CONTRACT.md:191`「关于示例里的 `urls`」 | ✓ |
+> | P2-10 | `docs/engines_vulkan_design.md:556`（两表分母不同）、`:563`（占盘量） | ✓ |
+> | P2-11 | `docs/RUNTIME_BOOTSTRAP_CONTRACT.md:385,389`、`docs/engines_vulkan_design.md:533-534` 点名 `verify_cdn_mirror.ps1` | ✓ |
+> | P2-12 | `scripts/bootstrap_runtime.ps1:907-910` `$flavor` 覆盖说明（含 `$mirror` 撞名的交叉引用） | ✓ |
+>
+> 回归结论：`scripts/bootstrap_runtime.ps1` `BOM=True / CRLF 1124 / LF-only 0 / PARSE_ERRORS=0`；
+> `cargo test --lib` **381 passed / 0 failed**（含 P2-7 的清单守卫）；`npx vue-tsc --noEmit` 与
+> `pnpm build` 均 EXIT=0。
 
 > 按 `AGENTS.md` 的档案同步规矩：**修复提交与本文档的状态行必须同一提交更新**，
 > 状态行要写依据（提交号 / PR 号），不要只写「已修复」。
@@ -620,9 +649,13 @@ P2 共 12 条（P2-12 为修复期新登记的 `$flavor` 撞名留档），已�
   （连接被拒得 `000 0 0.000578 0.000575`），该守卫基本不触发，真正拦失败的是 `$code -ne 206`
 - **P2-5** ✅ **已修复**（2026-11-16，续 PR #54（#53 合并后补推）内，提交 `34deecb`，`docs/RUNTIME_BOOTSTRAP_CONTRACT.md:48`）——
   参数表 `-ProbeMB` 行尾标注「**当前 GUI 不下发，仅供命令行/运维**」，并补一段「参数可达性」blockquote：
-  指明 `src-tauri/src/ai_runtime/runtime_install.rs:711-726` 目前只下发
+  指明 `src-tauri/src/ai_runtime/runtime_install.rs:711-726` 当时只下发
   `-Items -Flavor -RuntimeDir [-Manifest] [-Force]`，三参数无法从 GUI 触发，
-  合并 `feat/first-run-prep`（`RuntimeConfig.download_source` / `segment_mb`）后即可改口
+  合并 `feat/first-run-prep`（`RuntimeConfig.download_source` / `segment_mb`）后即可改口。
+  **2026-11-17 已按合并后实况改口**：`runtime_install.rs:718-741` 现在下发
+  `-Source` / `-SegmentMB`（受设置面板「下载源」「分段大小」控制），blockquote 只剩
+  `-ProbeMB` / `-ProbeSec` 两个命令行参数（`RuntimeConfig` 无对应字段），
+  并写明「要做就照 `segment_mb` 的路子加两个配置字段 + 面板项」
 - **P2-6** ✅ **已修复**（2026-11-16，续 PR #54（#53 合并后补推）内，提交 `9c8888d`，`src-tauri/resources/runtime/manifest.json:2-3`）——
   `"version": "1"` → `"2026-11-14"`，`"generated_at": "2026-11-02T01:37:25Z"` → `"2026-11-14T03:46:00Z"`；
   契约 schema 示例同步；schema 块后补说明：两字段仅作出处标注、代码不读，但 `version` 会写进用户状态
