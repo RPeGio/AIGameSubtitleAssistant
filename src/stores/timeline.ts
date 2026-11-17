@@ -3,6 +3,7 @@ import { ref, computed } from "vue";
 import type { InjectionKey } from "vue";
 import type { TimelineEvent } from "../types";
 import type { MergeStrategy, SplitStrategy } from "../composables/sentenceCuts";
+import { PREF_KEYS, readSnapDefault, setSnapDefault } from "../composables/appPrefs";
 
 /// 轨道片段配色：bg 底 / fg 文字 / line 描边，三值都指向主题令牌
 export interface ClipTone {
@@ -39,8 +40,10 @@ export const TEXT_TRACK_TYPES = ["ocr_text", "embed_ocr", "asr", "fused", "manua
 export const SNAP_THRESHOLD_PX = 8;
 
 /// 分割/合并策略的持久化键与合法值（第 8 项）；不合法或缺失时回落默认档
-const SPLIT_KEY = "gsa.timeline.splitStrategy";
-const MERGE_KEY = "gsa.timeline.mergeStrategy";
+// 键名统一从 appPrefs.PREF_KEYS 取：相同的两个字符串曾经在这里与 appPrefs 各写一份，
+// 改一边漏一边就会静默变成两个互不相干的偏好（P2-20）。
+const SPLIT_KEY = PREF_KEYS.splitStrategy;
+const MERGE_KEY = PREF_KEYS.mergeStrategy;
 const SPLIT_VALUES: SplitStrategy[] = ["punct", "space", "raw"];
 const MERGE_VALUES: MergeStrategy[] = ["latter", "former", "stack"];
 
@@ -60,8 +63,8 @@ export const useTimelineStore = defineStore("timeline", () => {
   /// 当前工具：select 选择 | split 分割 | merge 合并 | region 拖动画选区（迷你时间轴）
   const activeTool = ref<"select" | "split" | "merge" | "region">("select");
   const viewportWidth = ref(0);
-  /// 吸附开关（默认开启）
-  const snapEnabled = ref(true);
+  /// 吸附开关（默认值来自设置面板，缺省开启）
+  const snapEnabled = ref(readSnapDefault());
   /// 分段垂直互换模式（默认关闭）：开启后时间轴显示分段遮罩与
   /// 轨道边界互换按钮，用于手动修正跨段说话人归属
   const swapSegments = ref(false);
@@ -241,6 +244,9 @@ export const useTimelineStore = defineStore("timeline", () => {
 
   function toggleSnap() {
     snapEnabled.value = !snapEnabled.value;
+    // 顺手落盘：面板里那个「默认开启吸附」写的是同一个偏好键，
+    // 不写回的话本会话的切换重启即丢，且面板显示的还是旧默认值。
+    setSnapDefault(snapEnabled.value);
     snapGuideX.value = null;
   }
 

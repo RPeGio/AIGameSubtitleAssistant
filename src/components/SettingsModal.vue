@@ -1,0 +1,684 @@
+<script setup lang="ts">
+import { computed, onUnmounted, ref, watch } from "vue";
+import { open } from "@tauri-apps/plugin-dialog";
+import { NButton, NModal, NPopconfirm, NSelect, NSwitch, useMessage } from "naive-ui";
+import AppIcon from "./AppIcon.vue";
+import InfoDot from "./InfoDot.vue";
+import { useSettingsStore } from "../stores/settings";
+import { useUiStore } from "../stores/ui";
+import { useTimelineStore } from "../stores/timeline";
+import { useSetupStore } from "../stores/setup";
+import { SHORTCUTS, SHORTCUT_GROUPS, suppressShortcuts } from "../composables/shortcuts";
+import type { MergeStrategy, SplitStrategy } from "../composables/sentenceCuts";
+import { AUTOSAVE_DELAYS, ZOOM_VALUES } from "../composables/appPrefs";
+
+const show = defineModel<boolean>("show", { required: true });
+
+const settings = useSettingsStore();
+const ui = useUiStore();
+const timeline = useTimelineStore();
+const setup = useSetupStore();
+const message = useMessage();
+
+/// 面板开着时抑制全局快捷键（否则 Delete / Ctrl+Z / Space / Esc 会打到被遮住的时间轴），
+/// 同时拉一次运行时快照（命令要读盘 + 查可用空间，不必常驻）。
+/// 释放函数在关面板与卸载时都要调，避免面板被强关后快捷键永久失效（2026-11-16 审查 P2-6）。
+let releaseShortcuts: (() => void) | null = null;
+
+watch(show, (on) => {
+  if (on) {
+    releaseShortcuts = suppressShortcuts();
+    void settings.load();
+  } else {
+    releaseShortcuts?.();
+    releaseShortcuts = null;
+  }
+});
+
+onUnmounted(() => {
+  releaseShortcuts?.();
+  releaseShortcuts = null;
+});
+
+const snap = computed(() => settings.snapshot);
+
+const ZOOM_OPTIONS = ZOOM_VALUES.map((z) => ({
+  label: `${Math.round(z * 100)}%`,
+  value: z,
+}));
+
+const SOURCE_OPTIONS = [
+  { label: "自动（镜像 → GitHub）", value: "auto" },
+  { label: "强制镜像", value: "mirror" },
+  { label: "直连 GitHub", value: "direct" },
+];
+
+const SEGMENT_OPTIONS = [
+  { label: "关闭分段（单流下载）", value: 0 },
+  { label: "16 MB", value: 16 },
+  { label: "64 MB（默认）", value: 64 },
+  { label: "256 MB", value: 256 },
+];
+
+const OCR_DEVICE_OPTIONS = [
+  { label: "自动（跟随运行时自检）", value: "" },
+  { label: "CPU", value: "cpu" },
+  { label: "GPU:0", value: "gpu:0" },
+];
+
+const MOSS_THREAD_OPTIONS = [0, 4, 8, 12, 16, 24, 32].map((n) => ({
+  label: n === 0 ? "自动" : `${n}`,
+  value: n,
+}));
+
+const MOSS_TIMEOUT_OPTIONS = [0, 15, 30, 45, 60, 120].map((n) => ({
+  label: n === 0 ? "不限制" : `${n} 分钟`,
+  value: n,
+}));
+
+/// 前端候选表比后端允许的区间窄（后端 segment 0–1024、threads 0–256、timeout 0–1440、
+/// ocr_device 还支持 npu/xpu）。别处带来一个 32、gpu:1 这类「非枚举值」时，下拉框
+/// 会显示成空白，用户一旦切走就再也选不回来 —— 故按当前值动态补一项「自定义」。
+function withCustom<T extends string | number>(
+  opts: { label: string; value: T }[],
+  cur: T | null | undefined
+): { label: string; value: T }[] {
+  if (cur === null || cur === undefined) return opts;
+  if (opts.some((o) => o.value === cur)) return opts;
+  return [...opts, { label: `自定义（${cur}）`, value: cur }];
+}
+
+const AUTOSAVE_DELAY_OPTIONS = AUTOSAVE_DELAYS.map((d) => ({
+  label: d < 1000 ? `${d} 毫秒` : `${d / 1000} 秒`,
+  value: d,
+}));
+
+const SPLIT_OPTIONS: { label: string; value: SplitStrategy }[] = [
+  { label: "按标点（默认）", value: "punct" },
+  { label: "按空格", value: "space" },
+  { label: "按原始断句", value: "raw" },
+];
+
+const MERGE_OPTIONS: { label: string; value: MergeStrategy }[] = [
+  { label: "保留后一句（默认）", value: "latter" },
+  { label: "保留前一句", value: "former" },
+  { label: "上下堆叠", value: "stack" },
+];
+
+/// 快捷键只读表：分组顺序按 SHORTCUT_GROUPS，组内保持注册表顺序
+const shortcutGroups = computed(() =>
+  SHORTCUT_GROUPS.map((group) => ({
+    group,
+    rows: SHORTCUTS.filter((s) => s.group === group),
+  })).filter((g) => g.rows.length > 0)
+);
+
+function fmtBytes(n: number | null): string {
+  if (n === null) return "未知";
+  const gb = n / 1024 ** 3;
+  if (gb >= 1) return `${gb.toFixed(2)} GB`;
+  return `${(n / 1024 ** 2).toFixed(0)} MB`;
+}
+
+/// 只提交改动的字段：后端 patch 是 Option，少传即不改
+async function saveRuntime(patch: Parameters<typeof settings.patch>[0]) {
+  const ok = await settings.patch(patch);
+  if (!ok) message.error(`保存失败：${settings.error ?? "未知错误"}`);
+}
+
+async function onMove() {
+  // open() 也要放进 try：对话框插件异常时以前会变成未处理的 rejection，
+  // 用户看到的是「点了没反应」，与「用户自己取消了」完全无法区分（2026-11-16 审查 P2-10）。
+  try {
+    const target = await open({ directory: true, title: "选择新的 runtime 目录" });
+    if (!target || typeof target !== "string") return;
+    // 后端失败一律走 Err 分支（MoveResult 只在成功时构造），所以这里不需要判 res.ok
+    message.success((await settings.moveRuntimeDir(target)).message);
+  } catch (e) {
+    message.error(`移动失败：${e}`);
+  }
+}
+
+async function onDeleteOld() {
+  // NPopconfirm 的 :loading 只作用于 trigger NButton，确认按钮不认它 ⇒ 双击会连发两次删除，
+  // 第二个请求拿到「没有搬家记录」的 Err，用户先看到成功再看到红色失败（2026-11-16 审查 P2-7）
+  if (settings.saving) return;
+  try {
+    message.success(await settings.deleteOldRuntimeDir());
+  } catch (e) {
+    message.error(`删除失败：${e}`);
+  }
+}
+
+/// 「校验与日志」两个按钮的进行中状态：都不是瞬时操作（一个要跑运行时自检、一个要起资源管理器），
+/// 不给反馈的话用户会连点，进而并发发起多次探测 / 开出多个窗口（2026-11-16 审查 P2-9）
+const rechecking = ref(false);
+const openingLogs = ref(false);
+
+async function onOpenLogs() {
+  if (openingLogs.value) return;
+  openingLogs.value = true;
+  try {
+    await settings.openLogDir();
+  } catch (e) {
+    message.error(`打开日志目录失败：${e}`);
+  } finally {
+    openingLogs.value = false;
+  }
+}
+
+/// 「重新检查运行时」= 真的重新探测一次，再按结果决定要不要回准备页。
+///
+/// 以前这里只 `setup.reopen()`：它只把 stage 置 needs、不调 `runtime_status`，
+/// 于是 status/items 全是旧值；而 stage=needs 又让 passable=false，
+/// `App.vue` 的 `<router-view v-if="setup.passable">` 直接把主界面卸载 ——
+/// 用户点一下「重新检查」就被踢回准备页，看到的还是旧数据（2026-11-16 审查 P2-4）。
+async function onRecheckRuntime() {
+  if (rechecking.value) return;
+  rechecking.value = true;
+  try {
+    await setup.refresh();
+    if (setup.stage === "needs") {
+      show.value = false;
+      setup.reopen();
+    } else if (setup.stage === "failed") {
+      message.error(setup.error || "运行时检查未通过");
+    } else {
+      message.success("运行时状态已更新");
+    }
+  } finally {
+    rechecking.value = false;
+  }
+}
+
+function onZoom(next: number) {
+  // setZoom 现在是 async（失败就不改状态与偏好），这里不等待——失败已在 store 里 console.warn
+  void ui.setZoom(next);
+}
+</script>
+
+<template>
+  <NModal
+    v-model:show="show"
+    preset="card"
+    display-directive="if"
+    title="设置"
+    style="width: 720px"
+    :bordered="false"
+    :auto-focus="false"
+    class="settings-modal"
+  >
+    <div class="set-body">
+      <p v-if="settings.loading" class="set-loading">正在读取运行时设置…</p>
+      <!-- 读失败时不能静默：快照为 null 的话，下面的「未找到 manifest.json」会把「不知道」
+           说成「没有」，用户会以为运行时坏了而去重装（2026-11-16 审查 P2-5） -->
+      <div v-else-if="settings.error" class="set-error">
+        <span>读取运行时设置失败：{{ settings.error }}</span>
+        <NButton size="tiny" @click="settings.load()">重试</NButton>
+      </div>
+
+      <!-- ── A 外观 ─────────────────────────────────── -->
+      <section class="set-group">
+        <h4>外观</h4>
+        <div class="set-row">
+          <span class="sl">主题</span>
+          <span class="sv">
+            <button class="seg" :class="{ on: ui.isDark }" @click="ui.setTheme('dark')">
+              <AppIcon name="moon" :size="12" /> 深色
+            </button>
+            <button class="seg" :class="{ on: !ui.isDark }" @click="ui.setTheme('light')">
+              <AppIcon name="sun" :size="12" /> 浅色
+            </button>
+          </span>
+        </div>
+        <div class="set-row">
+          <span class="sl">
+            侧栏默认折叠
+            <InfoDot text="下次启动时的初始状态；本次已展开/折叠的状态不受影响。改这里会清掉手动折叠记录，下次启动按此值。" />
+          </span>
+          <span class="sv">
+            <NSwitch
+              :value="ui.sidebarDefault"
+              size="small"
+              @update:value="ui.setSidebarDefaultCollapsed"
+            />
+          </span>
+        </div>
+        <div class="set-row">
+          <span class="sl">界面缩放</span>
+          <span class="sv">
+            <NSelect
+              :value="ui.zoom"
+              :options="ZOOM_OPTIONS"
+              size="small"
+              style="width: 132px"
+              @update:value="onZoom"
+            />
+          </span>
+        </div>
+      </section>
+
+      <!-- ── B 运行时 ───────────────────────────────── -->
+      <template v-if="snap">
+      <section class="set-group">
+        <h4>运行时</h4>
+        <div class="set-row col">
+          <span class="sl">runtime 目录</span>
+          <span class="sv">
+            <code class="path">{{ snap?.runtime_dir ?? "—" }}</code>
+            <span class="hint">可用 {{ fmtBytes(snap?.free_bytes ?? null) }}</span>
+          </span>
+        </div>
+        <div v-if="snap?.location_warning" class="set-row col">
+          <span class="sv warn-line">{{ snap.location_warning }}</span>
+        </div>
+        <div class="set-row">
+          <span class="sl">
+            搬家
+            <InfoDot
+              text="复制到新目录后重启应用生效。旧目录会保留，确认新位置一切正常后再删。"
+            />
+          </span>
+          <span class="sv">
+            <NButton size="small" :loading="settings.saving" @click="onMove()">
+              移动到…
+            </NButton>
+            <NPopconfirm
+              v-if="snap?.previous_runtime_dir"
+              :positive-button-props="{
+                loading: settings.saving,
+                disabled: settings.saving,
+              }"
+              @positive-click="onDeleteOld"
+            >
+              <template #trigger>
+                <NButton size="small" type="error" ghost :loading="settings.saving">
+                  删除旧目录
+                </NButton>
+              </template>
+              删除 {{ snap.previous_runtime_dir }}？此操作不可撤销。
+            </NPopconfirm>
+          </span>
+        </div>
+        <div v-if="snap?.previous_runtime_dir" class="set-row col">
+          <span class="sl">旧目录（待删）</span>
+          <span class="sv"><code class="path">{{ snap.previous_runtime_dir }}</code></span>
+        </div>
+        <div class="set-row">
+          <span class="sl">下载源</span>
+          <span class="sv">
+            <NSelect
+              :value="snap?.download_source ?? 'auto'"
+              :options="SOURCE_OPTIONS"
+              size="small"
+              style="width: 260px"
+              :disabled="!snap || settings.saving"
+              @update:value="(v: string) => saveRuntime({ download_source: v })"
+            />
+          </span>
+        </div>
+        <div class="set-row">
+          <span class="sl">
+            分段下载
+            <InfoDot
+              text="大文件分段续传；镜像源分段会整包重取，脚本会自动改走单流。关闭后一律单流。"
+            />
+          </span>
+          <span class="sv">
+            <NSelect
+              :value="snap?.segment_mb ?? 64"
+              :options="withCustom(SEGMENT_OPTIONS, snap?.segment_mb)"
+              size="small"
+              style="width: 200px"
+              :disabled="!snap || settings.saving"
+              @update:value="(v: number) => saveRuntime({ segment_mb: v })"
+            />
+          </span>
+        </div>
+        <div class="set-row">
+          <span class="sl">启动时自动准备运行时</span>
+          <span class="sv">
+            <NSwitch
+              :value="snap?.setup_auto ?? true"
+              size="small"
+              :disabled="!snap || settings.saving"
+              @update:value="(v: boolean) => saveRuntime({ setup_auto: v })"
+            />
+          </span>
+        </div>
+        <div class="set-row">
+          <span class="sl">校验与日志</span>
+          <span class="sv">
+            <NButton
+              size="small"
+              :loading="rechecking"
+              :disabled="rechecking"
+              @click="onRecheckRuntime"
+            >
+              重新检查运行时
+            </NButton>
+            <NButton
+              size="small"
+              :loading="openingLogs"
+              :disabled="openingLogs"
+              @click="onOpenLogs"
+            >
+              打开日志目录
+            </NButton>
+          </span>
+        </div>
+        <div class="set-row">
+          <span class="sl">安装清单</span>
+          <span class="sv">
+            <span :class="['hint', snap && !snap.manifest_found ? 'bad' : '']">
+              {{ snap?.manifest_found ? "已找到 manifest.json" : "未找到 manifest.json" }}
+            </span>
+          </span>
+        </div>
+      </section>
+
+      <!-- ── C 引擎 ─────────────────────────────────── -->
+      <section class="set-group">
+        <h4>引擎</h4>
+        <div class="set-row">
+          <span class="sl">
+            OCR 设备
+            <InfoDot text="留空 = 跟随运行时自检；显式指定后 OCR worker 启动时按此选择。" />
+          </span>
+          <span class="sv">
+            <NSelect
+              :value="snap?.ocr_device ?? ''"
+              :options="withCustom(OCR_DEVICE_OPTIONS, snap?.ocr_device)"
+              size="small"
+              style="width: 200px"
+              :disabled="!snap || settings.saving"
+              @update:value="(v: string) => saveRuntime({ ocr_device: v })"
+            />
+          </span>
+        </div>
+        <div class="set-row">
+          <span class="sl">
+            MOSS 线程数
+            <InfoDot text="0 = 由后端按 CPU 核数自动决定；过大反而抢显存/内存带宽。" />
+          </span>
+          <span class="sv">
+            <NSelect
+              :value="snap?.moss_threads ?? 0"
+              :options="withCustom(MOSS_THREAD_OPTIONS, snap?.moss_threads)"
+              size="small"
+              style="width: 132px"
+              :disabled="!snap || settings.saving"
+              @update:value="(v: number) => saveRuntime({ moss_threads: v })"
+            />
+          </span>
+        </div>
+        <div class="set-row">
+          <span class="sl">MOSS 超时（分钟）</span>
+          <span class="sv">
+            <NSelect
+              :value="snap?.moss_timeout_minutes ?? 0"
+              :options="withCustom(MOSS_TIMEOUT_OPTIONS, snap?.moss_timeout_minutes)"
+              size="small"
+              style="width: 148px"
+              :disabled="!snap || settings.saving"
+              @update:value="(v: number) => saveRuntime({ moss_timeout_minutes: v })"
+            />
+          </span>
+        </div>
+        <div class="set-row">
+          <span class="sl">
+            MOSS 推理设备
+            <InfoDot text="只读：改这里要重启才生效，请到打轴页「转写参数 → 推理设备」修改（即时生效）。" />
+          </span>
+          <span class="sv">
+            <code class="path">{{ snap?.moss_device || "auto" }}</code>
+            <span class="hint">在打轴页修改</span>
+          </span>
+        </div>
+        <div class="set-row">
+          <span class="sl">
+            保留中间产物
+            <InfoDot text="dev_debug：把 OCR 逐帧图、MOSS 原始输出等留在临时目录，排查问题用。" />
+          </span>
+          <span class="sv">
+            <NSwitch
+              :value="snap?.dev_debug ?? false"
+              size="small"
+              :disabled="!snap || settings.saving"
+              @update:value="(v: boolean) => saveRuntime({ dev_debug: v })"
+            />
+          </span>
+        </div>
+      </section>
+      </template>
+
+      <!-- ── E 时间轴 ───────────────────────────────── -->
+      <section class="set-group">
+        <h4>时间轴与保存</h4>
+        <div class="set-row">
+          <span class="sl">默认开启吸附</span>
+          <span class="sv">
+            <NSwitch :value="settings.snapDefault" size="small" @update:value="settings.setSnapDefault" />
+          </span>
+        </div>
+        <div class="set-row">
+          <span class="sl">分割策略</span>
+          <span class="sv">
+            <NSelect
+              :value="timeline.splitStrategy"
+              :options="SPLIT_OPTIONS"
+              size="small"
+              style="width: 168px"
+              @update:value="timeline.setSplitStrategy"
+            />
+          </span>
+        </div>
+        <div class="set-row">
+          <span class="sl">合并策略</span>
+          <span class="sv">
+            <NSelect
+              :value="timeline.mergeStrategy"
+              :options="MERGE_OPTIONS"
+              size="small"
+              style="width: 168px"
+              @update:value="timeline.setMergeStrategy"
+            />
+          </span>
+        </div>
+        <div class="set-row">
+          <span class="sl">
+            自动保存
+            <InfoDot text="关闭后只有 Ctrl+S 与关窗前兜底会写盘；改动多时容易忘记保存。" />
+          </span>
+          <span class="sv">
+            <NSwitch :value="settings.autosave" size="small" @update:value="settings.setAutosave" />
+          </span>
+        </div>
+        <div v-if="settings.autosave" class="set-row">
+          <span class="sl">自动保存延迟</span>
+          <span class="sv">
+            <NSelect
+              :value="settings.autosaveDelay"
+              :options="AUTOSAVE_DELAY_OPTIONS"
+              size="small"
+              style="width: 132px"
+              @update:value="settings.setAutosaveDelay"
+            />
+          </span>
+        </div>
+      </section>
+
+      <!-- ── F 快捷键（只读） ───────────────────────── -->
+      <section class="set-group">
+        <h4>快捷键（只读）</h4>
+        <div v-for="g in shortcutGroups" :key="g.group" class="sc-group">
+          <div class="sc-title">{{ g.group }}</div>
+          <div v-for="s in g.rows" :key="s.id" class="sc-row">
+            <span class="sc-label">{{ s.label }}</span>
+            <span class="sc-keys">
+              <kbd v-for="k in s.keys" :key="k">{{ k }}</kbd>
+            </span>
+          </div>
+        </div>
+      </section>
+    </div>
+  </NModal>
+</template>
+
+<style scoped>
+.set-body {
+  max-height: min(70vh, 640px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.set-loading {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+/* 读失败：整行红字 + 重试，别让用户对着「默认值」猜 */
+.set-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--warn);
+}
+
+.set-group {
+  padding: 8px 0 10px;
+  border-top: 1px solid var(--color-border);
+}
+
+.set-group:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.set-group h4 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+}
+
+.set-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+  padding: 2px 0;
+}
+
+.set-row.col {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+
+.sl {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--color-text-primary);
+}
+
+.sv {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.path {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  word-break: break-all;
+  color: var(--color-text-secondary);
+}
+
+.hint {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.hint.bad {
+  color: var(--warn);
+}
+
+/* 指针失效等需要用户处理的提示：整行红字，不要挤在小字里 */
+.warn-line {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--warn);
+}
+
+.seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  font-size: 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.seg.on {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.sc-group {
+  margin-bottom: 6px;
+}
+
+.sc-title {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  margin: 4px 0 2px;
+}
+
+.sc-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+
+.sc-label {
+  color: var(--color-text-primary);
+}
+
+.sc-keys {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.sc-keys kbd {
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  padding: 1px 5px;
+  border: 1px solid var(--color-border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-secondary);
+}
+</style>

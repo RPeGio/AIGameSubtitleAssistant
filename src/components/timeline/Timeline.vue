@@ -568,6 +568,13 @@ function onMergeConfirm() {
 }
 
 // ── 滚轮：普通滚轮水平平移时间轴；Shift+滚轮垂直滚动轨道区 ──
+//
+// 三处约定（改样式前后都一样，别再动）：
+//   ① clip 区普通滚轮 = 横向平移（纵向轨道滚动不是这里的语义）
+//   ② Shift+滚轮 = 纵向滚动轨道区
+//   ③ 轨道信息标签列 = 纵向滚动：**不在这里处理**，直接放行让浏览器原生滚
+//      （标签列在 .tl-tracks 内，原生滚轮会滚到那个 overflow-y:auto 容器上，
+//      顺带保留触控板惯性。曾经在这里显式 scrollTop 代滚，反倒丢了惯性）
 
 function onWheelRoot(e: WheelEvent) {
   const t = e.target as HTMLElement;
@@ -1111,6 +1118,9 @@ onUnmounted(() => {
   position: relative; /* 框选覆盖层的定位上下文 */
   flex: 1;
   min-width: 0;
+  /* 关键：flex 项默认 min-height:auto，会被内容撑高 ⇒ .tl-tracks 永远不溢出，
+     轨道一多就被 .timeline-root 的 overflow:hidden 裁掉，滚轮完全没反应 */
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }

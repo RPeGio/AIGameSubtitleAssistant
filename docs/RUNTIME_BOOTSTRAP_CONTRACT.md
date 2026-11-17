@@ -42,14 +42,28 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
 | `-Items <ids>` | 逗号分隔的条目 id | 缺省 `moss,models-moss,deps-ocr,deps-ocr-gpu,deps-embed`；`deps-ocr-cuda-libs` 是"要 CUDA 运行库"的开关，不是清单条目（§4.3） |
 | `-Flavor <auto\|cpu\|cuda\|vulkan>` | 默认 `auto` | `auto` = L0 机器能力探测，判定顺序同 `backend_probe`：**nvidia-smi → vulkaninfo → cpu** |
 | `-Mirror <url>` | 默认 gh-proxy 代理前缀 | **代理前缀语义**（见 §4.1），非资源基址 |
+| `-Source <auto\|mirror\|direct>` | 默认 `auto` | 候选源顺序：`auto` = 清单 `urls[]` → 镜像 → 直链；`mirror` = 镜像优先且跳过测速/分段；`direct` = 只用 GitHub 直链。见 §8.10「下载源三档」 |
 | `-Force` | 开关 | 忽略已安装标记，强制重装 |
 | `-Manifest <path>` | 默认 app 内置 manifest | 覆盖内置清单（离线/自测用） |
+| `-RuntimeDir <path>` | 默认 `<脚本目录>/../runtime` | 安装落点。**GUI 每次都显式传**（`runtime_install.rs:711-726`），命令行手跑务必也传，否则会装进仓库根下的 `runtime/` |
 | `-SegmentMB <n>` | 默认 `64`，`0` = 不分段 | 分段大小；见 §4.5 |
-| `-ProbeMB <n>` | 默认 `2`，`0` = 关闭测速 | 选源前对每个候选发 n MB Range 请求测瞬时速率，按实测排序；见 §4.5 |
+| `-ProbeMB <n>` | 默认 `2`，`0` = 关闭测速 | 选源前对每个候选发 n MB Range 请求测瞬时速率，按实测排序；见 §4.5。**当前 GUI 仍不下发，仅供命令行/运维**（见下方「参数可达性」） |
+| `-ProbeSec <n>` | 默认 `4` | 单源测速请求的超时（秒）。**这是「慢但能通的源算不算可用」的旋钮**：超时只把该源降级为单流兜底（`Slow`），不判它不可用；见 §4.5 |
 | `-NoResume` | 开关 | 不读、不留 `.downloads` 缓存（每次从头下） |
 | `-MaxAttempts <n>` | 默认 `3` | 单段失败重试次数 |
 | `-PipMirror <url>` | 默认华为云 | CUDA 运行库 pip 索引（§4.3）；`-SkipGpuLibs` 可整段跳过 |
 | `-PipUseProxy` | 开关 | **默认清空 `HTTP(S)_PROXY`** 跑 pip（代理常拉慢 pip），加了才走代理 |
+
+> **参数可达性（2026-11-16 审查 P2-5 留档，2026-11-17 合并后更新）**：
+> `src-tauri/src/ai_runtime/runtime_install.rs:709-742` 现在下发的实参依次是
+> `-Items -Flavor -RuntimeDir [-Manifest] -Source -SegmentMB [-Force]`。
+>
+> - `-Source` / `-SegmentMB`：**已受设置面板控制**（`RuntimeConfig.download_source` /
+>   `segment_mb` → 设置面板「下载源」「分段大小」；随 #52 合入，`:738-739` 下发）。
+> - `-ProbeMB` / `-ProbeSec`：**仍只供命令行/运维**，`RuntimeConfig` 里没有对应字段，
+>   也没有面板项。后果仍是：慢链路用户不能把探针调小以缩短探测时间
+>   （默认 2 MB × 3 候选 × 7 条目 ≈ 42 MB 白流量 + 最坏 84 s）。
+>   要做就照 `segment_mb` 的路子加两个配置字段 + 面板项；在此之前这两行按命令行参数对待。
 
 - **无参运行** = `-Items <§2 表里的全部条目> -Flavor auto`，即「首启默认动作」（装齐运行时 + 模型 + OCR/向量运行时）。
 
@@ -113,13 +127,18 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
 
 ```json
 {
-  "version": "1",
-  "generated_at": "2026-10-30T03:01:00Z",
+  "version": "2026-11-14",
+  "generated_at": "2026-11-14T03:46:00Z",
   "items": [
     {
       "id": "moss",
       "flavor": "cuda",
       "url": "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-cuda.zip",
+      "urls": [
+        "https://modelscope.cn/datasets/RPeGio/gsa-runtime/resolve/master/moss-runtime-v1/moss-cuda.zip",
+        "https://dl.rpegio.top/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-cuda.zip",
+        "https://github.com/RPeGio/AIGameSubtitleAssistant/releases/download/moss-runtime-v1/moss-cuda.zip"
+      ],
       "sha256": "…",
       "size": 123456789,
       "dest": "bin",
@@ -163,13 +182,29 @@ manifest 条目、不改脚本逻辑。（`deps-funasr` 已随 FunASR 退役作�
 }
 ```
 
+- **`version` / `generated_at` 仅作出处标注，不是协议版本门禁**：代码不读、不比对这两个字段
+  （Rust 侧只取 `items[]` 的 `id/flavor/sha256/size/unpacked_size`，见
+  `src-tauri/src/ai_runtime/installed_state.rs:125` `parse_manifest_items`）。但 `version` 会被
+  安装器写进用户状态作为 `source_version`（`scripts/bootstrap_runtime.ps1:911`，
+  类型见 `installed_state.rs:40`），所以**改内容必须同改 `version`**，否则从这份清单装的机器
+  永远记着上一版的出处、与上一版安装无法区分。`generated_at` 会被
+  `scripts/package_moss_flavors.ps1:234` 带进 `packages.json`。
+  当前约定：`version` 写成内容定稿的日期戳（如 `"2026-11-14"`）。
+
+> **关于示例里的 `urls`**：上面只给第一条（`moss/cuda`）写全了三档，其余条目为省版面省略。
+> **真实清单 7 条每条都有 3 条 `urls`**（ModelScope → `dl.rpegio.top` → GitHub，末项必须等于
+> `url`）。这张表没有生成器（`scripts/package_moss_flavors.ps1` 不产 `urls`，也没有脚本写
+> `src-tauri/resources/runtime/manifest.json`），所以
+> `src-tauri/src/ai_runtime/backend_probe.rs` 里的 `shipped_manifest_has_three_tier_urls`
+> 会逐条校验这 3 条与 host 顺序——谁重跑打包脚本覆盖了清单，那条测试就会红。
+
 | 字段 | 必填 | 语义 |
 |---|---|---|
 | `id` | ✔ | 条目 id（`moss` / `deps-ocr` / `deps-ocr-gpu` / `deps-embed` / `models-moss`；`deps-funasr` 已随 FunASR 退役作废；`deps-ocr-cuda-libs` 已改为 pip 阶段，**不是清单条目**） |
 | `flavor` | ✖ | 缺省 = 该条目与 flavor 无关 |
 | `optional` | ✖ | `true` = 该条目在当前机器没有匹配 flavor 时**静默跳过**（不计失败）。OCR 的 CUDA 增量专用（AMD/Intel 机器 `-Flavor auto` 会选到 vulkan，而 OCR 没有 vulkan 版） |
 | `url` | ✔ | 下载地址，**写绝对地址**；`-Mirror` 缺省时按 §4.1 拼接 |
-| `urls` | ✖ | 多源候选（字符串数组，**顺序即优先级**）。存在时排在 `-Mirror` 拼接结果与 `url` 之前，见 §4.5。Rust 侧不消费该字段（`parse_manifest_items` 只取 `id/flavor/sha256/size/unpacked_size`），它是**下载器的输入** |
+| `urls` | ✖ | 多源候选（字符串数组）。**顺序只在「探针不可用」时作为缺省偏好**——正常路径按 §4.5 的实测吞吐排序，顺序不生效；`-ProbeMB 0` / `-SegmentMB 0` / `curl` 缺失这三条退化路径才严格按它。存在时排在 `-Mirror` 拼接结果与 `url` 之前，见 §4.5。Rust 侧不消费该字段（`parse_manifest_items` 只取 `id/flavor/sha256/size/unpacked_size`），它是**下载器的输入** |
 | `sha256` | ✔ | 下载物哈希，校验不过 = 退出码 2 |
 | `size` | ✔ | 字节数，用于磁盘预检 |
 | `unpacked_size` | ✖ | 解压后字节数。**有它就按它做预检**：`Σ下载 + Σ解压 + 最大单包解压 + 100 MB`（最后一项是临时目录与 dest 同时存在的那一份；早先漏了它，cuda 的 2.69 GB 包正好卡在这个差额上），没有才退回老的 `size × 3`。OCR 的 `deps` 有 24 065 个文件、压缩率只有 ~3 倍以内，`×3` 会低估 |
@@ -318,15 +353,16 @@ Range 走了单流镜像，反而成功。
 - 冷启动（对象未被边缘缓存）TTFB 约 2.5 s、6 MB/s，回源走 GitHub；免费版无预热、无 L2 缓存，
   每个边缘节点首访都要整份回源。
 
-**2026-11-12 测速选源**（`-ProbeMB`，默认 2 MB）：上一条的"每对象随机"意味着**固定的候选顺序必然
+**2026-11-12 测速选源**（`-ProbeMB`，默认 2 MB；超时 `-ProbeSec`，默认 4 s）：上一条的"每对象随机"意味着**固定的候选顺序必然
 在一半时间段选错源**，实测最坏情形是夜间 ESA 0.27 MB/s 与 gh-proxy 2.12 MB/s 之间的 8 倍差距。
 
 | 环节 | 规则 |
 |---|---|
-| 探针 | `Measure-UrlSpeed(url, 2)`：`curl -s -L --max-time 6 -r 0-(2MB-1) -o NUL -w '%{http_code} %{speed_download}'`，返回 `@{ok;mbps}`（`http_code` 非 2xx/206 视为不可用） |
-| 排序 | 全部候选测完后按 `mbps` 降序，只保留可用的；日志逐条打 `测速 <n> MB/s <url>` |
+| 探针 | `Measure-UrlSpeed(url, ProbeMB, ProbeSec)`：`curl -s -L --max-time <ProbeSec，默认 4> -r "0-(<ProbeMB，默认 2>MB-1)" -D <临时头文件> -o NUL -w "%{http_code} %{size_download} %{time_total} %{time_starttransfer}"`，**只接受 `http_code = 206` 且实收字节 > 0**（200/4xx/5xx 一律判不可用）；并且**必须命中 `Content-Range: bytes 0-<n>/<总长>`、实收字节不少于「请求量与总长的较小者」的一半**，否则只算「没测出来」（短响应算出的吞吐是假高速）。吞吐 = `size_download / (time_total − time_starttransfer)`（**扣掉 TTFB**，否则 2 MB 探针会被跨境首字节时间系统性摊薄：实测 ESA 真值 8.9 MB/s，含 TTFB 只算出 1.4 MB/s）；总长从临时头文件解析，解析不到就回落到清单 `size`（2026-11-16 订正，见审查记录 P1-3 / P1-4） |
+| 排序 | 全部候选测完后按 `mbps` 降序，只保留可用的；**等速时按候选顺序**（显式带原始下标做次键，不依赖 `Sort-Object` 的稳定性——PS 5.1 等键不保序且没有 `-Stable`）；日志逐条打 `测速 <n> MB/s <url>`；**例外——`-Source mirror` 档不走本条排序**（不测速、不分段，镜像直接排最前，见 §8.10 「下载源三档」表后的「叠加」注） |
+| 探针失败 | 分两种：拿到 HTTP 状态码（200/4xx/5xx）才判定「源不可用」并丢弃；超时 / 零字节 / 计时不可信只是「没测出来」，源保留在队尾（`Slow`）做单流兜底，排在镜像之前。`-SegmentMB 0`、`curl` 缺失、全都未测到时，兜底队列用**清单全部非镜像直链**（保序）打底。只有「测到速率且非 `Slow`」的源才配拿去分段（2026-11-16 修正，见审查记录 P0-1 / P1-2） |
 | 复用 | 探针测到的 `length`（`Content-Range` 总长）直接给分段用，不再额外发一次 Range 探测 |
-| 关闭 | `-ProbeMB 0` = 回到"第一个支持 Range 的候选优先"；`curl` 缺失或单流路径（`-SegmentMB 0`）也会跳过测速 |
+| 关闭 | `-ProbeMB 0` = 回到"第一个支持 Range 的候选优先"（这条路径完全不进速率排序，严格按 `urls[]` 顺序）；`curl` 缺失或单流路径（`-SegmentMB 0`）也会跳过测速 |
 | 失败回退 | 选定源在段级重试用尽后，按**测速排序的剩余顺序**改单流重试 ⇒ 刚失败的那个源自然被排到后面 |
 | 代价 | 每候选一次 2 MB 请求（本地/局域网源会秒回；真实源约 1–6 s），换来避免 40 分钟级的选错源 |
 
@@ -348,6 +384,13 @@ Range 走了单流镜像，反而成功。
 | 实测（2026-11-13 夜间同分钟） | ModelScope 7.88 MB/s｜GitHub 直连 0.13｜gh-proxy 0.13｜ESA 0.09 ⇒ 出境链路整体被打死，境内 CDN 是唯一通路 |
 | 与 `-ProbeMB` 的关系 | 顺序只是"探针不可用时的缺省偏好"；正常路径仍按实测速率排序，故换源不需要改任何代码 |
 | 校验 | 7 条直链均以 `curl -r 0-0` 的 `Content-Range` 总长与 `manifest.size` 对齐（如 `moss-cuda` 651834262、`models-moss` 626397892） |
+
+> **换源/加源请用 `scripts/verify_cdn_mirror.ps1` 复核**（2026-11-16 审查 P2-11 补引用）：它固定做三件事
+> ——Range 探测（不返 206 的源会被 `bootstrap_runtime.ps1` 降级成单流、不再续传）、多次采样报
+> TTFB 与持续速率的**中位数**（单次测速没有意义，同一源相邻两次能差 70 倍）、以及 `Age`/`X-Cache`
+> 缓存迹象（判断"命中边缘"还是"每次回源"）。用法：
+> `powershell -ExecutionPolicy Bypass -File scripts\verify_cdn_mirror.ps1 -Url <直链> -Samples 5 -Seconds 15`。
+> 三档候选都要跑一遍再改 `urls[]`。
 
 ---
 
@@ -728,7 +771,84 @@ invoke("runtime_status")   // 无参数
 - 为什么要它：一次装 5 个条目（含 622 MB 的 cuda 包与 597 MB 的模型）时，只报单条目百分比，
   用户看到的是"进度条反复从 0 走到 100"，观感上等于没有总进度。
 
+### 8.10 设置命令与 runtime 目录搬家（2026-11-02 新增，第 19 项）
 
+五个命令都在 `src-tauri/src/ai_runtime/config.rs`，均已注册到 `lib.rs` 的 `invoke_handler`。
+
+| 命令 | 入参 | 返回 | 说明 |
+|---|---|---|---|
+| `runtime_settings` | 无 | `SettingsSnapshot` | 读设置 + 运行时现场（目录、可用空间、日志目录、清单是否找到、待删旧目录） |
+| `update_runtime_settings` | `{ patch }` | `SettingsSnapshot` | 只改 patch 里出现的字段；落盘前过 `validate_schema()`（见下） |
+| `move_runtime_dir` | `{ target }` | `MoveResult` | 空间预检 + 复制 + 对账 + 写指针；**重启生效** |
+| `delete_old_runtime_dir` | 无 | `string` | 删指针里的 `previous` 目录 |
+| `open_log_dir` | 无 | `string` | 建目录并用系统文件管理器打开 `runtime/logs` |
+
+`SettingsPatch` 允许的字段：`ocr_device` / `moss_threads`（0–256，0 = CLI 默认全核）/
+`moss_timeout_minutes`（0–1440，0 = 不超时）/ `dev_debug` / `download_source` /
+`segment_mb`（0–1024，0 = 关分段）/ `setup_auto`。
+**超出区间的数值一律报错**（错误串带原值与允许区间），不静默钳位——
+同一个命令不能对 `segment_mb` 报错、对 `moss_threads` 悄悄改成 256（2026-11-16 审查 P2-2）。
+`ocr_device` 变更后**当场重建 OCR provider**（失败不阻断，下次启动生效）。
+
+**runtime 目录指针**：`<app_data>/runtime-location.json`，形如
+`{ "runtime_dir": "D:\\GSA\\runtime", "previous": "C:\\Users\\...\\runtime", "moved_at": 1793600000 }`
+
+- `resolve_runtime_dir` 的入参语义是**应用数据目录**（不是 runtime 目录），解析顺序：
+  指针文件 → `GSA_RUNTIME_DIR`（须含 `config.json`）→ 从 exe 向上找 `runtime/config.json` → `<app_data>/runtime`。
+  指针指向的目录不存在时（外接盘掉线）退回后面的兜底，**不返回死路径**。
+- 搬家规则：目标不能是当前目录 / 其子目录 / 其上级，不能是盘符根，**必须是空目录**；**先查目标盘剩余空间**
+  （要写的量 = 源目录实际字节数，另留 10% 余量；探测不到可用空间时**不拦**，交给复制过程自己失败回滚）；
+  复制时跳过**任意层级**的 `.downloads` 临时缓存；复制完按**相对路径 + 文件大小逐条对账**，缺一条或大小不符
+  就报错且**不写指针**（半搬状态比不搬更糟）。
+- 复制失败或对账失败**一律回滚**：本次新建的目标目录整个删掉；若是用户原有的空目录则只清掉本次拷进去的内容，
+  目录本身留着。回滚后才能真按提示「重试」，否则第二次必然撞上「目标目录非空」（2026-11-16 审查 P1-2 / P2-12）。
+- 旧目录**一律保留**，由用户在设置里点「删除旧目录」——搬完立刻删，出问题就没法回退。
+- 只搬 runtime：`recent_projects.json` 等仍在 app_data，不受影响。
+
+**2026-11-04 补记（真机搬家失败后的两条硬约束）**
+
+1. **调用方必须传 `app_data_dir()` 本身**。`lib.rs` 的 `setup` 原来写的是
+   `resolve_runtime_dir(app_data_dir().map(|d| d.join("runtime")))`——调用方先拼了 `runtime`，
+   `resolve_runtime_dir` 内部再拼一次，指针文件永远读不到；搬家"成功"但所有管理器仍盯着旧目录。
+   真机后果：三个运行时全部未就绪，而设置面板显示的是新目录，两边自相矛盾。
+   现在 `setup` 只有一行 `let runtime_dir = resolve_runtime_dir(app.path().app_data_dir().ok());`，
+   其余调用点（`backend_probe` / `installed_state` / `runtime_install` / `setup`）同样只传 `app_data_dir()`。
+2. **指针悬空必须可见**。`SettingsSnapshot.location_warning`（`Option<String>`）在指针目标目录不存在时
+   给出人话解释并说明已回退到哪个目录；前端在「runtime 目录」行下方以警示色整行显示。
+   指针里的路径是人手打/粘贴来的，拼错一个字母就会让应用"什么都没装"，这条信息不能再只留在日志里。
+
+**下载源三档**（`RuntimeConfig.download_source` → 脚本 `-Source`）
+
+| 值 | 脚本行为 |
+|---|---|
+| `auto`（默认） | 清单 `urls[]` 顺序：ESA 镜像 → 镜像前缀（gh-proxy）→ GitHub 直链 |
+| `mirror` | 镜像前缀排在最前（强制走镜像）。**这一档同时跳过测速与分段**：既然只走镜像，就没必要再花 2 MB × 每候选的探针流量；镜像的 Range 是"整包重取再切片"，分段也只有坏处，所以直接单流。镜像失败后按候选顺序回退到后面的直链（`auto` 的队尾兜底在这个模式下反过来了：镜像第一，直链兜底） |
+| `direct` | 只用 GitHub 直链（`urls[]` 里过滤 `://github.com/`） |
+
+**分段**（`RuntimeConfig.segment_mb` → 脚本 `-SegmentMB`）：0 = 一律单流；>0 = 逐候选探 Range，
+支持才分段。注意 §4.5 的实测结论：镜像源的 Range 是"整包重取再切片"，所以镜像候选不参与分段探测，
+只作单流兜底。Rust 侧**显式传参**，不依赖脚本默认值。
+
+> **`-Source` 与镜像尾部队列的叠加（2026-11-16）**：§4.5 的排序规则（镜像一律排队尾、只做单流兜底）
+> 管的是 `auto` / `direct` 两档。`mirror` 档是用户显式要求「走镜像」，若也把镜像压到队尾，
+> 这个档位等于失效（会先试 CDN）。所以脚本里 `$mirrorFirst = ($Source -eq "mirror") -and (存在镜像候选)`：
+> 为真时镜像排最前、跳过探针（`probed` 为空 ⇒ 自然不进分段），其余直链按清单顺序跟在后面兜底；
+> `-Mirror` 为空时筛不出镜像候选，退回普通排序。两条规则不打架：`auto`/`direct` 保尾，`mirror` 保头。
+
+**配置校验分两半（2026-11-07 真机后新增）**
+
+| 函数 | 校验内容 | 谁用 |
+|---|---|---|
+| `validate_schema(runtime_dir)` | 形状：路径不得越出 runtime（严格组）、`embed_*` 整组、`moss_device` / `funasr_device` 白名单 | **设置面板**（`update_runtime_settings`）、`AsrManager::reload_engine` |
+| `validate_paths(runtime_dir)` | 存在性：`python_path`（相对路径按 runtime 解析）、`moss_binary`、`llm_binary` | 启动时（仅 eprintln 告警，不阻断） |
+| `validate(runtime_dir)` | 上面两者之和 | 需要"真的能跑"的场合 |
+
+- **设置面板只做形状校验**。真机踩过：搬家后 `config.json` 落到默认值（旧 `python_path` 是 `"python"`，
+  指向目录），`update_runtime_settings` 无论改哪一项都先被存在性检查拦下，报
+  `python_path 指向的文件不存在: python`。
+- `validate_paths` 的 `python_path` 判定必须与运行期 `ocr_paths` / `embed_paths` 的 `pick()` 口径一致：
+  **配置值解析不到时，标准布局 `python/python.exe` 在位也算通过**。否则"能跑但校验报错"。
+- `RuntimeConfig::default().python_path` 已改为标准布局的 `python/python.exe`（不再是指向目录的 `"python"`）。
 
 ---
 

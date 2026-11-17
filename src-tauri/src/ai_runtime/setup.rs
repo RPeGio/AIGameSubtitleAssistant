@@ -65,6 +65,8 @@ pub struct RuntimeStatus {
     pub disk: DiskPrecheck,
     /// 判定本身失败时的原因（此时 `ready = false`，前端按失败态展示）
     pub error: Option<String>,
+    /// 首启是否自动开跑安装（设置面板可关；关掉后准备页等用户点「开始准备」）
+    pub auto_start: bool,
 }
 
 impl RuntimeStatus {
@@ -80,6 +82,7 @@ impl RuntimeStatus {
             pending_bytes: 0,
             disk: DiskPrecheck::default(),
             error: Some(message),
+            auto_start: true,
         }
     }
 }
@@ -242,6 +245,7 @@ pub fn evaluate_status(
         pending_bytes,
         disk,
         error: None,
+        auto_start: true,
     }
 }
 
@@ -254,7 +258,7 @@ fn skip_requested() -> bool {
 }
 
 fn status_impl(app: &tauri::AppHandle) -> RuntimeStatus {
-    let runtime_dir = resolve_runtime_dir(app.path().app_data_dir().ok().map(|d| d.join("runtime")));
+    let runtime_dir = resolve_runtime_dir(app.path().app_data_dir().ok());
     let config = RuntimeConfig::load(&runtime_dir).unwrap_or_default();
     let manifest_path: Option<PathBuf> =
         find_manifest(&manifest_candidates(app, &runtime_dir));
@@ -281,6 +285,7 @@ fn status_impl(app: &tauri::AppHandle) -> RuntimeStatus {
         status.error = Some("找不到运行时清单（resources/runtime/manifest.json）".into());
     }
     status.skip = skip_requested();
+    status.auto_start = config.setup_auto;
     status
 }
 

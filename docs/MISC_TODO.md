@@ -27,7 +27,7 @@
 | 12 | ✅ CUDA GPU 加速参数化（设备迁移到 UI） | 功能·Rust+UI | 7（要带 info 说明）+ 11（需 `probe_moss_backend` 命令） | 已实现（阶段 A+B `a8e8010`、阶段 C `2a766c8`；2026-10-30 探测命令改 async）：`probe_moss_backend` + `set_moss_device` 两命令、打轴页设备下拉、欢迎页硬报错、manifest 随包落库 |
 | 13 | ✅ 杂项清理与验证（死代码/参数开关/图标；真机波形待验） | 清理·零碎 | 无 | 已实现（`8b71ee2`）：死代码已删、易混字母开关已暴露、轨道图标常显 |
 | 14 | ✅ 内嵌 ffmpeg/ffprobe + 欢迎页 ffmpeg 自检卡 | 功能·打包 | 11（自检卡复用其探针机制） | 已实现（`40e645f`/`5acb56f`/`bfd1168`/`f3d19d8`/`cd1b753`）：LGPL 共享构建内嵌、内嵌优先回退 PATH、环境自检第 4 张卡；2026-10-30 `check_ffmpeg` 改 async + 静默启动 |
-| 19 | 设置面板（默认 ASR 模型 + 快捷键查看/修改） | 功能·跨页 | 10（注册表） | 改动大、用户明确单独一个 PR；快捷键帮助面板并入此项 |
+| 19 | ✅ 设置面板（运行时 / 引擎 / 时间轴 / 快捷键只读表） | 功能·跨页 | 10（注册表）、11（运行时） | 已实现（2026-11-02，`feat/first-run-prep`）：NModal 五组 + runtime 目录搬家指针 + 下载源三档 + 自动保存/缩放/吸附偏好 |
 | 20 | ✅ 校对区选中 clip 时，轨道总览滚动到该行 | 修复·小 | 无 | 已实现（`b2e70ab`）：`data-clip-id` + 矩形比对最小滚动 |
 | 21 | ✅ 时间轴框选多选（含 `Ctrl+A` 全选、多选整体位移） | 功能·核心 | 10（活动时间轴判定） | 已实现（`34e2837`）：多选模型 + 框选 + 修饰键 + 批量删除 + 刚性整组位移 |
 | 22 | ✅ `,`/`.` 上/下一个片段与「轨道总览 = 聚焦轨道」口径对齐 | 修复·小 | 20（总览滚动） | 已实现（`b28c87a`）：同轨内跳 + 无聚焦轨时兜底跨轨并切轨 + 边界提示 + 迷你时间轴不响应 |
@@ -889,7 +889,57 @@
 - 有 PATH ffmpeg 的机器行为不回退（查找顺序明确、可预期）；
 - 安装包内包含二进制，且许可档案已更新。
 
-### 19. 设置面板（默认 ASR 模型 + 快捷键查看/修改）
+### 19. ✅ 设置面板（运行时 / 引擎 / 时间轴 / 快捷键只读表）
+
+**已实现（2026-11-02，分支 `feat/first-run-prep`）**
+
+范围经用户逐组拍板（`m04501`/`m04549`）：**NModal 弹层**、runtime 默认仍存 `%APPDATA%` 但可在设置里**整体搬家**（重启生效）、下载源三档（自动 / 强制镜像 / 直连）。
+
+| 组 | 条目 | 落点 |
+|---|---|---|
+| A 外观 | 主题、侧栏默认折叠、界面缩放（90/100/110/125%） | `stores/ui.ts`（`zoom` + `applyZoom`，调 `set_ui_zoom` 走 WebView2 原生缩放）+ `composables/appPrefs.ts` |
+| B 运行时 | runtime 目录 + 可用空间、移动到…、删除旧目录、下载源、分段大小、启动时自动准备、重新检查、打开日志目录、清单状态 | `ai_runtime/config.rs` 五个新命令（见契约 §8.10） |
+| C 引擎 | OCR 设备、MOSS 线程数、MOSS 超时、MOSS 设备只读（跳打轴页）、保留中间产物 | 同上，写 `runtime/config.json` |
+| E 时间轴与保存 | 默认吸附、分割策略、合并策略、自动保存开关 + 延迟（关闭时收起延迟项） | `stores/timeline.ts`、`stores/project.ts` 的 `scheduleSave` 读 `appPrefs` |
+| F 快捷键 | 只读对照表（5 组 21 行 27 键位），与 `composables/shortcuts.ts` 注册表同源 | `SettingsModal.vue` |
+
+**关键实现点**
+- `RuntimeConfig` 新增 `download_source`（`auto`/`mirror`/`direct`）、`segment_mb`（0 = 关分段）、`setup_auto`，由 `runtime_install` 显式以 `-Source` / `-SegmentMB` 传给脚本，不依赖脚本默认值。
+- **runtime 目录搬家**：app_data 下写 `runtime-location.json` 指针（`runtime_dir` / `previous` / `moved_at`）；`resolve_runtime_dir` 语义从"兜底 runtime 路径"改成"接收 app_data 目录"，顺序 = 指针 → `GSA_RUNTIME_DIR` → exe 向上 → `app_data/runtime`；搬家 = 复制（跳过 `.downloads` 缓存）→ 按相对路径逐条对账 → 写指针；旧目录保留，确认无误后一键删。
+- **`load_or_default`**：`config.json` 不存在时从默认值起步再保存。真机上（一键安装只解包、不写 config.json）原来 `set_moss_device` / `update_runtime_settings` 会直接报"读取失败"，是本次一并修掉的真 bug。
+- 弹层入口两处：项目内顶栏（`AppToolbar.vue`）与欢迎页（`Welcome.vue`）——运行时目录、下载源这些在开项目前就该能改。
+
+**未做（用户明确排除）**：校对区宽度、`ocr_model`、FunASR 语言/超时、OCR/校对参数（保持 OCR 页唯一配置）、撤销深度、快捷键改键（F 组只读）。
+另：**默认转写引擎**一项失去意义——前端 FunASR 入口已在分发侧提交 `c654cfc` 中移除（`ENGINE_ORDER = ["moss"]`），故未做。
+
+**验证**：`cargo test --lib` 全绿（新增 `test_normalize_download_source_and_segment`、`test_location_pointer_overrides_fallback`、`test_move_runtime_dir_copies_then_delete_old`、`test_move_rejects_non_empty_target`、`test_load_or_default_starts_from_default_when_missing`）；`pnpm build` EXIT=0；headless（`temp/css-preview/settings.mjs`）确认弹层 5 组 21 行、27 个键位、宽 720、无溢出、无 console 错误，并实测「关掉自动保存 → 延迟项消失」。**未经真机手测**（搬家、日志目录、重新检查运行时需在安装包里点一遍）。
+
+**2026-11-04 补记（真机首测：搬家失效 + 三处界面问题）**
+
+| 症状 | 根因 | 修法 |
+|---|---|---|
+| 搬家并重启后三个运行时全未就绪，设置面板却显示新目录 | `lib.rs` 的 `setup` 调 `resolve_runtime_dir(app_data_dir().map(\|d\| d.join("runtime")))`，调用方先拼了 `runtime`，函数内部再拼一次 ⇒ 指针文件永远读不到 | 只传 `app_data_dir()`；`backend_probe`/`installed_state`/`runtime_install`/`setup` 同步统一 |
+| 指针指向的目录被人删/改名后，界面只说"未配置" | 指针悬空只 `eprintln` 到 stderr | `SettingsSnapshot.location_warning` + 设置面板警示行，写明已回退到哪个目录、该用「移动到…」重新指定 |
+| 打开设置面板时「侧栏默认折叠」的说明气泡自己弹出来 | `NModal` 打开时自动聚焦第一个可聚焦元素（`InfoDot` 的 button），触发了 tooltip | `NModal` 加 `:auto-focus="false"`；`InfoDot` 只在 `:focus-visible` 时展开（键盘可达、鼠标/程序化聚焦不弹） |
+| 界面缩放 90% 时窗口下方空出一条，125% 时文字被挤压换行 | 用 CSS `zoom` 缩放，而 `100vh` 等视口单位不跟着缩放 | 新增 `src-tauri/src/ui.rs` 的 `set_ui_zoom` 命令，走 `WebviewWindow::set_zoom`（WebView2 原生缩放，视口单位一起缩放） |
+| 设置按钮的图标与"切换深浅色"的月亮撞脸（都是圆 + 辐条） | `ic-gear` 画成了"太阳" | 重画成 8 齿齿轮轮廓 + 中心孔（root r=5.35、tip r=7.25） |
+
+**验证**：`cargo test --lib` **367 passed**；`pnpm build` EXIT=0；headless 复测 `tooltips: 0`、`zoomTest.calls = [set_ui_zoom 1, set_ui_zoom 1.1]`、`cssZoom: ""`（已无 CSS zoom）、`overflow: false`、无 console 错误；截图 `temp/css-preview/settings-open.png`、`gear-zoom.png`（5× 放大）。
+
+**真机现场（记录）**：用户搬家时把目标名打成 `D:\_GSA_RUNTIME`（实际数据在 `D:\__GSA_RUMTIME`），指针随后指向不存在的 `F:\...\rumtime`，旧目录已被删 ⇒ 全部运行时报"未找到"。已备份原指针为 `runtime-location.json.bak` 并改回真实目录。**教训：搬家目标路径由用户手输/选择，指针悬空必须有可见提示，不能只写日志。**
+
+**2026-11-07 补记（真机二次反馈：四处）**
+
+| 症状 | 根因 | 修法 |
+|---|---|---|
+| 语料行内编辑时每敲一个字就全选一次 | `CorpusView.vue` 的 `setEditInput` 是函数式 ref，**每次 patch 都会调用**（不只挂载），里面无条件 `focus()+select()` | 自己判重：同一元素只处理一次，传 `null` 时清记录 |
+| 时间轴轨道多到溢出后，标签列滚轮完全无响应 | `.timeline-col` 缺 `min-height:0`，作为 flex 项被内容撑高 ⇒ `.tl-tracks` 永不溢出，超出行被 `.timeline-root` 的 `overflow:hidden` 裁掉 | 补 `min-height:0`；标签列滚轮改为纵向滚动轨道区，**clip 区仍是水平平移**（用户明确只要求蓝框那一列） |
+| 打轴页 ASR/OCR 运行中，进度条、长诊断文字、按钮挤在一行，长句被压成竖排 | 三样塞进同一个 `.arow` flex 行 | 拆成三行（进度条 / 说明 / 取消+重新探测），整组用 `.astack` 贴底，多出的行向上生长 |
+| 搬家后设置面板引擎组任何一项都保存失败（`python_path 指向的文件不存在: python`） | `validate()` 里的 python_path 存在性检查无条件执行，而 `RuntimeConfig::default()` 的 `python_path` 是 `"python"`（指向目录）；运行期有 `pick()` 回退所以不受影响 | 拆成 `validate_schema()`（形状，设置面板只用这一半）+ `validate_paths()`（存在性，且与 `pick()` 口径对齐：标准布局在位即通过）；`default().python_path` 改 `python/python.exe` |
+
+**验证（2026-11-07）**：`cargo test --lib` **368 passed**（新增 `test_validate_schema_ignores_missing_python`）；`pnpm build` EXIT=0；`pnpm tauri build` EXIT=0（NSIS 57.5 MB / MSI 75.6 MB）。①②④ 需真机复测确认。
+
+**原始需求（保留）**
 
 **来源**：用户 m06929（原话）「增加设置面板，详细功能待定，但确定包括的有默认ASR模型设置、快捷键设置（承载快捷键查看和修改两个功能），改动较大，值得单独一个PR」。
 

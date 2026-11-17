@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { computed, onScopeDispose, ref, watch } from "vue";
 import { cutIndices, nearestCut, splitTextAtCut, stripTrailingPunctuation, textSegments } from "../composables/sentenceCuts";
+import { readAutosaveDelay, readAutosaveEnabled } from "../composables/appPrefs";
 import type { MergeStrategy, SplitStrategy } from "../composables/sentenceCuts";
 import type {
   Project,
@@ -238,7 +239,9 @@ export const useProjectStore = defineStore("project", () => {
   });
 
   // ── 自动保存 ─────────────────────────────────────────
-  const saveState = ref<"saved" | "pending" | "saving" | "error">("saved");
+  /// manual：自动保存被关掉，改动只等用户 Ctrl+S / 关窗兜底 —— 与「有个定时器马上要写盘」
+/// 的 pending 不是一回事，别再让状态灯永远红着说「未保存」。
+const saveState = ref<"saved" | "pending" | "saving" | "error" | "manual">("saved");
   let saveTimer: number | undefined;
   // 保存后把 updated_at 同步回 currentProject，会触发深监听；
   // 用该标记短路，避免"保存→触发监听→再保存"的死循环
@@ -271,9 +274,14 @@ export const useProjectStore = defineStore("project", () => {
   }
 
   function scheduleSave() {
+    // 自动保存可由设置面板关闭（关闭后只保留手动 Ctrl+S 与关窗兜底）
+    if (!readAutosaveEnabled()) {
+      saveState.value = "manual";
+      return;
+    }
     saveState.value = "pending";
     clearTimeout(saveTimer);
-    saveTimer = window.setTimeout(saveNow, 1000);
+    saveTimer = window.setTimeout(saveNow, readAutosaveDelay());
   }
 
   // 深监听整个项目对象：任何轨道/clip/坐标变更都会触发自动保存

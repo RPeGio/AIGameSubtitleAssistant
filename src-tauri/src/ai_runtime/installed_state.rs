@@ -334,9 +334,7 @@ fn flavor_label(flavor: &str) -> &str {
 pub fn probe_moss_install(app: tauri::AppHandle) -> InstallStatus {
     use tauri::Manager;
 
-    let runtime_dir = super::config::resolve_runtime_dir(
-        app.path().app_data_dir().ok().map(|d| d.join("runtime")),
-    );
+    let runtime_dir = super::config::resolve_runtime_dir(app.path().app_data_dir().ok());
     let config = super::RuntimeConfig::load(&runtime_dir).unwrap_or_default();
     // 路径解析与 provider 同源（空配置回退标准布局），否则会出现
     // "卡片说未安装、转写其实能跑"这种两套说法
@@ -362,9 +360,7 @@ pub fn probe_moss_install(app: tauri::AppHandle) -> InstallStatus {
 pub fn probe_embed_install(app: tauri::AppHandle) -> InstallStatus {
     use tauri::Manager;
 
-    let runtime_dir = super::config::resolve_runtime_dir(
-        app.path().app_data_dir().ok().map(|d| d.join("runtime")),
-    );
+    let runtime_dir = super::config::resolve_runtime_dir(app.path().app_data_dir().ok());
     let config = super::RuntimeConfig::load(&runtime_dir).unwrap_or_default();
     let (python, _worker, _deps, model, _tokenizer) =
         super::embed_paths(&config, &runtime_dir);

@@ -57,6 +57,9 @@ param(
   [string]$Items = "moss,models-moss,deps-ocr,deps-ocr-gpu,deps-embed",
   [string]$Flavor = "auto",
   [string]$Mirror = "https://gh-proxy.com/",
+  # 下载源策略（设置面板可改）：auto = 清单顺序（CDN/ESA → 镜像 → 直链）|
+  # mirror = 镜像优先（ESA 被墙但 gh-proxy 能通的网络）| direct = 只用 GitHub 直链
+  [string]$Source = "auto",
   [string]$PipMirror = "https://repo.huaweicloud.com/repository/pypi/simple",
   [switch]$PipUseProxy,
   [switch]$SkipGpuLibs,
@@ -72,6 +75,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+
+# 下载源归一化：非法值退回 auto（设置面板传错不该让整轮安装挂掉）
+$Source = "$Source".Trim().ToLower()
+if ($Source -notin @("auto", "mirror", "direct")) { $Source = "auto" }
 
 # stdout 必须是纯 JSONL：先统一成 UTF-8，避免中文 detail 在重定向时被 GBK 编码
 try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch { }
@@ -395,13 +402,26 @@ function Resolve-Url([string]$url) {
 #   cdn/direct = 直链，值得探 Range（ESA/R2 这类 CDN 支持 206，分段才快）
 #   mirror     = 代理前缀，实测会把 Range 变成"整包重取再切片"（0.18 MB/s），只走单流
 function Get-UrlCandidates($it) {
-  $list = New-Object System.Collections.ArrayList
+  # ⚠ 局部变量禁止叫 $mirror / $direct 这类与参数同名的名字：PowerShell 变量名大小写不敏感，
+  #   `$mirror = New-Object ArrayList` 会直接覆盖 [string]$Mirror 参数，镜像候选从此恒为空。
+  #   PR#52 就是这么把镜像兜底整条断掉的（不报错、不告警，只少一条候选），故一律带 Cands 后缀。
+  $cdn = New-Object System.Collections.ArrayList
   foreach ($u in @($it.urls)) {
-    if ($u) { [void]$list.Add([pscustomobject]@{ Url = [string]$u; Kind = "cdn" }) }
+    if ($u) { [void]$cdn.Add([pscustomobject]@{ Url = [string]$u; Kind = "cdn" }) }
   }
-  if ($it.url) {
-    if ($Mirror) { [void]$list.Add([pscustomobject]@{ Url = (Resolve-Url ([string]$it.url)); Kind = "mirror" }) }
-    [void]$list.Add([pscustomobject]@{ Url = [string]$it.url; Kind = "direct" })
+  $mirrorCands = New-Object System.Collections.ArrayList
+  if ($it.url -and $Mirror) { [void]$mirrorCands.Add([pscustomobject]@{ Url = (Resolve-Url ([string]$it.url)); Kind = "mirror" }) }
+  $directCands = New-Object System.Collections.ArrayList
+  if ($it.url) { [void]$directCands.Add([pscustomobject]@{ Url = [string]$it.url; Kind = "direct" }) }
+
+  # 候选顺序按 -Source 决定（设置面板三档）：
+  #   auto   → 清单顺序（ESA/CDN 在前）→ 镜像前缀 → 直链
+  #   mirror → 镜像前缀优先（ESA 被墙、gh-proxy 能通的网络）
+  #   direct → 只要 GitHub 直链（cdn 里非 github 的 ESA 地址一并排除）
+  $list = switch ($Source) {
+    "mirror" { @($mirrorCands) + @($cdn) + @($directCands) }
+    "direct" { @(@($cdn) | Where-Object { $_.Url -match "://github\.com/" }) + @($directCands) }
+    default { @($cdn) + @($mirrorCands) + @($directCands) }
   }
   $seen = @{}
   $out = @()
@@ -445,29 +465,44 @@ function Test-RangeSupport([string]$url) {
 # 而白天完全反过来（ESA 8.9、gh-proxy 0.3）——固定顺序必然在一半时间选错源。
 function Measure-UrlSpeed([string]$url, [int]$probeMB, [int]$timeoutSec) {
   $bytes = [int64]$probeMB * 1MB
-  if ($bytes -le 0) { return @{ ok = $false; mbps = 0.0; length = [int64]0 } }
+  if ($bytes -le 0) { return @{ ok = $false; mbps = 0.0; length = [int64]0; rejected = $false } }
   $last = $bytes - 1
   $hdr = [System.IO.Path]::GetTempFileName()
   try {
     $out = & curl.exe -s -L --max-time $timeoutSec -r "0-$last" -D $hdr -o NUL -w "%{http_code} %{size_download} %{time_total} %{time_starttransfer}" $url 2>$null
     $parts = (($out | Out-String).Trim() -split '\s+')
-    if ($parts.Count -lt 4) { return @{ ok = $false; mbps = 0.0; length = [int64]0 } }
+    # 这个守卫基本是死的：实测 curl 在连接被拒（exit 7）、DNS 失败（exit 6）、超时（exit 28）时
+    # 照样会把 -w 行吐出来（`000 0 0.000553 0.000550`），四个字段齐备。真正判失败的是下面
+    # 的 `$code -ne 206`——`[int]"000"` 就是 0（2026-11-16 审查 P2-4）。
+    # 保留它只为兜住 curl 连 -w 行都没输出的极端情形（比如进程被外部杀掉）。
+    if ($parts.Count -lt 4) { return @{ ok = $false; mbps = 0.0; length = [int64]0; rejected = $false } }
     $code = [int]$parts[0]
     $size = [double]$parts[1]
     $total = [double]$parts[2]
     $ttfb = [double]$parts[3]
-    if ($code -ne 206 -or $size -le 0) { return @{ ok = $false; mbps = 0.0; length = [int64]0 } }
+    # rejected 区分「源有意拒绝」与「没测出来」：拿到 HTTP 状态码（200/4xx/5xx）说明源确实不可用；
+    # code=0 是连接失败/超时/零字节，源可能只是慢，仍可单流下载，不能从兜底队列里删掉
+    # （2026-11-16 审查 P1-2）。
+    if ($code -ne 206 -or $size -le 0) { return @{ ok = $false; mbps = 0.0; length = [int64]0; rejected = ($code -ne 0) } }
     $len = [int64]0
     try {
       $h = [System.IO.File]::ReadAllText($hdr)
-      if ($h -match "(?i)Content-Range:\s*bytes\s+0-$last/(\d+)") { $len = [int64]$Matches[1] }
+      # 不写死上界：服务端可以按自己的上限裁短，对象也可能比探针还小（整包 + 206）
+      if ($h -match "(?i)Content-Range:\s*bytes\s+0-\d+/(\d+)") { $len = [int64]$Matches[1] }
     } catch { }
+    # 没有 Content-Range 的 206 不是可信的 Range 证据；实收字节不足请求量一半，说明服务端
+    # 「回得少、回得快」，此时 $size / $xfer 会把一个只有几 KB 的响应算成几百 MB/s
+    # （实测同款响应算出 897 MB/s，随后每段都 SEGMENT_SHORT）。
+    # 这两类都只算「没测出来」，不是「源不可用」——留给单流兜底，不参与选源（2026-11-16 审查 P1-3）。
+    if ($len -le 0) { return @{ ok = $false; mbps = 0.0; length = [int64]0; rejected = $false } }
+    $want = [math]::Min([int64]$last + 1, $len)
+    if ($size -lt ($want * 0.5)) { return @{ ok = $false; mbps = 0.0; length = $len; rejected = $false } }
     $xfer = $total - $ttfb
     if ($xfer -lt 0.05) { $xfer = $total }
-    if ($xfer -le 0) { return @{ ok = $false; mbps = 0.0; length = $len } }
-    return @{ ok = $true; mbps = ($size / $xfer / 1MB); length = $len }
+    if ($xfer -le 0) { return @{ ok = $false; mbps = 0.0; length = $len; rejected = $false } }
+    return @{ ok = $true; mbps = ($size / $xfer / 1MB); length = $len; rejected = $false }
   } catch {
-    return @{ ok = $false; mbps = 0.0; length = [int64]0 }
+    return @{ ok = $false; mbps = 0.0; length = [int64]0; rejected = $false }
   } finally {
     Remove-Item -LiteralPath $hdr -Force -ErrorAction SilentlyContinue
   }
@@ -627,8 +662,11 @@ function Invoke-SingleStream($candidates, [string]$dest, $id, $flavor, [int64]$e
 function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $flavor) {
   # 分段依赖系统自带 curl（Windows 10 1803+ 都有）；老系统上别硬失败，退回单流
   if ($SegmentMB -gt 0 -and -not (Get-Command curl.exe -ErrorAction SilentlyContinue)) {
-    Log "未找到 curl.exe（Win10 1803+ 自带），退回单流下载（无分段、无续传）"
-    $SegmentMB = 0
+    Log "未找到 curl.exe（Win10 1803+ 自带），本次运行退回单流下载（无分段、无续传）"
+    # 必须写 $script:SegmentMB：函数内的 `$SegmentMB = 0` 只会建一个函数局部变量，
+    # 脚本级 -SegmentMB 参数原封不动 ⇒ 7 个条目各打一遍同样的日志、各撞一次同样的失败。
+    # （PowerShell 变量名大小写不敏感，这类遮蔽与 PR#52 的 $mirror 撞名是同一类坑，2026-11-16 审查 P2-3）
+    $script:SegmentMB = 0
   }
 
   $expectedSize = [int64]0
@@ -636,54 +674,131 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
   $candidates = @(Get-UrlCandidates $it)
   if ($candidates.Count -eq 0) { throw "清单条目 $id 没有任何 url" }
 
+  # -Source mirror 是「强制走镜像」（CDN 被墙、只有 gh-proxy 能通的网络）：镜像候选必须排最前，
+  # 而不是像 auto/direct 那样留到队尾兜底——否则设置面板里选「强制镜像」等于什么都没发生，
+  # 因为下面的统一排序会把镜像无条件压到队尾（PR#53 的镜像尾部队列，2026-11-16 叠加到 PR#52）。
+  # 两条约束同时成立：
+  #   · 镜像的 Range 是「整包重取再切片」（实测按段 0.18 MB/s，同 URL 单流 6.7 MB/s）⇒ 强制镜像直接走单流、不参与分段；
+  #   · 既然只走镜像，就不必再花探针流量去测 CDN（2 MB × 每候选）⇒ 跳过测速。
+  # -Mirror 为空时 Get-UrlCandidates 的 mirror 分支筛不出候选，此时退回普通排序（不能凭空造候选）。
+  $mirrorCands = @($candidates | Where-Object { $_.Kind -eq "mirror" })
+  $mirrorFirst = ($Source -eq "mirror") -and ($mirrorCands.Count -gt 0)
+
   # 选源：对每个候选先打一发小探针，同时得到「是否支持 Range」和「实测吞吐」，
   # 再按吞吐从快到慢排序。镜像前缀不探（2026-11-01 真机：镜像对 Range 的响应是
   # "整包重取再切片"，按段下只有 0.18 MB/s，同一 URL 单流却有 6.7 MB/s），
   # 只留在队尾做单流兜底。
+  #
+  # 探针量必须随条目尺寸收缩：默认 2 MB × 3 个非镜像候选，而 moss/cpu 整包才 1.1 MB
+  # ⇒ 为了下它先下 6 MB，7 个条目合计约 42 MB 全部丢弃（-o NUL），最坏还串行等
+  # 3 × ProbeSec × 7 ≈ 84 s 才开始下载。条目小于探针总量的 8 倍时直接退回旧的
+  # 「探 Range 能力」路径——那种尺寸下分段收益本来也有限（2026-11-16 审查 P2-1）。
+  $probeSizeMB = $ProbeMB
+  if ($expectedSize -gt 0 -and $expectedSize -lt ([int64]8 * [int64]$ProbeMB * 1MB)) {
+    if ($ProbeMB -gt 0) { Log "条目仅 $(Format-MB $expectedSize)，跳过测速（探针量不成比例）" }
+    $probeSizeMB = 0
+  }
   $probed = @()
   if ($SegmentMB -le 0) {
     Log "已关闭分段（-SegmentMB 0），单流下载"
+  } elseif ($mirrorFirst) {
+    Log "强制镜像（-Source mirror）：跳过测速与分段，直接单流走镜像前缀"
   } else {
     foreach ($c in $candidates) {
       if ($c.Kind -eq "mirror") {
         Log "跳过 $($c.Url)（镜像前缀：Range 会被整包重取，只作单流兜底）"
         continue
       }
-      if ($ProbeMB -le 0) {
-        # 关闭测速：沿用旧行为，取第一个支持 Range 的源
+      if ($probeSizeMB -le 0) {
+        # 关闭测速（或条目太小不值得测）：沿用旧行为，取第一个支持 Range 的源
         $r = Test-RangeSupport $c.Url
-        if ($r.ok) { $probed += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Mbps = 0.0; Length = $r.length } }
+        if ($r.ok) { $probed += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Mbps = 0.0; Length = $r.length; Slow = $false } }
         else { Log "跳过 $($c.Url)（不支持 Range，或探测失败）" }
         continue
       }
-      $m = Measure-UrlSpeed $c.Url $ProbeMB $ProbeSec
+      $m = Measure-UrlSpeed $c.Url $probeSizeMB $ProbeSec
       if ($m.ok) {
-        $probed += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Mbps = $m.mbps; Length = $m.length }
+        $probed += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Mbps = $m.mbps; Length = $m.length; Slow = $false }
+      } elseif (-not $m.rejected) {
+        # 超时 / 零字节 / 时间不可信：源可能只是慢，仍能单流下完，不能当它不可用
+        # （2026-11-16 审查 P1-2）。降级到队尾，排在镜像之前。
+        Log "未测到速率 $($c.Url)（保留为单流兜底）"
+        $probed += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Mbps = 0.0; Length = [int64]0; Slow = $true }
       } else {
-        Log "跳过 $($c.Url)（不支持 Range，或探测失败）"
-      }
-    }
-    if ($probed.Count -gt 1) {
-      foreach ($p in ($probed | Sort-Object Mbps -Descending)) {
-        Log ("测速 {0,6:N2} MB/s  {1}" -f $p.Mbps, $p.Url)
+        Log "跳过 $($c.Url)（HTTP 状态表明源不可用）"
       }
     }
   }
 
-  # 排序队列：测速过的源（快→慢）→ 镜像候选（只做单流兜底）
-  $ranked = @()
-  foreach ($p in ($probed | Sort-Object Mbps -Descending)) {
-    $ranked += [pscustomobject]@{ Url = $p.Url; Kind = $p.Kind; Length = $p.Length }
+  # 统一排序：实测速率降序，**等速按候选顺序**。
+  # PS 5.1 的 Sort-Object 等键时不保序（实测输入 ModelScope→ESA→GitHub 全 0.0 时整体倒序，
+  # n=3/4/5/8 全部失败），且 5.1 根本没有 -Stable。而等速恰恰是常态：夜间实测 GitHub 与
+  # gh-proxy 同为 0.13 MB/s；-ProbeMB 0 这条路径更是全 0.0 等键。所以显式拿原始下标做次键，
+  # 没测速（-ProbeMB 0 或条目太小跳过测速）则完全不排序——那两条路径承诺的是「按候选顺序取
+  # 第一个支持 Range 的源」，2026-11-16 审查 P1-1 / P2-1。
+  $ordered = @($probed)
+  if ($probeSizeMB -gt 0 -and $probed.Count -gt 1) {
+    $seq = 0
+    $keyed = foreach ($p in $probed) {
+      [pscustomobject]@{ Seq = $seq; Url = $p.Url; Kind = $p.Kind; Length = $p.Length; Mbps = $p.Mbps; Slow = [bool]$p.Slow }
+      $seq = $seq + 1
+    }
+    $ordered = @($keyed | Sort-Object @{ Expression = "Mbps"; Descending = $true }, @{ Expression = "Seq"; Descending = $false })
+    foreach ($p in $ordered) {
+      Log ("测速 {0,6:N2} MB/s  {1}" -f $p.Mbps, $p.Url)
+    }
   }
-  foreach ($c in $candidates) {
-    if ($c.Kind -eq "mirror") { $ranked += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Length = [int64]0 } }
+
+  # 排序队列：探针通过的源（快→慢）→ 未探查成功的直链（保序）→ 镜像（只做单流兜底）。
+  # 兜底判据必须看「有没有探针通过的源」($probed)，不能看 $ranked.Count：镜像总会被追加，
+  # $ranked 永不为空，于是 -SegmentMB 0 / curl.exe 缺失 / 探针全失败 这三条正式路径
+  # 都会退化成「只剩镜像可用」，三条真实直链连试都不试（2026-11-16 审查 P0-1）。
+  $ranked = @()
+  if ($mirrorFirst) {
+    # 强制镜像：镜像在最前，其余直链按候选顺序跟在后面（镜像挂了才有机会轮到它们）
+    foreach ($c in $mirrorCands) {
+      $ranked += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Length = [int64]0; Slow = $false }
+    }
+    foreach ($c in $candidates) {
+      if ($c.Kind -ne "mirror") {
+        $ranked += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Length = [int64]0; Slow = $true }
+      }
+    }
+  } else {
+    foreach ($p in $ordered) {
+      $ranked += [pscustomobject]@{ Url = $p.Url; Kind = $p.Kind; Length = $p.Length; Slow = [bool]$p.Slow }
+    }
+    if ($ranked.Count -eq 0) {
+      # 探针一个都没过 ≠ 源不可用（超时/零字节只是「没测出来」），直链仍留在队列里做单流
+      foreach ($c in $candidates) {
+        if ($c.Kind -ne "mirror") {
+          $ranked += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Length = [int64]0; Slow = $true }
+        }
+      }
+    }
+    # 镜像永远排最后：Range 会被整包重取，只适合单流兜底
+    foreach ($c in $candidates) {
+      if ($c.Kind -eq "mirror") {
+        $ranked += [pscustomobject]@{ Url = $c.Url; Kind = $c.Kind; Length = [int64]0; Slow = $true }
+      }
+    }
   }
   if ($ranked.Count -eq 0) { $ranked = @($candidates) }
 
   $rangeUrl = $null
-  if ($SegmentMB -gt 0 -and $ranked.Count -gt 0 -and $ranked[0].Kind -ne "mirror") {
+  # 只有「探针确认支持 Range 且没被降级为 Slow」的源才配拿去分段，否则直接走单流回退
+  if ($SegmentMB -gt 0 -and $probed.Count -gt 0 -and $ranked.Count -gt 0 -and $ranked[0].Kind -ne "mirror" -and -not $ranked[0].Slow) {
     $rangeUrl = $ranked[0].Url
-    if ($ranked[0].Length -gt 0) { $expectedSize = $ranked[0].Length }
+    # 总长以清单 `size` 为准，探针报的总长只在「清单没写」时兜底。
+    # 探针拿到的是 HTTP 服务端自报值，一个坏掉/被劫持的源可以谎报成任意值：谎报变大 ⇒
+    # 段数按 $expectedSize / $segBytes 爆炸（一路写盘到磁盘满），而磁盘预检用的是清单
+    # size，根本拦不住；谎报变小 ⇒ Join-Segments 的完整性校验直接失败。2026-11-16 审查 P2-2。
+    if ($ranked[0].Length -gt 0) {
+      if ($expectedSize -le 0) { $expectedSize = $ranked[0].Length }
+      elseif ($ranked[0].Length -ne $expectedSize) {
+        Log "探针报的总长 $(Format-MB $ranked[0].Length) 与清单 $(Format-MB $expectedSize) 不一致，以清单为准"
+      }
+    }
     Log "分段下载源：$rangeUrl（支持 Range，总长 $(Format-MB $expectedSize)）"
   }
 
@@ -760,6 +875,21 @@ function Invoke-SegmentedDownload($it, [string]$dest, [string]$cacheDir, $id, $f
   }
 }
 
+# 删除临时产物时统一走这里（2026-11-16 审查 P2-22）。
+# 两个理由：① `Remove-Item` 不加 `-LiteralPath` 会把 `[ ] * ?` 当通配符，清单 id 目前
+# 都是静态字面量，但一个 `[` 就足以删到别的目录上；② 这些路径由清单 id 拼成，
+# 加一道「必须落在系统临时目录内」的断言，才不至于清单被改坏时越界删除用户文件。
+function Remove-TempArtifact([string]$path, [switch]$Recurse) {
+  if (-not $path) { return }
+  $tempRoot = [System.IO.Path]::GetTempPath().TrimEnd('\', '/')
+  $full = [System.IO.Path]::GetFullPath($path)
+  if (-not $full.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    Write-Warning "拒绝清理临时目录之外的路径：$full"
+    return
+  }
+  Remove-Item -LiteralPath $full -Recurse:$Recurse -Force -ErrorAction SilentlyContinue
+}
+
 function Get-Sha256([string]$path) {
   return (Get-FileHash -Path $path -Algorithm SHA256).Hash.ToLower()
 }
@@ -772,6 +902,11 @@ $hashFailed = $false
 
 foreach ($it in $selected) {
   $id = [string]$it.id
+  # 注意：PowerShell 变量名大小写不敏感，这里给 `$flavor` 赋值就是覆盖 `-Flavor` 参数本身
+  # （参数在 :210-221 已消费进 `$effectiveFlavor`，之后不再需要 `$Flavor`，故当前无害）。
+  # 但**别在循环体里再用 `$Flavor`**：那时它已经是"当前条目的 flavor"，不是用户传的参数了。
+  # 同类坑见 PR#52 的 `$mirror` 覆盖 `-Mirror`，那条直接把镜像兜底整条断掉且不报错
+  # （2026-11-16 审查 P2-12 留档）。
   $flavor = if ($it.flavor) { ([string]$it.flavor).ToLower() } else { "" }
   $destRel = if ($it.dest) { [string]$it.dest } else { "bin" }
   $destDir = Join-Path $runtime $destRel
@@ -820,7 +955,7 @@ foreach ($it in $selected) {
     $extractEvt = @{ event = "progress"; item = $id; phase = "extract"; percent = 0; detail = "解压" }
     if ($flavor) { $extractEvt.flavor = $flavor }
     Emit $extractEvt
-    if (Test-Path $tmpDir) { Remove-Item $tmpDir -Recurse -Force }
+    if (Test-Path -LiteralPath $tmpDir) { Remove-TempArtifact $tmpDir -Recurse }
     Expand-Archive -Path $tmpZip -DestinationPath $tmpDir -Force
     if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
     Copy-Item -Path (Join-Path $tmpDir "*") -Destination $destDir -Recurse -Force
@@ -856,8 +991,8 @@ foreach ($it in $selected) {
     $failed += $id
     Log "安装 $label 失败：$msg"
   } finally {
-    Remove-Item $tmpZip -Force -ErrorAction SilentlyContinue
-    Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-TempArtifact $tmpZip
+    Remove-TempArtifact $tmpDir -Recurse
   }
 }
 
