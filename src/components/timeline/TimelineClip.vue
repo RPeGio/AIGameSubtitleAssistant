@@ -2,6 +2,7 @@
 import { computed, inject, ref } from "vue";
 import type { TimelineEvent } from "../../types";
 import { useTimelineStore, TIMELINE_STORE_KEY, SNAP_THRESHOLD_PX } from "../../stores/timeline";
+import type { ClipTone } from "../../stores/timeline";
 import { useProjectStore } from "../../stores/project";
 
 const timeline = inject(TIMELINE_STORE_KEY, null) ?? useTimelineStore();
@@ -13,10 +14,16 @@ const props = defineProps<{
   trackId: string;
   /// 同轨全部事件（含自身）：拖动时计算相邻约束
   siblings: TimelineEvent[];
-  color: string;
+  /// 本时间轴渲染的全部事件（跨轨吸附候选）。由 Timeline 传「当前显示的轨道」，
+  /// 避免不同视频源的迷你时间轴互相吸附到对方的起止。
+  snapEvents: TimelineEvent[];
+  /// 片段配色（按事件类型取主题令牌）
+  tone: ClipTone;
   left: number;
   width: number;
   focused: boolean;
+  /// 是否属于多选集（框选 / Ctrl+A）；focused 仍是「主选中」单元素语义
+  selected: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -29,6 +36,12 @@ const emit = defineEmits<{
 
 // ── 拖动：整段移动 / 左右边界改起止 / 垂直换轨 ──
 const MIN_DUR = 0.05; // 与 splitEvent 的 EPS 一致，避免零长度 sliver
+
+/// 是否属于刚分割出的一对（被分割态：键盘 ⬅️➡️ 可整段搬句界）
+const isSplitPair = computed(() => {
+  const pair = timeline.splitPair;
+  return !!pair && (pair.leftId === props.event.id || pair.rightId === props.event.id);
+});
 const DRAG_THRESHOLD = 3; // 位移超过该像素才视为拖动（区分点击）
 const V_DRAG_THRESHOLD = 12; // 垂直位移超过该像素才进入换轨模式（asr 事件专属）
 
@@ -52,7 +65,16 @@ const drag = ref<{
   bodyRect: DOMRect | null;
   /// 候选吸附边界（所有其他事件 start/end 时间秒），拖动开始收集一次（静态）
   snapEdges: number[];
+  /// 多选整体位移：按下时同组各成员的起始位置（快照）
+  group: GroupMember[];
 } | null>(null);
+
+/// 组内一个成员的位移快照
+interface GroupMember {
+  id: string;
+  start: number;
+  end: number;
+}
 let suppressClick = false;
 
 // 相邻约束：只考虑与当前事件完全不重叠的最近前驱/后继
@@ -92,22 +114,87 @@ function bounds(): {
 // 合并工具：resize 边缘拖过相邻边界该距离（px）即合并
 const MERGE_DRAG_PX = 30;
 
+// ── 多选整体位移 ──
+
+/// 收集「本次拖动要整体平移的成员」：自身 + 选择集里属于本时间轴可见事件的其它 clip。
+/// 跨时间轴的选择（如校对区选中的 clip 出现在迷你时间轴里）不参与，避免误移不可见条目。
+function collectGroupMembers(): GroupMember[] {
+  const self = props.event;
+  const visible = new Set(props.snapEvents.map((e) => e.id));
+  const ids = [self.id, ...timeline.selectedClipIds.filter((id) => id !== self.id && visible.has(id))];
+  const tracks = projectStore.currentProject?.tracks ?? [];
+  const members: GroupMember[] = [];
+  for (const id of ids) {
+    const track = tracks.find((t) => t.events.some((e) => e.id === id));
+    const ev = track?.events.find((e) => e.id === id);
+    if (!ev) continue;
+    members.push({ id, start: ev.start, end: ev.end });
+  }
+  return members;
+}
+
+/// 整组刚性平移：位移只受时间轴两端限制，组内成员之间的相邻关系不再各自 clamp。
+/// 早先按「每个成员各自与同轨邻居取交集」实现，紧贴的一组会在组内互相夹死（交集为空）
+/// ⇒ 表现为「这组怎么拖都不动」。抓住组内任何一条都必须能带动整组（用户 m07277）。
+/// 代价：整组可以压到未选中的 clip 上（数据层本就允许同轨重叠），撤销即可复位。
+function moveGroup(d: NonNullable<typeof drag.value>, dt: number) {
+  const gStart = Math.min(...d.group.map((m) => m.start));
+  const gEnd = Math.max(...d.group.map((m) => m.end));
+  const limit = timeline.duration > 0 ? timeline.duration : Number.MAX_SAFE_INTEGER;
+  const dtMin = -gStart;
+  const dtMax = limit - gEnd;
+  let shift = Math.max(dtMin, Math.min(dt, dtMax));
+
+  // 吸附：候选取被拖 clip 起止 + 整组外缘，命中 8px 内最近的一条
+  if (timeline.snapEnabled && timeline.activeTool === "select" && d.snapEdges.length > 0) {
+    const pps = timeline.pixelsPerSecond;
+    const gStart = Math.min(...d.group.map((m) => m.start));
+    const gEnd = Math.max(...d.group.map((m) => m.end));
+    const values = [d.origStart + shift, d.origEnd + shift, gStart + shift, gEnd + shift];
+    let bestDelta: number | null = null;
+    let bestPx: number | null = null;
+    let bestDist = SNAP_THRESHOLD_PX;
+    for (const cand of d.snapEdges) {
+      for (const v of values) {
+        const delta = cand - v;
+        const dist = Math.abs(delta) * pps;
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestDelta = delta;
+          bestPx = cand * pps;
+        }
+      }
+    }
+    if (bestDelta !== null) {
+      shift = Math.max(dtMin, Math.min(shift + bestDelta, dtMax));
+      timeline.setSnapGuide(bestPx);
+    } else {
+      timeline.setSnapGuide(null);
+    }
+  }
+
+  // 整组位移不显示拖边参考线（它只用于单条 clip 改起止）
+  timeline.setEdgeGuide(null);
+  for (const m of d.group) projectStore.updateEventTime(m.id, m.start + shift, m.end + shift);
+}
+
 // ── 吸附 ──
 
-/// 收集所有轨道所有事件的 start/end 时间 + 自身原位置边界（移走后可吸回原位）：
+/// 收集本时间轴所有事件的 start/end 时间 + 自身原位置边界（移走后可吸回原位）：
 /// 拖动中候选边界集合静态，首次进入拖动时收集一次
 function collectSnapEdges(): number[] {
   const edges: number[] = [];
   const d = drag.value;
   // 自身原边界：clip 移走后仍能吸附回原位
   edges.push(d?.origStart ?? props.event.start, d?.origEnd ?? props.event.end);
-  const tracks = projectStore.currentProject?.tracks ?? [];
-  for (const track of tracks) {
-    for (const e of track.events) {
-      if (e.id === props.event.id) continue;
-      edges.push(e.start, e.end);
-    }
+  for (const e of props.snapEvents) {
+    if (e.id === props.event.id) continue;
+    edges.push(e.start, e.end);
   }
+  // 播放头也作为吸附点：拖边时能把边界对齐到当前位置（第 16 项，
+  // 取拖动开始时刻的时间值，拖动中播放头移动不影响本次拖动）
+  const playhead = timeline.currentTime;
+  if (playhead > 0 && playhead <= timeline.duration) edges.push(playhead);
   return edges;
 }
 
@@ -173,6 +260,8 @@ function onClipMouseDown(e: MouseEvent, mode: DragMode) {
   if (timeline.activeTool === "split") return;
   e.preventDefault();
   e.stopPropagation();
+  // 拖动未选中的 clip：先按单击语义把选择集重置为它自己（否则整组位移会带上旧选择）
+  if (!timeline.isSelected(props.event.id)) timeline.focusClip(props.event.id);
   const body = (e.currentTarget as HTMLElement).closest(".tl-content") as HTMLElement | null;
   drag.value = {
     mode,
@@ -186,6 +275,7 @@ function onClipMouseDown(e: MouseEvent, mode: DragMode) {
     vTarget: null,
     bodyRect: body ? body.getBoundingClientRect() : null,
     snapEdges: [],
+    group: collectGroupMembers(),
   };
   window.addEventListener("mousemove", onWindowMouseMove);
   window.addEventListener("mouseup", onWindowMouseUp);
@@ -260,6 +350,13 @@ function onWindowMouseMove(e: MouseEvent) {
   const dt = (dx + (timeline.scrollLeft - d.origScrollLeft)) / timeline.pixelsPerSecond;
 
   const { minStart, maxEnd, prev, next } = bounds();
+
+  // 多选整体位移：组内刚性平移（不走合并工具的过界合并与单条 clamp）
+  if (d.mode === "move" && d.group.length > 1 && timeline.activeTool !== "merge") {
+    moveGroup(d, dt);
+    return;
+  }
+
   const dur0 = d.origEnd - d.origStart;
   // 合并工具：resize 边缘拖过相邻边界超过阈值即直接合并相邻 clip
   // （阈值以像素声明，比较前换算为秒：prev.end - MERGE_DRAG_PX / pps）
@@ -302,6 +399,12 @@ function onWindowMouseMove(e: MouseEvent) {
     }
   }
 
+  // 拖边参考线（第 15 项）：正在拖起止时把被拖的那条边标在轨道区上，
+  // 与吸附线（虚线/实线不同长度）区分；整段移动时不显示
+  timeline.setEdgeGuide(
+    d.mode === "move" ? null : (d.mode === "l" ? start : end) * timeline.pixelsPerSecond,
+  );
+
   projectStore.updateEventTime(props.event.id, start, end);
 }
 
@@ -309,7 +412,7 @@ function onWindowMouseMove(e: MouseEvent) {
 // 拖动场景的相邻关系已由 bounds() 保证（最近非重叠邻居），
 // 中间可能有重叠事件打断排序相邻，故不要求严格相邻
 function tryMergeWith(other: TimelineEvent): boolean {
-  const merged = projectStore.mergeTwo(props.event.id, other.id, false);
+  const merged = projectStore.mergeTwo(props.event.id, other.id, false, timeline.mergeStrategy);
   if (!merged) return false;
   timeline.focusClip(merged);
   emit("merged");
@@ -320,8 +423,9 @@ function tryMergeWith(other: TimelineEvent): boolean {
 function onWindowMouseUp() {
   const d = drag.value;
   drag.value = null;
-  // 拖动结束：吸附标记线立即消失
+  // 拖动结束：吸附标记线与拖边参考线立即消失
   timeline.setSnapGuide(null);
+  timeline.setEdgeGuide(null);
   window.removeEventListener("mousemove", onWindowMouseMove);
   window.removeEventListener("mouseup", onWindowMouseUp);
   // 垂直换轨：释放时若有有效目标轨道则移动事件，并清除悬停高亮
@@ -370,17 +474,18 @@ function clipText(): string {
   <div
     v-if="drag && drag.moved"
     class="clip-ghost"
-    :style="{ ...ghostStyle, borderColor: color, color }"
+    :style="{ ...ghostStyle, borderColor: tone.line, color: tone.fg }"
   />
   <div
     class="clip"
-    :class="{ focused, dragging: drag !== null, 'v-dragging': drag?.vMode, 'split-tool': timeline.activeTool === 'split' }"
+    :class="{ focused, selected, dragging: drag !== null, 'v-dragging': drag?.vMode, 'split-tool': timeline.activeTool === 'split', 'split-pair': isSplitPair }"
     :data-event-id="event.id"
     :style="{
       left: left + 'px',
       width: width + 'px',
-      backgroundColor: color,
-      borderColor: focused ? '#fff' : color,
+      backgroundColor: tone.bg,
+      borderColor: focused ? 'var(--accent)' : tone.line,
+      color: tone.fg,
     }"
     @mousedown="onClipMouseDown($event, 'move')"
     @click.stop="onClick"
@@ -402,10 +507,10 @@ function clipText(): string {
 <style scoped>
 .clip {
   position: absolute;
-  top: 4px;
-  height: 32px;
+  top: 7px;
+  bottom: 7px;
   border-radius: 4px;
-  border: 2px solid;
+  border: 1px solid;
   box-sizing: border-box;
   overflow: hidden;
   cursor: pointer;
@@ -415,9 +520,9 @@ function clipText(): string {
 /* 原位虚影：拖动中显示在原始位置的虚线框 */
 .clip-ghost {
   position: absolute;
-  top: 4px;
-  height: 32px;
-  border: 2px dashed;
+  top: 7px;
+  bottom: 7px;
+  border: 1px dashed;
   border-radius: 4px;
   box-sizing: border-box;
   background: color-mix(in srgb, currentColor 20%, transparent);
@@ -427,15 +532,33 @@ function clipText(): string {
 
 .clip.focused {
   z-index: 5;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.5);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+/* 多选中（非主选中）：内描边标记，与主选中的外框区分 */
+.clip.selected {
+  box-shadow: inset 0 0 0 1px var(--accent-ink);
+}
+
+.clip.selected.focused {
+  box-shadow: inset 0 0 0 1px var(--accent-ink), 0 0 0 1px var(--accent);
 }
 
 .clip:hover {
-  opacity: 0.9;
+  opacity: 0.92;
 }
 
 .clip.split-tool {
   cursor: crosshair;
+}
+
+/* 被分割态：这对 clip 用内描边标一下，提示 ⬅️➡️ 可用（不改变外框聚焦样式） */
+.clip.split-pair {
+  box-shadow: inset 0 0 0 1px var(--accent-ink);
+}
+
+.clip.split-pair.focused {
+  box-shadow: inset 0 0 0 1px var(--accent-ink), 0 0 0 1px var(--accent);
 }
 
 .clip.dragging {
@@ -470,15 +593,16 @@ function clipText(): string {
 }
 
 .resize-handle:hover {
-  background: rgba(255, 255, 255, 0.35);
+  background: color-mix(in srgb, var(--text) 22%, transparent);
 }
 
 .clip-label {
-  display: block;
+  display: flex;
+  align-items: center;
+  height: 100%;
   padding: 0 6px;
   font-size: 11px;
-  line-height: 28px;
-  color: #fff;
+  color: inherit;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

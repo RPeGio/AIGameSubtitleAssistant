@@ -2,7 +2,7 @@
 
 English | [中文](development.md)
 
-This document is for collaborators who want to understand the codebase or contribute. For the project vision and phased plan, see [GameSubtitleAssistant_Plan.md](../GameSubtitleAssistant_Plan.md); for usage, see the [README](../README.md).
+This document is for collaborators who want to understand the codebase or contribute. For the project vision and phased plan, see [GameSubtitleAssistant_Plan.md](GameSubtitleAssistant_Plan.md); for usage, see the [README](../README.md).
 
 ## Tech stack
 
@@ -10,8 +10,8 @@ This document is for collaborators who want to understand the codebase or contri
 |---|---|
 | Desktop shell | Tauri 2 (`protocol-asset`, dialog / opener plugins) |
 | Frontend | Vue 3 + TypeScript + Pinia + Vue Router + Naive UI + Tailwind CSS 4 + Vite 6 |
-| Backend | Rust 2021 (tauri / serde / image / uuid / ffmpeg-sidecar) |
-| AI | PaddleOCR (Python worker), FunASR / MOSS (ASR), multilingual-e5-small + unified transition DP (fusion), llama.cpp + Qwen2.5-3B (LLM, test bench) |
+| Backend | Rust 2021 (tauri / serde / image / uuid) |
+| AI | PaddleOCR (Python worker), MOSS (ASR, the only engine), multilingual-e5-small + unified transition DP (fusion).<br>FunASR and llama.cpp + Qwen2.5-3B are retired and not distributed (code kept, see the Retired components section below) |
 
 Constraint: **fully offline**. The Rust side has no HTTP client and makes no network requests; every AI capability runs as a local subprocess.
 
@@ -26,7 +26,7 @@ Constraint: **fully offline**. The Rust side has no HTTP client and makes no net
                │ invoke() commands / listen() events (ocr-progress…)
 ┌──────────────▼──────────────────────────────────────────────┐
 │ Rust backend (src-tauri)                                    │
-│  video ── ffmpeg/ffprobe (external, PATH lookup)            │
+│  video ── ffmpeg/ffprobe (bundled, PATH fallback)           │
 │  ocr / asr / llm / fuse ── pipelines + progress events      │
 │  ai_runtime ── provider traits + managers + runtime config  │
 │  project / export ── <project-name>.gsa persistence / subs  │
@@ -46,7 +46,7 @@ Constraint: **fully offline**. The Rust side has no HTTP client and makes no net
 
 | Module | Responsibility |
 |---|---|
-| `src-tauri/src/video/mod.rs` | ffprobe metadata (`get_video_metadata`); frame / audio extraction reused by OCR / ASR; FFmpeg located via system PATH → ffmpeg-sidecar dir, error `FFMPEG_NOT_FOUND` |
+| `src-tauri/src/video/mod.rs` | ffprobe metadata (`get_video_metadata`); frame / audio extraction reused by OCR / ASR; FFmpeg lookup lives in `video/ffmpeg_locator.rs`: bundled `resources/ffmpeg/` (shipped in the installer) → system PATH, error `FFMPEG_NOT_FOUND` |
 | `src-tauri/src/ocr/` (`mod.rs` facade + `commands`/`correct`/`merge`/`params`/`pipeline`/`refine` submodules) | Full OCR pipeline `run_ocr` (background thread + `ocr-progress` events): extract → change detection → window refinement → OCR → merge; `run_ocr_images` for direct screenshots; `approve_corpus_diff` to approve a corpus correction (single implementation of the replace rule, shared with the benchmark) |
 | `src-tauri/src/ai_runtime/dhash.rs` | 64-bit dHash of cropped frames + Hamming-distance change decision |
 | `src-tauri/src/ai_runtime/mod.rs` | AI runtime skeleton: provider traits + managers for OCR/ASR/LLM + `NoneProvider` placeholder (keeps the build compiling when the environment is absent; providers report "not ready") |
@@ -71,20 +71,45 @@ Constraint: **fully offline**. The Rust side has no HTTP client and makes no net
 ```
 runtime/
 ├── config.json          # the single config file (merged writes by bootstrap scripts)
-├── python/              # embedded CPython 3.12.10 (NuGet package)
-├── deps/                # OCR pip deps (--target isolated)
-├── deps_gpu/            # OCR GPU-only pieces (optional, bootstrap_ocr_gpu.ps1; runtime PYTHONPATH=deps_gpu;deps)
-├── deps_funasr/         # FunASR pip deps (torch isolated from paddle)
+├── .installed.json      # one-click installer state (which items are installed, hashes, timestamps)
+├── python/              # embedded CPython 3.12.10 (NuGet package; now shipped in the OCR pack)
+├── deps/                # OCR pip deps (--target isolated; now shipped in the OCR pack)
+├── deps_gpu/            # OCR GPU-only pieces (optional, shipped in the OCR cuda pack; runtime PYTHONPATH=deps_gpu;deps)
+├── deps_funasr/         # [retired] FunASR pip deps (script kept, never installed by the product)
 ├── deps_embed/          # vector-recall pip deps (onnxruntime CPU + tokenizers, fusion)
 ├── models/
-│   ├── paddleocr/       # PP-OCRv5 cache
-│   ├── funasr/          # Fun-ASR-Nano + VAD + speaker models (modelscope cache)
-│   ├── embed/           # multilingual-e5-small (ONNX qint8, fusion)
+│   ├── paddleocr/       # PP-OCRv5 cache (shipped in the OCR pack)
+│   ├── funasr/          # [retired] Fun-ASR-Nano + VAD + speaker models
+│   ├── embed/           # multilingual-e5-small (ONNX qint8; shipped in the embed pack)
 │   ├── moss/            # moss-transcribe-<quant>.gguf
-│   └── qwen/            # qwen2.5-3b-instruct-q4_k_m.gguf (optional, test bench)
+│   └── qwen/            # [retired] qwen2.5-3b-instruct (historical test bench)
 ├── worker/              # worker scripts copied by bootstrap
-└── bin/                 # moss-transcribe.exe, bin/llm/ (llama.cpp)
+└── bin/                 # moss-transcribe.exe (+ ggml backend DLLs), bin/llm/ ([retired] llama.cpp)
 ```
+
+> **Everything is installed on first launch**: `scripts/bootstrap_runtime.ps1` reads
+> `src-tauri/resources/runtime/manifest.json` and downloads `moss` (cpu/cuda/vulkan chosen by
+> device), `models-moss` (the gguf), the two OCR packs (`deps-ocr` / `deps-ocr-gpu`;
+> the latter is `optional` and is skipped on non-NVIDIA machines) and the vector-fusion pack
+> `deps-embed` (26 CPU-only wheels + the e5-small model + the workers; it reuses the OCR pack's
+> `python/`), verifying SHA256 before extracting.
+> The CUDA/cuDNN runtime libraries are **not shipped** (CUDA EULA 1.2.2 forbids distributing the SDK
+> as a stand-alone product): after the OCR baseline lands, the installer pulls the eight `nvidia-*`
+> wheels with `pip` from a PyPI mirror (~1.7 GB, Huawei Cloud by default, `--require-hashes`). For development you can still use the step-by-step scripts
+> (`bootstrap_ocr.ps1` etc.). Packaging: `scripts/package_ocr_runtime.ps1` (§8.11) and
+> `scripts/package_embed_runtime.ps1` (§8.12). A flaky connection is no longer fatal: the downloader works in
+> 64 MB segments with resume (cache under `<runtime>\.downloads\`), tunable via
+> `-SegmentMB` / `-NoResume` / `-MaxAttempts`, and multiple sources come from the manifest's
+> `urls[]` (contract §4.5). **Source selection is measured, not ordered**: `-ProbeMB` (default 2 MB)
+> fires one small range request per candidate, sorts by measured throughput and only then downloads
+> (ESA is faster by day, gh-proxy by night, so a fixed order picks wrong); `-ProbeMB 0` disables it.
+> How the artifacts are built is described in
+> `scripts/package_ocr_runtime.ps1` and design doc §8.11.
+> **China acceleration**: each asset's `urls[]` carries three tiers — first **ModelScope**
+> (since 2026-11-14, `https://modelscope.cn/datasets/RPeGio/gsa-runtime/resolve/master/…`,
+> anonymously downloadable, Range-capable, measured 7.88 MB/s at night while GitHub/ESA served
+> 0.09–0.13 MB/s), then the Alibaba Cloud ESA mirror (`https://dl.rpegio.top/…`, ~10 MB/s by day),
+> then GitHub Releases as the last resort. See design §8.13 and §8.14.
 
 ### Key config.json fields
 
@@ -93,11 +118,48 @@ runtime/
 | `python_path` / `worker_script` / `deps_dir` / `model_dir` | OCR worker paths (relative to the runtime dir) |
 | `ocr_model` | `mobile` (default) or `server` (PP-OCRv5 tier) |
 | `language` / `dev_debug` | OCR language; debug frame dump (`temp/`) |
-| `moss_binary` / `moss_model` / `moss_threads` / `moss_device` | MOSS; `moss_device`: empty=auto / cpu / cuda / vulkan |
-| `llm_binary` / `llm_model` / `llm_threads` | llama.cpp (optional, fusion-capability test bench only) |
-| `asr_provider` | `moss` / `funasr` / empty=auto |
-| `funasr_worker` / `funasr_deps` / `funasr_model_dir` / `funasr_device` / `funasr_language` / `funasr_timeout_minutes` | FunASR |
+| `moss_binary` / `moss_model` / `moss_threads` / `moss_device` | MOSS; `moss_device`: empty=auto (ggml chooses) / cpu / cuda / vulkan (explicit request unavailable = hard error, see below) |
+| `llm_binary` / `llm_model` / `llm_threads` | [retired] llama.cpp (historical test bench only) |
+| `asr_provider` | `moss` / empty=auto (`funasr` retired, accepted only for compatibility) |
+| `funasr_worker` / `funasr_deps` / `funasr_model_dir` / `funasr_device` / `funasr_language` / `funasr_timeout_minutes` | [retired] FunASR |
 | `embed_worker` / `embed_model` / `embed_tokenizer` / `embed_deps_dir` | Fusion worker script / E5-small model / tokenizer / deps paths; written by `bootstrap_embed.ps1`, shared by product fusion and the lab; **all four must be set together, or all left empty** |
+
+### Retired components (2026-10-30)
+
+The product keeps a single ASR engine, MOSS. The two implementations below are **not distributed**, but their code and scripts stay in the repo:
+
+| Component | Status | Where it lives |
+|---|---|---|
+| FunASR (Fun-ASR-Nano + VAD + cam++ speaker) | Not shipped in the installer and absent from `runtime/manifest.json`; no UI entry (`AsrView` / `AppStatusBar` render MOSS only) | `scripts/bootstrap_funasr.ps1`, `scripts/funasr_worker.py`, `src-tauri/src/ai_runtime/funasr.rs` |
+| Local LLM (llama.cpp + Qwen2.5-3B) | Same; fusion moved to vector recall + unified transition DP, and the LLM only ever appeared in the historical test bench | `scripts/bootstrap_llm.ps1`, `src-tauri/src/ai_runtime/llm.rs` |
+
+Why they stay: reproducing historical defects (e.g. the LLM-route experiments behind [benchmark/FUSE_PIPELINE_DEFECTS.md](../benchmark/FUSE_PIPELINE_DEFECTS.md) F13) requires being able to rebuild those environments. **Never** reference them again in the release flow, `bundle.resources`, `runtime/manifest.json`, or any user-facing text.
+
+### MOSS backend and three-device benchmark (2026-10-19)
+
+The backend is chosen by ggml from `MTD_DEVICE` (empty = auto; on a dual-GPU machine auto prefers the dGPU, measured); **the actually effective backend can only be read from the `[mt I] backend:` line on stderr** — requesting an unavailable backend degrades silently (exit 0, no warning; `backend.cpp` does not warn for "valid" names such as `vulkan`).
+
+The same benchmark run once per device: the 5:14.99 / 16 kHz mono wav extracted from `examples/benchmark_examples/quality_bench_test(voiced)_5min.mp4` (same parameters as `video::extract_audio`), `moss-transcribe-q5_k.gguf`, `--format json`, `MTD_THREADS` unset:
+
+| Device (setting) | Effective backend | Wall time | vs CPU |
+|---|---|---|---|
+| CPU (`MTD_DEVICE=cpu`) | `CPU` | 680.6 s | 1× |
+| Vulkan (empty = auto) | `Vulkan1` (RTX 4060) | 134.7 s | 5.0× |
+| CUDA (empty = auto, CUDA build) | `CUDA0` | 76.2 s | 8.9× |
+
+- Vulkan is 1.77× slower than CUDA but still 5× faster than CPU — a clear win on machines without NVIDIA drivers/GPUs.
+- The transcribed text matches across all three (total chars 3765/3765/3775; first and last segments byte-identical; 84 vs 90 segments is a boundary-granularity difference).
+- ⚠ On a dual-GPU machine a bare `MTD_DEVICE=vulkan` lands on the **iGPU** (first in enumeration order, `Vulkan0`); in the product, `moss_device` should stay empty (auto) for the Vulkan build — see `docs/engines_vulkan_design_EN.md` §3.3/§5-11.
+
+### MOSS backend semantics and fallback (`backend_probe.rs`, feat/engines-gpu-vulkan)
+
+`moss_device` values and semantics: `""` (=auto, ggml chooses; on dual-GPU it prefers the discrete card per measurement) / `cpu` / `cuda` / `vulkan`. The decision chain has three levels (`ai_runtime/backend_probe.rs`, 15 unit tests):
+
+- **L2 (the only trustworthy evidence)**: at spawn, `info <model>` is launched with the **same parameters** as transcription (MTD_DEVICE set only for explicit devices); the `[mt I] backend:` line in stderr is taken — silent degradation (exit 0) can only be caught by this line;
+- **L0/L1**: nvidia-smi + vulkaninfo (machine capability), `.backend` marker + `ggml-{cuda,vulkan}.dll` (installed assets), used for error messages and "which backend to install" hints;
+- **Fallback semantics = Option A**: only one ggml backend set can exist at a time (`ggml.dll` collides by name), so "fallback" = probe the installed backend + tell the user which to install, **not runtime switching**. An explicit cpu/cuda/vulkan request that cross-family mismatches the measurement is a **hard error** (hinting `build_moss.ps1 -Backend …` reinstall or switching back to auto), never auto-degrading; only auto lets ggml sink (an `uma:1` iGPU placement gets a hint in the reason).
+
+The measured backend is exported via `AsrProvider::effective_backend()` (only MOSS implements it) → the `effective_backend` field of `check_asr_engines` → the welcome ASR card shows "设备 · <config>（实测 <measured>）". Vulkan build: `scripts/build_moss.ps1 -Backend vulkan` (requires Vulkan SDK/glslc; a working root longer than ~50 chars triggers MAX_PATH FTK1011 — the script defaults to a short root and warns). See `docs/engines_vulkan_design_EN.md` for the full design.
 
 ### Runtime directory resolution order
 
@@ -222,8 +284,8 @@ See [src-tauri/tests/fuse_lab/README.md](../src-tauri/tests/fuse_lab/README.md);
 
 ## Packaging & distribution status
 
-- `tauri.conf.json` does **not** yet configure `bundle.resources`: installers will not carry `runtime/`. The distribution plan (bundle `runtime/**` and teach `config.rs` the installed resource layout) is noted as a TODO in `config.rs`.
-- FFmpeg is not bundled: the app searches PATH → the ffmpeg-sidecar directory.
+- `tauri.conf.json` now carries two `bundle.resources` entries: the install manifest `resources/runtime/manifest.json` and the bundled ffmpeg `resources/ffmpeg/*`. The AI runtime itself (python / deps / models, well over 10 GB) is still not shipped — it is installed on the user's machine by `scripts/bootstrap_runtime.ps1` from that manifest (the MOSS card on the welcome page offers a one-click install/update after a disk precheck).
+- FFmpeg **is** bundled (LGPL shared build, rationale in `THIRD_PARTY.md`): `src-tauri/src/video/ffmpeg_locator.rs` looks in the bundled `resources/ffmpeg/` first, then falls back to system PATH. A source checkout needs one `scripts/fetch_ffmpeg.ps1` run (161 MB, binaries are not tracked).
 - Model downloads exist only in the bootstrap scripts; the app side only performs readiness checks (the `check_*` commands).
 
 ## Collaboration conventions

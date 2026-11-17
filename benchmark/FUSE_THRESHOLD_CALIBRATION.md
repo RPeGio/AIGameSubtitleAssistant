@@ -1195,7 +1195,7 @@ T4（向量召回 + 统一转移 DP **落地产品**、替换 `src-tauri/src/fus
 5. 前端形态（用户决策）：融合跑完后罗列低置信段，逐段可选 **保留当前 / 从候选名单替换 /
    在整个语料列表里选择替换 / 不配该条**。
 
-待办细节见 `GameSubtitleAssistant_Plan.md` §6.3。
+待办细节见 `docs/GameSubtitleAssistant_Plan.md` §6.3。
 
 ### 8.3 R3 审计表落地（2026-10-13，本轮）
 

@@ -2,7 +2,7 @@
 
 [English](development_EN.md) | 中文
 
-本文面向想理解代码结构或参与开发的协作者。项目愿景与分阶段计划见 [GameSubtitleAssistant_Plan.md](../GameSubtitleAssistant_Plan.md)，上手使用见 [README](../README.md)。
+本文面向想理解代码结构或参与开发的协作者。项目愿景与分阶段计划见 [GameSubtitleAssistant_Plan.md](GameSubtitleAssistant_Plan.md)，上手使用见 [README](../README.md)。
 
 ## 技术栈
 
@@ -10,8 +10,8 @@
 |---|---|
 | 桌面壳 | Tauri 2（`protocol-asset`、dialog / opener 插件） |
 | 前端 | Vue 3 + TypeScript + Pinia + Vue Router + Naive UI + Tailwind CSS 4 + Vite 6 |
-| 后端 | Rust 2021（tauri / serde / image / uuid / ffmpeg-sidecar） |
-| AI | PaddleOCR（Python worker）、FunASR / MOSS（ASR）、multilingual-e5-small + 统一转移 DP（融合）、llama.cpp + Qwen2.5-3B（LLM，测试台） |
+| 后端 | Rust 2021（tauri / serde / image / uuid） |
+| AI | PaddleOCR（Python worker）、MOSS（ASR，唯一引擎）、multilingual-e5-small + 统一转移 DP（融合）。<br>FunASR 与 llama.cpp + Qwen2.5-3B 已退役、不参与分发（代码保留，见下文「已退役组件」） |
 
 约束：**完全离线**。Rust 侧无 HTTP 客户端，应用不做任何网络请求；所有 AI 能力通过本地子进程实现。
 
@@ -26,7 +26,7 @@
                │ invoke() 命令 / listen() 事件（ocr-progress 等）
 ┌──────────────▼──────────────────────────────────────────────┐
 │ Rust 后端 (src-tauri)                                       │
-│  video ── ffmpeg/ffprobe（外部依赖，PATH 查找）              │
+│  video ── ffmpeg/ffprobe（内嵌 resources/ffmpeg/，回退 PATH）  │
 │  ocr / asr / llm / fuse ── 各自的 pipeline + 进度事件        │
 │  ai_runtime ── provider trait + manager + runtime 配置      │
 │  project / export ── <项目名>.gsa 持久化 / 字幕导出          │
@@ -46,7 +46,7 @@
 
 | 模块 | 职责 |
 |---|---|
-| `src-tauri/src/video/mod.rs` | ffprobe 元数据（`get_video_metadata`）；帧提取 / 音频提取供 OCR / ASR 复用；FFmpeg 定位：系统 PATH → ffmpeg-sidecar 目录，找不到报 `FFMPEG_NOT_FOUND` |
+| `src-tauri/src/video/mod.rs` | ffprobe 元数据（`get_video_metadata`）；帧提取 / 音频提取供 OCR / ASR 复用；FFmpeg 定位在 `video/ffmpeg_locator.rs`：内嵌 `resources/ffmpeg/`（随安装包分发）→ 系统 PATH，找不到报 `FFMPEG_NOT_FOUND` |
 | `src-tauri/src/ocr/`（`mod.rs` 门面 + `params`/`pipeline`/`merge`/`refine`/`correct`/`commands` 子模块） | 完整 OCR 流水线 `run_ocr`（后台线程 + `ocr-progress` 事件）：抽帧 → 变化检测 → 窗口精化 → OCR → 合并；`run_ocr_images` 直接识别截图；`approve_corpus_diff` 采纳语料纠正（替换规则的单一实现，与基准共用） |
 | `src-tauri/src/ai_runtime/dhash.rs` | 帧裁切区域的 64-bit dHash + 汉明距离变化判定 |
 | `src-tauri/src/ai_runtime/mod.rs` | AI Runtime 骨架：OCR/ASR/LLM 的 provider trait + manager + NoneProvider 占位（环境未就绪时保证可编译、返回"未就绪"） |
@@ -71,20 +71,40 @@
 ```
 runtime/
 ├── config.json          # 唯一配置文件（bootstrap 脚本合并写入）
-├── python/              # 内嵌 CPython 3.12.10（NuGet 包解压）
-├── deps/                # OCR pip 依赖（--target 隔离）
-├── deps_gpu/            # OCR GPU 专有件（可选，bootstrap_ocr_gpu.ps1；运行时 PYTHONPATH=deps_gpu;deps）
-├── deps_funasr/         # FunASR pip 依赖（torch 与 paddle 依赖隔离）
-├── deps_embed/          # 向量召回 pip 依赖（onnxruntime CPU + tokenizers，融合用）
+├── .installed.json      # 一键安装器的落盘状态（哪些条目装了、hash、时间）
+├── python/              # 内嵌 CPython 3.12.10（NuGet 包解压；现随 OCR 包分发）
+├── deps/                # OCR pip 依赖（--target 隔离；现随 OCR 包分发）
+├── deps_gpu/            # OCR GPU 专有件（可选，随 OCR 的 cuda 包分发；运行时 PYTHONPATH=deps_gpu;deps）
+├── deps_funasr/         # 【已退役】FunASR pip 依赖（脚本保留，产品不再安装）
+├── deps_embed/          # 向量召回 pip 依赖（onnxruntime CPU + tokenizers；现随 embed 包分发）
 ├── models/
-│   ├── paddleocr/       # PP-OCRv5 缓存
-│   ├── funasr/          # Fun-ASR-Nano + VAD + 说话人模型（modelscope 缓存）
-│   ├── embed/           # multilingual-e5-small（ONNX qint8，融合用）
-│   ├── moss/            # moss-transcribe-<quant>.gguf
-│   └── qwen/            # qwen2.5-3b-instruct-q4_k_m.gguf（可选，测试台）
+│   ├── paddleocr/       # PP-OCRv5 缓存（随 OCR 包分发）
+│   ├── funasr/          # 【已退役】Fun-ASR-Nano + VAD + 说话人模型
+│   ├── embed/           # multilingual-e5-small（ONNX qint8；现随 embed 包分发）
+│   ├── moss/            # moss-transcribe-q5_k.gguf（随 runtime manifest 分发）
+│   └── qwen/            # 【已退役】qwen2.5-3b-instruct（历史测试台）
 ├── worker/              # bootstrap 拷贝的 worker 脚本
-└── bin/                 # moss-transcribe.exe、bin/llm/（llama.cpp）
+└── bin/                 # moss-transcribe.exe（+ ggml 后端 DLL）、bin/llm/（【已退役】llama.cpp）
 ```
+
+> **首次启动即装齐**：`scripts/bootstrap_runtime.ps1` 按 `src-tauri/resources/runtime/manifest.json`
+> 下载 `moss`（按设备选 cpu/cuda/vulkan）、`models-moss`（gguf）、OCR 两包
+> （`deps-ocr` / `deps-ocr-gpu`；后者 `optional`，非 NVIDIA 机器自动跳过）与向量融合包
+> `deps-embed`（26 个 CPU 包 + e5-small 模型 + worker，复用 OCR 包的 `python/`），校验 SHA256 后解压。
+> **CUDA/cuDNN 运行库不打包分发**（CUDA EULA 1.2.2 禁止当独立产品公开分发），装完 OCR 后由安装器
+> 用 `pip` 从 PyPI 镜像现拉 8 个 `nvidia-*` 轮子（约 1.7 GB，缺省华为云源，`--require-hashes`）。
+> 开发期仍可用 `scripts/bootstrap_ocr.ps1` 等分步脚本自行搭建。
+> 网络差也不用担心断流：下载器按 64 MB 分段、断点续传（缓存 `<runtime>\.downloads\`），
+> 并可 `-SegmentMB` / `-NoResume` / `-MaxAttempts` 调整；多源用清单里的 `urls[]`（见契约 §4.5）。
+> **选源靠实测而不是顺序**：`-ProbeMB`（默认 2 MB）先对每个候选发一个小 Range 请求测速、按实测
+> 排序再下（白天 ESA 快、夜间 gh-proxy 快，固定顺序会选错），`-ProbeMB 0` 可关掉。
+> 发版物的打包方式见 `scripts/package_ocr_runtime.ps1`（§8.11）与
+> `scripts/package_embed_runtime.ps1`（§8.12）。
+> **国内加速**：清单每条资产的 `urls[]` 是三级冗余 —— 第一项 **ModelScope 魔搭**（2026-11-14 起，
+> `https://modelscope.cn/datasets/RPeGio/gsa-runtime/resolve/master/…`，匿名可下、支持 Range、
+> 实测夜间 7.88 MB/s 而同期 GitHub/ESA 只有 0.09–0.13 MB/s），第二项阿里云 ESA 镜像
+> （`https://dl.rpegio.top/…`，白天 10 MB/s 量级），第三项 GitHub Releases 兜底。
+> 详见 §8.13 与 §8.14。
 
 ### config.json 关键字段
 
@@ -93,11 +113,48 @@ runtime/
 | `python_path` / `worker_script` / `deps_dir` / `model_dir` | OCR worker 相关（相对 runtime 目录） |
 | `ocr_model` | `mobile`（默认）或 `server`（PP-OCRv5 档位） |
 | `language` / `dev_debug` | OCR 语言、调试帧落盘（`temp/`） |
-| `moss_binary` / `moss_model` / `moss_threads` / `moss_device` | MOSS 配置；`moss_device`：空=自动 / cpu / cuda / vulkan |
-| `llm_binary` / `llm_model` / `llm_threads` | llama.cpp 配置（可选，仅融合能力测试台） |
-| `asr_provider` | `moss` / `funasr` / 空=自动 |
-| `funasr_worker` / `funasr_deps` / `funasr_model_dir` / `funasr_device` / `funasr_language` / `funasr_timeout_minutes` | FunASR 配置 |
+| `moss_binary` / `moss_model` / `moss_threads` / `moss_device` | MOSS 配置；`moss_device`：空=auto（ggml 自选）/ cpu / cuda / vulkan（显式请求不可用时硬报错，见下节） |
+| `llm_binary` / `llm_model` / `llm_threads` | 【已退役】llama.cpp 配置（仅历史测试台） |
+| `asr_provider` | `moss` / 空=自动（`funasr` 已退役，仅作兼容值） |
+| `funasr_worker` / `funasr_deps` / `funasr_model_dir` / `funasr_device` / `funasr_language` / `funasr_timeout_minutes` | 【已退役】FunASR 配置 |
 | `embed_worker` / `embed_model` / `embed_tokenizer` / `embed_deps_dir` | 融合 worker 脚本 / E5-small 模型 / 分词器 / 依赖路径；由 `bootstrap_embed.ps1` 写入，产品融合与实验台共用；**四个字段整组必配或整组为空** |
+
+### 已退役组件（2026-10-30）
+
+产品只保留 MOSS 一个 ASR 引擎。以下两套实现**不参与分发**，但代码与脚本仍留在仓库里：
+
+| 组件 | 现状 | 保留在哪 |
+|---|---|---|
+| FunASR（Fun-ASR-Nano + VAD + cam++ 说话人） | 不随安装包发布、不进 `runtime/manifest.json`；前端无入口（`AsrView` / `AppStatusBar` 只渲染 MOSS） | `scripts/bootstrap_funasr.ps1`、`scripts/funasr_worker.py`、`src-tauri/src/ai_runtime/funasr.rs` |
+| 本地 LLM（llama.cpp + Qwen2.5-3B） | 同上；融合早已改为「向量召回 + 统一转移 DP」，LLM 只在历史测试台出现过 | `scripts/bootstrap_llm.ps1`、`src-tauri/src/ai_runtime/llm.rs` |
+
+为什么留着：历史缺陷复现（如 [benchmark/FUSE_PIPELINE_DEFECTS.md](../benchmark/FUSE_PIPELINE_DEFECTS.md) F13 的 LLM 路线实验）需要能原样把环境搭起来。**不要**在发布流程、`bundle.resources`、`runtime/manifest.json` 或任何面向用户的文案里再引用它们。
+
+### MOSS 后端与三设备实测（2026-10-19）
+
+后端由 ggml 按 `MTD_DEVICE` 决定（空=自动；双 GPU 实测 auto 偏好独显）；**实际生效后端只认 stderr 的 `[mt I] backend:` 行**——请求不可用的后端会静默降级（exit 0、无警告，`backend.cpp` 对 `vulkan` 这类"合法名"不告警）。
+
+同一基准三设备各跑一次：`examples/benchmark_examples/quality_bench_test(voiced)_5min.mp4` 提取 5:14.99 / 16kHz mono wav（与 `video::extract_audio` 同参），`moss-transcribe-q5_k.gguf`，`--format json`，未设 `MTD_THREADS`：
+
+| 设备（取值） | 实际 backend | 耗时 | 相对 CPU |
+|---|---|---|---|
+| CPU（`MTD_DEVICE=cpu`） | `CPU` | 680.6 s | 1× |
+| Vulkan（空 = auto） | `Vulkan1`（RTX 4060） | 134.7 s | 5.0× |
+| CUDA（空 = auto，CUDA 构建） | `CUDA0` | 76.2 s | 8.9× |
+
+- Vulkan 比 CUDA 慢 1.77×，但仍比 CPU 快 5 倍——无 NVIDIA 的机器上 Vulkan 构建收益明确。
+- 转写文本三方一致（总字数 3765/3765/3775，首末段逐字相同；段数 84 vs 90 属分界粒度差异）。
+- ⚠ 双 GPU 机器上裸 `MTD_DEVICE=vulkan` 落**核显**（枚举序第一块，`Vulkan0`）；产品侧 vulkan 构建的 `moss_device` 应留空（auto），见 `docs/engines_vulkan_design.md` §3.3/§5-11。
+
+### MOSS 后端语义与回退（`backend_probe.rs`，feat/engines-gpu-vulkan）
+
+`moss_device` 取值与语义：`""`（=auto，ggml 自选，双 GPU 实测偏好独显）/ `cpu` / `cuda` / `vulkan`。判定链三级（`ai_runtime/backend_probe.rs`，15 单测）：
+
+- **L2（唯一可信判据）**：spawn 时以与转写**同参**拉起 `info <model>`（显式设备才设 `MTD_DEVICE`），从 stderr 取 `[mt I] backend:` 行——静默降级（exit 0）只有这行能识破；
+- **L0/L1**：nvidia-smi + vulkaninfo（机器能力）、`.backend` 标记 + `ggml-{cuda,vulkan}.dll`（已装资产），用于报错文案与"该装哪个后端"建议；
+- **回退语义 = 方案 A**：资产层同时只有一套 ggml 后端（`ggml.dll` 同名互斥），故"回退"= 探测已装后端 + 告诉用户装哪个，**不是运行期切换**。显式 cpu/cuda/vulkan 与实测跨族不符 = **硬报错**（提示 `build_moss.ps1 -Backend …` 重装或改回 auto），不自动降级；只有 auto 允许 ggml 下沉（落 `uma:1` 核显时在理由中提示）。
+
+实测生效后端经 `AsrProvider::effective_backend()`（仅 MOSS 实现）→ `check_asr_engines` 的 `effective_backend` 字段 → 欢迎页 ASR 卡显示「设备 · 配置值（实测 …）」。Vulkan 构建：`scripts/build_moss.ps1 -Backend vulkan`（需 Vulkan SDK/glslc；工作根超 ~50 字符会触发 MAX_PATH FTK1011，脚本已默认短根并告警）。详见 `docs/engines_vulkan_design.md`。
 
 ### runtime 目录解析顺序
 
@@ -106,6 +163,14 @@ runtime/
 3. 兜底：Tauri `app_data_dir/runtime`
 
 `validate()` 保证所有相对路径不越出 runtime 目录（防路径穿越）、python / moss / llm 二进制存在；`embed_*` 四项**整组必配或整组为空**（半配视为配置错误，避免运行期才失败），已配置时同样逐项做越界校验；模型文件不做存在性检查（由 provider 报"未就绪"）。
+
+**路径字段分两组**（2026-10-31）：可执行文件 / worker 脚本 / 依赖目录（`worker_script`、`deps_dir`、`moss_binary`、`llm_binary`、`funasr_worker`、`funasr_deps`、`embed_worker`、`embed_deps_dir`）必须落在 runtime 内——它们要跟同目录 DLL、包内 python 绑定；**模型类只读数据**（`model_dir`、`moss_model`、`llm_model`、`funasr_model_dir`、`embed_model`、`embed_tokenizer`）允许写**绝对路径指向别的盘**，相对路径仍查越界。
+
+**运行时/模型放哪个盘**：
+- 整目录搬：设环境变量 `GSA_RUNTIME_DIR=<新路径>`（该目录下要有 `config.json`），或直接在安装时把 app 装在非系统盘——兜底路径是 `app_data_dir/runtime`，跟着 `%APPDATA%` 走。
+- 只搬模型（省 C 盘空间）：在 `runtime/config.json` 里给 `moss_model` / `embed_model` / `embed_tokenizer` 写绝对路径即可，例如
+  `"moss_model": "D:/gsa-models/moss/moss-transcribe-q5_k.gguf"`。
+- 就绪判定**不读配置是否为空**，一律走 `moss_paths()` / `ocr_paths()` / `embed_paths()` 的标准布局回退（一键安装只解包、不写 config.json），见 `docs/RUNTIME_BOOTSTRAP_CONTRACT.md` §8.6.2。
 
 ## 数据模型（`project/mod.rs`）
 
@@ -222,8 +287,8 @@ T4 落地后仍作为融合阈值 / 判据的**标定与回归来源**：LLM 判
 
 ## 打包与分发现状
 
-- `tauri.conf.json` 的 `bundle.resources` **尚未配置**：安装包不会携带 `runtime/`。分发方案（把 `runtime/**` 打进 bundle 并让 `config.rs` 识别安装后的资源目录布局）见 `config.rs` 内 TODO。
-- FFmpeg 不打包：应用按 PATH → ffmpeg-sidecar 目录的顺序查找。
+- `tauri.conf.json` 的 `bundle.resources` 现在带两样：安装清单 `resources/runtime/manifest.json` 与内嵌 ffmpeg `resources/ffmpeg/*`。AI 运行时本体（python / deps / 模型，十几 GB）仍不进安装包，由 `scripts/bootstrap_runtime.ps1` 在用户机器上按清单现装（欢迎页 MOSS 卡提供一键安装/更新入口，先做磁盘预检）。
+- FFmpeg 已随包分发（LGPL 共享构建，理由见 `THIRD_PARTY.md`）：`src-tauri/src/video/ffmpeg_locator.rs` 先找内嵌目录 `resources/ffmpeg/`，再回退系统 PATH；源码检出需先跑一次 `scripts/fetch_ffmpeg.ps1`（161 MB，二进制不入库）。
 - 模型下载只存在于 bootstrap 脚本；应用侧只有就绪检查（`check_*` 命令）。
 
 ## 协作约定

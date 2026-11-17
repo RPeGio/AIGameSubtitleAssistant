@@ -139,8 +139,9 @@ fn run_pierro_embed_ocr() {
         println!("【试跑模式】时间跨度截到 {max_sec:.1}s");
     }
 
-    // 视频元数据：直接调产品同一命令函数（非 async，测试可直呼）
-    let meta = get_video_metadata(video.clone()).expect("获取视频元数据失败");
+    // 视频元数据：直接调产品同一命令函数（async 命令，测试内用 block_on 驱动）
+    let meta = tauri::async_runtime::block_on(get_video_metadata(video.clone()))
+        .expect("获取视频元数据失败");
     println!("视频元数据: {}x{} @ {:.3}fps, {:.1}s", meta.width, meta.height, meta.fps, meta.duration);
 
     let config = RuntimeConfig::load(&runtime_dir).expect("读取 runtime 配置失败");

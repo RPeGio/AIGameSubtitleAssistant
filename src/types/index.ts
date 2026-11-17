@@ -198,24 +198,240 @@ export interface AsrSegment {
 }
 
 export interface AsrRunParams {
-  /// 引擎："funasr" | "moss"
+  /// 引擎：固定 "moss"（FunASR 已弃用，前端不再提供入口）
   engine: string;
-  /// 说话人上限：null = 自动估计（仅 funasr+diarize 生效；moss 忽略）
+  /// 说话人上限：前沿固定 null（MOSS 自动估计）。字段保留是因为后端 payload 仍收这两个键
   max_speakers: number | null;
-  /// 识别语言：null = 自动检测（仅 funasr 生效；moss 自动识别）
+  /// 识别语言：前沿固定 null（MOSS 自动识别多语言）。同上，仅保留 payload 形状
   language: string | null;
 }
 
 export interface AsrEngineStatus {
-  /// "funasr" | "moss"
+  /// "moss"（后端可能仍返回已弃用的 funasr 条目，前端忽略）
   engine: string;
   ready: boolean;
   message: string;
+  /// 配置的推理设备：""（=auto，ggml 自动选优）/ cpu / cuda / vulkan
+  device: string;
+  /// 实测生效后端（如 "CUDA0"/"Vulkan1"/"CPU"）；与 device 不同：device=vulkan 时 ggml 静默降级后实测可能仍是 CUDA0
+  effective_backend?: string | null;
 }
 
 export interface AsrProgress {
   progress: number;
   message: string;
+}
+
+/// MOSS 后端探测报告（Rust `probe_moss_backend`）
+export interface MossBackendProbe {
+  /// 配置里的 moss_device 原值（"" = auto）
+  configured_device: string;
+  /// 本次判定实际请求的设备："auto" / "cpu" / "cuda" / "vulkan"
+  requested: string;
+  /// 请求是否可用：显式请求不可用 = false（硬报错，绝不静默降级）
+  available: boolean;
+  /// 实际生效后端（"CUDA0" / "Vulkan1" / "CPU"）；不可用或未实证时为空
+  backend: string;
+  /// 判定依据（人话）
+  reason: string;
+  /// 判定来源："l2" 实证 / "l1" 资产推断 / "requested" 显式指定 / "reject" 硬报错
+  source: string;
+  /// 推荐后端（"cuda" / "vulkan" / "cpu"）与推荐理由
+  recommendation: string;
+  recommendation_reason: string;
+  /// 本机能力：NVIDIA 驱动可用 / Vulkan loader + GPU 可枚举
+  machine_cuda: boolean;
+  machine_vulkan: boolean;
+  /// Vulkan 枚举到的 GPU 名
+  gpus: string[];
+  /// manifest 是否找到：false = 没找到 manifest ⇒ 下拉显示全部四项
+  manifest_found: boolean;
+  /// manifest 里 id=="moss" 的条目声明的 flavor（只有这些 flavor 可选）
+  manifest_flavors: string[];
+  /// 硬报错信息（显式请求不可用 / MOSS 未安装时非空）
+  error?: string | null;
+}
+
+/// 推理设备保存结果（Rust `set_moss_device` / `set_funasr_device` 共用）
+export interface DeviceSaveResult {
+  /// 实际写入的值（moss 的 "" = auto；funasr 恒为 cpu/cuda）
+  device: string;
+  /// 面向用户的结果说明（含是否已立即生效）
+  message: string;
+}
+
+/// installer 写下的安装记录（`runtime/.installed.json` 的单项）
+export interface MossInstalledItem {
+  /// 装的是哪个后端版本：cpu / cuda / vulkan
+  flavor: string;
+  /// 所装压缩包的 SHA256（与清单比对是唯一判据）
+  sha256: string;
+  /// 清单版本号（装的时候那份）
+  source_version: string;
+  /// 安装时间（ISO8601）
+  installed_at: string;
+}
+
+/// 已装运行时 vs 清单的比对结果（Rust `probe_moss_install`）
+export interface MossInstallStatus {
+  /// ok / update_available / not_installed / file_missing / flavor_not_in_manifest / manifest_missing / unknown
+  state: string;
+  /// 无安装记录时 null（`.installed.json` 尚未由 installer 写入）
+  installed: MossInstalledItem | null;
+  /// 清单里该 flavor 声明的字节数；清单缺失或该 flavor 不在清单时 null
+  declared_size: number | null;
+  /// 可直接上屏的中文结论
+  message: string;
+}
+
+/// 运行时安装进度事件（Rust `runtime_install::INSTALL_PROGRESS_EVENT`）
+export const RUNTIME_INSTALL_EVENT = "runtime-install-progress";
+
+/// ffmpeg 自检结论（Rust `video::ffmpeg_locator::check_ffmpeg`）
+export interface FfmpegStatus {
+  /// ffmpeg 与 ffprobe 都可用
+  ready: boolean;
+  /// "bundled"（随包内嵌）/ "path"（系统 PATH）/ "missing"
+  source: string;
+  /// 内嵌时是绝对路径，走 PATH 时是命令名
+  ffmpeg: string;
+  ffprobe: string;
+  /// 形如 "n8.1.3-25-g611cec792a"；取不到为空串
+  version: string;
+  /// 可直接上屏的结论（未就绪时说明该怎么办）
+  message: string;
+}
+
+/// installer 脚本 stdout 的一行事件（契约 §3 冻结的 schema）
+export interface RuntimeInstallEvent {
+  /// start / progress / item_done / item_skip / item_fail / error / done
+  event: string;
+  item?: string;
+  flavor?: string;
+  /// download / verify / extract / configure（仅 progress）
+  phase?: string;
+  /// 0–100（仅 progress）
+  percent?: number;
+  detail?: string;
+  /// 当前条目在本次安装里的序号（1 起）与总数（Rust 按请求顺序补的）
+  item_index?: number;
+  item_total?: number;
+  /// 以下只出现在 done
+  ok?: boolean;
+  installed?: string[];
+  skipped?: string[];
+  failed?: string[];
+}
+
+/// 一次安装的结果（Rust `install_runtime` 返回值）
+export interface RuntimeInstallSummary {
+  ok: boolean;
+  /// 契约 §5 退出码：0 成功 / 1 预检失败 / 2 校验失败 / 3 部分条目失败 / 4 未知
+  exit_code: number;
+  installed: string[];
+  skipped: string[];
+  failed: string[];
+  cancelled: boolean;
+  message: string;
+}
+
+/// 磁盘预检结论（Rust `precheck_runtime_disk`）
+export interface RuntimeDiskPrecheck {
+  ok: boolean;
+  /// 清单里找到的条目数（0 = 清单未找到）
+  manifest_entries: number;
+  /// 估算需要字节数（下载量 ×3 + 100MB 余量）
+  required_bytes: number;
+  /// runtime 所在盘可用字节；查不到为 null（此时不拦）
+  free_bytes: number | null;
+  message: string;
+}
+
+/// 运行时整体重载结论（Rust `reload_runtimes`）：装完运行时后重建进程内 provider
+export interface RuntimeReloadSummary {
+  asr: string[];
+  ocr: string;
+}
+
+/// 首启准备页清单里的一行（Rust `setup::SetupItem`）
+export interface SetupItem {
+  id: string;
+  /// 用户可读名称（"MOSS 转写运行时" 等）
+  label: string;
+  /// 选中要装的后端（无 flavor 条目为空串）
+  flavor: string;
+  /// 下载体积（字节）
+  size: number;
+  /// ready / update / missing
+  state: string;
+  /// 缺了就不放行
+  required: boolean;
+  /// 补充说明（可选条目的处置建议）
+  note: string;
+}
+
+/// 启动门控判定（Rust `runtime_status`）
+export interface RuntimeStatus {
+  ready: boolean;
+  /// 开发期跳过（GSA_SKIP_SETUP=1）
+  skip: boolean;
+  runtime_dir: string;
+  /// 安装脚本路径；null = 打包形态下脚本没随包发布
+  script: string | null;
+  items: SetupItem[];
+  missing_required: string[];
+  /// 还要下载的字节数（不含解压余量）
+  pending_bytes: number;
+  disk: RuntimeDiskPrecheck;
+  error: string | null;
+  /// 首启是否自动开跑（设置里的「自动准备运行时」开关）
+  auto_start: boolean;
+}
+
+/// 设置面板读到的运行时侧快照（Rust `config::SettingsSnapshot`）
+export interface RuntimeSettingsSnapshot {
+  runtime_dir: string;
+  app_data_dir: string;
+  log_dir: string;
+  /// runtime 所在盘可用字节；查不到为 null
+  free_bytes: number | null;
+  /// 搬家前的旧目录；null = 没有待删的旧目录
+  previous_runtime_dir: string | null;
+  manifest_found: boolean;
+  ocr_device: string;
+  moss_threads: number;
+  moss_timeout_minutes: number;
+  dev_debug: boolean;
+  /// auto / mirror / direct
+  download_source: string;
+  /// 0 = 关闭分段
+  segment_mb: number;
+  setup_auto: boolean;
+  moss_device: string;
+  funasr_device: string;
+  /// 指针指向的目录不存在时的告警（已回退到默认目录）；null = 正常
+  location_warning: string | null;
+}
+
+/// 设置面板写回的补丁（只带改了的字段）
+export interface RuntimeSettingsPatch {
+  ocr_device?: string;
+  moss_threads?: number;
+  moss_timeout_minutes?: number;
+  dev_debug?: boolean;
+  download_source?: string;
+  segment_mb?: number;
+  setup_auto?: boolean;
+}
+
+/// runtime 目录搬家结果（Rust `config::MoveResult`）
+export interface MoveRuntimeResult {
+  ok: boolean;
+  message: string;
+  old_dir: string;
+  new_dir: string;
+  /// 一律 true：路径变更只能下次启动生效
+  needs_restart: boolean;
 }
 
 /// ASR 进度事件名（Rust 侧 `ASR_PROGRESS_EVENT` 需保持一致）

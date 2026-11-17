@@ -26,8 +26,10 @@ fn bench_refinement() {
 
     let config = RuntimeConfig::load(&runtime_dir).expect("读取 runtime 配置失败");
     let manager = OcrManager::new(config, runtime_dir);
-    let meta = get_video_metadata(video.to_string_lossy().into_owned())
-        .expect("读取视频元数据失败");
+    let meta = tauri::async_runtime::block_on(get_video_metadata(
+        video.to_string_lossy().into_owned(),
+    ))
+    .expect("读取视频元数据失败");
 
     // 与 e2e 相同的 4 段选区
     let clips = vec![

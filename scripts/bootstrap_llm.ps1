@@ -1,4 +1,8 @@
 ﻿<#
+【已弃用 · 不发布】2026-10-30 决策：本地 LLM（llama.cpp + Qwen）不参与产品分发——
+运行时不随安装包发布、不进 runtime manifest（scripts/bootstrap_runtime.ps1）。
+本脚本保留仅供开发期复现与排查历史问题；发布流程里不要再引用它。
+
 bootstrap_llm.ps1 —— 搭建本地 LLM 运行环境（llama.cpp + Qwen2.5-3B）
 1. 下载 llama.cpp 官方预编译 release zip 到 runtime/bin/llm/（与 moss 分目录：
    两者的 ggml.dll 等共享库同名且互相不兼容，DLL 从 exe 所在目录优先加载）

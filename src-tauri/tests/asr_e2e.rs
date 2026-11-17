@@ -49,7 +49,10 @@ fn test_asr_end_to_end() {
     let ready = manager.with_engine(&params.engine, |p| p.is_ready());
     assert!(ready, "ASR 环境未就绪");
 
-    let meta = get_video_metadata(video.to_string_lossy().into_owned()).expect("读取视频元数据失败");
+    let meta = tauri::async_runtime::block_on(get_video_metadata(
+        video.to_string_lossy().into_owned(),
+    ))
+    .expect("读取视频元数据失败");
 
     let mut last_progress = 0.0f64;
     let start = Instant::now();

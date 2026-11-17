@@ -18,9 +18,22 @@ src-tauri/gen/
 
 # Local AI runtime (python deps, models, worker) — bootstrap creates this
 runtime/
+# 例外：随 app 发布的安装清单必须入库。上面这条指用户数据目录，但它会顺带
+# 吃掉 src-tauri/resources/runtime/；父目录被排除后无法只放行子文件，故整目录放行。
+!src-tauri/resources/runtime/
 
 # Dev debug frames output
 temp/
+
+# 内嵌的 ffmpeg（LGPL 共享构建，约 161 MB）由 scripts/fetch_ffmpeg.ps1 现取现用，不入库；
+# 打包时由 tauri.conf.json 的 bundle.resources 从该目录取。缺文件就跑一次脚本。
+src-tauri/resources/ffmpeg/
+
+# 随包发布的运行脚本由 scripts/sync_bundle_resources.mjs 在 `pnpm build` 时从
+# `scripts/` 拷过来（唯一源在 scripts/，这里只是一份构建产物）。
+# 注意只忽略具体的 .ps1，不忽略整个目录：目录里的 README.md 要入库，否则
+# `bundle.resources` 的 `resources/scripts/*` 匹配不到任何文件，Tauri 会直接报错。
+src-tauri/resources/scripts/*.ps1
 
 # Local tests
 # 素材 mp4 体积达 GB 级，不入库；但基准的**工程与参考文本**是小文件（合计约 0.2 MB），

@@ -1,0 +1,69 @@
+# OCR 运行时 — CPU 基线依赖（钉子清单，供 package_ocr_runtime.ps1 构建分发包）
+#
+# 生成方式（2026-10-30）：在 bootstrap_ocr.ps1 装好的 runtime/deps 上执行
+#   python -m pip freeze --path runtime/deps
+# 与 ocr-requirements.txt 的关系：那个只有 2 行顶层包、传递依赖随上游漂移；
+# 分发物必须字节可复现，所以这里把 61 个包全钉死（与 deps/ 里 dist-info 数量一致）。
+# 升级任何一行都要重跑打包与冒烟。
+# 校验：package_ocr_runtime.ps1 构建后会再 freeze 一次，与本文件逐行比对，不一致拒绝打包。
+aistudio_sdk==0.3.9
+annotated-types==0.8.0
+anyio==4.15.1
+bce-python-sdk==0.9.79
+certifi==2026.7.22
+cffi==2.1.1
+chardet==7.6.0
+charset-normalizer==3.5.1
+click==8.5.0
+colorama==0.4.6
+colorlog==6.12.0
+crc32c==2.9.post0
+cryptography==50.0.1
+filelock==4.0.3
+fsspec==2026.9.0
+future==1.0.0
+h11==0.16.0
+hf-xet==1.6.0
+httpcore==1.0.9
+httpx==0.28.1
+huggingface_hub==1.32.0
+idna==3.20
+imagesize==2.0.1
+modelscope==1.40.1
+modelscope-hub==0.4.5
+networkx==3.7
+numpy==2.5.3
+opencv-contrib-python==4.10.0.84
+opt-einsum==3.3.0
+packaging==26.3
+paddleocr==3.4.0
+paddlepaddle==3.2.2
+paddlex==3.4.3
+pandas==3.0.6
+pillow==12.3.0
+prettytable==3.18.0
+protobuf==7.36.2
+psutil==7.2.2
+pyclipper==1.4.0
+pycparser==3.0
+py-cpuinfo==9.0.0
+pycryptodome==3.23.0
+pydantic_core==2.46.5
+pydantic==2.13.5
+pypdfium2==5.13.0
+python-bidi==0.6.11
+python-dateutil==2.9.0.post0
+PyYAML==6.0.2
+requests==2.34.2
+ruamel.yaml==0.19.1
+safetensors==0.8.0
+setuptools==84.0.0
+shapely==2.1.2
+six==1.17.0
+tqdm==4.70.1
+typing_extensions==4.16.0
+typing-inspection==0.4.4
+tzdata==2026.4
+ujson==6.0.0
+urllib3==2.8.0
+wcwidth==0.9.1

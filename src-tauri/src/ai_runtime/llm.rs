@@ -1,11 +1,14 @@
 // ─── LLM 推理 CLI Provider ───────────────────────────────
+// 【已退役 · 不参与分发】本地 LLM（llama.cpp + Qwen）已退出产品功能：融合改为
+// 「向量召回 + 统一转移 DP」，运行时不随安装包发布（2026-10-30 决策）。
+// 代码保留仅为历史测试台/缺陷复现，新功能不要再接。
 // 一次性子进程：`llama-cli -m <model> -p <prompt> -st -n 256 --no-display-prompt`。
 // stdout 输出回答文本，stderr 是日志（错误时取尾部报错）。
 // 0.5B 模型加载极快（~0.3s），相对生成耗时可忽略，故不做常驻进程（3B 后再评估）。
 
 use crate::ai_runtime::{resolve_path, LlmError, LlmProvider, RuntimeConfig};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -60,7 +63,7 @@ impl LlamaProvider {
     /// 成功说明模型可加载且推理链路通；比仅验元数据更真实（能暴露 CUDA 初始化等问题）。
     /// 60s 超时保护：模型加载/GPU 初始化卡住时不能拖死应用启动。
     fn probe(&self) -> Result<(), LlmError> {
-        let mut cmd = Command::new(&self.binary);
+        let mut cmd = crate::subprocess::hidden(&self.binary);
         cmd.arg("-m")
             .arg(&self.model)
             .arg("-p")
@@ -110,7 +113,7 @@ impl LlamaProvider {
     /// 执行一次单轮推理（阻塞；由编排层放后台线程）。
     /// 温度固定 0.2：纠错/去重/格式化等确定性任务，低温减少幻觉。
     fn run_complete(&self, prompt: &str, max_tokens: u32) -> Result<String, LlmError> {
-        let mut cmd = Command::new(&self.binary);
+        let mut cmd = crate::subprocess::hidden(&self.binary);
         cmd.arg("-m")
             .arg(&self.model)
             .arg("-p")

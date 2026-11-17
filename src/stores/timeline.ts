@@ -2,21 +2,55 @@ import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import type { InjectionKey } from "vue";
 import type { TimelineEvent } from "../types";
+import type { MergeStrategy, SplitStrategy } from "../composables/sentenceCuts";
+import { PREF_KEYS, readSnapDefault, setSnapDefault } from "../composables/appPrefs";
 
-export const CLIP_COLORS: Record<string, string> = {
-  ocr_region: "#00b894",
-  ocr_text: "#fdcb6e",
-  embed_ocr: "#e17055",
-  asr: "#0984e3",
-  fused: "#00cec9",
-  manual: "#a29bfe",
+/// 轨道片段配色：bg 底 / fg 文字 / line 描边，三值都指向主题令牌
+export interface ClipTone {
+  bg: string;
+  fg: string;
+  line: string;
+}
+
+/// 未知事件类型的中性回落配色
+const FALLBACK_TONE: ClipTone = {
+  bg: "var(--hover)",
+  fg: "var(--dim)",
+  line: "var(--hair-2)",
 };
+
+export const CLIP_COLORS: Record<string, ClipTone> = {
+  ocr_region: { bg: "var(--reg-bg)", fg: "var(--reg-fg)", line: "var(--reg-line)" },
+  ocr_text: { bg: "var(--otx-bg)", fg: "var(--otx-fg)", line: "var(--otx-line)" },
+  embed_ocr: { bg: "var(--ocr-bg)", fg: "var(--ocr-fg)", line: "var(--ocr-line)" },
+  asr: { bg: "var(--asr-bg)", fg: "var(--asr-fg)", line: "var(--asr-line)" },
+  fused: { bg: "var(--fus-bg)", fg: "var(--fus-fg)", line: "var(--fus-line)" },
+  manual: { bg: "var(--man-bg)", fg: "var(--man-fg)", line: "var(--man-line)" },
+};
+
+/// 取某事件类型的片段配色（未知类型回落中性灰）
+export function clipTone(type: string): ClipTone {
+  return CLIP_COLORS[type] ?? FALLBACK_TONE;
+}
 
 /// 参与字幕预览/文字编辑的轨道类型（眼睛开关与预览渲染共用，防两处漂移）
 export const TEXT_TRACK_TYPES = ["ocr_text", "embed_ocr", "asr", "fused", "manual"];
 
 /// 统一吸附阈值（像素）：clip 边缘与吸附点距离小于该值即对齐
 export const SNAP_THRESHOLD_PX = 8;
+
+/// 分割/合并策略的持久化键与合法值（第 8 项）；不合法或缺失时回落默认档
+// 键名统一从 appPrefs.PREF_KEYS 取：相同的两个字符串曾经在这里与 appPrefs 各写一份，
+// 改一边漏一边就会静默变成两个互不相干的偏好（P2-20）。
+const SPLIT_KEY = PREF_KEYS.splitStrategy;
+const MERGE_KEY = PREF_KEYS.mergeStrategy;
+const SPLIT_VALUES: SplitStrategy[] = ["punct", "space", "raw"];
+const MERGE_VALUES: MergeStrategy[] = ["latter", "former", "stack"];
+
+function readStrategy<T extends string>(key: string, allowed: T[], fallback: T): T {
+  const saved = localStorage.getItem(key);
+  return saved && (allowed as string[]).includes(saved) ? (saved as T) : fallback;
+}
 
 export const useTimelineStore = defineStore("timeline", () => {
   const pixelsPerSecond = ref(100);
@@ -26,15 +60,27 @@ export const useTimelineStore = defineStore("timeline", () => {
   const isSeeking = ref(false);
   const focusedClipId = ref<string | null>(null);
   const focusedTrackId = ref<string | null>(null);
-  const activeTool = ref<"select" | "split" | "merge">("select");
+  /// 当前工具：select 选择 | split 分割 | merge 合并 | region 拖动画选区（迷你时间轴）
+  const activeTool = ref<"select" | "split" | "merge" | "region">("select");
   const viewportWidth = ref(0);
-  /// 吸附开关（默认开启）
-  const snapEnabled = ref(true);
+  /// 吸附开关（默认值来自设置面板，缺省开启）
+  const snapEnabled = ref(readSnapDefault());
   /// 分段垂直互换模式（默认关闭）：开启后时间轴显示分段遮罩与
   /// 轨道边界互换按钮，用于手动修正跨段说话人归属
   const swapSegments = ref(false);
   /// 吸附标记线位置（内容区像素坐标；null = 不显示）
   const snapGuideX = ref<number | null>(null);
+  /// 「被分割态」：刚分割出的一对 clip（同轨相邻）。存在期间键盘 ⬅️➡️ 可整段搬句界；
+  /// 失焦、Esc、换工具或再次分割都会清掉。
+  const splitPair = ref<{ trackId: string; leftId: string; rightId: string } | null>(null);
+  /// 当前持有播放权的播放器 id（"review" 校对区 / "clip" 切片预览 / "source" 剧情录屏预览）。
+  /// 打轴页与校对区共用同一条时间轴时间，若两侧 <video> 同时播放会双声道、双解码，
+  /// 故约定：谁按下播放谁持有播放权，另一侧只跟随时间、保持静音暂停。
+  const activePlayer = ref<string | null>(null);
+  /// 分割策略（面板可切，持久化）：punct 按断句标点 | space 按空格 | raw 保留原文
+  const splitStrategy = ref<SplitStrategy>(readStrategy(SPLIT_KEY, SPLIT_VALUES, "punct"));
+  /// 合并策略：latter 保留后者文本 | former 保留前者文本 | stack 前后堆叠（现状）
+  const mergeStrategy = ref<MergeStrategy>(readStrategy(MERGE_KEY, MERGE_VALUES, "latter"));
 
   const totalWidth = computed(() => duration.value * pixelsPerSecond.value);
 
@@ -53,21 +99,29 @@ export const useTimelineStore = defineStore("timeline", () => {
     currentTime.value = t;
   }
 
-  function scrubbing(value: boolean) {
-    isSeeking.value = value;
+  /// 拖动擦洗开始：期间由鼠标位置驱动时间，视频的 tick 不得回写
+  function beginScrub() {
+    isSeeking.value = true;
   }
 
-  function seek(t: number) {
-    scrubbing(true);
-    currentTime.value = t;
-  }
-
-  function seekDone() {
+  /// 拖动擦洗结束：恢复「视频驱动时间」
+  function endScrub() {
     isSeeking.value = false;
+  }
+
+  /// 瞬时跳转（点 clip、双击总览条目等）：只写时间，不进入擦洗态。
+  /// 若这里置 isSeeking，视频的 tick 会被挡掉 ⇒ 该时间轴的播放头永久停住。
+  function setTime(t: number) {
+    currentTime.value = t;
   }
 
   function setDuration(d: number) {
     duration.value = d;
+  }
+
+  /// 抢占播放权：调用方开始播放时自报身份，其他播放器监听到后自行暂停（只跟随时间）
+  function claimPlayback(id: string) {
+    activePlayer.value = id;
   }
 
   function playheadX(): number {
@@ -89,13 +143,71 @@ export const useTimelineStore = defineStore("timeline", () => {
     scrollLeft.value = Math.max(0, Math.min(scrollLeft.value + delta, maxScroll()));
   }
 
+  /// 缩放至全部：整段时长刚好铺满视口（即最小 pps，等价于缩略块铺满滑条）
+  function zoomToFit() {
+    if (duration.value <= 0 || viewportWidth.value <= 0) return;
+    pixelsPerSecond.value = viewportWidth.value / duration.value;
+    scrollLeft.value = 0;
+  }
+
   function timeAtPixel(px: number): number {
     const t = (scrollLeft.value + px) / pixelsPerSecond.value;
     return Math.max(0, Math.min(duration.value, t));
   }
 
+  // ── 多选（框选 / Ctrl+A）──
+  // 不变式：selectedClipIds 永远包含 focusedClipId；主选中为 null 时选择集为空。
+  // 主选中仍承担「总览定位 / 行内编辑 / Delete 目标」等单元素语义，多选只是附加集合。
+  const selectedClipIds = ref<string[]>([]);
+
+  function isSelected(id: string): boolean {
+    return selectedClipIds.value.includes(id);
+  }
+
+  /// 聚焦某个 clip 即「单击选择」：主选中改为它，选择集重置为单元素
   function focusClip(id: string | null) {
     focusedClipId.value = id;
+    selectedClipIds.value = id ? [id] : [];
+  }
+
+  /// 设定整个选择集；primary 缺省时若当前主选中不在集合内则取首个
+  function setSelection(ids: string[], primary?: string | null) {
+    const unique = Array.from(new Set(ids));
+    selectedClipIds.value = unique;
+    if (primary !== undefined) {
+      focusedClipId.value = primary;
+    } else if (unique.length === 0) {
+      focusedClipId.value = null;
+    } else if (!unique.includes(focusedClipId.value ?? "")) {
+      focusedClipId.value = unique[0];
+    }
+  }
+
+  /// 并集添加（框选按住 Shift）
+  function addToSelection(ids: string[]) {
+    const base = [...selectedClipIds.value];
+    for (const id of ids) if (!base.includes(id)) base.push(id);
+    setSelection(base, ids.length > 0 ? ids[ids.length - 1] : undefined);
+  }
+
+  /// 反选（框选按住 Ctrl）：已在集合内的移出，不在的加入
+  function toggleInSelection(ids: string[]) {
+    const next = [...selectedClipIds.value];
+    let last: string | null = null;
+    for (const id of ids) {
+      const at = next.indexOf(id);
+      if (at >= 0) next.splice(at, 1);
+      else {
+        next.push(id);
+        last = id;
+      }
+    }
+    setSelection(next, last ?? undefined);
+  }
+
+  function clearSelection() {
+    selectedClipIds.value = [];
+    focusedClipId.value = null;
   }
 
   /// 聚焦某条轨道（决定选区遮罩是否显示）
@@ -103,13 +215,38 @@ export const useTimelineStore = defineStore("timeline", () => {
     focusedTrackId.value = id;
   }
 
-  /// 切换时间轴工具：select 选择/擦动 | split 分割 | merge 合并
-  function setTool(tool: "select" | "split" | "merge") {
+  /// 切换时间轴工具：select 选择/擦动 | split 分割 | merge 合并 | region 拖动画选区
+  function setTool(tool: "select" | "split" | "merge" | "region") {
     activeTool.value = tool;
+  }
+
+  /// 切换分割策略（面板选择后持久化）
+  function setSplitStrategy(next: SplitStrategy) {
+    splitStrategy.value = next;
+    localStorage.setItem(SPLIT_KEY, next);
+  }
+
+  /// 切换合并策略（面板选择后持久化）
+  function setMergeStrategy(next: MergeStrategy) {
+    mergeStrategy.value = next;
+    localStorage.setItem(MERGE_KEY, next);
+  }
+
+  /// 进入「被分割态」（记下刚分割出的一对 clip id）
+  function setSplitPair(pair: { trackId: string; leftId: string; rightId: string } | null) {
+    splitPair.value = pair;
+  }
+
+  /// 退出「被分割态」
+  function clearSplitPair() {
+    splitPair.value = null;
   }
 
   function toggleSnap() {
     snapEnabled.value = !snapEnabled.value;
+    // 顺手落盘：面板里那个「默认开启吸附」写的是同一个偏好键，
+    // 不写回的话本会话的切换重启即丢，且面板显示的还是旧默认值。
+    setSnapDefault(snapEnabled.value);
     snapGuideX.value = null;
   }
 
@@ -119,6 +256,13 @@ export const useTimelineStore = defineStore("timeline", () => {
   }
 
   /// 设置吸附标记线位置（内容区像素坐标）；null 清除
+  /// 拖边参考线（第 15 项）：拖动 clip 起止期间持续显示的一条细线。
+  /// 存像素位置（相对内容区，未减 scrollLeft），与 snapGuideX 同口径但互不影响。
+  const edgeGuideX = ref<number | null>(null);
+  function setEdgeGuide(x: number | null) {
+    edgeGuideX.value = x;
+  }
+
   function setSnapGuide(x: number | null) {
     snapGuideX.value = x;
   }
@@ -158,25 +302,43 @@ export const useTimelineStore = defineStore("timeline", () => {
     snapEnabled,
     snapGuideX,
     swapSegments,
+    activePlayer,
+    splitStrategy,
+    mergeStrategy,
+    splitPair,
     tick,
-    scrubbing,
-    seek,
-    seekDone,
+    beginScrub,
+    endScrub,
+    setTime,
     setDuration,
     setViewportWidth,
     maxScroll,
     playheadX,
     zoom,
+    zoomToFit,
     pan,
     timeAtPixel,
     focusClip,
     focusTrack,
+    selectedClipIds,
+    isSelected,
+    setSelection,
+    addToSelection,
+    toggleInSelection,
+    clearSelection,
     setTool,
+    setSplitStrategy,
+    setMergeStrategy,
+    setSplitPair,
+    clearSplitPair,
     toggleSnap,
     toggleSwapSegments,
     setSnapGuide,
+    edgeGuideX,
+    setEdgeGuide,
     clipPosition,
     jumpTo,
+    claimPlayback,
   };
 });
 

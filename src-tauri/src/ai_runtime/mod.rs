@@ -6,20 +6,24 @@
 //
 // 本阶段（2.1）只搭骨架：trait + 管理器 + 配置 + 占位 provider。
 
+pub mod backend_probe;
 pub mod config;
 pub mod dhash;
 pub mod embed;
 pub mod funasr;
+pub mod installed_state;
 pub mod llm;
 pub mod moss;
 pub mod paddle;
+pub mod runtime_install;
+pub mod setup;
 
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tauri::Manager;
 
 pub use config::RuntimeConfig;
@@ -35,8 +39,124 @@ pub(crate) fn resolve_path(p: &str, runtime_dir: &Path) -> PathBuf {
     }
 }
 
-// ─── OCR 数据与错误 ──────────────────────────────────────
+/// 安装器约定的 MOSS 标准布局（与 manifest 条目的 `dest` 一致）
+pub(crate) const MOSS_BINARY_REL: &str = "bin/moss-transcribe.exe";
+pub(crate) const MOSS_MODEL_REL: &str = "models/moss/moss-transcribe-q5_k.gguf";
 
+/// 解析 MOSS 的二进制与模型路径。
+///
+/// 为什么空字段要回退到标准布局：一键安装（欢迎页自检卡片）只解包文件、**不写
+/// config.json**，所以"刚装完、配置还没生成"是正常状态。此时若把空字段当成
+/// runtime 目录本身（`resolve_path("")` 的结果），就会把已装好的运行时判成
+/// "文件缺失"——用户看到的是装完反而坏了。用户自定义过路径时 config 里一定有值，
+/// 回退不会被触发。
+pub(crate) fn moss_paths(config: &RuntimeConfig, runtime_dir: &Path) -> (PathBuf, PathBuf) {
+    let binary = if config.moss_binary.trim().is_empty() {
+        resolve_path(MOSS_BINARY_REL, runtime_dir)
+    } else {
+        resolve_path(&config.moss_binary, runtime_dir)
+    };
+    let model = if config.moss_model.trim().is_empty() {
+        resolve_path(MOSS_MODEL_REL, runtime_dir)
+    } else {
+        resolve_path(&config.moss_model, runtime_dir)
+    };
+    (binary, model)
+}
+
+/// 安装器约定的 OCR 标准布局（与 manifest 条目 `deps-ocr` 的 `dest: "."` 一致）
+pub(crate) const OCR_PYTHON_REL: &str = "python/python.exe";
+pub(crate) const OCR_DEPS_REL: &str = "deps";
+pub(crate) const OCR_DEPS_GPU_REL: &str = "deps_gpu";
+pub(crate) const OCR_MODELS_REL: &str = "models/paddleocr";
+pub(crate) const OCR_WORKER_REL: &str = "worker/ocr_worker.py";
+
+/// OCR 运行时的四个关键路径：(python 可执行, 依赖目录, 模型目录, worker 脚本)。
+///
+/// 与 `moss_paths` 同一动机：一键安装只解包、不写 config.json，所以配置为空时
+/// 必须回退到标准布局，否则会把刚装好的运行时判成"缺失"。
+///
+/// 这里比 `moss_paths` 多一条判据：**配置值指向的东西在磁盘上不存在时也回退**。
+/// 原因是 `RuntimeConfig::default()` 的 `python_path` 是历史占位值 "python"
+/// （不是 "python/python.exe"），按字面 join 会得到一个目录；安装器又不会写
+/// config.json。存在性判定能让"刚装完"和"老的占位配置"都落到标准布局。
+/// 用户自定义过路径时那个路径通常存在，回退不会被触发。
+/// 注意 `deps_gpu` 是**可选**增量（只有 NVIDIA 机器会有），不参与这里的解析。
+pub(crate) fn ocr_paths(config: &RuntimeConfig, runtime_dir: &Path) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+    fn pick(value: &str, rel: &str, runtime_dir: &Path, want_dir: bool) -> PathBuf {
+        let std_path = resolve_path(rel, runtime_dir);
+        let value = value.trim();
+        if value.is_empty() {
+            return std_path;
+        }
+        let custom = resolve_path(value, runtime_dir);
+        let ok = if want_dir {
+            custom.is_dir()
+        } else {
+            custom.is_file()
+        };
+        if ok {
+            custom
+        } else {
+            std_path
+        }
+    }
+    (
+        pick(&config.python_path, OCR_PYTHON_REL, runtime_dir, false),
+        pick(&config.deps_dir, OCR_DEPS_REL, runtime_dir, true),
+        pick(&config.model_dir, OCR_MODELS_REL, runtime_dir, true),
+        pick(&config.worker_script, OCR_WORKER_REL, runtime_dir, false),
+    )
+}
+
+/// 安装器约定的向量融合（embed）标准布局（与 manifest 条目 `deps-embed` 的 `dest: "."` 一致）
+pub(crate) const EMBED_WORKER_REL: &str = "worker/embed_worker.py";
+pub(crate) const EMBED_DEPS_REL: &str = "deps_embed";
+pub(crate) const EMBED_MODEL_REL: &str =
+    "models/embed/multilingual-e5-small/model_qint8_avx512_vnni.onnx";
+pub(crate) const EMBED_TOKENIZER_REL: &str =
+    "models/embed/multilingual-e5-small/tokenizer.json";
+
+/// embed 运行时的关键路径：(python, worker, 依赖目录, 模型, tokenizer)。
+///
+/// 与 `moss_paths` / `ocr_paths` 同一动机：一键安装只解包、不写 config.json，
+/// 所以配置为空时必须回退到标准布局——否则"刚装完"会被判成"未配置"，
+/// 用户看到的是装好了却不能用（PR43 前 MOSS/OCR 都踩过这个坑）。
+///
+/// embed 复用 OCR 包带来的 `python/python.exe`（不单独分发解释器），
+/// 因此 `deps-embed` 的安装前置是 `deps-ocr` 已装。
+pub(crate) fn embed_paths(
+    config: &RuntimeConfig,
+    runtime_dir: &Path,
+) -> (PathBuf, PathBuf, PathBuf, PathBuf, PathBuf) {
+    fn pick(value: &str, rel: &str, runtime_dir: &Path, want_dir: bool) -> PathBuf {
+        let std_path = resolve_path(rel, runtime_dir);
+        let value = value.trim();
+        if value.is_empty() {
+            return std_path;
+        }
+        let custom = resolve_path(value, runtime_dir);
+        let ok = if want_dir {
+            custom.is_dir()
+        } else {
+            custom.is_file()
+        };
+        if ok {
+            custom
+        } else {
+            std_path
+        }
+    }
+    (
+        pick(&config.python_path, OCR_PYTHON_REL, runtime_dir, false),
+        pick(&config.embed_worker, EMBED_WORKER_REL, runtime_dir, false),
+        pick(&config.embed_deps_dir, EMBED_DEPS_REL, runtime_dir, true),
+        pick(&config.embed_model, EMBED_MODEL_REL, runtime_dir, false),
+        pick(&config.embed_tokenizer, EMBED_TOKENIZER_REL, runtime_dir, false),
+    )
+}
+
+// ─── OCR 数据与错误 ──────────────────────────────────────
 /// 单张帧图像的 OCR 识别结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OcrResult {
@@ -195,29 +315,41 @@ pub struct OcrRuntimeStatus {
 
 /// 全局 OCR 管理器 —— 持有配置与当前 provider
 pub struct OcrManager {
-    config: RuntimeConfig,
+    /// 配置用 RwLock 而不是裸值：`reload()` 会从磁盘重读配置，
+    /// 若只换 provider 不换 config，`config().dev_debug` 就永远是启动时那份旧值，
+    /// 面板里改 `dev_debug` / `ocr_device` 得重启才生效（2026-11-16 审查 P2-1）。
+    config: RwLock<RuntimeConfig>,
     runtime_dir: PathBuf,
     provider: Mutex<Box<dyn OcrProvider>>,
 }
 
 impl OcrManager {
     pub fn new(config: RuntimeConfig, runtime_dir: PathBuf) -> Self {
-        // 已配置 worker 脚本则走 Paddle；否则用 None 占位
-        let kind = if config.worker_script.is_empty() {
+        // 已配置 worker 脚本、或标准布局里已有 worker（一键安装后没有 config.json）
+        // 都走 Paddle；都没有才用 None 占位
+        let worker = ocr_paths(&config, &runtime_dir).3;
+        let kind = if config.worker_script.is_empty() && !worker.is_file() {
             OcrProviderKind::None
         } else {
             OcrProviderKind::Paddle
         };
         let provider = create_ocr_provider(kind, &config, &runtime_dir);
         Self {
-            config,
+            config: RwLock::new(config),
             runtime_dir,
             provider: Mutex::new(provider),
         }
     }
 
-    pub fn config(&self) -> &RuntimeConfig {
-        &self.config
+    /// 返回配置的一份拷贝（不是引用）。
+    ///
+    /// 配置会在 `reload()` 时被整体替换，拿引用不可能既安全又不过期；
+    /// 调用方都只用一两个字段，克隆一次的成本远小于「读到旧值」的代价。
+    pub fn config(&self) -> RuntimeConfig {
+        self.config
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     pub fn runtime_dir(&self) -> &PathBuf {
@@ -254,6 +386,43 @@ impl OcrManager {
             message,
         }
     }
+
+    /// 从磁盘重建 provider（一键安装/更新运行时之后调用，让新装的 worker 立刻生效）。
+    ///
+    /// 与 `new()` 用同一套判定（含「空配置回退标准布局」），所以「装完必须重启」
+    /// 这条边界不存在了 —— 真机 2026-10-31 的「脚本跑完 4 个都未就绪」就是它。
+    pub fn reload(&self) -> Result<String, String> {
+        let config = RuntimeConfig::load(&self.runtime_dir).unwrap_or_else(|_| self.config());
+        let worker = ocr_paths(&config, &self.runtime_dir).3;
+        let kind = if config.worker_script.is_empty() && !worker.is_file() {
+            OcrProviderKind::None
+        } else {
+            OcrProviderKind::Paddle
+        };
+        let provider = create_ocr_provider(kind, &config, &self.runtime_dir);
+        let (name, ready, detail) = (
+            provider.name().to_string(),
+            provider.is_ready(),
+            provider.describe(),
+        );
+        {
+            let mut guard = self.provider.lock().unwrap_or_else(|e| e.into_inner());
+            *guard = provider;
+        }
+        // 关键：config 必须跟着一起换，否则 config().dev_debug 永远是启动时的旧值，
+        // 面板上「改这里立即生效」就成了半句真话（2026-11-16 审查 P2-1）。
+        {
+            let mut guard = self.config.write().unwrap_or_else(|e| e.into_inner());
+            *guard = config;
+        }
+        Ok(if ready {
+            format!("OCR 已重新加载（provider: {name}）")
+        } else if detail.is_empty() {
+            format!("OCR 已重新加载但未就绪（provider: {name}）")
+        } else {
+            format!("OCR 已重新加载但未就绪（provider: {name}）：{detail}")
+        })
+    }
 }
 
 // ─── 单元测试 ─────────────────────────────────────────────
@@ -280,6 +449,121 @@ mod tests {
     }
 
     #[test]
+    fn test_ocr_reload_reports_not_ready_without_worker() {
+        // 一键装完运行时后要能"热加载"：目录里没有 worker 时如实说未就绪，而不是报错或 panic
+        let dir = std::env::temp_dir().join(format!("gsa_ocr_reload_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let manager = OcrManager::new(RuntimeConfig::default(), dir.clone());
+        let msg = manager.reload().expect("没有 config.json 也应能重建（回退默认配置）");
+        assert!(msg.contains("未就绪"), "reload 应如实说未就绪：{msg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_ocr_reload_refreshes_config_too() {
+        // P2-1：reload() 只换 provider 不换 config 时，config().dev_debug 永远是启动那份旧值，
+        // 面板里改 dev_debug 得重启才生效。这里直接验证「reload 之后能读到磁盘上的新值」。
+        let dir = std::env::temp_dir().join(format!("gsa_ocr_reload_cfg_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 启动时：dev_debug = false
+        let manager = OcrManager::new(RuntimeConfig::default(), dir.clone());
+        assert!(!manager.config().dev_debug);
+
+        // 面板把它改成 true 并存盘，然后热加载
+        let mut saved = RuntimeConfig::default();
+        saved.dev_debug = true;
+        saved.save(&dir).unwrap();
+        manager.reload().expect("有合法 config.json 时应能重建");
+
+        assert!(
+            manager.config().dev_debug,
+            "reload 之后 config() 必须反映磁盘新值，否则 dev_debug 要重启才生效"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ocr_paths_fall_back_to_standard_layout() {
+        // 安装器只解包、不写 config.json，且 default() 里 python_path 是历史占位值
+        // "python"（目录，不是 python/python.exe）——两种情形都必须落到标准布局
+        let dir = std::env::temp_dir().join(format!("gsa_ocr_paths_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (python, deps, models, worker) = ocr_paths(&RuntimeConfig::default(), &dir);
+        assert_eq!(python, dir.join(OCR_PYTHON_REL));
+        assert_eq!(deps, dir.join(OCR_DEPS_REL));
+        assert_eq!(models, dir.join(OCR_MODELS_REL));
+        assert_eq!(worker, dir.join(OCR_WORKER_REL));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ocr_paths_keep_existing_custom_paths() {
+        // 自定义路径存在时必须用它（不能被回退逻辑吃掉）
+        let dir = std::env::temp_dir().join(format!("gsa_ocr_custom_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("py")).unwrap();
+        std::fs::create_dir_all(dir.join("dep")).unwrap();
+        std::fs::create_dir_all(dir.join("mdl")).unwrap();
+        std::fs::write(dir.join("py\\python.exe"), "x").unwrap();
+        std::fs::write(dir.join("w.py"), "x").unwrap();
+        let mut cfg = RuntimeConfig::default();
+        cfg.python_path = "py/python.exe".into();
+        cfg.deps_dir = "dep".into();
+        cfg.model_dir = "mdl".into();
+        cfg.worker_script = "w.py".into();
+        let (python, deps, models, worker) = ocr_paths(&cfg, &dir);
+        assert_eq!(python, dir.join("py\\python.exe"));
+        assert_eq!(deps, dir.join("dep"));
+        assert_eq!(models, dir.join("mdl"));
+        assert_eq!(worker, dir.join("w.py"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn embed_paths_fall_back_to_standard_layout() {
+        // 与 moss/ocr 同一个坑：一键安装不写 config.json，default() 的字段全是空的
+        let dir = std::env::temp_dir().join(format!("gsa_embed_paths_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (python, worker, deps, model, tokenizer) =
+            embed_paths(&RuntimeConfig::default(), &dir);
+        assert_eq!(python, dir.join(OCR_PYTHON_REL));
+        assert_eq!(worker, dir.join(EMBED_WORKER_REL));
+        assert_eq!(deps, dir.join(EMBED_DEPS_REL));
+        assert_eq!(model, dir.join(EMBED_MODEL_REL));
+        assert_eq!(tokenizer, dir.join(EMBED_TOKENIZER_REL));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn embed_paths_keep_existing_custom_paths() {
+        let dir = std::env::temp_dir().join(format!("gsa_embed_custom_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("dep")).unwrap();
+        std::fs::write(dir.join("py.exe"), "x").unwrap();
+        std::fs::write(dir.join("w.py"), "x").unwrap();
+        std::fs::write(dir.join("m.onnx"), "x").unwrap();
+        std::fs::write(dir.join("t.json"), "x").unwrap();
+        let mut cfg = RuntimeConfig::default();
+        cfg.python_path = "py.exe".into();
+        cfg.embed_worker = "w.py".into();
+        cfg.embed_deps_dir = "dep".into();
+        cfg.embed_model = "m.onnx".into();
+        cfg.embed_tokenizer = "t.json".into();
+        let (python, worker, deps, model, tokenizer) = embed_paths(&cfg, &dir);
+        assert_eq!(python, dir.join("py.exe"));
+        assert_eq!(worker, dir.join("w.py"));
+        assert_eq!(deps, dir.join("dep"));
+        assert_eq!(model, dir.join("m.onnx"));
+        assert_eq!(tokenizer, dir.join("t.json"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn test_broken_provider_reports_reason() {
         let p = BrokenProvider {
             name: "paddle".into(),
@@ -300,7 +584,7 @@ mod tests {
             std::panic::panic_any("poison");
         }));
         let mgr = OcrManager {
-            config: RuntimeConfig::default(),
+            config: RwLock::new(RuntimeConfig::default()),
             runtime_dir: PathBuf::from("runtime"),
             provider: mutex,
         };
@@ -317,6 +601,49 @@ mod tests {
 #[tauri::command]
 pub fn check_ocr_runtime(state: tauri::State<'_, OcrManager>) -> OcrRuntimeStatus {
     state.status()
+}
+
+/// 运行时整体重载的结果（一句话/条，直接可显示）
+#[derive(Clone, Serialize)]
+pub struct RuntimeReloadSummary {
+    pub asr: Vec<String>,
+    pub ocr: String,
+}
+
+/// Tauri 命令：安装/更新运行时后重建 ASR 与 OCR 的 provider。
+///
+/// 为什么需要它：provider 是 setup 阶段按当时的文件情况一次性构造的（缺文件时
+/// 会退化成 None/Broken 占位），一键安装只是往磁盘写文件，进程内的对象不会
+/// 自动换新 —— 于是"装完不重启就还是未就绪"。重建比重启应用便宜得多。
+#[tauri::command]
+pub async fn reload_runtimes(app: tauri::AppHandle) -> RuntimeReloadSummary {
+    // MOSS 重建要跑 `info`（数秒），放命令线程上会把窗口拖住
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut asr = Vec::new();
+        match app.try_state::<AsrManager>() {
+            Some(manager) => {
+                for key in ["moss", "funasr"] {
+                    asr.push(match manager.reload_engine(key) {
+                        Ok(m) => m,
+                        Err(e) => format!("{key}: {e}"),
+                    });
+                }
+            }
+            None => asr.push("ASR 管理器未初始化".into()),
+        }
+        let ocr = match app.try_state::<OcrManager>() {
+            Some(manager) => manager
+                .reload()
+                .unwrap_or_else(|e| format!("OCR 重新加载失败：{e}")),
+            None => "OCR 管理器未初始化".into(),
+        };
+        RuntimeReloadSummary { asr, ocr }
+    })
+    .await
+    .unwrap_or_else(|e| RuntimeReloadSummary {
+        asr: vec![format!("重新加载失败：{e}")],
+        ocr: format!("重新加载失败：{e}"),
+    })
 }
 
 // ─── ASR 数据与错误 ──────────────────────────────────────
@@ -404,6 +731,24 @@ pub trait AsrProvider: Send + Sync {
     fn is_ready(&self) -> bool;
     /// 附加说明（如未就绪的原因），默认空
     fn describe(&self) -> String {
+        String::new()
+    }
+    /// 后台预热（启动后由管理器的后台线程调用一次）。
+    ///
+    /// 默认空实现——探测成本高的引擎（MOSS 要跑 `info` 加载 GGUF 元数据）在这里做，
+    /// **不要**放进构造函数，否则会把 setup 阶段的主线程卡住（真机反馈 2026-10-29）。
+    fn warm_up(&self) {}
+    /// 后台重试预热（默认等同 `warm_up`）。
+    ///
+    /// 由状态轮询（`check_asr_engines`）在「未就绪」时触发：装了运行时/驱动就绪后
+    /// 不必重启应用即可自愈；实现方需自带失败冷冻期，避免每次轮询重起进程。
+    fn retry_warm_up(&self) {
+        self.warm_up();
+    }
+    /// 实测生效的推理后端（如 "CUDA0"/"Vulkan1"/"CPU"），默认空。
+    /// 仅 MOSS 有实证来源（spawn 时 info 的 [mt I] backend 行）；其余引擎
+    /// 实测需拉起重依赖子进程，欢迎页探针不做。
+    fn effective_backend(&self) -> String {
         String::new()
     }
     /// 转写整段音频（WAV 文件路径），返回带说话人标签的时间轴段。
@@ -527,50 +872,139 @@ pub struct AsrEngineStatus {
     pub engine: String,
     pub ready: bool,
     pub message: String,
+    /// 配置的推理设备：moss 为 ""(=auto，ggml 自动选优)/cpu/cuda/vulkan，funasr 为 cpu/cuda。
+    /// 展示的是配置值而非实测后端——实测需拉起子进程，欢迎页探针只做存在性检查。
+    pub device: String,
+    /// 实测生效后端（仅 moss 有值，来自 spawn 时 `info` 的 `[mt I] backend:` 行，
+    /// 如 "CUDA0"/"Vulkan1"/"CPU"）。与 device 不同：这是硬判据——device=vulkan
+    /// 时 ggml 静默降级后实测可能仍是 CUDA0。None = 未实证（引擎未配置/探测失败）。
+    pub effective_backend: Option<String>,
 }
 
 /// 全局 ASR 管理器 —— 同时持有 funasr / moss 两个引擎（各自按配置就绪），
 /// 由前端配置面板在每次运行时选择。provider 以 Arc 共享、无互斥锁：
 /// transcribe 阻塞调用与 cancel（取消/超时/退出钩子）需要并发，锁会把
-/// 取消拖到转写结束（失效）。
+/// 取消拖到转写结束（失效）。这里的 `RwLock` 只护住"换 provider 的那一瞬"
+/// （见 `reload_engine`）：取用时先克隆 Arc、立刻放锁，转写期间不会持锁。
 pub struct AsrManager {
-    config: RuntimeConfig,
+    /// 当前生效的配置快照：切换设备后整体替换，因此只能克隆、不能借出引用
+    config: RwLock<RuntimeConfig>,
     runtime_dir: PathBuf,
-    funasr: Arc<dyn AsrProvider>,
-    moss: Arc<dyn AsrProvider>,
+    funasr: RwLock<Arc<dyn AsrProvider>>,
+    moss: RwLock<Arc<dyn AsrProvider>>,
     /// 转写进行中标志（test-and-set）：Arc 去锁后不再天然串行转写，
     /// 该标志是后端兜底，防并发转写互相覆盖 active_child / 互相清理
     transcribing: AtomicBool,
 }
 
+/// 按配置构造 funasr provider：三路径字段任一为空即视为未配置（None 占位）
+fn build_funasr(config: &RuntimeConfig, runtime_dir: &PathBuf) -> Box<dyn AsrProvider> {
+    if config.funasr_worker.is_empty()
+        || config.funasr_deps.is_empty()
+        || config.funasr_model_dir.is_empty()
+    {
+        return Box::new(AsrNoneProvider);
+    }
+    create_asr_provider(AsrProviderKind::FunAsr, config, runtime_dir)
+}
+
+/// 按配置构造 moss provider。
+///
+/// **空字段不等于"未配置"**：一键安装（欢迎页自检卡）只解包文件、不写 `config.json`，
+/// 所以"装完了、配置还没生成"是正常状态。路径统一由 `moss_paths()` 解析（空字段回退
+/// 安装器约定的标准布局，见 `:52` 的注释）；真的没装时 `MossProvider::spawn` 会带着
+/// 具体路径报错，前端因此能显示"哪个文件不在"而不是一句空白的"未就绪"。
+fn build_moss(config: &RuntimeConfig, runtime_dir: &PathBuf) -> Box<dyn AsrProvider> {
+    create_asr_provider(AsrProviderKind::Moss, config, runtime_dir)
+}
+
 impl AsrManager {
     pub fn new(config: RuntimeConfig, runtime_dir: PathBuf) -> Self {
-        // 双引擎并存：funasr 需三路径字段齐全（worker/deps/model_dir），
-        // moss 需 binary + model；未配置的引擎用 None 占位
-        let funasr = if !config.funasr_worker.is_empty()
-            && !config.funasr_deps.is_empty()
-            && !config.funasr_model_dir.is_empty()
+        // 双引擎并存：各自按路径字段是否齐全决定是否真的拉起 provider
+        let funasr = build_funasr(&config, &runtime_dir);
+        let moss = build_moss(&config, &runtime_dir);
+        let funasr: Arc<dyn AsrProvider> = Arc::from(funasr);
+        let moss: Arc<dyn AsrProvider> = Arc::from(moss);
+        // 预热放到后台：MOSS 的 `info` 要加载几百 MB GGUF 元数据，放在构造里会在
+        // setup 阶段冻住主线程（窗口出来一片死寂、连拖动都卡）。这里起一个线程跑
+        // warm_up()，命令与转写各自另有兜底，就绪状态照旧如实上报。
         {
-            create_asr_provider(AsrProviderKind::FunAsr, &config, &runtime_dir)
-        } else {
-            Box::new(AsrNoneProvider)
-        };
-        let moss = if !config.moss_binary.is_empty() && !config.moss_model.is_empty() {
-            create_asr_provider(AsrProviderKind::Moss, &config, &runtime_dir)
-        } else {
-            Box::new(AsrNoneProvider)
-        };
+            let providers = vec![Arc::clone(&funasr), Arc::clone(&moss)];
+            std::thread::spawn(move || {
+                for p in providers {
+                    p.warm_up();
+                }
+            });
+        }
         Self {
-            config,
+            config: RwLock::new(config),
             runtime_dir,
-            funasr: Arc::from(funasr),
-            moss: Arc::from(moss),
+            funasr: RwLock::new(funasr),
+            moss: RwLock::new(moss),
             transcribing: AtomicBool::new(false),
         }
     }
 
-    pub fn config(&self) -> &RuntimeConfig {
-        &self.config
+    /// 当前生效的配置快照（克隆）
+    pub fn config(&self) -> RuntimeConfig {
+        self.read_config()
+    }
+
+    /// 读配置快照；锁中毒时取回内部值——一次 panic 不该让整个管理器永久不可用
+    fn read_config(&self) -> RuntimeConfig {
+        match self.config.read() {
+            Ok(g) => g.clone(),
+            Err(e) => e.into_inner().clone(),
+        }
+    }
+
+    /// 取指定引擎的 provider（克隆 Arc 后立即放锁，转写期间不持锁）
+    fn provider_of(&self, key: &str) -> Arc<dyn AsrProvider> {
+        let slot = if key == "moss" { &self.moss } else { &self.funasr };
+        match slot.read() {
+            Ok(g) => Arc::clone(&g),
+            Err(e) => Arc::clone(&e.into_inner()),
+        }
+    }
+
+    /// 重读盘上配置并重建**单个**引擎的 provider（切换设备后立即生效）。
+    /// 另一个引擎不动：FunASR worker 拉起成本高，改 MOSS 设备没理由重启它。
+    /// 返回面向用户的一句话（成功=已重新加载 / 成功但不可用=原因）。
+    pub fn reload_engine(&self, key: &str) -> Result<String, String> {
+        if key != "moss" && key != "funasr" {
+            return Err(format!("未知 ASR 引擎: {key}"));
+        }
+        // 换 provider 会丢弃正在跑的子进程，转写期间直接拒绝（配置已落盘，重启后仍生效）
+        if self.transcribing.load(Ordering::SeqCst) {
+            return Err("转写进行中，完成后再切换".into());
+        }
+        let config = RuntimeConfig::load(&self.runtime_dir)?;
+        // 只校验形状：这里要的是"能不能重建 provider"，路径存在性由 provider 自己报原因
+        config.validate_schema(&self.runtime_dir)?;
+        let provider: Box<dyn AsrProvider> = if key == "moss" {
+            build_moss(&config, &self.runtime_dir)
+        } else {
+            build_funasr(&config, &self.runtime_dir)
+        };
+        let (name, ready, message) = (
+            provider.name().to_string(),
+            provider.is_ready(),
+            provider.describe().to_string(),
+        );
+        let slot = if key == "moss" { &self.moss } else { &self.funasr };
+        match slot.write() {
+            Ok(mut g) => *g = Arc::from(provider),
+            Err(e) => *e.into_inner() = Arc::from(provider),
+        }
+        match self.config.write() {
+            Ok(mut g) => *g = config,
+            Err(e) => *e.into_inner() = config,
+        }
+        Ok(if ready {
+            format!("{name} 已重新加载")
+        } else {
+            format!("{name} 已重新加载但不可用：{message}")
+        })
     }
 
     pub fn runtime_dir(&self) -> &PathBuf {
@@ -579,22 +1013,38 @@ impl AsrManager {
 
     /// 访问指定引擎的 provider（无锁：provider 内部自带同步，transcribe 与 cancel 可并发）
     pub fn with_engine<R>(&self, key: &str, f: impl FnOnce(&dyn AsrProvider) -> R) -> R {
-        match key {
-            "moss" => f(&*self.moss),
-            _ => f(&*self.funasr),
-        }
+        let provider = self.provider_of(key);
+        f(&*provider)
     }
 
     /// 两引擎状态列表（供 check_asr_engines 命令展示面板可用性）
     pub fn engines(&self) -> Vec<AsrEngineStatus> {
+        let config = self.read_config();
         ["funasr", "moss"]
             .iter()
             .map(|key| {
-                let (ready, message) = self.with_engine(key, |p| (p.is_ready(), p.describe()));
+                let (ready, message, effective) = self.with_engine(key, |p| {
+                    (p.is_ready(), p.describe(), p.effective_backend())
+                });
+                // 设备值直接取配置：welcome 页展示"当前配置的 moss device"，
+                // 空 = auto（ggml 自动选优，实测偏好独显），由前端转成可读文案
+                let device = match *key {
+                    "moss" => config.moss_device.clone(),
+                    _ => config.funasr_device.clone(),
+                };
+                // 未就绪就让引擎自己在后台再探一次（带失败冷冻期）：
+                // 装完运行时/驱动就绪后，前端每次刷新状态就能自愈，不必重启应用
+                if !ready {
+                    let provider = self.provider_of(key);
+                    std::thread::spawn(move || provider.retry_warm_up());
+                }
                 AsrEngineStatus {
                     engine: (*key).into(),
                     ready,
                     message,
+                    device,
+                    // 实测后端：moss 来自 spawn 时的 L2 实证；空则不展示
+                    effective_backend: if effective.is_empty() { None } else { Some(effective) },
                 }
             })
             .collect()
@@ -652,8 +1102,8 @@ impl AsrManager {
 
     /// 请求取消当前转写（两引擎同时取消，幂等：无活动任务时无副作用）
     pub fn cancel(&self) {
-        self.funasr.cancel();
-        self.moss.cancel();
+        self.provider_of("funasr").cancel();
+        self.provider_of("moss").cancel();
     }
 }
 
@@ -1109,54 +1559,34 @@ pub struct EmbedRuntimeStatus {
 }
 
 impl EmbedManager {
-    /// 就绪判定**只做静态检查**（配置齐 + worker 脚本存在），不 spawn python——
+    /// 就绪判定**只做静态检查**（关键路径都真实存在），不 spawn python——
     /// 模型可加载性由真正融合时验证并给出具体错误（与 FunAsr/Llm 就绪探测同哲学）。
+    ///
+    /// 路径一律走 `embed_paths()`：一键安装只解包、不写 `config.json`，空字段必须回退到
+    /// 安装器约定的标准布局（与 `moss_paths` / `ocr_paths` 同一口径）。这里曾经判"配置
+    /// 字符串为空 = 未配置"，于是真机上 worker、模型、依赖三样都在盘上，卡片仍报
+    /// "缺 embed_worker / embed_model / embed_tokenizer / embed_deps_dir"。
     pub fn status(&self) -> EmbedRuntimeStatus {
-        let missing: Vec<&str> = [
-            ("embed_worker", &self.config.embed_worker),
-            ("embed_model", &self.config.embed_model),
-            ("embed_tokenizer", &self.config.embed_tokenizer),
-            ("embed_deps_dir", &self.config.embed_deps_dir),
-        ]
-        .iter()
-        .filter(|(_, v)| v.is_empty())
-        .map(|(name, _)| *name)
-        .collect();
-        if !missing.is_empty() {
-            return EmbedRuntimeStatus {
-                ready: false,
-                message: format!(
-                    "向量融合未配置（缺 {}，请先跑 scripts/bootstrap_embed.ps1）",
-                    missing.join(" / ")
-                ),
-            };
-        }
-        let worker = resolve_path(&self.config.embed_worker, &self.runtime_dir);
-        let deps = resolve_path(&self.config.embed_deps_dir, &self.runtime_dir);
-        let python = resolve_path(&self.config.python_path, &self.runtime_dir);
-        if !python.is_file() {
-            return EmbedRuntimeStatus {
-                ready: false,
-                message: format!("Python 解释器不存在: {}", python.display()),
-            };
-        }
-        if !worker.is_file() {
-            return EmbedRuntimeStatus {
-                ready: false,
-                message: format!(
-                    "fuse worker 脚本不存在: {}（请先跑 scripts/bootstrap_embed.ps1）",
-                    worker.display()
-                ),
-            };
-        }
-        if !deps.is_dir() {
-            return EmbedRuntimeStatus {
-                ready: false,
-                message: format!(
-                    "向量依赖目录不存在: {}（请先跑 scripts/bootstrap_embed.ps1）",
-                    deps.display()
-                ),
-            };
+        let (python, worker, deps, model, tokenizer) =
+            embed_paths(&self.config, &self.runtime_dir);
+        // 逐项检查而不是只看配置字符串：报错要能指出"到底哪个文件不在"
+        for (label, path, want_dir) in [
+            ("Python 解释器", &python, false),
+            ("fuse worker 脚本", &worker, false),
+            ("向量依赖目录", &deps, true),
+            ("嵌入模型", &model, false),
+            ("tokenizer", &tokenizer, false),
+        ] {
+            let exists = if want_dir { path.is_dir() } else { path.is_file() };
+            if !exists {
+                return EmbedRuntimeStatus {
+                    ready: false,
+                    message: format!(
+                        "{label}不存在: {}（点「安装运行时」可补齐，或先跑 scripts/bootstrap_embed.ps1）",
+                        path.display()
+                    ),
+                };
+            }
         }
         EmbedRuntimeStatus {
             ready: true,

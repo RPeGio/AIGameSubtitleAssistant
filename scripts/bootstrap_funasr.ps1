@@ -1,4 +1,8 @@
 ﻿<#
+【已弃用 · 不发布】2026-10-30 决策：FunASR 不参与产品分发——运行时不随安装包发布、
+不进 runtime manifest（scripts/bootstrap_runtime.ps1），前端也不再提供入口。
+本脚本保留仅供开发期复现与排查历史问题；发布流程里不要再引用它。
+
 bootstrap_funasr.ps1 —— 搭建 FunASR ASR 运行环境（Fun-ASR-Nano + VAD + 说话人）
 
 1. 复用 runtime/python（OCR 的内嵌解释器；缺失时提示先跑 bootstrap_ocr.ps1）

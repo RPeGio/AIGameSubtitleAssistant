@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import { NButton, NPopselect, NSelect, useMessage } from "naive-ui";
+import { useRoute } from "vue-router";
+import { NPopselect, useMessage } from "naive-ui";
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
-import { useTimelineStore, CLIP_COLORS } from "../stores/timeline";
+import { useTimelineStore, clipTone } from "../stores/timeline";
 import { useProjectStore } from "../stores/project";
+import AppIcon from "./AppIcon.vue";
 import type { TimelineEvent } from "../types";
 
 const timeline = useTimelineStore();
@@ -22,6 +24,34 @@ function onTrackRoleChange(role: string | null) {
   if (track) projectStore.updateTrackRole(track.id, role ?? "game");
 }
 
+// 轨道角色用原生下拉（外观可控、无浮层），事件里取值
+function onRoleChange(e: Event) {
+  onTrackRoleChange((e.target as HTMLSelectElement).value);
+}
+
+// ── 聚焦 clip 时把对应行滚进视口 ──
+// 用 getBoundingClientRect 比对（.ov-entry 的 offsetParent 未必是滚动容器）；
+// 只在行越出可视带时最小滚动，已在视口内不动，避免打断正在浏览的总览列表。
+const bodyRef = ref<HTMLElement | null>(null);
+
+function scrollFocusedRow() {
+  const body = bodyRef.value;
+  const id = timeline.focusedClipId;
+  if (!body || !id) return;
+  const row = body.querySelector<HTMLElement>(`[data-clip-id="${id}"]`);
+  if (!row) return;
+  const rb = row.getBoundingClientRect();
+  const vb = body.getBoundingClientRect();
+  const MARGIN = 4;
+  if (rb.top < vb.top) body.scrollTop += rb.top - vb.top - MARGIN;
+  else if (rb.bottom > vb.bottom) body.scrollTop += rb.bottom - vb.bottom + MARGIN;
+}
+
+watch([() => timeline.focusedClipId, () => timeline.focusedTrackId], async () => {
+  await nextTick();
+  scrollFocusedRow();
+});
+
 // ── 单轨字幕导出 ──
 const EXPORT_FORMATS = [
   { label: "SRT（通用字幕）", value: "srt" },
@@ -29,6 +59,19 @@ const EXPORT_FORMATS = [
   { label: "LRC（歌词）", value: "lrc" },
   { label: "TXT（纯文本）", value: "txt" },
 ];
+
+// ── 文本美化（第 17 项）：把文本处理动作集中成一个下拉，后续新增动作直接加条目 ──
+const BEAUTIFY_ACTIONS = [{ label: "去除文本末标点", value: "strip-trailing-punct" }];
+
+function onBeautify(action: string) {
+  const track = focusedTrack.value;
+  if (!track) return;
+  if (action === "strip-trailing-punct") {
+    const n = projectStore.stripTrackTrailingPunctuation(track.id);
+    if (n > 0) message.success(`已去除 ${n} 条的末尾标点`);
+    else message.info("没有需要去除的末尾标点");
+  }
+}
 
 /// 选定格式 → 保存对话框选路径 → 后端生成内容并写文件
 async function onExport(format: string) {
@@ -214,8 +257,19 @@ function cancelRename() {
 
 // 轨道名编辑时点击输入框外任意处即提交：
 // 时间轴 clip 的 mousedown preventDefault/stopPropagation 会挡住 blur 与冒泡，
-// 捕获阶段注册先于其执行（与时间轴标签列一致的兜底）
+// 捕获阶段注册先于其执行（与时间轴标签列一致的兜底）。
+// 组件在 ReviewPane 内（KeepAlive 的孙组件，收不到 activated/deactivated 钩子，
+// 见 Timeline.vue 同款注释）：监听挂在 mount 生命周期上，
+// 用 DOM 是否仍连接文档当激活闸门；失活时未落地的编辑由路由变化信号补提交。
+const panelRef = ref<HTMLElement | null>(null);
+
+function isAttached(): boolean {
+  const el = panelRef.value;
+  return !!el && el.isConnected;
+}
+
 function onWindowMouseDown(e: MouseEvent) {
+  if (!isAttached()) return;
   if (!renamingTrackId.value) return;
   if ((e.target as HTMLElement).closest(".ov-name-input")) return;
   commitRename();
@@ -223,10 +277,22 @@ function onWindowMouseDown(e: MouseEvent) {
 
 onMounted(() => window.addEventListener("mousedown", onWindowMouseDown, true));
 onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, true));
+
+// 切页（含切到语料页收起校对区）时顺手提交未落地的行内编辑/重命名——
+// 未改动或未在编辑态时是无害 no-op
+const route = useRoute();
+
+watch(
+  () => route.name,
+  () => {
+    commitEdit();
+    commitRename();
+  }
+);
 </script>
 
 <template>
-  <div class="overview-panel">
+  <div class="overview-panel" ref="panelRef">
     <div class="overview-header">
       <div v-if="focusedTrack" class="ov-track-name-wrap">
         <input
@@ -241,14 +307,25 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
         <span v-else class="ov-track-name" title="双击重命名轨道" @dblclick="startRename">
           {{ focusedTrack.name }}
         </span>
-        <NSelect
-          v-if="focusedTrack.type === 'asr'"
-          :value="focusedTrack.track_role"
-          size="tiny"
-          :options="TRACK_ROLE_OPTIONS"
-          class="ov-track-role-select"
-          @update:value="onTrackRoleChange"
-        />
+        <span v-if="focusedTrack.type === 'asr'" class="ov-role">
+          <select :value="focusedTrack.track_role" @change="onRoleChange">
+            <option v-for="o in TRACK_ROLE_OPTIONS" :key="o.value" :value="o.value">
+              {{ o.label }}
+            </option>
+          </select>
+          <AppIcon name="chev-d" :size="11" class="ov-role-cv" />
+        </span>
+        <NPopselect
+          v-if="isTextTrack"
+          :options="BEAUTIFY_ACTIONS"
+          trigger="click"
+          placement="bottom-end"
+          @update:value="onBeautify"
+        >
+          <button class="btn ghost sm" title="文本美化">
+            <AppIcon name="sparkle" :size="12" />美化
+          </button>
+        </NPopselect>
         <NPopselect
           v-if="isTextTrack"
           :options="EXPORT_FORMATS"
@@ -256,7 +333,9 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
           placement="bottom-end"
           @update:value="onExport"
         >
-          <NButton size="tiny" secondary title="导出当前轨道字幕">导出</NButton>
+          <button class="btn ghost sm" title="导出当前轨道字幕">
+            <AppIcon name="export" :size="12" />导出
+          </button>
         </NPopselect>
       </div>
       <span v-else class="ov-track-name">轨道总览</span>
@@ -269,11 +348,12 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
       点击时间轴轨道以查看 clip 总览
     </div>
 
-    <div v-else class="overview-body">
+    <div v-else class="overview-body" ref="bodyRef">
       <div
         v-for="(clip, i) in clips"
         :key="clip.id"
         class="ov-entry"
+        :data-clip-id="clip.id"
         :class="{ focused: timeline.focusedClipId === clip.id }"
         @click="onEntryClicked(clip)"
         @dblclick="timeline.jumpTo(clip.start)"
@@ -287,7 +367,7 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
         >
           <div
             class="ov-region"
-            :style="{ ...regionStyle(clip), borderColor: CLIP_COLORS.ocr_region }"
+            :style="{ ...regionStyle(clip), borderColor: clipTone('ocr_region').line }"
           />
         </div>
 
@@ -307,10 +387,10 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
             @keydown.esc="cancelEdit"
             @blur="commitEdit"
           />
-          <span v-else class="ov-text">{{ textOf(clip) }}</span>
+          <span v-else class="ov-text selectable">{{ textOf(clip) }}</span>
         </div>
 
-        <span v-else-if="isRegionTrack" class="ov-coords">{{ regionLabel(clip) }}</span>
+        <span v-else-if="isRegionTrack" class="ov-coords selectable">{{ regionLabel(clip) }}</span>
       </div>
 
       <div v-if="clips.length === 0" class="overview-empty">此轨道暂无 clip</div>
@@ -322,67 +402,102 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
 .overview-panel {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-width: 0;
   height: 100%;
   min-height: 0;
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
+  background: var(--panel);
+  border: 1px solid var(--hair);
   border-radius: 8px;
   overflow: hidden;
 }
 
+/* 面板头 30px：轨道名 · 角色下拉 · 导出 · 类型标签 */
 .overview-header {
-  flex-shrink: 0;
+  flex: none;
+  height: 30px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--color-border);
+  gap: 6px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--hair);
 }
 
 .ov-track-name-wrap {
   flex: 1;
   min-width: 0;
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
 }
 
 .ov-track-name {
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   font-weight: 600;
-  color: var(--color-text-primary);
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  flex: 1;
-  min-width: 0;
 }
 
 .ov-name-input {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   font-weight: 600;
   font-family: inherit;
-  color: var(--color-text-primary);
-  background: var(--color-bg-primary);
-  border: 1px solid var(--color-accent);
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--accent);
   border-radius: 4px;
-  padding: 2px 6px;
+  padding: 1px 6px;
   outline: none;
   box-sizing: border-box;
 }
 
-.ov-track-type {
-  font-size: 10px;
-  color: var(--color-text-secondary);
-  background: var(--color-bg-tertiary);
-  border-radius: 4px;
-  padding: 1px 6px;
-  flex-shrink: 0;
+.ov-role {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
 }
 
-.ov-track-role-select {
-  flex-shrink: 0;
+.ov-role select {
   width: 110px;
+  height: 22px;
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 0 20px 0 7px;
+  border: 1px solid var(--hair-2);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 11px;
+  outline: none;
+  cursor: pointer;
+}
+
+.ov-role select:hover {
+  border-color: var(--dim);
+}
+
+.ov-role-cv {
+  position: absolute;
+  right: 6px;
+  color: var(--faint);
+  pointer-events: none;
+}
+
+.ov-track-type {
+  flex: none;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--faint);
+  border: 1px solid var(--hair-2);
+  border-radius: 4px;
+  padding: 1px 6px;
 }
 
 .overview-body {
@@ -394,30 +509,43 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
 }
 
 .ov-entry {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
-  border-bottom: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--hair);
   cursor: pointer;
 }
 
+.ov-entry:last-child {
+  border-bottom: 0;
+}
+
 .ov-entry:hover {
-  background: var(--color-bg-tertiary);
+  background: var(--hover);
 }
 
 .ov-entry.focused {
-  background: var(--color-bg-tertiary);
-  box-shadow: inset 2px 0 0 var(--color-accent);
+  background: var(--sel-bg);
+}
+
+.ov-entry.focused::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
 }
 
 .ov-index {
   flex-shrink: 0;
   width: 20px;
   text-align: center;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--color-text-secondary);
+  font: 600 12px/1 var(--sans);
+  color: var(--dim);
   font-variant-numeric: tabular-nums;
 }
 
@@ -426,7 +554,7 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
   flex-shrink: 0;
   width: 96px;
   background: #000;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--hair-2);
   border-radius: 4px;
   overflow: hidden;
 }
@@ -442,12 +570,13 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
   display: flex;
   flex-direction: column;
   align-items: flex-start;
+  gap: 1px;
   min-width: 84px;
 }
 
 .ov-time {
-  font-size: 11px;
-  color: var(--color-text-secondary);
+  font: 11px/1.35 var(--mono);
+  color: var(--dim);
   font-variant-numeric: tabular-nums;
 }
 
@@ -460,7 +589,7 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
 
 .ov-text {
   font-size: 12px;
-  color: var(--color-text-primary);
+  color: var(--text);
   line-height: 1.4;
   white-space: pre-wrap;
   word-break: break-all;
@@ -472,9 +601,9 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
   font-size: 12px;
   font-family: inherit;
   line-height: 1.4;
-  color: var(--color-text-primary);
-  background: var(--color-bg-primary);
-  border: 1px solid var(--color-accent);
+  color: var(--text);
+  background: var(--raised);
+  border: 1px solid var(--accent);
   border-radius: 4px;
   padding: 4px 6px;
   outline: none;
@@ -486,8 +615,8 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
 .ov-coords {
   flex: 1;
   min-width: 0;
-  font-size: 11px;
-  color: var(--color-text-secondary);
+  font: 11px/1.35 var(--mono);
+  color: var(--dim);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   overflow: hidden;
@@ -498,8 +627,7 @@ onUnmounted(() => window.removeEventListener("mousedown", onWindowMouseDown, tru
   padding: 32px 12px;
   text-align: center;
   font-size: 12px;
-  color: var(--color-text-secondary);
-  opacity: 0.6;
+  color: var(--faint);
   line-height: 1.8;
 }
 </style>

@@ -53,9 +53,17 @@ watch(
 );
 
 // 视频播放推进 → 时间轴播放头（tick 在拖动时被 isSeeking 挡掉）
+// 外部大跳（>0.5s）走 jumpTo：它会在必要时做最小滚动让播放头重新可见；
+// 播放中的小步进仍走 tick，避免逐帧触发滚动。
 watch(
   () => props.time,
-  (t) => timeline.tick(t)
+  (t) => {
+    if (!timeline.isSeeking && Math.abs(t - timeline.currentTime) > 0.5) {
+      timeline.jumpTo(t);
+    } else {
+      timeline.tick(t);
+    }
+  }
 );
 
 // 时间轴交互（拖动刻度/点击 clip）→ 同步视频（父级 v-model:time）
@@ -64,7 +72,7 @@ watch(
   (t) => emit("update:time", t)
 );
 
-/// 双击轨道空白：以点击处为中心 ±1.5s 添加选区
+/// 双击轨道空白：以点击处为中心 ±1.5s 添加选区（快捷方式，保留）
 function onDblClickTrack(time: number) {
   if (!regionTrack.value) return;
   const start = Math.max(0, time - 1.5);
@@ -72,20 +80,28 @@ function onDblClickTrack(time: number) {
   projectStore.addOcrRegionEvent(regionTrack.value.id, start, end);
   emit("update:time", time);
 }
+
+/// 加选区工具拖出的草稿：落库为正式选区，并把播放头放到选区起点
+function onCreateTrackRegion(payload: { trackId: string; start: number; end: number }) {
+  projectStore.addOcrRegionEvent(payload.trackId, payload.start, payload.end);
+  timeline.setTime(payload.start);
+  emit("update:time", payload.start);
+}
 </script>
 
 <template>
   <div class="source-timeline">
-    <div class="hint">
-      双击空白加选区 · 拖动 clip 调起止 · 点击 clip 跳转 · 滚轮平移 · Ctrl+滚轮缩放
-    </div>
     <div class="tl-shell">
       <Timeline
         :track-filter="trackFilter"
-        :show-tool-strip="false"
+        :show-tool-strip="true"
+        tool-variant="mini"
+        timeline-role="mini"
+        :video-source="props.videoKey"
         :click-seeks="true"
         :label-width="132"
         @dblclick-track="onDblClickTrack"
+        @create-track-region="onCreateTrackRegion"
       />
     </div>
   </div>
@@ -101,20 +117,10 @@ function onDblClickTrack(time: number) {
   overflow: hidden;
 }
 
-.hint {
-  padding: 4px 8px;
-  font-size: 11px;
-  color: var(--color-text-secondary);
-  border-bottom: 1px solid var(--color-border);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex-shrink: 0;
-}
-
-/* Timeline 根节点是 height:100%，需给固定高度的容器 */
+/* Timeline 根节点是 height:100%，需给固定高度的容器
+   110 = 工具条 30 + 标尺 20 + 车道 48 + 滑条 8 + 边框余量 */
 .tl-shell {
-  height: 200px;
+  height: 110px;
   min-height: 0;
 }
 </style>

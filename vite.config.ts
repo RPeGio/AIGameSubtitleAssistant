@@ -20,7 +20,12 @@ export default defineConfig(async () => ({
         }
       : undefined,
     watch: {
-      ignored: ["**/src-tauri/**"],
+      ignored: [
+        "**/src-tauri/**",
+        // 编辑器/代理的原子写会在目标目录里建 .<name>.<pid>.<uuid>.tmpdir/：
+        // 监听器一碰到被锁的临时文件就 EBUSY 抛错，整个 dev server 会退出，这里一律忽略。
+        /(^|[\\/])\.[^\\/]*\.tmpdir([\\/]|$)/,
+      ],
     },
   },
 }));

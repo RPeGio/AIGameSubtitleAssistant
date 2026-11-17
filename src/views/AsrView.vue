@@ -1,52 +1,65 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useProjectStore } from "../stores/project";
-import SourceVideoPreview from "../components/SourceVideoPreview.vue";
+import { useTimelineStore } from "../stores/timeline";
 import SourceTimeline from "../components/SourceTimeline.vue";
-import type { AsrRunParams, AsrEngineStatus } from "../types";
+import AppIcon from "../components/AppIcon.vue";
+import ParamStepper from "../components/ParamStepper.vue";
+import InfoDot from "../components/InfoDot.vue";
+import type { AsrRunParams, AsrEngineStatus, MossBackendProbe } from "../types";
 import { usePersistedOcrParams } from "../composables/ocrDefaults";
-import {
-  NButton,
-  NCollapse,
-  NCollapseItem,
-  NInputNumber,
-  NProgress,
-  NRadio,
-  NRadioGroup,
-  NSelect,
-  NSpace,
-  NText,
-  useMessage,
-} from "naive-ui";
+import { FIX_MISREAD_DOC } from "../composables/ocrParamDocs";
+import { useMessage } from "naive-ui";
 
 const projectStore = useProjectStore();
+/// 全局时间轴 store（校对区同一个实例）：打轴页的播放头挂在它上面
+const timeline = useTimelineStore();
 const message = useMessage();
 
-// ── 两个时间轴来源折叠标签（默认展开第一个）────────────
-const activeKeys = ref<string[]>(["audio"]);
+/// 推理设备下拉的说明文案
+const MOSS_DEVICE_DOC = [
+  "决定 MOSS 跑在哪个后端上。",
+  "自动：交给 ggml 自己选优（优先 CUDA，其次 Vulkan，最后 CPU）。",
+  "CUDA / Vulkan / CPU：强制指定后端，本机不具备该后端时直接报错，不会静默降级。",
+  "保存后需重启应用生效。",
+  "下拉只列出 runtime manifest 里已发布的 flavor（manifest 未随包时列出全部）。",
+].join("\n");
+
+// ── 两张折叠卡的展开态（默认全部收起，一次只开一张最大利用高度）──
+type CardName = "visual" | "audio";
+const openCard = ref<CardName | null>(null);
+
+function toggleCard(name: CardName) {
+  openCard.value = openCard.value === name ? null : name;
+}
 
 // ── "音频获取时间轴"（ASR）─────────────────────────────
 const asrParams = ref<AsrRunParams>({
-  engine: "funasr",
+  engine: "moss",
   max_speakers: null,
   language: null,
 });
-/// 两引擎运行环境（展开时探测，禁用不可用引擎）
+
+/// 唯一转写引擎：MOSS（FunASR 已弃用、不再分发，前端不留入口）
+const ENGINE_ORDER = ["moss"] as const;
+
+const ENGINE_INFO: Record<string, { title: string; sub: string }> = {
+  moss: {
+    title: "MOSS-Transcribe-Diarize",
+    sub: "GPU 更快 · 说话人分离更好",
+  },
+};
+
+/// 引擎运行环境（展开时探测；未就绪时禁用运行按钮并给出原因）
 const asrEngines = ref<AsrEngineStatus[]>([]);
-
-const asrLanguageOptions = [
-  { label: "中文", value: "zh" },
-  { label: "English", value: "en" },
-  { label: "日本語", value: "ja" },
-];
-
-function engineStatus(engine: string): AsrEngineStatus | undefined {
-  return asrEngines.value.find((e) => e.engine === engine);
-}
 
 /// 探测失败（asrEngines 为空）时直通：不阻塞用户，运行失败由错误提示兜底
 function probeFailed(): boolean {
   return asrEngines.value.length === 0;
+}
+
+function engineStatus(engine: string): AsrEngineStatus | undefined {
+  return asrEngines.value.find((e) => e.engine === engine);
 }
 
 function engineReady(engine: string): boolean {
@@ -54,10 +67,18 @@ function engineReady(engine: string): boolean {
   return engineStatus(engine)?.ready ?? false;
 }
 
-function engineDetail(engine: string): string {
+function engineStateText(engine: string): string {
   const s = engineStatus(engine);
-  if (!s) return probeFailed() ? "状态未知（探测失败，可直接尝试）" : "正在探测…";
-  return s.ready ? "就绪" : s.message || "未配置";
+  if (!s) return probeFailed() ? "状态未知" : "探测中";
+  return s.ready ? "就绪" : "未就绪";
+}
+
+function engineStateTitle(engine: string): string {
+  const s = engineStatus(engine);
+  if (!s) {
+    return probeFailed() ? "探测失败，可直接尝试运行" : "正在探测运行环境";
+  }
+  return s.ready ? "运行环境就绪" : s.message || "未配置";
 }
 
 async function openAsrPanel() {
@@ -66,9 +87,98 @@ async function openAsrPanel() {
   } catch {
     asrEngines.value = [];
   }
+  await loadMossProbe();
+  mossDevice.value = mossProbe.value?.configured_device || "auto";
 }
 
-async function startAsr() {
+// ── MOSS 推理设备（第 12 项）────────────────────────────
+/// 下拉值写入 runtime/config.json 的 moss_device；"" = auto（ggml 选优）
+const mossDevice = ref<string>("auto");
+const mossProbe = ref<MossBackendProbe | null>(null);
+const deviceSaving = ref(false);
+
+const DEVICE_OPTIONS = [
+  { value: "auto", label: "自动（ggml 选优，推荐）" },
+  { value: "cuda", label: "CUDA（NVIDIA 显卡）" },
+  { value: "vulkan", label: "Vulkan（显卡通用）" },
+  { value: "cpu", label: "CPU（通用，最慢）" },
+];
+
+/// manifest 只声明已发布的 flavor：不在 manifest 里的 flavor 不给选；
+/// manifest 还没进包（installer 未落地）时退化为全部四项。
+const deviceOptions = computed(() => {
+  const p = mossProbe.value;
+  if (!p || !p.manifest_found) return DEVICE_OPTIONS;
+  const allowed = new Set(p.manifest_flavors);
+  const cur = p.configured_device || "auto";
+  const list = DEVICE_OPTIONS.filter((o) => o.value === "auto" || allowed.has(o.value));
+  // 已保存值不在 manifest 里（装的是 CPU 版却存着 cuda）→ 补回，保证下拉能显示当前值
+  if (!list.some((o) => o.value === cur)) {
+    list.push({ value: cur, label: `${cur}（当前已保存，manifest 未提供）` });
+  }
+  return list;
+});
+
+/// 探测结论文案：实测后端 + 判定依据
+const probeVerdict = computed(() => {
+  const p = mossProbe.value;
+  if (!p) return "";
+  if (!p.available) return p.error || p.reason || "当前设备不可用";
+  return [p.backend ? `实测 ${p.backend}` : "", p.reason].filter(Boolean).join(" · ");
+});
+
+/// 显式选了当前环境不具备的设备 → 醒目警示（仍允许保存，运行期硬拦）
+const deviceUnavailable = computed(() => {
+  const p = mossProbe.value;
+  return !!p && !p.available && p.requested !== "auto";
+});
+
+/// 推荐与当前选择不一致时才提示（如当前只有 CPU 版但本机有 N 卡）
+const deviceSuggestion = computed(() => {
+  const p = mossProbe.value;
+  if (!p || !p.recommendation) return "";
+  if (p.recommendation === p.requested) return "";
+  return `建议 ${p.recommendation}：${p.recommendation_reason}`;
+});
+
+/// 没读到安装清单 ⇒ 下拉走了"四项全显示"的退化分支，得让用户看得出来
+const manifestMissing = computed(() => !!mossProbe.value && !mossProbe.value.manifest_found);
+
+async function loadMossProbe(device?: string) {
+  try {
+    mossProbe.value = await projectStore.probeMossBackend(device);
+  } catch {
+    mossProbe.value = null;
+  }
+}
+
+async function onDeviceChange(e: Event) {
+  const raw = (e.target as HTMLSelectElement).value;
+  const value = raw === "auto" ? "" : raw;
+  deviceSaving.value = true;
+  try {
+    const res = await projectStore.setMossDevice(value);
+    message.success(res.message);
+    // 用刚保存的值立即判定一次：显式不可用要当场说清楚（运行期也会硬拦）
+    await loadMossProbe(value);
+    mossDevice.value = raw;
+    const p = mossProbe.value;
+    if (p && !p.available && p.requested !== "auto") {
+      message.warning(`已保存，但当前环境不可用：${p.error || p.reason}`);
+    }
+  } catch (err) {
+    message.error(String(err));
+    await loadMossProbe();
+    mossDevice.value = mossProbe.value?.configured_device || "auto";
+  } finally {
+    deviceSaving.value = false;
+  }
+}
+
+// 展开 ASR 卡时探测一次引擎状态
+watch(openCard, (v) => {
+  if (v === "audio") void openAsrPanel();
+});async function startAsr() {
   try {
     await projectStore.runAsr(asrParams.value);
     message.success("ASR 完成，时间轴已生成");
@@ -101,7 +211,7 @@ function setTrackRole(trackId: string, role: string) {
   projectStore.updateTrackRole(trackId, role);
 }
 
-// ── ② 内嵌字幕 OCR（画面获取时间轴）───────────────────
+// ── "检测画面变化获取时间轴"（内嵌字幕 OCR）────────────
 /// 针对没有配音的游戏任务：OCR 切片视频画面里的游戏内嵌字幕，
 /// 产出带时间轴的 embed_ocr 轨（嵌字轴），作为"游戏内容"源供融合。
 // 术语表是**语料 OCR 独有**功能：嵌字产物进 embed_ocr 轨（供融合做游戏内容段），
@@ -111,9 +221,29 @@ const ocrParams = usePersistedOcrParams("asr");
 
 const hasClipVideo = computed(() => projectStore.currentVideoMeta !== null);
 
-/// 共享播放状态：视频预览 ↔ 迷你时间轴同步
-const clipTime = ref(0);
-const clipDuration = ref(0);
+/// 播放头与校对区共用：预览与迷你时间轴直接读写全局时间轴时间（双向），
+/// 不再各持一份进度——否则同一支切片视频两处播放头会各走各的。
+/// 写回走 setTime()（瞬时跳转语义，不置 isSeeking），不会挡住校对区播放器的 tick。
+const clipTime = computed({
+  get: () => timeline.currentTime,
+  set: (t: number) => {
+    timeline.setTime(t);
+  },
+});
+/// 切片视频时长取工程元数据。此前由预览组件的 loadedmetadata 回填，
+/// 预览删掉后它恒为 0 ⇒ 迷你时间轴没有时长（滚动/缩放/双击加选区全失效）。
+const clipDuration = computed(() => projectStore.currentVideoMeta?.duration ?? 0);
+
+const clipFileName = computed(() => {
+  const p = projectStore.currentProject?.video ?? "";
+  return p.split(/[\\/]/).pop() || p;
+});
+
+const clipMeta = computed(() => {
+  const m = projectStore.currentVideoMeta;
+  if (!m) return "";
+  return `${m.width}×${m.height} · ${fmtDur(m.duration)}`;
+});
 
 /// 切片视频时长就绪后确保嵌字选区控制轨存在（page=asr，与编辑页选区并存）
 watch(
@@ -123,6 +253,15 @@ watch(
   },
   { immediate: true }
 );
+
+function fmtDur(sec: number): string {
+  const s = Math.max(0, Math.floor(sec));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function pct(v: number): string {
+  return `${Math.round(v * 100)}%`;
+}
 
 async function startEmbedOcr() {
   try {
@@ -136,270 +275,275 @@ async function startEmbedOcr() {
 
 <template>
   <div class="page">
-    <h2 class="page-title">打轴+转写</h2>
-    <p class="page-desc">从切片视频生成精确的字幕轴 / 视频内嵌字轴</p>
+    <div class="phead">
+      <h2>打轴 + 转写</h2>
+      <p>用 ASR 生成说话人轨道；没有配音的任务改用画面变化 + 内嵌字幕 OCR 取轴</p>
+    </div>
 
-    <NCollapse v-model:expanded-names="activeKeys" class="sources" arrow-placement="right">
-      <!-- ① 音频获取时间轴（ASR） -->
-      <NCollapseItem name="audio" title="音频获取时间轴">
-        <div class="source-body">
-          <NText depth="3" style="font-size: 12px">
-            对切片视频做语音识别 + 说话人分离，产出带说话人标签的时间轴与转录文本
-          </NText>
+    <!-- ① 检测画面变化获取时间轴（内嵌字幕 OCR） -->
+    <div class="acc" :class="openCard === 'visual' ? 'open' : 'off'">
+      <div class="acch" @click="toggleCard('visual')">
+        检测画面变化获取时间轴（内嵌字幕 OCR）
+        <span class="ad">
+          <AppIcon :name="openCard === 'visual' ? 'chev-d' : 'chev-r'" :size="14" />
+        </span>
+      </div>
+      <div v-if="openCard === 'visual'" class="accb">
+        <span class="enote">
+          针对没有配音的游戏任务：框选切片视频画面中的游戏字幕区域，OCR 识别内嵌字幕，
+          产出带时间轴的嵌字轨道，供 AI 融合作为游戏内容
+        </span>
 
-          <!-- ASR 参数（内联，点击立即执行） -->
-          <div class="params">
-            <div class="cfg-field">
-              <NText depth="2">引擎（必选）</NText>
-              <NRadioGroup v-model:value="asrParams.engine">
-                <NSpace vertical>
-                  <NRadio value="funasr" :disabled="!engineReady('funasr')">
-                    <div class="engine-option">
-                      <div>FunASR + diarize（推荐，本地 GPU 快）</div>
-                      <NText depth="3" style="font-size: 12px">
-                        {{ engineDetail("funasr") }}
-                      </NText>
-                    </div>
-                  </NRadio>
-                  <NRadio value="moss" :disabled="!engineReady('moss')">
-                    <div class="engine-option">
-                      <div>MOSS-Transcribe-Diarize（慢但更准）</div>
-                      <NText depth="3" style="font-size: 12px">
-                        {{ engineDetail("moss") }}
-                      </NText>
-                    </div>
-                  </NRadio>
-                </NSpace>
-              </NRadioGroup>
-            </div>
-            <div class="cfg-field">
-              <NText depth="2">最大说话人数量（选填，默认自动估计）</NText>
-              <NInputNumber
-                v-model:value="asrParams.max_speakers"
-                :min="1"
-                :precision="0"
-                :step="1"
-                placeholder="自动估计"
-                :disabled="asrParams.engine === 'moss'"
-                style="width: 100%"
-              />
-              <NText v-if="asrParams.engine === 'moss'" depth="3" style="font-size: 12px">
-                MOSS 自动估计说话人，不支持手动限制
-              </NText>
-            </div>
-            <div class="cfg-field">
-              <NText depth="2">识别语言（选填，默认自动检测）</NText>
-              <NSelect
-                v-model:value="asrParams.language"
-                :options="asrLanguageOptions"
-                clearable
-                placeholder="自动检测"
-                :disabled="asrParams.engine === 'moss'"
-                style="width: 100%"
-              />
-              <NText v-if="asrParams.engine === 'moss'" depth="3" style="font-size: 12px">
-                MOSS 自动识别多语言，无需指定
-              </NText>
-            </div>
+        <template v-if="!hasClipVideo">
+          <div class="arow">
+            <button class="btn pri" @click="projectStore.importVideo()">导入切片视频</button>
+            <span class="enote">支持 mp4 / mkv / webm / avi / mov / flv</span>
+          </div>
+        </template>
+
+        <template v-else>
+          <div class="frow">
+            <button class="btn ghost" @click="projectStore.importVideo()">
+              <AppIcon name="folder" :size="14" />选择切片视频
+            </button>
+            <span class="fname selectable">{{ clipFileName }}</span>
+            <span class="sp"></span>
+            <span class="enote">{{ clipMeta }}</span>
           </div>
 
-          <!-- 说话人标记：每条 ASR 轨标记为主播语音 / 游戏内容（"选择即生效"）。
-               融合只消费游戏内容轨（嵌字轴），主播轨仅供字幕轴参考 -->
-          <div v-if="asrTracks.length > 0" class="role-tags">
-            <div class="role-header">
-              <NText strong style="font-size: 13px">说话人标记</NText>
-              <NText depth="3" style="font-size: 12px">
-                标记为「游戏内容」的轨道参与 AI 融合；「主播语音」不参与
-              </NText>
+          <SourceTimeline
+            video-key="clip"
+            v-model:time="clipTime"
+            :duration="clipDuration"
+            class="mini-timeline"
+          />
+
+          <div class="enote">
+            选区直接在校对区画面上拖拽调整：焦点在本页时显示，回到校对区即隐藏
+          </div>
+
+          <div class="agrid">
+            <ParamStepper
+              v-model="ocrParams.frame_interval"
+              label="帧间隔（秒）"
+              param-key="frame_interval"
+              :step="0.5"
+              :min="0.1"
+              :precision="1"
+            />
+            <ParamStepper
+              v-model="ocrParams.dhash_threshold"
+              label="变化检测阈值"
+              param-key="dhash_threshold"
+              :min="0"
+              :max="64"
+            />
+            <ParamStepper
+              v-model="ocrParams.batch_size"
+              label="批大小"
+              param-key="batch_size"
+              :min="1"
+              :max="128"
+            />
+            <ParamStepper
+              v-model="ocrParams.merge_similarity"
+              label="合并相似度"
+              param-key="merge_similarity"
+              :step="0.05"
+              :min="0"
+              :max="1"
+              :precision="2"
+            />
+            <ParamStepper
+              v-model="ocrParams.min_subtitle_sec"
+              label="字幕预估最短长度（秒）"
+              param-key="min_subtitle_sec"
+              :step="0.1"
+              :min="0"
+              :max="5"
+              :precision="1"
+            />
+            <ParamStepper
+              v-model="ocrParams.min_text_length"
+              label="单段最少实质字符数"
+              param-key="min_text_length"
+              :min="0"
+              :max="10"
+            />
+          </div>
+
+          <!-- 后端已有、此前界面未暴露的开关（第 13 项） -->
+          <div class="chkrow">
+            <button
+              type="button"
+              class="chk"
+              role="checkbox"
+              :aria-checked="ocrParams.punctuation.fix_misread_letters ? 'true' : 'false'"
+              @click="
+                ocrParams.punctuation.fix_misread_letters =
+                  !ocrParams.punctuation.fix_misread_letters
+              "
+            >
+              <i :class="{ on: ocrParams.punctuation.fix_misread_letters }"></i>修正行尾 j（引号误识别）
+            </button>
+            <InfoDot :text="FIX_MISREAD_DOC" title="修正行尾 j（引号误识别）" />
+          </div>
+
+          <span class="enote">
+            合并相似度越大越易合并同句；单段最少实质字符数 0 关闭过滤。OCR 按播放头所在时间段对应的选区识别
+          </span>
+
+          <div class="astack">
+            <div class="arow">
+              <button class="btn pri" :disabled="projectStore.ocrRunning" @click="startEmbedOcr">
+                {{ projectStore.ocrRunning ? "OCR 运行中…" : "开始识别" }}
+              </button>
             </div>
-            <div v-for="track in asrTracks" :key="track.id" class="role-row">
-              <span class="role-name">{{ track.name }}</span>
-              <span class="role-count">{{ track.events.length }} 段</span>
-              <div class="role-btns">
-                <NButton
-                  size="tiny"
-                  :type="track.track_role === 'game' ? 'primary' : 'default'"
-                  :secondary="track.track_role !== 'game'"
-                  @click="setTrackRole(track.id, 'game')"
-                >
-                  游戏内容
-                </NButton>
-                <NButton
-                  size="tiny"
-                  :type="track.track_role === 'streamer' ? 'primary' : 'default'"
-                  :secondary="track.track_role !== 'streamer'"
-                  @click="setTrackRole(track.id, 'streamer')"
-                >
-                  主播语音
-                </NButton>
+            <!-- 运行中：进度条与说明各占一行，避免和按钮挤在一起被压扁 -->
+            <template v-if="projectStore.ocrRunning">
+              <div class="arow arow-prog">
+                <span class="hbar"><i :style="{ width: pct(projectStore.ocrProgress) }"></i></span>
+                <span class="enote">{{ pct(projectStore.ocrProgress) }}</span>
               </div>
+              <div v-if="projectStore.ocrMessage" class="arow arow-msg">
+                <span class="enote">{{ projectStore.ocrMessage }}</span>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- ② 音频获取时间轴（ASR） -->
+    <div class="acc" :class="openCard === 'audio' ? 'open' : 'off'">
+      <div class="acch" @click="toggleCard('audio')">
+        音频获取时间轴
+        <span class="ad">
+          <AppIcon :name="openCard === 'audio' ? 'chev-d' : 'chev-r'" :size="14" />
+        </span>
+      </div>
+      <div v-if="openCard === 'audio'" class="accb">
+        <span class="enote">
+          对切片视频做语音识别 + 说话人分离，产出带说话人标签的时间轴与转录文本
+        </span>
+
+        <div class="sblk">
+          <span class="bt">转写引擎</span>
+          <div class="eng">
+            <div
+              v-for="key in ENGINE_ORDER"
+              :key="key"
+              class="erow"
+              :class="{ on: asrParams.engine === key, dis: !engineReady(key) }"
+              :title="engineStateTitle(key)"
+              @click="engineReady(key) && (asrParams.engine = key)"
+            >
+              <span class="erdot"></span>
+              <span class="en">
+                <span class="t">{{ ENGINE_INFO[key].title }}</span>
+                <span class="s">{{ ENGINE_INFO[key].sub }}</span>
+              </span>
+              <span class="psrc es">{{ engineStateText(key) }}</span>
             </div>
           </div>
+        </div>
 
-          <!-- 仅"开始 ASR"按钮，点击立即执行 -->
-          <div class="run-row">
-            <NButton
-              type="primary"
+        <!-- MOSS 推理设备（第 12 项）：写入 runtime/config.json，切设备立即生效 -->
+        <div class="sblk">
+          <span class="bt">推理设备</span>
+          <div class="prow">
+            <div class="pcell">
+              <span class="pl">
+                <span class="pl-t">MOSS 推理设备</span>
+                <InfoDot :text="MOSS_DEVICE_DOC" title="MOSS 推理设备" />
+              </span>
+              <span class="selwrap">
+                <select
+                  class="selbox"
+                  :value="mossDevice"
+                  :disabled="deviceSaving"
+                  @change="onDeviceChange"
+                >
+                  <option v-for="o in deviceOptions" :key="o.value" :value="o.value">
+                    {{ o.label }}
+                  </option>
+                </select>
+                <AppIcon name="chev-d" :size="11" />
+              </span>
+            </div>
+          </div>
+          <span v-if="probeVerdict" class="enote" :class="{ danger: deviceUnavailable }">
+            {{ probeVerdict }}
+          </span>
+          <span v-if="deviceSuggestion" class="enote warn">{{ deviceSuggestion }}</span>
+          <span v-if="manifestMissing" class="enote warn">
+            未读取到安装清单，暂显示全部设备选项
+          </span>
+          <span class="enote">选中即保存并立即生效；显式指定但本机不具备时会直接报错，不会静默降级</span>
+        </div>
+
+        <!-- 说话人标记：每条 ASR 轨标记为主播语音 / 游戏内容（"选择即生效"）。
+             融合只消费游戏内容轨（嵌字轴），主播轨仅供字幕轴参考 -->
+        <div v-if="asrTracks.length > 0" class="sblk">
+          <span class="bt">说话人标记 · 标记为「游戏内容」的轨道参与 AI 融合</span>
+          <div v-for="track in asrTracks" :key="track.id" class="trow">
+            <span class="ln">{{ track.name }}</span>
+            <span class="enote">{{ track.events.length }} 段</span>
+            <span class="sp"></span>
+            <button
+              class="btn sm"
+              :class="{ on: track.track_role === 'game' }"
+              @click="setTrackRole(track.id, 'game')"
+            >
+              游戏内容
+            </button>
+            <button
+              class="btn sm"
+              :class="{ on: track.track_role === 'streamer' }"
+              @click="setTrackRole(track.id, 'streamer')"
+            >
+              主播语音
+            </button>
+          </div>
+        </div>
+
+        <!-- 尾部动作区整体贴底：卡体撑满时不留空白，运行中多出的行向上生长 -->
+        <div class="astack">
+          <div class="arow">
+            <button
+              class="btn pri"
               :disabled="projectStore.asrRunning || !engineReady(asrParams.engine)"
               @click="startAsr"
             >
-              {{ projectStore.asrRunning ? "ASR 运行中..." : "开始 ASR" }}
-            </NButton>
-            <template v-if="projectStore.asrRunning">
-              <NProgress
-                type="line"
-                class="progress"
-                :percentage="Math.round(projectStore.asrProgress * 100)"
-                :show-indicator="false"
-              />
-              <span class="ocr-msg">{{ projectStore.asrMessage }}</span>
-              <NButton size="tiny" quaternary type="error" @click="cancelAsr">
-                取消
-              </NButton>
-            </template>
+              {{ projectStore.asrRunning ? "ASR 运行中…" : "开始 ASR" }}
+            </button>
           </div>
-
-          <NButton size="small" quaternary @click="openAsrPanel">
-            重新探测引擎状态
-          </NButton>
-        </div>
-      </NCollapseItem>
-
-      <!-- ② 检测画面变化获取时间轴（内嵌字幕 OCR） -->
-      <NCollapseItem name="visual" title="检测画面变化获取时间轴（内嵌字幕 OCR）">
-        <div class="source-body">
-          <NText depth="3" style="font-size: 12px">
-            针对没有配音的游戏任务：框选切片视频画面中的游戏字幕区域，OCR 识别
-            内嵌字幕，产出带时间轴的嵌字轨道（内嵌字幕 OCR），供 AI 融合作为游戏内容
-          </NText>
-
-          <template v-if="!hasClipVideo">
-            <NButton type="primary" @click="projectStore.importVideo()">
-              导入切片视频
-            </NButton>
-            <NText depth="3" style="font-size: 12px">
-              支持 mp4 / mkv / webm / avi / mov / flv
-            </NText>
-          </template>
-
-          <template v-else>
-            <!-- 视频选区预览（独立于全局时间轴，播放时间与下方迷你时间轴同步） -->
-            <div class="preview-box">
-              <SourceVideoPreview
-                video-key="clip"
-                v-model:time="clipTime"
-                v-model:duration="clipDuration"
-              />
+          <!-- 运行中：进度条、说明、按钮各占一行——三样挤一行时长句会把行撑爆 -->
+          <template v-if="projectStore.asrRunning">
+            <div class="arow arow-prog">
+              <span class="hbar"><i :style="{ width: pct(projectStore.asrProgress) }"></i></span>
+              <span class="enote">{{ pct(projectStore.asrProgress) }}</span>
             </div>
-
-            <!-- 迷你时间轴：按时间段管理多条选区 -->
-            <SourceTimeline
-              video-key="clip"
-              v-model:time="clipTime"
-              :duration="clipDuration"
-              class="mini-timeline"
-            />
-            <NText depth="3" style="font-size: 12px">
-              在预览中拖拽选框框定字幕区域；双击迷你时间轴空白添加不同时间段的选区，
-              拖动 clip 调整起止、点击跳转。OCR 按播放头所在时间段对应的选区识别。
-            </NText>
-
-            <!-- OCR 参数（内联，点击立即执行） -->
-            <div class="params">
-              <div class="cfg-field">
-                <NText depth="2">帧间隔（秒）</NText>
-                <NInputNumber
-                  v-model:value="ocrParams.frame_interval"
-                  :min="0.1"
-                  :step="0.5"
-                  style="width: 100%"
-                />
-              </div>
-              <div class="cfg-field">
-                <NText depth="2">变化检测阈值</NText>
-                <NInputNumber
-                  v-model:value="ocrParams.dhash_threshold"
-                  :min="0"
-                  :max="64"
-                  :precision="0"
-                  :step="1"
-                  style="width: 100%"
-                />
-              </div>
-              <div class="cfg-field">
-                <NText depth="2">批大小</NText>
-                <NInputNumber
-                  v-model:value="ocrParams.batch_size"
-                  :min="1"
-                  :max="128"
-                  :precision="0"
-                  :step="1"
-                  style="width: 100%"
-                />
-              </div>
-              <div class="cfg-field">
-                <NText depth="2">合并相似度（0~1，越大越易合并）</NText>
-                <NInputNumber
-                  v-model:value="ocrParams.merge_similarity"
-                  :min="0"
-                  :max="1"
-                  :step="0.05"
-                  style="width: 100%"
-                />
-              </div>
-              <div class="cfg-field">
-                <NText depth="2">字幕预估最短长度（秒，越小越少误并）</NText>
-                <NInputNumber
-                  v-model:value="ocrParams.min_subtitle_sec"
-                  :min="0"
-                  :max="5"
-                  :step="0.1"
-                  style="width: 100%"
-                />
-                <NText depth="3" style="font-size: 12px">
-                  短于此长度的产出段若与后一条同句（前缀/子序列），并入后一条。默认 1.5，
-                  能收掉长打字机/遮挡造成的碎片，但会提高"误吞真实短句"的概率（0 关闭）
-                </NText>
-              </div>
-              <div class="cfg-field">
-                <NText depth="2">单段最少实质字符数（0 关闭过滤）</NText>
-                <NInputNumber
-                  v-model:value="ocrParams.min_text_length"
-                  :min="0"
-                  :max="10"
-                  :step="1"
-                  style="width: 100%"
-                />
-                <NText depth="3" style="font-size: 12px">
-                  低于此值的产出段直接丢弃（纯符号/单字符垃圾，如画面元素被读成 `6`/`O`/`口`）。
-                  实质字符 = 字母/数字/汉字（标点空白不计）。默认 1 只丢纯符号段；粗略选区常需 2
-                </NText>
-              </div>
+            <div v-if="projectStore.asrMessage" class="arow arow-msg">
+              <span class="enote">{{ projectStore.asrMessage }}</span>
             </div>
-
-            <!-- 仅"开始识别"按钮 -->
-            <div class="run-row">
-              <NButton
-                type="primary"
-                :disabled="projectStore.ocrRunning"
-                @click="startEmbedOcr"
-              >
-                {{ projectStore.ocrRunning ? "OCR 运行中..." : "开始识别内嵌字幕" }}
-              </NButton>
-              <template v-if="projectStore.ocrRunning">
-                <NProgress
-                  type="line"
-                  class="progress"
-                  :percentage="Math.round(projectStore.ocrProgress * 100)"
-                  :show-indicator="false"
-                />
-                <span class="ocr-msg">{{ projectStore.ocrMessage }}</span>
-              </template>
+            <div class="arow">
+              <button class="btn ghost sm" @click="cancelAsr">取消</button>
+              <span class="sp"></span>
+              <button class="btn ghost sm" @click="openAsrPanel">重新探测引擎状态</button>
             </div>
           </template>
+          <div v-else class="arow">
+            <span class="sp"></span>
+            <button class="btn ghost sm" @click="openAsrPanel">重新探测引擎状态</button>
+          </div>
         </div>
-      </NCollapseItem>
-    </NCollapse>
+      </div>
+    </div>
+
+    <div class="wfoot">
+      输出轨道：S01 游戏内容 · S02 主播语音（嵌字 OCR 产物进「内嵌字幕」轨）
+    </div>
   </div>
 </template>
 
@@ -407,120 +551,115 @@ async function startEmbedOcr() {
 .page {
   flex: 1;
   min-width: 0;
-  padding: 20px 24px;
-  overflow: auto;
-}
-
-.page-title {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--color-text-primary);
-  margin-bottom: 8px;
-}
-
-.page-desc {
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  margin-bottom: 16px;
-}
-
-.sources {
-  margin-bottom: 24px;
-}
-
-.source-body {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 4px 0;
-}
-
-.params {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 12px;
-  padding: 12px;
-  background: var(--color-bg-secondary);
-  border-radius: 8px;
-}
-
-.preview-box {
-  height: 300px;
-  background: #000;
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.mini-timeline {
-  flex-shrink: 0;
-}
-
-.cfg-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.engine-option {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.run-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-/* 说话人标记：每轨一行，两个水平互斥按钮 */
-.role-tags {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px;
-  background: var(--color-bg-secondary);
-  border-radius: 8px;
+  padding: 16px 18px;
+  overflow: hidden;
 }
 
-.role-header {
+.frow {
+  flex: none;
   display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin-bottom: 2px;
+  align-items: center;
+  gap: 12px;
+  min-height: 32px;
 }
 
-.role-row {
+.fname {
+  min-width: 0;
+  font: 11px/1 var(--mono);
+  color: var(--dim);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 文件行右侧的尺寸/时长不许折行——窄列里折行会把文件行撑成两行 */
+.frow .enote {
+  flex: none;
+  white-space: nowrap;
+}
+
+.mini-timeline {
+  flex: none;
+  margin-top: 2px;
+}
+
+.agrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 16px;
+  align-content: start;
+}
+
+.prow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+
+.enote.danger { color: var(--danger); }
+.enote.warn { color: var(--warn); }
+
+.trow {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-height: 26px;
 }
 
-.role-name {
-  font-size: 13px;
+.trow .ln {
+  font-size: 12.5px;
   font-weight: 600;
-  color: var(--color-text-primary);
-  min-width: 80px;
 }
 
-.role-count {
-  font-size: 11px;
-  color: var(--color-text-secondary);
-  min-width: 44px;
-}
-
-.role-btns {
+.arow {
+  flex: none;
   display: flex;
-  gap: 6px;
+  align-items: center;
+  gap: 12px;
+  min-height: 34px;
 }
 
-.progress {
-  flex: 1;
-  max-width: 320px;
+.arow .hbar {
+  width: 170px;
+  flex: 0 0 auto;
 }
 
-.ocr-msg {
-  font-size: 12px;
-  color: var(--color-text-secondary);
+/* 进度行：只放进度条和百分比，不需要按钮行那么高 */
+.arow-prog {
+  min-height: 18px;
+}
+
+/* 进度说明行：不参与"压到卡底"，长句正常折行而不是被挤成竖排 */
+.arow-msg {
+  flex: none;
+  min-height: 0;
+  align-items: flex-start;
+}
+
+.arow-msg .enote {
+  /* min-width:0 是这个 flex 项能被压缩的前提：默认 min-width:auto 会让长路径/长报错
+     按最长不可断词撑宽，把 .accb 的 overflow-x:auto 撑出一条横向滚动条 */
+  min-width: 0;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+/* 卡体撑满时把整组动作压到卡底，避免动作行悬在中间留一片空白；
+   运行中多出来的进度/说明行在组内向上生长，不会把主按钮顶到半空 */
+.astack {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wfoot {
+  flex: none;
+  padding-top: 2px;
+  font-size: 11px;
+  color: var(--faint);
 }
 </style>

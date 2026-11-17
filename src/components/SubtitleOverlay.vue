@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { useTimelineStore, CLIP_COLORS, TEXT_TRACK_TYPES } from "../stores/timeline";
+import { useTimelineStore, clipTone, TEXT_TRACK_TYPES } from "../stores/timeline";
 import { useProjectStore } from "../stores/project";
 import { useVideoContentRect } from "../composables/useVideoContentRect";
+import { frameDurOf, hitsFrame } from "../composables/useFrameTolerance";
 import type { TimelineEvent } from "../types";
 
 const timeline = useTimelineStore();
@@ -32,6 +33,7 @@ function prefixOf(e: TimelineEvent): string {
 const activeLines = computed<PreviewLine[]>(() => {
   if (!projectStore.subtitlePreviewOn) return [];
   const t = timeline.currentTime;
+  const frameDur = frameDurOf(projectStore.currentVideoMeta);
   const tracks = projectStore.currentProject?.tracks ?? [];
   const lines: PreviewLine[] = [];
   for (const track of tracks) {
@@ -39,9 +41,10 @@ const activeLines = computed<PreviewLine[]>(() => {
     if (!TEXT_TRACK_TYPES.includes(track.type)) continue;
     for (const e of track.events) {
       // ocr_region 无 text，排除后其余事件类型均含 text（TS 窄化）
-      if (e.start <= t && e.end > t && e.type !== "ocr_region") {
+      // 命中判定留一帧容差：跳到 clip 起点时时间可能落在 start 之前一帧内
+      if (e.type !== "ocr_region" && hitsFrame(e.start, e.end, t, frameDur)) {
         lines.push({
-          color: CLIP_COLORS[e.type] ?? "#ffffff",
+          color: clipTone(e.type).fg,
           prefix: prefixOf(e),
           text: e.text,
         });
@@ -53,6 +56,7 @@ const activeLines = computed<PreviewLine[]>(() => {
 
 // 字幕堆叠贴视频画面底部（letterbox 校正后），translateY(-100%) 向上生长；
 // max-height 限画面高度，多轨同时命中溢出时裁掉顶部（保留贴底行）
+// 播放控件条已移到画面之外（VideoPlayer 的 .controls），故不再需要上抬让位
 const stackStyle = computed(() => ({
   left: contentRect.value.left + "px",
   top: contentRect.value.top + contentRect.value.height + "px",
